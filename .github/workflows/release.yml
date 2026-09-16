@@ -12,6 +12,8 @@
 #   两个平台的 GB 级打包不受影响，也不算重复算力。
 # - SHA256SUMS.txt 必须是纯 LF：Windows 侧 Set-Content -Encoding ascii 产出 CRLF，merge 前统一剥 \r，
 #   合并后再断言一次——否则 .exe 那几行会让 `shasum -a 256 -c SHA256SUMS.txt` 报 FAILED。
+# - 校验和里的 Windows 文件名写成「发布后的资产名」（空格 → 点）：GitHub Releases 会自动把资产名里的
+#   空格换成点，照磁盘原名写会让用户侧 `shasum -c` 找不到文件（v1.6.0 首跑实测）。
 
 name: Release
 
@@ -191,7 +193,11 @@ jobs:
             Sort-Object Name)
           if ($names.Count -eq 0) { throw "release/ 下没有可校验的产物，打包环节没有产出任何文件" }
           $names | ForEach-Object {
-            "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 -Path $_.FullName).Hash.ToLower(), $_.Name
+            # 校验和里的文件名必须写成**发布后的资产名**：GitHub Releases 会把资产名里的空格换成点
+            # （"Bunkiten Setup 1.6.0.exe" 上传后叫 "Bunkiten.Setup.1.6.0.exe"），照磁盘原名写会让
+            # 用户 `shasum -a 256 -c SHA256SUMS.txt` 对 .exe 报 FAILED open or read（v1.6.0 首跑实测）。
+            $assetName = $_.Name -replace ' ', '.'
+            "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 -Path $_.FullName).Hash.ToLower(), $assetName
           } | Set-Content -Path SHA256SUMS-win.txt -Encoding ascii
           Get-Content SHA256SUMS-win.txt
 
