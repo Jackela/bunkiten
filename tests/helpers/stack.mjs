@@ -156,8 +156,10 @@ export async function startStack() {
 }
 
 async function start(children, stop) {
-  // acp-server：默认 7800，被占自动 +1（stdout 打印实际端口）
+  // acp-server：显式钉一个高位端口起（避开开发中的 7800 实例，保证 e2e 与外部服务隔离）；
+  // 被占时 server 自身 +1 重试，行里打印的是**实际监听端口**（server.address().port）
   const acp = await spawnAndAwaitLine(process.execPath, ["server/acp-server.mjs"], {
+    env: { PORT: "7900" },
     matcher: (line) => /\[acp\] http:\/\/localhost:(\d+)/.exec(line),
     label: "acp-server listen",
     onSpawn: (p) => children.push(p),

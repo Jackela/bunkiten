@@ -1110,8 +1110,12 @@ export function startServer() {
       server.once("error", onError);
       server.listen(port, () => {
         server.removeListener("error", onError);
-        console.log(`[acp] http://localhost:${port}  (game root: ${GAME_ROOT})`);
-        resolve({ port, server, proc });
+        // 端口以**实际监听结果**为准：双栈/被占重试时，早先 attempt 的回调可能迟到触发，
+        // 用闭包 port 会打印出假的「第一行」（真实 socket 可能在下一个端口），
+        // 进而骗过按首行解析端口的测试编排（tests/helpers/stack.mjs）。
+        const actualPort = server.address()?.port ?? port;
+        console.log(`[acp] http://localhost:${actualPort}  (game root: ${GAME_ROOT})`);
+        resolve({ port: actualPort, server, proc });
       });
     });
   }
