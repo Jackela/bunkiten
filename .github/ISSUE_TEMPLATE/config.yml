@@ -1,0 +1,8 @@
+# 只留结构化表单：现象/环境/日志齐全才排得动，空 issue 容易来回追问。
+blank_issues_enabled: false
+
+# 仓库当前未开启 Discussions（Questions / Ideas 已关闭）。
+# 若将来开启 Discussions，可在此追加 contact_links，把「玩法交流 / 剧本分享 / 提问」引到讨论区：
+#   - name: 玩法交流与提问
+#     url: https://github.com/Jackela/bunkiten/discussions
+#     about: 现在依然请走下方模板；讨论区开启后这里会改指过去。

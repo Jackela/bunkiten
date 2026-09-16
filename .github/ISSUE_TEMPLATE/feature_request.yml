@@ -1,0 +1,35 @@
+name: 功能建议
+description: 提出新功能或改进（先看 AGENTS.md 的项目地图与契约同步表）
+title: "[建议] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        欢迎建议。先说明**你遇到的问题**，再说方案：我们把「想让引擎/客户端多做什么」放在场景里评估，比单点功能更好对齐。
+
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 场景
+      description: 你在什么情况下需要它？现在是怎么绕过去的、哪里别扭？
+      placeholder: |
+        例：玩长剧本时想在剧情图上直接改某一章的分支名，现在只能 …
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望方案
+      description: 你希望它怎么工作（交互/协议行/数据落盘位置都可以写）。若涉及文本协议行、RULES、HTTP/SSE 接口或 `state/` 布局，请注明——这些属于契约面，要同步多处。
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 替代方案
+      description: 你考虑过的其他做法，以及为什么不如上面的方案；「什么都不做/以后再改」也是合法答案。
+    validations:
+      required: false

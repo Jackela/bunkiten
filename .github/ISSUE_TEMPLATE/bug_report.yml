@@ -1,0 +1,85 @@
+name: 缺陷报告
+description: 报告可复现的行为异常（Electron 桌面应用，本机运行）
+title: "[缺陷] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请把「现象 → 复现步骤 → 期望」写清楚，附原文日志。
+
+        ⚠️ **安全问题不要发公开 issue**：请走 [Security Advisories](https://github.com/Jackela/bunkiten/security/advisories/new) 私密渠道，见 [SECURITY.md](../SECURITY.md)。
+
+  - type: textarea
+    id: symptom
+    attributes:
+      label: 现象
+      description: 实际发生了什么？界面原文、报错信息、日志行比概括有用得多。
+      placeholder: |
+        例：装载剧本「xxx」后标题屏卡带停在第一张；日志出现 ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从启动开始的每一步，能稳定复现最好；偶发也请说明发生频率。
+      placeholder: |
+        1. 启动应用
+        2. 选剧本「xxx」→ 新世界线 → 快速开局
+        3. 第一轮点【行动】… → 画面卡在 …
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+      description: 你认为正确的表现是什么。（若与某个剧本/协议行的输出有关，请贴出对应行原文）
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统
+      options:
+        - macOS（Apple Silicon）
+        - macOS（Intel）
+        - Windows
+        - Linux
+        - 其他（请在日志/补充说明里写明）
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 应用版本
+      description: 见 [Releases](https://github.com/Jackela/bunkiten/releases) 的 tag，或安装包文件名；从源码运行则填 `package.json` 的 version + commit。
+      placeholder: 例：v1.5.1（或 1.5.1 + 9829a7a）
+    validations:
+      required: true
+
+  - type: dropdown
+    id: distribution
+    attributes:
+      label: 是否官方包
+      options:
+        - 是，从 Releases 下载的安装包
+        - 否，从源码运行（npm run dev:electron）
+        - 其他来源（自行打包/二次分发的包）
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志
+      description: |
+        请贴关键片段：启动 acp-server 的输出、grok CLI 报错、浏览器/Electron 控制台错误。
+        ⚠️ 贴之前删掉 API key、token、绝对路径里的用户名等隐私信息。
+      render: shell
+    validations:
+      required: false

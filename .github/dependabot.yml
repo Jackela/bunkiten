@@ -1,0 +1,41 @@
+version: 2
+
+updates:
+  # 前端 / 工具链依赖：每周批量一次，patch 与 minor 各合一个 PR，major 单独开（要人工判断）。
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      npm-patch:
+        applies-to: version-updates
+        update-types:
+          - patch
+      npm-minor:
+        applies-to: version-updates
+        update-types:
+          - minor
+
+  # GitHub Actions：同上，量少，一个 PR 装下 patch+minor。
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      actions-patch-minor:
+        applies-to: version-updates
+        update-types:
+          - patch
+          - minor

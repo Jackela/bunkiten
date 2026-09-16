@@ -2,6 +2,8 @@
 
 # bunkiten（分岐点）
 
+<p align="center"><a href="https://github.com/Jackela/bunkiten/actions/workflows/ci.yml"><img src="https://github.com/Jackela/bunkiten/actions/workflows/ci.yml/badge.svg" alt="CI 状态"></a> <a href="https://github.com/Jackela/bunkiten/releases"><img src="https://img.shields.io/github/v/release/Jackela/bunkiten?label=release" alt="最新 release"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a> <img src="https://img.shields.io/badge/node-24-brightgreen.svg" alt="Node 24"></p>
+
 > v1.5.1 —— 给单人定制的 LLM 互动 AVG（文字冒险 / 视觉小说）完整产品：Electron 桌面壳 + React 前端 + grok CLI（ACP）叙事引擎；本版让资产随故事走（立绘/背景落进当前剧本的 `presets/<id>/assets/`）并兼容旧档资产路径，项目更名为 bunkiten（分岐点）。
 
 一个自包含的游戏：**引擎是 skill**（`.grok/skills/bunkiten/SKILL.md`），**剧本是数据**（`presets/`），**进度是文件**（`state/`），**美术按需生成**（image_gen，按「类型+名字」持久化到当前剧本的 `presets/<id>/assets/`）。AI 实时演绎剧情、画立绘背景，你做选择。每个剧本自带一套主题——配色与氛围图案从标题屏卡带一路贯穿到对话框。
