@@ -8,6 +8,7 @@ function RailButton({ label, onClick }: { label: string; onClick: () => void }) 
       type="button"
       onClick={onClick}
       title={label}
+      aria-label={label}
       className="rounded-md px-1.5 py-2.5 text-[11.5px] tracking-[.25em] text-ink/60 transition-colors duration-200 hover:bg-white/[.06] hover:text-[color:var(--accent)] [writing-mode:vertical-rl]"
     >
       {label}
@@ -27,6 +28,7 @@ export default function TopBar() {
   const toggleDrawer = useGameStore((s) => s.toggleDrawer);
   const openAssets = useGameStore((s) => s.openAssets);
   const openTree = useGameStore((s) => s.openTree);
+  const openSettings = useGameStore((s) => s.openSettings);
   const busy = status.includes("…");
   const elapsed = useTurnElapsed();
 
@@ -46,6 +48,7 @@ export default function TopBar() {
       </div>
 
       <nav className="fixed top-1/2 right-2.5 z-30 flex -translate-y-1/2 flex-col gap-0.5 rounded-lg border border-white/[.08] bg-[rgba(10,12,18,.5)] p-1 backdrop-blur-md">
+        <RailButton label="设置" onClick={openSettings} />
         <RailButton label="历史" onClick={toggleDrawer} />
         <RailButton label="素材" onClick={openAssets} />
         <RailButton label="剧情图" onClick={openTree} />

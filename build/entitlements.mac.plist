@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  mac 签名/公证用的最小权限集（hardenedRuntime: true 下 Electron/Chromium 必需项）：
+  - allow-jit / allow-unsigned-executable-memory：V8 的 JIT 与可写可执行内存页
+  - network.client：acp-server 的本地 HTTP 与引擎（grok CLI）的出网访问
+  未签名构建（identity 不可用）时这份 plist 不生效，仅在签名时被 codesign 读取。
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.network.client</key>
+  <true/>
+</dict>
+</plist>

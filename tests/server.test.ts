@@ -11,25 +11,39 @@ import {
   assetTargetFile,
   createWorld,
   deleteWorld,
+  exportWorld,
   forkNote,
   forkTreeMarkdown,
   forkWorld,
+  importWorld,
   isDirectivePrompt,
+  isSnapshotEntry,
   legacyAssetCandidates,
   listWorlds,
   migrateLegacyState,
+  normalizeSnapshot,
   parseArtLine,
+  parseAudioLine,
   parseExpressionLine,
   parsePresetAddedLine,
+  parseTreePointer,
   parseTreeLine,
   parseWorldRef,
+  pickEffort,
   presetAssetsDir,
   presetFromStateFile,
   presetIdFromPath,
+  readSnapshots,
+  readWorldFiles,
   readWorldsIndex,
   resolvePersistPreset,
+  restoreWorld,
+  scanPresetAudio,
   scanPresets,
+  selectSnapshotForNode,
+  updateWorld,
   worldChapterNo,
+  writeSnapshot,
 } from "../server/acp-server.mjs";
 
 describe("server parseArtLine：【图】三段 + 可选第四段「重绘」", () => {
@@ -538,5 +552,414 @@ describe("server parseWorldRef：开局/续玩指令里的世界段（资产落�
     expect(parseWorldRef("开演。")).toBeNull();
     expect(parseWorldRef("")).toBeNull();
     expect(parseWorldRef("世界：中文 id 不合法。")).toBeNull();
+  });
+});
+
+describe("server parseAudioLine：【曲】/【环境】/【音效】协议行（CONTRACTS §1）", () => {
+  it("三种类型都解析出 {kind,name}", () => {
+    expect(parseAudioLine("【曲】雨夜")).toEqual({ kind: "曲", name: "雨夜" });
+    expect(parseAudioLine("【环境】旅店大堂")).toEqual({ kind: "环境", name: "旅店大堂" });
+    expect(parseAudioLine("【音效】门响")).toEqual({ kind: "音效", name: "门响" });
+  });
+
+  it("「停」是普通名字（停止语义由客户端处理），不特殊解析", () => {
+    expect(parseAudioLine("【曲】停")).toEqual({ kind: "曲", name: "停" });
+    expect(parseAudioLine("【环境】停")).toEqual({ kind: "环境", name: "停" });
+  });
+
+  it("首尾空白（含尾随换行）被容忍——行首 trim 后匹配", () => {
+    expect(parseAudioLine("  【曲】雨夜\n")).toEqual({ kind: "曲", name: "雨夜" });
+    expect(parseAudioLine("\t【音效】门响  ")).toEqual({ kind: "音效", name: "门响" });
+  });
+
+  it("非音频行不误报（【图】/【立绘】/【树】/自由文本）", () => {
+    expect(parseAudioLine("【图】立绘|薇拉|images/1.jpg")).toBeNull();
+    expect(parseAudioLine("【立绘】薇拉|微笑")).toBeNull();
+    expect(parseAudioLine("【树】")).toBeNull();
+    expect(parseAudioLine("雨夜")).toBeNull();
+    expect(parseAudioLine("【曲】")).toMatchObject({ kind: "曲", name: "" }); // 空名也成行（文件缺失即静默）
+    expect(parseAudioLine("")).toBeNull();
+  });
+});
+
+describe("server scanPresetAudio：presets/<id>/audio/ 扫描（CONTRACTS §1，临时 root）", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), "audio-"));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const writeAudio = (file: string) => {
+    const dir = path.join(root, "presets", "demo", "audio");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, file), "x");
+  };
+
+  it("只认 <类型>-<名>.<ext>（类型/扩展名白名单），url 指向 /audio?p=", () => {
+    writeAudio("曲-雨夜.mp3");
+    writeAudio("环境-旅店大堂.ogg");
+    writeAudio("音效-门响.wav");
+    writeAudio("曲-主题.m4a");
+    writeAudio("环境-风声.flac");
+    writeAudio("readme.txt"); // 非 <类型>- 前缀 → 忽略
+    writeAudio("未知-噪声.mp3"); // 类型不合法 → 忽略
+    writeAudio("曲-无扩展"); // 无扩展名 → 忽略
+    const items = scanPresetAudio("demo", root) as Array<{ kind: string; name: string; file: string; url: string }>;
+    expect(items).toHaveLength(5);
+    // url 里的文件名百分号编码（文件名可能含 &/?/#/空格）：服务端 searchParams 解回原值再直服
+    expect(items.find((i) => i.name === "雨夜")).toEqual({
+      kind: "曲",
+      name: "雨夜",
+      file: "曲-雨夜.mp3",
+      url: "/audio?p=presets/demo/audio/%E6%9B%B2-%E9%9B%A8%E5%A4%9C.mp3",
+    });
+    expect(items.find((i) => i.name === "风声")).toMatchObject({ kind: "环境", file: "环境-风声.flac" });
+  });
+
+  it("无 audio 目录 = 空数组（不报错）；非法 preset id 也为空（不拼目录外路径）", () => {
+    expect(scanPresetAudio("demo", root)).toEqual([]);
+    mkdirSync(path.join(root, "presets", "demo"), { recursive: true });
+    expect(scanPresetAudio("demo", root)).toEqual([]);
+    expect(scanPresetAudio("../etc", root)).toEqual([]);
+    expect(scanPresetAudio("a/b", root)).toEqual([]);
+    expect(scanPresetAudio("", root)).toEqual([]);
+  });
+});
+
+describe("server 快照子系统纯函数（CONTRACTS §2）", () => {
+  it("parseTreePointer：从 story-tree.md 的进度指针取节点 id", () => {
+    expect(parseTreePointer("# 剧情树\n- 当前进度: 节点 2-2（已走 6 轮）\n")).toBe("2-2");
+    expect(parseTreePointer("- 当前进度：节点 3-4（已走 0 轮）")).toBe("3-4"); // 全角冒号
+    expect(parseTreePointer("### 节点 1-1（门口）\n- 状态: 可达\n")).toBeNull();
+    expect(parseTreePointer("")).toBeNull();
+    expect(parseTreePointer(null)).toBeNull();
+  });
+
+  it("selectSnapshotForNode：取最早（seq 最小）的匹配快照；无匹配为 null", () => {
+    const snaps = [
+      { seq: 3, nodeId: "a" },
+      { seq: 1, nodeId: "a" },
+      { seq: 2, nodeId: "b" },
+    ];
+    expect(selectSnapshotForNode(snaps, "a")).toEqual({ seq: 1, nodeId: "a" });
+    expect(selectSnapshotForNode(snaps, "b")).toEqual({ seq: 2, nodeId: "b" });
+    expect(selectSnapshotForNode(snaps, "zzz")).toBeNull();
+    expect(selectSnapshotForNode([], "a")).toBeNull();
+    expect(selectSnapshotForNode(null, "a")).toBeNull();
+  });
+
+  it("normalizeSnapshot：统一字段类型与 files 三键（缺失 = null）", () => {
+    const e = normalizeSnapshot({ seq: "2", kind: "backup", nodeId: "1-1", chapterNo: "3", files: { state: "s" } }) as any;
+    expect(e).toMatchObject({ seq: 2, kind: "backup", nodeId: "1-1", chapterNo: 3 });
+    expect(e.files).toEqual({ state: "s", summary: null, tree: null });
+    expect(typeof e.at).toBe("string");
+    expect(e.at.length).toBeGreaterThan(0);
+  });
+
+  it("isSnapshotEntry：结构校验（seq/kind/files 类型与取值域）", () => {
+    expect(isSnapshotEntry(normalizeSnapshot({ seq: 1, kind: "turn", nodeId: null, chapterNo: 1, files: {} }))).toBe(true);
+    expect(isSnapshotEntry({ ...normalizeSnapshot({ seq: 1 }), files: { state: null, summary: null, tree: "t" } })).toBe(true);
+    expect(isSnapshotEntry({ seq: 0, at: "x", kind: "turn", nodeId: null, chapterNo: null, files: {} })).toBe(false);
+    expect(isSnapshotEntry({ seq: 1, at: "x", kind: "weird", nodeId: null, chapterNo: null, files: {} })).toBe(false);
+    expect(isSnapshotEntry({ seq: 1, at: "", kind: "turn", nodeId: null, chapterNo: null, files: {} })).toBe(false);
+    expect(isSnapshotEntry({ seq: 1, at: "x", kind: "turn", nodeId: null, chapterNo: null, files: { state: 1 } })).toBe(false);
+    expect(isSnapshotEntry(null)).toBe(false);
+  });
+
+  it("writeSnapshot / readSnapshots：seq 从 1 递增、内容全等去重、dedupe=false 强制落盘", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "snap-"));
+    try {
+      mkdirSync(path.join(root, "w1"), { recursive: true });
+      const files = { state: "s", summary: "m", tree: "- 当前进度: 节点 1-1（已走 0 轮）\n" };
+      const a = writeSnapshot(root, "w1", { kind: "turn", nodeId: "1-1", chapterNo: 1, files }) as any;
+      expect(a).toMatchObject({ ok: true, seq: 1 });
+      // 内容全等 → 跳过（不产生重复条目）
+      const dup = writeSnapshot(root, "w1", { kind: "turn", nodeId: "1-1", chapterNo: 1, files }) as any;
+      expect(dup.skipped).toBe(true);
+      // backup 必须能落盘（dedupe=false）
+      const b = writeSnapshot(root, "w1", { kind: "backup", nodeId: "1-1", chapterNo: 1, files }, { dedupe: false }) as any;
+      expect(b).toMatchObject({ ok: true, seq: 2 });
+      const snaps = readSnapshots("w1", root) as any[];
+      expect(snaps.map((s) => s.seq)).toEqual([1, 2]);
+      expect(snaps[1].kind).toBe("backup");
+      expect(snaps[0].files.state).toBe("s");
+      expect(existsSync(path.join(root, "w1", "history", "0001.json"))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("readWorldFiles / readSnapshots：缺失文件 = null、非法世界 id 为空", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "rf-"));
+    try {
+      mkdirSync(path.join(root, "w1"), { recursive: true });
+      writeFileSync(path.join(root, "w1", "state.md"), "# 剧情状态\n");
+      const files = readWorldFiles(path.join(root, "w1")) as any;
+      expect(files.state).toBe("# 剧情状态\n");
+      expect(files.summary).toBeNull();
+      expect(files.tree).toBeNull();
+      expect(readSnapshots("../etc", root)).toEqual([]);
+      expect(readSnapshots("no-such", root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("writeSnapshot：存在更大 seq 文件时仍取最大 +1（last.seq 由文件名推出，不受内容 seq 影响）", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "seqmax-"));
+    try {
+      const hdir = path.join(root, "w1", "history");
+      mkdirSync(hdir, { recursive: true });
+      // 手工放一条 0003.json（内容 seq=3）——下一次必须落在 0004，而不是 0002
+      writeFileSync(
+        path.join(hdir, "0003.json"),
+        JSON.stringify({ seq: 3, at: "2026-01-01T00:00:00.000Z", kind: "turn", nodeId: "1-1", chapterNo: 1, files: { state: "old", summary: null, tree: null } }) + "\n",
+      );
+      const res = writeSnapshot(root, "w1", { kind: "turn", nodeId: "1-2", chapterNo: 2, files: { state: "new", summary: null, tree: null } }) as any;
+      expect(res).toMatchObject({ ok: true, seq: 4 });
+      expect(existsSync(path.join(hdir, "0004.json"))).toBe(true);
+      expect((readSnapshots("w1", root) as any[]).map((s) => s.seq)).toEqual([3, 4]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("writeWorldFiles（经 restore）：快照里为 null 的文件回退后必须被删除（不留「未来」内容）", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "nullfiles-"));
+    try {
+      const w = createWorld(root, "demo", "示例");
+      const dir = path.join(root, w.worldId);
+      // 落快照时 summary.md 尚不存在（引擎还没生成）→ 快照里的 summary = null
+      writeFileSync(path.join(dir, "state.md"), "# 状态 v1\n");
+      writeFileSync(path.join(dir, "story-tree.md"), "- 当前进度: 节点 1-1（已走 0 轮）\n");
+      const files = readWorldFiles(dir) as any;
+      expect(files.summary).toBeNull();
+      expect((writeSnapshot(root, w.worldId, { kind: "turn", nodeId: "1-1", chapterNo: 1, files }) as any)).toMatchObject({ ok: true, seq: 1 });
+
+      // 之后引擎才生成 summary.md（快照里并没有它）
+      writeFileSync(path.join(dir, "summary.md"), "# 后来的摘要\n");
+      expect(existsSync(path.join(dir, "summary.md"))).toBe(true);
+
+      // 精确回退到 #1：当时 summary 尚不存在 → 回退后 summary.md 必须被删除，state 恢复 v1
+      const r = restoreWorld(root, w.worldId, 1) as any;
+      expect(r.backupSeq).toBe(2);
+      expect(existsSync(path.join(dir, "summary.md"))).toBe(false);
+      expect(readFileSync(path.join(dir, "state.md"), "utf8")).toBe("# 状态 v1\n");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("server pickEffort：推理档位分档（CONTRACTS §4）", () => {
+  it("规划/美术/剧情/装配/创作模式 → planning 档；其余 → 正戏档", () => {
+    expect(pickEffort("规划：第 2 章。", "medium", "low")).toBe("low");
+    expect(pickEffort("美术：重绘 立绘 薇拉", "medium", "low")).toBe("low");
+    expect(pickEffort("剧情：把这段改冷一点。", "medium", "low")).toBe("low");
+    expect(pickEffort("装配。", "medium", "low")).toBe("low");
+    expect(pickEffort("创作模式：进入剧本创作。", "medium", "low")).toBe("low");
+    expect(pickEffort("推开门看看。", "medium", "low")).toBe("medium");
+    expect(pickEffort("继续世界：w1。", "medium", "low")).toBe("medium");
+    expect(pickEffort("", "medium", "low")).toBe("medium");
+  });
+});
+
+describe("server updateWorld：label/note 参数校验（CONTRACTS §2，临时 root）", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), "update-"));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("写 label(≤60)/note(≤200)，空串清除；listWorlds 返回 label", () => {
+    const w = createWorld(root, "demo", "示例");
+    const r = updateWorld(root, w.worldId, { label: " 我的存档 ", note: "第一章结束" }) as any;
+    expect(r.entry.label).toBe("我的存档"); // 首尾空格被 trim
+    expect(r.entry.note).toBe("第一章结束");
+    const cleared = updateWorld(root, w.worldId, { note: "" }) as any;
+    expect(cleared.entry.note).toBe("");
+    expect(cleared.entry.label).toBe("我的存档"); // 未出现的键保持原值
+    const worlds = listWorlds(root) as any[];
+    expect(worlds.find((e) => e.worldId === w.worldId).label).toBe("我的存档");
+  });
+
+  it("越界长度、未知世界、非法 id 都返回 error（不落盘）", () => {
+    const w = createWorld(root, "demo", "示例");
+    expect(updateWorld(root, w.worldId, { label: "字".repeat(61) })).toMatchObject({ error: expect.stringContaining("label") });
+    expect(updateWorld(root, w.worldId, { note: "字".repeat(201) })).toMatchObject({ error: expect.stringContaining("note") });
+    expect(updateWorld(root, "nope-1", { label: "x" })).toMatchObject({ error: "世界不存在" });
+    expect(updateWorld(root, "../etc", { label: "x" })).toMatchObject({ error: "参数不合法" });
+    // 越界长度不落盘：索引里的原值不变
+    expect((readWorldsIndex(root)[0] as any).label).toBeUndefined();
+  });
+});
+
+describe("server importWorld：bundle 校验 / 重名后缀 / 快照与文件落盘（CONTRACTS §2）", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), "import-"));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const bundleFor = (over: Record<string, unknown> = {}) => ({
+    format: "bunkiten-world",
+    version: 1,
+    exportedAt: "2026-01-01T00:00:00.000Z",
+    world: {
+      worldId: "w1",
+      preset: "demo",
+      title: "示例",
+      label: "存档",
+      note: "原注",
+      chapterNo: 1,
+      files: { state: "# 状态\n", summary: "# 摘要\n", tree: "## 第 1 章：起点\n- 当前进度: 节点 1-1（已走 0 轮）\n" },
+      snapshots: [
+        {
+          seq: 1,
+          at: "2026-01-01T00:00:00.000Z",
+          kind: "turn",
+          nodeId: "1-1",
+          chapterNo: 1,
+          files: { state: "# 状态\n", summary: "# 摘要\n", tree: "## 第 1 章：起点\n- 当前进度: 节点 1-1（已走 0 轮）\n" },
+        },
+      ],
+      ...over,
+    },
+  });
+
+  it("非法 bundle（format/version/worldId）一律拒绝", () => {
+    expect(importWorld(root, null)).toMatchObject({ error: expect.any(String) });
+    expect(importWorld(root, {})).toMatchObject({ error: expect.any(String) });
+    expect(importWorld(root, { format: "x", version: 1, world: { worldId: "w1" } })).toMatchObject({ error: expect.any(String) });
+    expect(importWorld(root, { format: "bunkiten-world", version: 2, world: { worldId: "w1" } })).toMatchObject({ error: expect.any(String) });
+    expect(importWorld(root, { format: "bunkiten-world", version: 1, world: { worldId: "../etc" } })).toMatchObject({ error: expect.any(String) });
+    expect(readWorldsIndex(root)).toEqual([]); // 拒绝后不产生半个世界
+  });
+
+  it("写入文件 + 快照 + 索引，note 追加「（导入）」；重名自动 -2 / -3", () => {
+    const first = importWorld(root, bundleFor()) as any;
+    expect(first.worldId).toBe("w1");
+    const dir = path.join(root, "w1");
+    expect(readFileSync(path.join(dir, "state.md"), "utf8")).toBe("# 状态\n");
+    expect(existsSync(path.join(dir, "history", "0001.json"))).toBe(true);
+    const entry = readWorldsIndex(root).find((e: any) => e.worldId === "w1") as any;
+    expect(entry.note).toBe("原注（导入）");
+
+    // 重名：-2、-3…
+    expect((importWorld(root, bundleFor()) as any).worldId).toBe("w1-2");
+    expect((importWorld(root, bundleFor()) as any).worldId).toBe("w1-3");
+    expect(existsSync(path.join(root, "w1-2"))).toBe(true);
+  });
+
+  it("import：磁盘上已存在但索引缺失的世界目录也算被占用（分配 -2，原目录内容不变）", () => {
+    // 磁盘上有个 w1 目录，但索引里没有它（手建世界 / 索引被删）——旧实现只看索引，会静默顶替它
+    mkdirSync(path.join(root, "w1"), { recursive: true });
+    writeFileSync(path.join(root, "w1", "state.md"), "# 原世界状态\n");
+    const out = importWorld(root, bundleFor()) as any;
+    expect(out.worldId).toBe("w1-2"); // 不顶替磁盘上的 w1
+    expect(readFileSync(path.join(root, "w1", "state.md"), "utf8")).toBe("# 原世界状态\n"); // 原目录内容原样
+    expect(readFileSync(path.join(root, "w1-2", "state.md"), "utf8")).toBe("# 状态\n"); // 导入落到 -2
+    expect(readWorldsIndex(root).map((e: any) => e.worldId)).toEqual(["w1-2"]);
+  });
+
+  it("import：files.state 缺失/null/空串 → 400（不写半个世界）", () => {
+    const bad = (files: unknown) => importWorld(root, bundleFor({ files }));
+    expect(bad(undefined)).toMatchObject({ error: expect.stringContaining("files.state") });
+    expect(bad(null)).toMatchObject({ error: expect.stringContaining("files.state") });
+    expect(bad({ state: null, summary: null, tree: null })).toMatchObject({ error: expect.stringContaining("files.state") });
+    expect(bad({ state: "   " })).toMatchObject({ error: expect.stringContaining("files.state") });
+    expect(readWorldsIndex(root)).toEqual([]);
+    expect(existsSync(path.join(root, "w1"))).toBe(false);
+  });
+
+  it("import：label(≤60)/note(≤200) 超长 → 400（不静默截断）", () => {
+    expect(importWorld(root, bundleFor({ label: "字".repeat(61) }))).toMatchObject({ error: expect.stringContaining("label") });
+    expect(importWorld(root, bundleFor({ note: "字".repeat(201) }))).toMatchObject({ error: expect.stringContaining("note") });
+    // 边界内照常通过，超出才拒
+    expect((importWorld(root, bundleFor({ label: "字".repeat(60), note: "字".repeat(200) })) as any).worldId).toBe("w1");
+  });
+
+  it("exportWorld：缺 worldId/不存在返回 error；合法世界给出 bundle 头与三文件", () => {
+    const w = createWorld(root, "demo", "示例");
+    writeFileSync(path.join(root, w.worldId, "state.md"), "# 状态\n- preset: demo\n");
+    const out = exportWorld(root, w.worldId) as any;
+    expect(out.bundle.format).toBe("bunkiten-world");
+    expect(out.bundle.version).toBe(1);
+    expect(out.bundle.world.worldId).toBe(w.worldId);
+    expect(out.bundle.world.files.state).toBe("# 状态\n- preset: demo\n");
+    expect(out.bundle.world.snapshots).toEqual([]);
+    expect(exportWorld(root, "../etc")).toMatchObject({ error: expect.any(String) });
+    expect(exportWorld(root, "nope-1")).toMatchObject({ error: expect.any(String) });
+  });
+});
+
+describe("server restoreWorld：先备份再覆盖（CONTRACTS §2，临时 root）", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), "restore-"));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("写一条 backup（当前三文件）再覆盖为目标快照，返回 backupSeq", () => {
+    const w = createWorld(root, "demo", "示例");
+    const dir = path.join(root, w.worldId);
+    const snapFiles = { state: "# 状态 v1\n", summary: "# 摘要 v1\n", tree: "- 当前进度: 节点 1-1（已走 0 轮）\n" };
+    const s1 = writeSnapshot(root, w.worldId, { kind: "turn", nodeId: "1-1", chapterNo: 1, files: snapFiles }) as any;
+    expect(s1.seq).toBe(1);
+    // 剧情推进：磁盘文件更新（与快照不同）
+    writeFileSync(path.join(dir, "state.md"), "# 状态 v2\n");
+    writeFileSync(path.join(dir, "story-tree.md"), "- 当前进度: 节点 1-2（已走 3 轮）\n");
+
+    const r = restoreWorld(root, w.worldId, 1) as any;
+    expect(r.backupSeq).toBe(2);
+    const snaps = readSnapshots(w.worldId, root) as any[];
+    expect(snaps.map((s) => s.kind)).toEqual(["turn", "backup"]);
+    expect(snaps[1].files.state).toBe("# 状态 v2\n"); // backup 存的是恢复前的当前状态
+    expect(readFileSync(path.join(dir, "state.md"), "utf8")).toBe("# 状态 v1\n"); // 已覆盖成快照
+    expect(readFileSync(path.join(dir, "story-tree.md"), "utf8")).toContain("节点 1-1（已走 0 轮）");
+
+    expect(restoreWorld(root, w.worldId, 99)).toMatchObject({ error: "快照不存在" });
+    expect(restoreWorld(root, "../etc", 1)).toMatchObject({ error: "参数不合法" });
+  });
+
+  it("精确分叉：有快照时以快照三文件建新世界（索引标精确），无快照走兼容路径", () => {
+    const origin = createWorld(root, "demo", "示例");
+    const dir = path.join(root, origin.worldId);
+    const snapFiles = { state: "# 快照状态\n", summary: "# 快照摘要\n", tree: "- 当前进度: 节点 1-1（已走 0 轮）\n" };
+    writeSnapshot(root, origin.worldId, { kind: "turn", nodeId: "1-1", chapterNo: 1, files: snapFiles });
+    // 当前磁盘与快照不同：精确分叉必须用快照（而不是复制当前文件）
+    writeFileSync(path.join(dir, "state.md"), "# 当前状态\n");
+    writeFileSync(path.join(dir, "story-tree.md"), "- 当前进度: 节点 1-5（已走 9 轮）\n");
+
+    const f = forkWorld(root, origin.worldId, "1-1", 1) as any;
+    const fdir = path.join(root, f.worldId);
+    expect(readFileSync(path.join(fdir, "state.md"), "utf8")).toBe("# 快照状态\n"); // 逐字来自快照
+    expect(readFileSync(path.join(fdir, "story-tree.md"), "utf8")).toBe(snapFiles.tree);
+    expect(existsSync(path.join(fdir, "fork.md"))).toBe(true);
+    expect(f.entry.forkedFrom).toEqual({ worldId: origin.worldId, nodeId: "1-1", seq: 1 });
+    expect(f.entry.note).toContain("精确快照");
+
+    // 无快照的另一个世界 → 兼容路径（复制当前文件 + 本地回退）
+    const plain = createWorld(root, "other", "对照");
+    writeFileSync(path.join(root, plain.worldId, "story-tree.md"), "- 当前进度: 节点 2-4（已走 6 轮）\n");
+    const cf = forkWorld(root, plain.worldId, "2-2") as any;
+    expect(cf.entry.forkedFrom).toEqual({ worldId: plain.worldId, nodeId: "2-2" });
+    expect(readFileSync(path.join(root, cf.worldId, "story-tree.md"), "utf8")).toContain("节点 2-2（已走 0 轮）");
   });
 });

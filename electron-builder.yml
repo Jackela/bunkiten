@@ -2,11 +2,17 @@
 # 代码（electron/server）进 asar；dist 同时保留在 asar 内只是冗余备份，运行时走 resources/app-dist。
 appId: com.local.bunkiten
 productName: Bunkiten # ASCII，规避 NSIS/非 UTF-8 终端对中文 productName 的兼容风险
-# 占位 publish：新版 electron-builder 无 publish 配置时 update-info 环节会拿到 null channel 崩溃；
-# 本应用不做自动更新，latest*.yml 产物忽略即可
+# github provider：latest*.yml / app-update.yml 与 electron-updater 的前提（electron/main.js 打包态会查更新）。
+# 实际发布由 .github/workflows/release.yml 的 release job 完成（打包时一律 --publish never），
+# 这里只声明 update channel 的来源，避免 update-info 环节拿到 null channel 崩溃。
 publish:
-  provider: generic
-  url: https://localhost/unused
+  provider: github
+  owner: Jackela
+  repo: bunkiten
+# 公证钩子：electron-builder 的 afterSign 是**根级** hook（放在 mac: 下 schema 校验会失败），
+# 钩子内部自行判断平台与三件套（APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD/APPLE_TEAM_ID）；不齐则直接 return，
+# 本地未签名构建（dist:mac / dist:mac:dir）与未配 secrets 的 CI 都照常成功。
+afterSign: electron/notarize.cjs
 directories:
   output: release
   buildResources: build # 应用图标等打包资源（build/icon.png ≥512，electron-builder 自动派生 .icns/.ico）
@@ -36,4 +42,10 @@ mac:
   target:
     - dmg
     - zip
-  identity: null # 不签名；arch 由 dist:mac 脚本 --arm64 --x64 传入
+  # 不再写死 identity: null —— 让 electron-builder 按 CSC_LINK / CSC_IDENTITY_AUTO_DISCOVERY 决定：
+  # 本地与未配 secrets 的 CI 用 CSC_IDENTITY_AUTO_DISCOVERY=false 显式走未签名路径（dist:mac / dist:mac:dir）；
+  # CI 里 CSC_LINK 存在时才自动发现证书并签名。arch 由 dist:mac 脚本 --arm64 --x64 传入。
+  hardenedRuntime: true # 公证的前置条件
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist

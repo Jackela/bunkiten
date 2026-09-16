@@ -2,9 +2,11 @@
 // 与实现共享的真源只有行为规格本身（改实现不许改这里，除非契约变更）。
 import { describe, expect, it } from "vitest";
 import {
+  AUDIO_KINDS,
   BUILD_ASSEMBLE,
   BUILD_START,
   ENTER_CREATION,
+  PROTOCOL_HEADS,
   assetNameMatches,
   buildArtCommand,
   buildCustomOpening,
@@ -15,6 +17,7 @@ import {
   buildTreeEditCommand,
   cleanForHistory,
   finalMarkers,
+  isProtocolLine,
   parseCardLines,
   parseChapterMark,
   parseManifest,
@@ -305,6 +308,46 @@ describe("协议行过滤：【树】（v1.5 剧情图编辑完成通知）", ()
   it("cleanForHistory 过滤【树】行；parseOptions 里混入的【树】行不产生选项", () => {
     expect(cleanForHistory("已新增节点 3-4。\n【树】")).toBe("已新增节点 3-4。");
     expect(parseOptions("**行动**\n【树】\n1. 追上去")).toEqual([{ n: "1", t: "追上去" }]);
+  });
+});
+
+describe("音频协议行（v1.6：【曲】/【环境】/【音效】）", () => {
+  it("PROTOCOL_HEADS 是 9 项协议头（契约 lint 的真源），isProtocolLine 的正则由它构造", () => {
+    expect(PROTOCOL_HEADS).toEqual(["图", "清单", "章", "立绘", "新剧本", "树", "曲", "环境", "音效"]);
+    expect(PROTOCOL_HEADS).toHaveLength(9);
+    expect(AUDIO_KINDS).toEqual(["曲", "环境", "音效"]);
+    // 每个协议头都必须被 isProtocolLine 认下（正则不是手写的第二份，新增头只改一个数组）
+    for (const head of PROTOCOL_HEADS) expect(isProtocolLine(`【${head}】…`)).toBe(true);
+  });
+
+  it("三行音频指令都是协议行：带名与「停」、首尾空白同样识别", () => {
+    expect(isProtocolLine("【曲】雨夜")).toBe(true);
+    expect(isProtocolLine("【环境】旅店大堂")).toBe(true);
+    expect(isProtocolLine("【音效】门响")).toBe(true);
+    expect(isProtocolLine("【曲】停")).toBe(true);
+    expect(isProtocolLine("  【环境】停  ")).toBe(true);
+  });
+
+  it("正文里提到音频字样的行不算协议行（必须整行以【头】开头）", () => {
+    expect(isProtocolLine("她说：【曲】是这首歌的名字。")).toBe(false);
+    expect(isProtocolLine("（音效）门响了一声。")).toBe(false);
+    expect(isProtocolLine("背景音是雨。")).toBe(false);
+    expect(isProtocolLine("【他】走进来。")).toBe(false);
+    expect(isProtocolLine("")).toBe(false);
+  });
+
+  it("visibleTarget：三行音频指令不进对话正文（流式与定稿都过滤）", () => {
+    expect(visibleTarget("【曲】雨夜\n【环境】旅店大堂\n她推门进来。\n半截", "")).toBe("她推门进来。");
+    expect(visibleTarget("【音效】门响\n她推门进来。\n【曲】停", "已定稿")).toBe("她推门进来。");
+  });
+
+  it("cleanForHistory：音频行不进历史（混在正文里也只留正文）", () => {
+    expect(cleanForHistory("【曲】雨夜\n雨敲着窗。\n【环境】停\n**行动**\n1. 继续")).toBe("雨敲着窗。");
+    expect(cleanForHistory("【音效】门响\n【曲】停\n")).toBe("");
+  });
+
+  it("parseOptions：选项段里混入的音频行不产生选项", () => {
+    expect(parseOptions("**行动**\n【音效】门响\n1. 追上去\n【曲】停")).toEqual([{ n: "1", t: "追上去" }]);
   });
 });
 

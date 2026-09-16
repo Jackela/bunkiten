@@ -1,0 +1,276 @@
+# 打 tag 即发版：push v* tag（或手动 workflow_dispatch）→ 两个平台各自打包 → 汇总校验和 → 建/更新 GitHub Release
+#
+# 纪律与取舍：
+# - 两个 build job 都不发布（--publish never），发布只由 release job 的 softprops/action-gh-release 做，
+#   避免 electron-builder 与 action 争抢同一个 release。
+# - 平台清单写 SHA256SUMS-<platform>.txt（不是同名 SHA256SUMS.txt）：download-artifact 的 merge-multiple
+#   会把两个 artifact 解到同一目录，同名文件会互相覆盖；最终 SHA256SUMS.txt 由 release job 合并生成。
+# - 签名/公证全部条件化：secrets 缺失时 CSC_IDENTITY_AUTO_DISCOVERY=false，走未签名路径，构建照样成功。
+#   已知限制：未签名 mac 包无法自动更新（Squirrel.Mac 要求签名一致），见 docs/ARCHITECTURE.md「已知限制」。
+# - guard job 是唯一测试门禁：npm test（单测 + 集成，约 10s；e2e 不进 CI）不过就不发版。放 guard 只跑一次，
+#   两个平台的 GB 级打包不受影响，也不算重复算力。
+# - SHA256SUMS.txt 必须是纯 LF：Windows 侧 Set-Content -Encoding ascii 产出 CRLF，merge 前统一剥 \r，
+#   合并后再断言一次——否则 .exe 那几行会让 `shasum -a 256 -c SHA256SUMS.txt` 报 FAILED。
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的 tag（如 v1.6.0）；留空则用 package.json 的版本号拼 v<version>"
+        required: false
+        type: string
+        default: ""
+
+# 默认只读；只有 release job 提升到 contents: write（创建/更新 Release 需要）
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # 发版前守卫，两件事都放这里（只跑一次，算力最省）：
+  # 1) 版本号同步点：tag 必须等于 v<package.json version>，否则产物名（Bunkiten-<version>-*.dmg）会与
+  #    Release 标题不符。秒级失败，不必等 GB 级打包完。
+  # 2) 测试门禁：npm test（单测 + 集成）不过就不发版——build-mac/build-win 都 needs: guard。
+  # 放成独立 job 是为了让上述两者都在两个平台开始打包之前挡住流程。
+  guard:
+    runs-on: ubuntu-latest
+    env:
+      # 与 ci.yml 同款：guard 只跑测试、不打包，不需要 Electron 二进制（省一次 ~100MB 下载）
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      # workflow_dispatch 时用输入的 tag；push tag 时用真实 tag；两者都没有则退回 package.json 版本
+      - name: Resolve release tag
+        id: tag
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          TAG_INPUT: ${{ github.event.inputs.tag }}
+        run: |
+          if [ "$REF_TYPE" = "tag" ]; then
+            tag="$REF_NAME"
+          elif [ -n "$TAG_INPUT" ]; then
+            tag="$TAG_INPUT"
+          else
+            tag="v$(node -p "require('./package.json').version")"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "release tag = $tag"
+
+      - name: Verify tag matches package.json version
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          expected="v$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$expected" ]; then
+            echo "tag ($TAG) != package.json version ($expected)：先 bump package.json（并同步 README 标语/版本沿革）再打 tag" >&2
+            exit 1
+          fi
+          echo "版本号核对通过：$TAG"
+
+      - name: Install
+        run: npm ci
+
+      # 测试门禁（评审 S3）：秒级的版本号核对之后、GB 级打包之前跑全量 `npm test`
+      # （vitest run --exclude "tests/e2e/**"：单测 + tests/integration，约 10s）。测试不过 → 整个 release
+      # 工作流失败，两个平台 job 因为 needs: guard 不会启动，也就不会产出可发布的 Release。
+      # e2e（真引擎 + Playwright）仍不进 CI。
+      - name: Test（单测 + 集成；e2e 不进 CI）
+        run: npm test
+
+  build-mac:
+    needs: guard
+    runs-on: macos-14 # arm64 runner：--mac --arm64 --x64 双架构产物
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      # 测试已经在 guard job 跑过（needs: guard 保证测试通过才会到这里），构建 job 不重复跑。
+      - name: Install
+        run: npm ci
+
+      - name: Build（tsc -b && vite build）
+        run: npm run build
+
+      # 签名/公证条件化：有证书（CSC_LINK）才开启 identity 自动发现，否则显式走未签名路径。
+      # secrets 缺失 → 空字符串 → CSC_IDENTITY_AUTO_DISCOVERY=false → electron-builder 跳过签名，
+      # afterSign 钩子（electron/notarize.cjs）在三件套不全时也直接 return。
+      - name: Package（mac dmg + zip，arm64 + x64）
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.CSC_LINK != '' && 'true' || 'false' }}
+        run: npx electron-builder --mac --arm64 --x64 --publish never
+
+      - name: Checksums（dmg/zip/exe/latest*.yml）
+        run: |
+          cd release
+          shopt -s nullglob
+          files=(*.dmg *.zip *.exe latest*.yml)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "release/ 下没有可校验的产物，打包环节没有产出任何文件" >&2
+            exit 1
+          fi
+          shasum -a 256 "${files[@]}" | LC_ALL=C sort -k2 > SHA256SUMS-mac.txt
+          cat SHA256SUMS-mac.txt
+
+      - name: Upload mac artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-artifacts
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.blockmap
+            release/latest*.yml
+            release/SHA256SUMS-mac.txt
+
+  build-win:
+    needs: guard
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      # 测试已在 guard job 跑过（本 job needs: guard），这里不重复跑，只负责打包。
+      - name: Install
+        run: npm ci
+
+      - name: Build（tsc -b && vite build）
+        run: npm run build
+
+      # Windows 侧保持不签名（electron-builder.yml 的 win.signExecutable: false）；
+      # 后续接入代码签名证书时在这里加 CSC_LINK/CSC_KEY_PASSWORD 即可，配置无需改。
+      - name: Package（win nsis + portable，x64）
+        run: npx electron-builder --win --x64 --publish never
+
+      - name: Checksums（exe/latest*.yml）
+        shell: pwsh
+        run: |
+          cd release
+          $names = @(Get-ChildItem -File |
+            Where-Object { $_.Name -match '\.(exe|dmg|zip)$' -or $_.Name -match '^latest.*\.yml$' } |
+            Sort-Object Name)
+          if ($names.Count -eq 0) { throw "release/ 下没有可校验的产物，打包环节没有产出任何文件" }
+          $names | ForEach-Object {
+            "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 -Path $_.FullName).Hash.ToLower(), $_.Name
+          } | Set-Content -Path SHA256SUMS-win.txt -Encoding ascii
+          Get-Content SHA256SUMS-win.txt
+
+      - name: Upload win artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: win-artifacts
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            release/*.exe
+            release/*.blockmap
+            release/latest*.yml
+            release/SHA256SUMS-win.txt
+
+  release:
+    needs: [guard, build-mac, build-win]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # 创建/更新 GitHub Release 与上传产物
+    steps:
+      - uses: actions/checkout@v5 # 仅为读取 docs/releases/<tag>.md（wave7 起的发布说明文件）
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+
+      # 合并两平台校验和（exe 名含空格，按第 2 字段排序即可稳定输出；uniq 防极端情况下同名重复行）。
+      # 换行统一（评审 S5）：Windows 侧 Set-Content -Encoding ascii 写出的是 CRLF，混进发布物会让
+      # `shasum -a 256 -c SHA256SUMS.txt` 对 .exe 那几行报 FAILED（文件名尾巴多一个 \r → 找不到文件）。
+      # 所以 merge 前先剥掉两个平台文件的行尾 \r，合并后再断言结果里没有任何 CR（不靠「上游一定写对」）。
+      # 注：`sed -i.bak` 的 .bak 后缀是为了 GNU/BSD sed 行为一致（本步骤在 ubuntu-latest 上是 GNU sed，
+      # 裸 `-i 's/…/'` 在 BSD sed 下会把脚本当后缀吃掉）；临时文件紧接着删掉。
+      - name: Merge SHA256SUMS.txt
+        run: |
+          cd release
+          sed -i.bak 's/\r$//' SHA256SUMS-mac.txt SHA256SUMS-win.txt
+          rm -f SHA256SUMS-mac.txt.bak SHA256SUMS-win.txt.bak
+          cat SHA256SUMS-mac.txt SHA256SUMS-win.txt | LC_ALL=C sort -k2 | uniq > SHA256SUMS.txt
+          rm -f SHA256SUMS-mac.txt SHA256SUMS-win.txt
+          if grep -q $'\r' SHA256SUMS.txt; then
+            echo "SHA256SUMS.txt 含 CR（\\r）：会让 shasum -a 256 -c 报 FAILED，拒绝发布这份校验和" >&2
+            grep -c $'\r' SHA256SUMS.txt >&2
+            exit 1
+          fi
+          if [ ! -s SHA256SUMS.txt ]; then
+            echo "SHA256SUMS.txt 为空：上游 Checksums 步骤没有产出内容" >&2
+            exit 1
+          fi
+          echo "行数：$(wc -l < SHA256SUMS.txt)，CR 行数：$(grep -c $'\r' SHA256SUMS.txt || true)"
+          echo "--- SHA256SUMS.txt ---"
+          cat SHA256SUMS.txt
+
+      # 发布说明优先级：docs/releases/<tag>.md（wave7 起）→ gh api 自动 notes → 兜底文案
+      - name: Prepare release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.guard.outputs.tag }}
+        run: |
+          mkdir -p release
+          if [ -f "docs/releases/${TAG}.md" ]; then
+            cp "docs/releases/${TAG}.md" release/RELEASE_NOTES.md
+            echo "notes: docs/releases/${TAG}.md"
+          elif gh api -X POST "repos/${{ github.repository }}/releases/generate-notes" \
+                 -f tag_name="${TAG}" --jq .body > release/RELEASE_NOTES.md 2>/dev/null \
+               && [ -s release/RELEASE_NOTES.md ]; then
+            echo "notes: gh api generate-notes（自动 notes）"
+          else
+            printf '### %s\n\n自动 notes 生成失败，产物见下方 Assets；提交历史见该 tag。\n' "$TAG" \
+              > release/RELEASE_NOTES.md
+            echo "notes: 兜底文案"
+          fi
+
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.guard.outputs.tag }}
+          name: ${{ needs.guard.outputs.tag }}
+          body_path: release/RELEASE_NOTES.md
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: false
+          files: |
+            release/*.dmg
+            release/*.zip
+            release/*.exe
+            release/*.blockmap
+            release/latest*.yml
+            release/SHA256SUMS.txt

@@ -1,7 +1,7 @@
 {
   "name": "bunkiten",
   "private": true,
-  "version": "1.5.1",
+  "version": "1.6.0",
   "description": "bunkiten（分岐点）—— LLM 互动 AVG（文字冒险/视觉小说）脚手架：Electron 桌面壳 + React 前端 + ACP 叙事引擎",
   "license": "MIT",
   "author": {
@@ -24,9 +24,11 @@
     "test": "vitest run --exclude \"tests/e2e/**\"",
     "test:e2e": "playwright test",
     "dist:win": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win --x64 --publish never",
-    "dist:mac": "npm run build && electron-builder --mac --arm64 --x64 --publish never"
+    "dist:mac": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --arm64 --x64 --publish never",
+    "dist:mac:dir": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --arm64 --dir --publish never"
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "framer-motion": "^13.3.0",
     "lucide-react": "^1.46.0",
     "react": "^19.3.0",
@@ -34,6 +36,7 @@
     "zustand": "^5.0.15"
   },
   "devDependencies": {
+    "@electron/notarize": "^3.1.1",
     "@playwright/test": "^1.63.0",
     "@tailwindcss/vite": "^4.3.3",
     "@testing-library/react": "^16.3.3",

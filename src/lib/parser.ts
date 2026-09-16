@@ -80,13 +80,32 @@ export function finalMarkers(text: string): Marker[] {
 }
 
 /**
- * 整行是否协议行（【图】/【清单】/【章】/【立绘】/【新剧本】/【树】开头）：这些行不进对话正文与历史。
- * 【立绘】是表情切换指令、【新剧本】是装配完成通知、【树】是剧情图编辑完成通知，同为引擎协议行，对玩家不可见。
+ * 协议头集合（**唯一真源**）：`isProtocolLine` 的正则由它构造，契约 lint 也断言这一项。
+ * 顺序即契约声明顺序（CONTRACTS §6），改这里前先同步 SKILL.md / ARCHITECTURE.md 的备忘与表格，
+ * 以及 server 侧对应的各 parse*（协议是四处一致的字符串契约，不是各自实现的巧合）。
+ */
+export const PROTOCOL_HEADS = ["图", "清单", "章", "立绘", "新剧本", "树", "曲", "环境", "音效"] as const;
+
+/**
+ * 音频协议行的三种类型字面（v1.6）：【曲】切 BGM、【环境】切环境音、【音效】一次性音效。
+ * 名必须与 `presets/<剧本 id>/audio/<类型>-<名>.<ext>` 的文件名一致；客户端不做路径拼接解析（走 /api/audio 索引）。
+ */
+export const AUDIO_KINDS = ["曲", "环境", "音效"] as const;
+
+export type AudioKind = (typeof AUDIO_KINDS)[number];
+
+/** 协议行正则：由 {@link PROTOCOL_HEADS} 构造（新增协议头只改那一个数组，别手写第二份） */
+const PROTOCOL_LINE_RE = new RegExp(`^【(${PROTOCOL_HEADS.join("|")})】`);
+
+/**
+ * 整行是否协议行（{@link PROTOCOL_HEADS} 开头）：这些行不进对话正文与历史。
+ * 【立绘】是表情切换指令、【新剧本】是装配完成通知、【树】是剧情图编辑完成通知、
+ * 【曲】/【环境】/【音效】是音频演出指令，同为引擎协议行，对玩家不可见。
  * @param {string} line 单行文本
  * @returns {boolean} true 表示该行是引擎协议行，对玩家不可见
  */
 export function isProtocolLine(line: string): boolean {
-  return /^【(图|清单|章|立绘|新剧本|树)】/.test(line.trim());
+  return PROTOCOL_LINE_RE.test(line.trim());
 }
 
 /**
@@ -241,7 +260,7 @@ export function stripOptionsBlock(text: string): string {
 
 /**
  * 打字机目标文本：按行保持——流式期间丢弃最后一行（可能是半截标记），
- * finalText 落定后保留全部行；协议行（【图】【清单】【章】【立绘】【新剧本】【树】）始终过滤；
+ * finalText 落定后保留全部行；协议行（{@link PROTOCOL_HEADS}：图/清单/章/立绘/新剧本/树/曲/环境/音效）始终过滤；
  * 「**行动**」行出现即截断（流式打出该行后正文不再增长，选项交给按钮渲染）。
  * 截断放在行保持之后：选项段之前的正文行必已完整，不被行保持误丢。
  * @param {string} received 当前段累计文本
@@ -273,7 +292,7 @@ export function parseOptions(text: string): GameOption[] | null {
     });
 }
 
-/** 历史记录用正文：过滤协议行（【图】【清单】【章】【立绘】【新剧本】【树】）、去掉选项段并去除首尾空白 */
+/** 历史记录用正文：过滤协议行（{@link PROTOCOL_HEADS}）、去掉选项段并去除首尾空白 */
 export function cleanForHistory(finalText: string): string {
   return stripOptionsBlock(finalText)
     .split("\n")

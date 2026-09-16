@@ -1,4 +1,5 @@
 // acp-server 的 HTTP/SSE 客户端。全部走相对路径：dev 由 vite 代理，生产由 /app 同源托管。
+import type { AudioKind } from "./parser";
 
 /** 剧本主题（preset frontmatter 的 theme 字段；字段非法或缺省由 theme.ts 兜底） */
 export interface PresetTheme {
@@ -46,6 +47,29 @@ export interface PresetsResponse {
   errors: { dir: string; error: string }[];
 }
 
+/**
+ * /api/audio 返回的单条音频（v1.6）。目录 `presets/<id>/audio/`，文件命名 `<类型>-<名>.<ext>`；
+ * 音频不落盘、不生成、不进 assetRegistry——索引只列「磁盘上已存在的文件」，缺失即静默 no-op。
+ */
+export interface AudioItem {
+  /** 曲（BGM）/ 环境（环境音）/ 音效（一次性）——与协议行【曲】【环境】【音效】同字面 */
+  kind: AudioKind;
+  /** 名（与文件名里的 <名> 一致，协议行里写的就是它） */
+  name: string;
+  /** 相对 server 根的落盘路径 `presets/<剧本 id>/audio/<类型>-<名>.<ext>` */
+  file: string;
+  /** 服务端给出的直服 URL（/audio?p=…）；缺失时由 {@link audioFileUrl} 按 preset+file 兜底拼 */
+  url: string;
+}
+
+/**
+ * /api/audio 的响应体（preset 必填且过 PRESET_ID_RE，否则 400——与 /api/assets 同款）。
+ * 剧本没有 audio 目录时是空数组（不报错）。
+ */
+export interface AudioResponse {
+  items: AudioItem[];
+}
+
 /** /api/worlds 返回的单条世界线（与 server listWorlds 对齐；chapterNo/lastPlayed 由磁盘自愈） */
 export interface WorldEntry {
   /** 世界 id（`state/worlds/<worldId>/`） */
@@ -60,17 +84,90 @@ export interface WorldEntry {
   lastPlayed: number;
   /** 显示名/备注（分叉世界自动写「分叉自 <世界> @ <节点>」） */
   note: string;
+  /** 显示用名（v1.6 POST update 写入，≤60 字；空串=未设置，UI 回退 note/id） */
+  label?: string;
   /** 分叉来源（非分叉世界为 null） */
   forkedFrom: { worldId: string; nodeId: string } | null;
   /** 目录是否存在（索引记录但目录被删时为 false） */
   exists: boolean;
 }
 
-/** POST /api/worlds 的动作（create=新建 / fork=在节点分叉 / delete=删除） */
+/**
+ * 逐轮快照的元信息（v1.6）：`state/worlds/<worldId>/history/NNNN.json` 的头部字段。
+ * 快照 append-only，seq 从 1 起递增（> 9999 后服务端不再写并 warn once）。
+ */
+export interface WorldSnapshotMeta {
+  seq: number;
+  /** 写入时刻（ISO 字符串） */
+  at: string;
+  /** turn=正戏回合的自动快照；backup=回退前自动备份的当前状态 */
+  kind: "turn" | "backup";
+  /** 该回合影的剧情树节点 id（解析不到为 null） */
+  nodeId: string | null;
+  /** 该回合的章号（读不到为 null） */
+  chapterNo: number | null;
+}
+
+/** 快照三文件（缺失文件为 null；带 seq 查询才返回本字段） */
+export interface SnapshotFiles {
+  state: string | null;
+  summary: string | null;
+  tree: string | null;
+}
+
+/** 带全文的快照（GET /api/history?worldId=&seq= 附 files） */
+export interface WorldSnapshot extends WorldSnapshotMeta {
+  files: SnapshotFiles;
+}
+
+/** GET /api/history?worldId=<id> 的响应（snapshots 升序） */
+export interface HistoryResponse {
+  worldId: string;
+  snapshots: WorldSnapshotMeta[];
+}
+
+/** GET /api/history?worldId=<id>&seq=<n> 的响应（条目附 files；服务端可能仍返回整列，调用方自行取目标 seq） */
+export interface SnapshotResponse {
+  worldId: string;
+  snapshots: WorldSnapshot[];
+}
+
+/** 世界线导出包（GET /api/worlds/export 体；POST import 原样回传） */
+export interface WorldBundle {
+  format: "bunkiten-world";
+  version: 1;
+  /** 导出时刻（ISO 字符串） */
+  exportedAt: string;
+  world: {
+    worldId: string;
+    preset: string;
+    title: string;
+    label: string;
+    note: string;
+    chapterNo: number;
+    files: SnapshotFiles;
+    snapshots: WorldSnapshot[];
+  };
+}
+
+/** POST /api/worlds 的动作（create=新建 / fork=在节点分叉 / delete=删除 / update=改标签 / restore=精确回退 / import=导入世界线） */
 export type WorldAction =
   | { action: "create"; preset: string }
-  | { action: "fork"; worldId: string; nodeId: string }
-  | { action: "delete"; worldId: string };
+  | { action: "fork"; worldId: string; nodeId: string; seq?: number }
+  | { action: "delete"; worldId: string }
+  | { action: "update"; worldId: string; label?: string; note?: string }
+  | { action: "restore"; worldId: string; seq: number }
+  | { action: "import"; bundle: WorldBundle };
+
+/** POST /api/worlds 的响应（失败在 error 里，不抛错；restore 额外回备份 seq，import 回分配到的 worldId） */
+export interface WorldPostResult {
+  ok: boolean;
+  worldId?: string;
+  entry?: WorldEntry;
+  /** restore 先写的那条 kind:"backup" 快照的 seq */
+  backupSeq?: number;
+  error?: string;
+}
 
 /** /events 推送的回合事件（与 server broadcast 结构对齐） */
 export type AcpEvent =
@@ -81,7 +178,9 @@ export type AcpEvent =
   | { type: "error"; message: string }
   | { type: "expression"; character: string; variant: string }
   | { type: "presetAdded"; id: string }
-  | { type: "treeEdited"; note: string };
+  | { type: "treeEdited"; note: string }
+  /** v1.6 【曲】/【环境】/【音效】协议行（单独成段、不进正文；文件缺失由客户端静默 no-op） */
+  | { type: "audio"; kind: AudioKind; name: string };
 
 /** @returns {Promise<{loggedIn: boolean}>} grok CLI 登录态（~/.grok/auth.json 存在性） */
 export async function fetchAuth(): Promise<{ loggedIn: boolean }> {
@@ -130,18 +229,70 @@ export async function fetchWorlds(preset?: string, signal?: AbortSignal): Promis
 }
 
 /**
- * 世界线管理动作（新建 / 在节点分叉 / 删除）。分叉本身不推演任何内容——新世界只带树与回退进度。
+ * 世界线管理动作（新建 / 在节点分叉 / 删除 / 改标签 / 精确回退 / 导入）。分叉本身不推演任何内容——
+ * 新世界只带树与回退进度；有快照时服务端以快照三文件精确建世界（兼容路径仍是复制当前文件 + forkNote）。
  * @param {WorldAction} body 动作负载
- * @returns {Promise<{ok: boolean; worldId?: string; entry?: WorldEntry; error?: string}>} 失败在 error 里返回，不抛错
+ * @returns {Promise<WorldPostResult>} 失败在 error 里返回，不抛错
  */
-export async function postWorld(body: WorldAction): Promise<{ ok: boolean; worldId?: string; entry?: WorldEntry; error?: string }> {
+export async function postWorld(body: WorldAction): Promise<WorldPostResult> {
   const r = await fetch("/api/worlds", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
-  const data = (await r.json().catch(() => ({}))) as { ok?: boolean; worldId?: string; entry?: WorldEntry; error?: string };
+  const data = (await r.json().catch(() => ({}))) as WorldPostResult;
   return { ...data, ok: r.ok && data.ok !== false };
+}
+
+/**
+ * 改世界线的显示名/备注（世界线管理用）。
+ * @param {{worldId: string; label?: string; note?: string}} p label ≤60 字、note ≤200 字；空串=清除该字段
+ * @returns {Promise<WorldPostResult>} 失败在 error 里返回，不抛错
+ */
+export async function postWorldUpdate(p: { worldId: string; label?: string; note?: string }): Promise<WorldPostResult> {
+  return postWorld({ action: "update", ...p });
+}
+
+/**
+ * 精确回退到某个快照：服务端先写一条 `kind:"backup"` 的当前状态快照，再覆盖为目标快照的 state/summary/tree。
+ * @param {{worldId: string; seq: number}} p 目标世界与快照序号
+ * @returns {Promise<WorldPostResult>} 成功时 backupSeq = 回退前那条备份的 seq
+ */
+export async function postWorldRestore(p: { worldId: string; seq: number }): Promise<WorldPostResult> {
+  return postWorld({ action: "restore", ...p });
+}
+
+/**
+ * 世界线导出包下载地址（浏览器直接开或喂给 <a download>；服务端带 Content-Disposition）。
+ * @param {string} worldId 世界 id
+ * @returns {string} 相对 URL（`/api/worlds/export?worldId=…`）
+ */
+export function worldExportUrl(worldId: string): string {
+  return `/api/worlds/export?worldId=${encodeURIComponent(worldId)}`;
+}
+
+/**
+ * 导入世界线包（服务端校验 format/version/worldId；重名改 <id>-2、-3…，note 追加「（导入）」）。
+ * @param {WorldBundle} bundle 导出包原文（原样回传，前端不改结构）
+ * @returns {Promise<WorldPostResult>} 成功时 worldId = 实际落盘的（可能改名后的）世界 id
+ */
+export async function postWorldImport(bundle: WorldBundle): Promise<WorldPostResult> {
+  return postWorld({ action: "import", bundle });
+}
+
+/**
+ * 删除一条已落盘的素材（画廊批量删除用）。
+ * @param {{preset: string; file: string}} p preset 剧本 id；file 只允许该剧本 assets 目录下的 `*.jpg`（封面不受理）
+ * @returns {Promise<{ok: boolean; error?: string}>} 文件不存在（404）等失败在 error 里返回，不抛错
+ */
+export async function postAssetDelete(p: { preset: string; file: string }): Promise<{ ok: boolean; error?: string }> {
+  const r = await fetch("/api/assets", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action: "delete", ...p }),
+  });
+  const data = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+  return { ok: r.ok && data.ok !== false, error: data.error || (r.ok ? undefined : `HTTP ${r.status}`) };
 }
 
 /**
@@ -155,6 +306,53 @@ export async function fetchTree(worldId: string, signal?: AbortSignal): Promise<
   const r = await fetch(`/api/tree?worldId=${encodeURIComponent(worldId)}`, { signal });
   if (!r.ok) throw new Error(`GET /api/tree -> HTTP ${r.status}`);
   return (await r.json()) as { worldId: string; markdown: string };
+}
+
+/**
+ * 快照索引（逐轮回退列表）：只要元信息，不含三文件全文（列表页用）。
+ * @param {string} worldId 世界 id
+ * @param {AbortSignal} [signal] 取消
+ * @returns {Promise<HistoryResponse>} snapshots 升序（seq 从小到大）；没有快照是空数组
+ * @throws HTTP 非 200 时带上下文抛错
+ */
+export async function fetchHistory(worldId: string, signal?: AbortSignal): Promise<HistoryResponse> {
+  const r = await fetch(`/api/history?worldId=${encodeURIComponent(worldId)}`, { signal });
+  if (!r.ok) throw new Error(`GET /api/history -> HTTP ${r.status}`);
+  return (await r.json()) as HistoryResponse;
+}
+
+/**
+ * 单个快照的全文（含 state/summary/tree 三文件；用于预览与「以此重建」）。
+ * 服务端在带 seq 时给条目附 files（可能仍返回整列，故这里按 seq 取目标项，不假设只回一条）。
+ * @param {string} worldId 世界 id
+ * @param {number} seq 快照序号（history 索引里的 seq）
+ * @param {AbortSignal} [signal] 取消
+ * @returns {Promise<WorldSnapshot>} 目标快照（含 files）
+ * @throws HTTP 非 200、或响应里没有该 seq 时抛错（屏内提示「快照已不存在」）
+ */
+export async function fetchSnapshot(worldId: string, seq: number, signal?: AbortSignal): Promise<WorldSnapshot> {
+  const r = await fetch(`/api/history?worldId=${encodeURIComponent(worldId)}&seq=${encodeURIComponent(String(seq))}`, {
+    signal,
+  });
+  if (!r.ok) throw new Error(`GET /api/history?seq=${seq} -> HTTP ${r.status}`);
+  const data = (await r.json()) as SnapshotResponse;
+  const hit = (data.snapshots ?? []).find((s) => s.seq === seq);
+  if (!hit) throw new Error(`快照 ${seq} 不在世界 ${worldId} 的历史里`);
+  return hit;
+}
+
+/**
+ * 当前剧本的音频索引（目录 `presets/<id>/audio/`，命名 `<类型>-<名>.<ext>`）。
+ * @param {string} presetId 剧本 id（服务端要求必填，缺失/非法即 400）
+ * @param {AbortSignal} [signal] 取消
+ * @returns {Promise<AudioItem[]>} 磁盘上已存在的音频；剧本没有 audio 目录时是空数组
+ * @throws HTTP 非 200 时带上下文抛错（调用方 AudioManager 捕获后静默——没有音频也能玩）
+ */
+export async function fetchAudio(presetId: string, signal?: AbortSignal): Promise<AudioItem[]> {
+  const r = await fetch(`/api/audio?preset=${encodeURIComponent(presetId)}`, { signal });
+  if (!r.ok) throw new Error(`GET /api/audio -> HTTP ${r.status}`);
+  const data = (await r.json()) as AudioResponse;
+  return data.items ?? [];
 }
 
 /**
@@ -251,6 +449,18 @@ export function assetFileUrl(file: string, v?: string | number): string {
  */
 export function coverUrl(presetId: string): string {
   return assetFileUrl(`presets/${presetId}/cover.jpg`);
+}
+
+/**
+ * 音频直服 URL（v1.6）：服务端 `/audio?p=<相对路径>`（白名单 `presets/<id>/audio/<类型>-<名>.<ext>`）。
+ * `/api/audio` 已经给了 url，这里只是兜底与「按名构造」的单一入口（AudioManager 建索引时用它）。
+ * @param {string} presetId 剧本 id（file 只给文件名时用来补全目录）
+ * @param {string} file 相对 server 根的路径（`presets/<id>/audio/曲-雨夜.mp3`）或裸文件名（`曲-雨夜.mp3`）
+ * @returns {string} 可直接喂给 <audio>.src 的相对 URL
+ */
+export function audioFileUrl(presetId: string, file: string): string {
+  const path = file.includes("/") ? file : `presets/${presetId}/audio/${file}`;
+  return `/audio?p=${encodeURIComponent(path)}`;
 }
 
 /**

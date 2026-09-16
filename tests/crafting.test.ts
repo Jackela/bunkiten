@@ -6,9 +6,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   fallbackPortraitUrl,
+  isTypingTarget,
   nextPortraitOnExpression,
+  parseWorldBundle,
   useGameStore,
 } from "../src/store/game";
+import { DEFAULT_SETTINGS } from "../src/lib/settings";
 import { assetPath, type AssetEntry, type Preset, type PresetsResponse } from "../src/lib/acp";
 
 // presets/campus-summer/preset.md 手抄 fixture（「# 主要角色」的三个 ## 标题即 characters）
@@ -877,5 +880,574 @@ describe("v1.5 世界线与剧情图（store 公共 API 驱动）", () => {
     const s = useGameStore.getState();
     expect(s.worldId).toBe("campus-summer-1"); // 未切换
     expect(s.treeNotice).toContain("引擎忙");
+  });
+});
+
+describe("v1.6 批量重绘 / 素材删除 / 世界线管理（store 公共 API 驱动）", () => {
+  /** 导入用的最小合法导出包（形状与 acp.WorldBundle 对齐） */
+  const BUNDLE = {
+    format: "bunkiten-world",
+    version: 1,
+    exportedAt: "2026-01-01T00:00:00.000Z",
+    world: {
+      worldId: "campus-summer-8",
+      preset: "campus-summer",
+      title: "盛夏偏差值",
+      label: "",
+      note: "",
+      chapterNo: 2,
+      files: { state: null, summary: null, tree: null },
+      snapshots: [],
+    },
+  };
+  /** 画廊里两个可重绘项（key 与【图|重绘】标记里的名字都按既有契约） */
+  const JOB_PORTRAIT = { type: "立绘", key: "薇拉", matchName: "薇拉" } as const;
+  const JOB_BG = { type: "背景", key: "灰雀镇", matchName: "灰雀镇" } as const;
+  const MARK_PORTRAIT = "【图】立绘|薇拉|presets/campus-summer/assets/立绘-薇拉.jpg|重绘\n";
+  const MARK_BG = "【图】背景|灰雀镇|presets/campus-summer/assets/背景-灰雀镇.jpg|重绘\n";
+  /** POST /api/assets 收到的删除请求（按顺序） */
+  let assetPosts: { action: string; preset?: string; file?: string }[] = [];
+  /** POST /api/worlds 收到的动作（按顺序） */
+  let worldPosts: Record<string, unknown>[] = [];
+  /** 让指定文件删除失败（file → 错误文案） */
+  let deleteFails: Record<string, string> = {};
+  /** 让指定世界线动作失败（action → 错误文案） */
+  let worldFails: Record<string, string> = {};
+
+  beforeEach(() => {
+    prompts = [];
+    assetPosts = [];
+    worldPosts = [];
+    deleteFails = {};
+    worldFails = {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/prompt") {
+          prompts.push(JSON.parse(String(init?.body)).text);
+          return jsonResponse({ ok: true });
+        }
+        if (url.pathname === "/api/assets" && init?.method === "POST") {
+          const body = JSON.parse(String(init.body)) as { file: string };
+          assetPosts.push(body);
+          const fail = deleteFails[body.file];
+          return fail ? jsonResponse({ error: fail }, 404) : jsonResponse({ ok: true });
+        }
+        if (url.pathname === "/api/assets") return jsonResponse([]);
+        if (url.pathname === "/api/worlds" && init?.method === "POST") {
+          const body = JSON.parse(String(init.body)) as { action: string };
+          worldPosts.push(body);
+          const fail = worldFails[body.action];
+          if (fail) return jsonResponse({ ok: false, error: fail }, 400);
+          if (body.action === "import") return jsonResponse({ ok: true, worldId: "campus-summer-9" });
+          return jsonResponse({ ok: true });
+        }
+        if (url.pathname === "/api/worlds") return jsonResponse({ worlds: [] });
+        return jsonResponse({ error: `unexpected ${url.pathname}` }, 404);
+      }),
+    );
+    useGameStore.getState().selectPreset(PRESET);
+    // 画廊态的干净起点（store 是单例，批次记账不跨用例）
+    useGameStore.setState({
+      screen: "assets",
+      screenReturn: "game",
+      assetsStamp: 0,
+      assetsPreview: null,
+      regenPending: null,
+      regenQueue: [],
+      regenTotal: 0,
+      regenDone: 0,
+      regenFailed: [],
+      regenNotice: null,
+      assetsNotice: null,
+      assetsBusy: false,
+      engineBusy: false,
+      worldNotice: null,
+      worldBusy: false,
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    useGameStore.getState().toTitle(); // 清看门狗，避免测试进程悬挂
+  });
+
+  it("批量重绘：顺序队列逐条派发（一条收尾才发下一条），i/N 记账，跑空后落收尾提示", () => {
+    useGameStore.getState().startRegenBatch([JOB_PORTRAIT, JOB_BG]);
+
+    expect(prompts).toEqual(["美术：重绘 立绘 薇拉"]);
+    expect(useGameStore.getState()).toMatchObject({
+      regenPending: "立绘|薇拉",
+      regenTotal: 2,
+      regenDone: 0,
+      regenQueue: [JOB_BG],
+      regenNotice: null,
+    });
+
+    const s = useGameStore.getState();
+    s.handleEvent({ type: "turn_start" });
+    s.handleEvent({ type: "chunk", seg: 0, text: MARK_PORTRAIT });
+
+    // 标记命中即解除挂起、刷新画廊；但回合没结束，下一条不许抢发（抢发必 409）
+    expect(useGameStore.getState().regenPending).toBeNull();
+    expect(useGameStore.getState().regenDone).toBe(1);
+    expect(prompts).toHaveLength(1);
+
+    useGameStore.getState().handleEvent({ type: "turn_end" });
+    expect(prompts).toEqual(["美术：重绘 立绘 薇拉", "美术：重绘 背景 灰雀镇"]);
+    expect(useGameStore.getState()).toMatchObject({ regenPending: "背景|灰雀镇", regenQueue: [], regenDone: 1 });
+
+    engineTurn(MARK_BG);
+    const done = useGameStore.getState();
+    expect(done.regenPending).toBeNull();
+    expect(done.regenTotal).toBe(0);
+    expect(done.regenDone).toBe(0); // 收尾后批次记账清零（提示里已经写清了结果）
+    expect(done.regenNotice?.kind).toBe("ok");
+    expect(done.regenNotice?.text).toContain("2 项已换图");
+  });
+
+  it("批量重绘：某条本轮没回标记 → 记未确认并继续跑，收尾提示点名那条", () => {
+    useGameStore.getState().startRegenBatch([JOB_PORTRAIT, JOB_BG]);
+    engineTurn(); // 第一条：回合结束但没收到 |重绘 标记
+    expect(useGameStore.getState().regenFailed).toEqual(["立绘|薇拉"]);
+    expect(prompts).toEqual(["美术：重绘 立绘 薇拉", "美术：重绘 背景 灰雀镇"]); // 失败不拦住队列
+
+    engineTurn(MARK_BG);
+    const s = useGameStore.getState();
+    expect(s.regenQueue).toEqual([]);
+    expect(s.regenNotice?.kind).toBe("error");
+    expect(s.regenNotice?.text).toContain("1/2 项换图");
+    expect(s.regenNotice?.text).toContain("立绘|薇拉");
+  });
+
+  it("批量重绘：某条引擎报错 → 记未确认并立即接队列下一条（失败不拦住队列）", () => {
+    useGameStore.getState().startRegenBatch([JOB_PORTRAIT, JOB_BG]);
+    const s = useGameStore.getState();
+    s.handleEvent({ type: "turn_start" });
+    s.handleEvent({ type: "error", message: "image_gen failed" });
+
+    expect(useGameStore.getState().regenFailed).toEqual(["立绘|薇拉"]);
+    expect(prompts).toEqual(["美术：重绘 立绘 薇拉", "美术：重绘 背景 灰雀镇"]); // 报错后立刻接上
+    expect(useGameStore.getState().regenPending).toBe("背景|灰雀镇");
+  });
+
+  it("批量重绘：引擎忙或已有重绘在跑时拒绝起跑（不发指令、队列不动、提示原因）", () => {
+    const s = useGameStore.getState();
+    s.handleEvent({ type: "turn_start" }); // 引擎忙
+    s.startRegenBatch([JOB_PORTRAIT]);
+    expect(prompts).toEqual([]);
+    expect(useGameStore.getState()).toMatchObject({ regenQueue: [], regenTotal: 0, regenPending: null });
+    expect(useGameStore.getState().regenNotice?.kind).toBe("error");
+
+    useGameStore.getState().handleEvent({ type: "turn_end" }); // 收尾本轮，不留忙态
+    useGameStore.getState().startRegenBatch([JOB_PORTRAIT]);
+    expect(prompts).toEqual(["美术：重绘 立绘 薇拉"]); // 空闲后正常起跑
+    useGameStore.getState().handleEvent({ type: "turn_start" });
+    useGameStore.getState().handleEvent({ type: "turn_end" });
+    useGameStore.getState().handleEvent({ type: "turn_end" }); // 幂等：空闲时的 turn_end 不再乱动队列
+    expect(prompts).toEqual(["美术：重绘 立绘 薇拉"]);
+  });
+
+  it("批量删除：逐条 POST delete（顺序=入参顺序），收尾刷新清单（assetsStamp+1）并落成功提示", async () => {
+    const stamp0 = useGameStore.getState().assetsStamp;
+    const files = ["presets/campus-summer/assets/立绘-薇拉.jpg", "presets/campus-summer/assets/背景-灰雀镇.jpg"];
+    await useGameStore.getState().deleteAssets(files);
+
+    expect(assetPosts).toEqual([
+      { action: "delete", preset: "campus-summer", file: files[0] },
+      { action: "delete", preset: "campus-summer", file: files[1] },
+    ]);
+    const s = useGameStore.getState();
+    expect(s.assetsBusy).toBe(false);
+    expect(s.assetsStamp).toBe(stamp0 + 1);
+    expect(s.assetsNotice).toEqual({ kind: "ok", text: "已删除 2 项素材" });
+  });
+
+  it("批量删除：部分失败逐条记账（成功项照删），提示点名失败文件并标 error", async () => {
+    const stamp0 = useGameStore.getState().assetsStamp;
+    const bad = "presets/campus-summer/assets/立绘-薇拉.jpg";
+    deleteFails = { [bad]: "文件不存在" };
+    await useGameStore.getState().deleteAssets([bad, "presets/campus-summer/assets/背景-灰雀镇.jpg"]);
+
+    expect(assetPosts.map((p) => p.file)).toEqual([bad, "presets/campus-summer/assets/背景-灰雀镇.jpg"]);
+    const s = useGameStore.getState();
+    expect(s.assetsNotice?.kind).toBe("error");
+    expect(s.assetsNotice?.text).toContain("已删除 1/2 项");
+    expect(s.assetsNotice?.text).toContain("立绘-薇拉.jpg");
+    expect(s.assetsNotice?.text).toContain("文件不存在");
+    expect(s.assetsStamp).toBe(stamp0 + 1); // 失败也要刷新：成功的那些已经不在磁盘上了
+  });
+
+  it("批量删除：没有剧本上下文或空清单时原地不动（不发请求、不刷新、不落提示）", async () => {
+    const stamp0 = useGameStore.getState().assetsStamp;
+    await useGameStore.getState().deleteAssets([]);
+    useGameStore.setState({ selected: null });
+    await useGameStore.getState().deleteAssets(["presets/campus-summer/assets/立绘-薇拉.jpg"]);
+
+    expect(assetPosts).toEqual([]);
+    expect(useGameStore.getState().assetsStamp).toBe(stamp0);
+    expect(useGameStore.getState().assetsNotice).toBeNull();
+  });
+
+  it("世界线改名：POST update 带 label/note（空串=清除），成功与失败分别落 worldNotice", async () => {
+    const ok = await useGameStore.getState().updateWorld({ worldId: "campus-summer-1", label: "雨夜那条", note: "" });
+    expect(ok.ok).toBe(true);
+    expect(worldPosts).toEqual([{ action: "update", worldId: "campus-summer-1", label: "雨夜那条", note: "" }]);
+    expect(useGameStore.getState().worldNotice).toEqual({ kind: "ok", text: "已保存「雨夜那条」的显示信息" });
+    expect(useGameStore.getState().worldBusy).toBe(false);
+
+    worldFails = { update: "label 太长" };
+    const bad = await useGameStore.getState().updateWorld({ worldId: "campus-summer-1", label: "x", note: "y" });
+    expect(bad.ok).toBe(false);
+    expect(bad.error).toBe("label 太长");
+    expect(useGameStore.getState().worldNotice).toEqual({ kind: "error", text: "保存失败：label 太长" });
+    expect(useGameStore.getState().worldBusy).toBe(false);
+  });
+
+  it("世界线导入：合法包原样回传服务端 import，成功提示落 worldId；服务端拒绝走 error 提示", async () => {
+    const ok = await useGameStore.getState().importWorldText(JSON.stringify(BUNDLE));
+    expect(ok).toEqual({ ok: true, worldId: "campus-summer-9" });
+    expect(worldPosts).toEqual([{ action: "import", bundle: BUNDLE }]);
+    expect(useGameStore.getState().worldNotice).toEqual({ kind: "ok", text: "已导入世界线 campus-summer-9" });
+    expect(useGameStore.getState().worldBusy).toBe(false);
+
+    worldFails = { import: "bundle 校验失败" };
+    const bad = await useGameStore.getState().importWorldText(JSON.stringify(BUNDLE));
+    expect(bad.ok).toBe(false);
+    expect(useGameStore.getState().worldNotice).toEqual({ kind: "error", text: "导入失败：bundle 校验失败" });
+  });
+
+  it("世界线导入：非法原文本地挡下（不打服务端），提示说清「不是导出包」", async () => {
+    for (const text of ["{ 这不是 JSON", JSON.stringify({ format: "other", version: 1 }), JSON.stringify({ format: "bunkiten-world", version: 2 })]) {
+      const r = await useGameStore.getState().importWorldText(text);
+      expect(r.ok).toBe(false);
+      expect(useGameStore.getState().worldNotice?.kind).toBe("error");
+    }
+    expect(worldPosts).toEqual([]); // 一次都没打扰服务端
+  });
+
+  it("parseWorldBundle：format/version/worldId 三处校验，合法包原样返回", () => {
+    expect(parseWorldBundle(JSON.stringify(BUNDLE))).toEqual(BUNDLE);
+    expect(parseWorldBundle("不是 JSON")).toBeNull();
+    expect(parseWorldBundle("[]")).toBeNull();
+    expect(parseWorldBundle(JSON.stringify({ ...BUNDLE, version: 2 }))).toBeNull();
+    expect(parseWorldBundle(JSON.stringify({ format: "bunkiten-world", version: 1 }))).toBeNull();
+    expect(parseWorldBundle(JSON.stringify({ ...BUNDLE, world: { ...BUNDLE.world, worldId: "" } }))).toBeNull();
+  });
+});
+
+describe("v1.6 精确回退与自动前进（store 公共 API 驱动）", () => {
+  /** POST /api/worlds 收到的动作（按顺序） */
+  let worldPosts: Record<string, unknown>[] = [];
+  /** POST /prompt 收到的原始 body（逐字断言续档指令的载荷） */
+  let promptBodies: string[] = [];
+  /** restore 的返回（单个用例可覆盖成失败） */
+  let restoreResp: Record<string, unknown> = { ok: true, backupSeq: 12 };
+  /** 引擎空闲时的两个选项（自动前进到点要选第一项） */
+  const OPTIONS = [
+    { n: "1", t: "溜进座位" },
+    { n: "2", t: "转身去天台" },
+  ];
+  /** 续档指令原文（与 parser.buildResumeCommand / 世界线屏「继续」同一条契约） */
+  const RESUME = "继续世界：campus-summer-1。";
+
+  beforeEach(() => {
+    prompts = [];
+    promptBodies = [];
+    worldPosts = [];
+    restoreResp = { ok: true, backupSeq: 12 };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/prompt") {
+          promptBodies.push(String(init?.body));
+          prompts.push(JSON.parse(String(init?.body)).text);
+          return jsonResponse({ ok: true });
+        }
+        if (url.pathname === "/api/worlds" && init?.method === "POST") {
+          const body = JSON.parse(String(init.body)) as { action: string };
+          worldPosts.push(body);
+          if (body.action === "restore") return jsonResponse(restoreResp, restoreResp.ok ? 200 : 400);
+          if (body.action === "fork") return jsonResponse({ ok: true, worldId: "campus-summer-3" });
+          return jsonResponse({ ok: true });
+        }
+        return jsonResponse({ error: `unexpected ${url.pathname}` }, 404);
+      }),
+    );
+    useGameStore.getState().selectPreset(PRESET);
+    useGameStore.getState().resumeWorld({ worldId: "campus-summer-1", chapterNo: 2, note: "" });
+    useGameStore.getState().openTree();
+    // 自动前进的干净起点（store 是单例，上一用例的倒计时/取消不跨用例）
+    useGameStore.setState({
+      settings: { ...DEFAULT_SETTINGS, autoAdvance: 0 },
+      autoAdvanceDeadline: null,
+      autoAdvanceMuted: false,
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    useGameStore.getState().toTitle();
+  });
+
+  it("原地回退：POST restore 带 worldId+seq；成功后补发续档指令让引擎重新读档同步（提示备份 seq 并自增 treeStamp）", async () => {
+    const stamp0 = useGameStore.getState().treeStamp;
+    expect(prompts).toEqual([RESUME]); // 基线：进屏时的续玩指令
+
+    const r = await useGameStore.getState().restoreSnapshot(7);
+
+    expect(r.ok).toBe(true);
+    expect(worldPosts).toStrictEqual([{ action: "restore", worldId: "campus-summer-1", seq: 7 }]);
+    // 三文件覆盖只是「换档」：紧接着必须让引擎按续档语义重新读 state/summary（跳过初始化与开场卡，重发【图】标记）
+    expect(promptBodies.at(-1)).toBe(JSON.stringify({ text: RESUME }));
+    expect(prompts).toEqual([RESUME, RESUME]); // 恰好多出一条，且是回退世界的那条
+    const s = useGameStore.getState();
+    expect(s.treeNotice).toBe("已回退到快照 #7；回退前状态已备份为快照 #12；引擎已重新读档同步（续演，不重开场）");
+    expect(s.treeStamp).toBe(stamp0 + 1);
+  });
+
+  it("原地回退后的续档回合：引擎重发【图】标记 → 画面按回退后的档重建（回退不是「只换文件」）", async () => {
+    useGameStore.setState({ bgUrl: null, portrait: null }); // 清掉回退前的画面：下面看到的一切都得是引擎重发的
+    await useGameStore.getState().restoreSnapshot(7);
+
+    engineTurn("雨还在下。你回到了走廊尽头。\n【图】背景|旧教学楼|images/40.jpg\n【图】立绘|沈屿|images/41.jpg\n**行动**\n1. 推门");
+
+    const s = useGameStore.getState();
+    expect(new URL(s.bgUrl ?? "", "http://localhost").searchParams.get("p")).toBe("images/40.jpg");
+    expect(s.portrait?.name).toBe("沈屿");
+    expect(s.history.at(-1)?.t).toBe("雨还在下。你回到了走廊尽头。"); // 续档回合是正常回合（选项段照旧不进历史）
+    expect(s.options?.map((o) => o.t)).toEqual(["推门"]);
+  });
+
+  it("原地回退：引擎忙（或有排队指令）时拒绝——回退覆盖的正是引擎在写的文件；失败不改 treeStamp 也不发指令", async () => {
+    const stamp0 = useGameStore.getState().treeStamp;
+    const sent0 = prompts.length; // 进屏时的续玩指令：此后不该再多任何一条
+    useGameStore.getState().handleEvent({ type: "turn_start" }); // 引擎忙
+
+    const busy = await useGameStore.getState().restoreSnapshot(7);
+    expect(busy.ok).toBe(false);
+    expect(worldPosts).toStrictEqual([]); // 一个请求都没发
+    expect(prompts).toHaveLength(sent0);
+    expect(useGameStore.getState().treeNotice).toContain("引擎忙");
+
+    useGameStore.getState().handleEvent({ type: "turn_end" });
+    useGameStore.setState({ pendingTreeMessage: "剧情：删掉节点 2-3" });
+    expect((await useGameStore.getState().restoreSnapshot(7)).ok).toBe(false);
+    expect(worldPosts).toStrictEqual([]);
+    expect(prompts).toHaveLength(sent0); // 排队指令还在：同样一条都不发
+
+    // 回退本身失败（HTTP 400 / ok:false）：不发续档指令、不改 treeStamp，提示说清原因
+    useGameStore.setState({ pendingTreeMessage: null });
+    restoreResp = { ok: false, error: "快照已不存在" };
+    const bad = await useGameStore.getState().restoreSnapshot(9);
+    expect(bad.ok).toBe(false);
+    expect(useGameStore.getState().treeNotice).toBe("回退失败：快照已不存在");
+    expect(useGameStore.getState().treeStamp).toBe(stamp0);
+    expect(prompts).toHaveLength(sent0); // 文件都没回退成，不许让引擎去读档
+  });
+
+  it("分叉：带 seq 走精确分叉（提示点名快照），不带 seq 的载荷与 v1.5 逐字一致", async () => {
+    useGameStore.getState().forkAt("2-1", 3);
+    await vi.waitUntil(() => worldPosts.length === 1);
+    expect(worldPosts[0]).toStrictEqual({ action: "fork", worldId: "campus-summer-1", nodeId: "2-1", seq: 3 });
+    await vi.waitUntil(() => useGameStore.getState().treeNotice.includes("精确到快照 #3"));
+
+    useGameStore.getState().forkAt("2-4");
+    await vi.waitUntil(() => worldPosts.length === 2);
+    // toStrictEqual：无快照时连 seq 键都不许出现（旧世界的既有载荷不许被改写）
+    expect(worldPosts[1]).toStrictEqual({ action: "fork", worldId: "campus-summer-1", nodeId: "2-4" });
+    expect(useGameStore.getState().treeNotice).not.toContain("精确到快照");
+  });
+
+  it("自动前进：到点自动选第一项；重复 arm 幂等（不重置计时）", () => {
+    vi.useFakeTimers();
+    useGameStore.setState({
+      screen: "game",
+      engineBusy: false,
+      typingDone: true,
+      options: OPTIONS,
+      settings: { ...DEFAULT_SETTINGS, autoAdvance: 3000 },
+      autoAdvanceDeadline: null,
+      autoAdvanceMuted: false,
+    });
+
+    useGameStore.getState().armAutoAdvance();
+    const deadline = useGameStore.getState().autoAdvanceDeadline;
+    expect(deadline).toBe(Date.now() + 3000);
+
+    useGameStore.getState().armAutoAdvance(); // 幂等：选项组件重渲染不该把计时重置
+    expect(useGameStore.getState().autoAdvanceDeadline).toBe(deadline);
+
+    vi.advanceTimersByTime(2999);
+    expect(prompts.at(-1)).toBe("继续世界：campus-summer-1。"); // 还没到点
+    vi.advanceTimersByTime(1);
+    expect(prompts.at(-1)).toBe("溜进座位"); // 到点自动选第一项
+    expect(useGameStore.getState().autoAdvanceDeadline).toBeNull();
+    expect(useGameStore.getState().options).toBeNull(); // 走的是同一条 send：选项随即收起
+    expect(useGameStore.getState().status).toBe("引擎演绎中…");
+  });
+
+  it("自动前进：设置关 / 引擎忙 / 有排队指令 / 打字未完 / 无选项 / 非游戏屏都不启动", () => {
+    const armed = () => useGameStore.getState().autoAdvanceDeadline;
+    const ready = { screen: "game" as const, engineBusy: false, typingDone: true, options: OPTIONS };
+    useGameStore.setState({ ...ready, settings: { ...DEFAULT_SETTINGS, autoAdvance: 3000 }, autoAdvanceDeadline: null, autoAdvanceMuted: false });
+
+    useGameStore.setState({ settings: { ...DEFAULT_SETTINGS, autoAdvance: 0 } });
+    useGameStore.getState().armAutoAdvance();
+    expect(armed()).toBeNull();
+
+    useGameStore.setState({ settings: { ...DEFAULT_SETTINGS, autoAdvance: 3000 }, engineBusy: true });
+    useGameStore.getState().armAutoAdvance();
+    expect(armed()).toBeNull(); // 引擎忙：这一轮还没定稿
+
+    useGameStore.setState({ engineBusy: false, pendingCreationMessage: "想玩一个赛博朋克侦探故事" });
+    useGameStore.getState().armAutoAdvance();
+    expect(armed()).toBeNull(); // 创作屏排队指令还没发出去
+
+    useGameStore.setState({ pendingCreationMessage: null, pendingTreeMessage: "剧情：删掉节点 2-3" });
+    useGameStore.getState().armAutoAdvance();
+    expect(armed()).toBeNull(); // 图屏排队编辑同理
+
+    useGameStore.setState({ pendingTreeMessage: null, typingDone: false });
+    useGameStore.getState().armAutoAdvance();
+    expect(armed()).toBeNull(); // 打字还没完：此刻没有「选项已就绪」
+
+    useGameStore.setState({ typingDone: true, options: [] });
+    useGameStore.getState().armAutoAdvance();
+    expect(armed()).toBeNull();
+
+    useGameStore.setState({ options: OPTIONS, screen: "tree" });
+    useGameStore.getState().armAutoAdvance();
+    expect(armed()).toBeNull(); // 不在游戏屏（图屏/画廊里不该替玩家做决定）
+
+    useGameStore.setState({ screen: "game" });
+    useGameStore.getState().armAutoAdvance();
+    expect(armed()).not.toBeNull(); // 条件都齐了才起计时
+    useGameStore.getState().cancelAutoAdvance();
+  });
+
+  it("自动前进：用户交互取消本回合（不到点补发），新回合 turn_start 复位后重新计时", () => {
+    vi.useFakeTimers();
+    useGameStore.setState({
+      screen: "game",
+      engineBusy: false,
+      typingDone: true,
+      options: OPTIONS,
+      settings: { ...DEFAULT_SETTINGS, autoAdvance: 3000 },
+      autoAdvanceDeadline: null,
+      autoAdvanceMuted: false,
+    });
+
+    useGameStore.getState().armAutoAdvance();
+    expect(useGameStore.getState().autoAdvanceDeadline).not.toBeNull();
+    useGameStore.getState().cancelAutoAdvance(); // App 层的点击/按键/输入都落到这里
+    expect(useGameStore.getState()).toMatchObject({ autoAdvanceDeadline: null, autoAdvanceMuted: true });
+
+    useGameStore.getState().armAutoAdvance(); // 本回合已取消过：不再重开
+    expect(useGameStore.getState().autoAdvanceDeadline).toBeNull();
+    vi.advanceTimersByTime(5000);
+    expect(prompts.at(-1)).toBe("继续世界：campus-summer-1。"); // 被取消的倒计时不会到点补发
+
+    // 新回合：上一回合的取消不跨回合
+    useGameStore.getState().handleEvent({ type: "turn_start" });
+    expect(useGameStore.getState().autoAdvanceMuted).toBe(false);
+    useGameStore.setState({ engineBusy: false, typingDone: true, options: OPTIONS, autoAdvanceDeadline: null });
+    useGameStore.getState().armAutoAdvance();
+    expect(useGameStore.getState().autoAdvanceDeadline).not.toBeNull();
+    vi.advanceTimersByTime(3000);
+    expect(prompts.at(-1)).toBe("溜进座位");
+  });
+
+  it("自动前进：撞上引擎忙不作废，250ms 短延迟重试到引擎空闲后照样选第一项", () => {
+    vi.useFakeTimers();
+    useGameStore.setState({
+      screen: "game",
+      engineBusy: false, // 起跑时引擎空着（忙的时候根本不会起计时，见「都不启动」那条）
+      typingDone: true,
+      options: OPTIONS,
+      settings: { ...DEFAULT_SETTINGS, autoAdvance: 3000 },
+      autoAdvanceDeadline: null,
+      autoAdvanceMuted: false,
+    });
+    const sent0 = prompts.length;
+
+    useGameStore.getState().armAutoAdvance();
+    expect(useGameStore.getState().autoAdvanceDeadline).not.toBeNull();
+
+    // 倒计时跑着，引擎又忙起来（回合还在收尾 / 刚发出的指令还没落地）
+    useGameStore.setState({ engineBusy: true });
+    vi.advanceTimersByTime(3000); // 到点：引擎忙
+    expect(prompts).toHaveLength(sent0); // 不抢发（抢发必 409）
+    expect(useGameStore.getState().autoAdvanceDeadline).not.toBeNull(); // 也不算作废：仍在重试窗口里
+
+    // 第一个重试窗口还没到：什么都不做
+    vi.advanceTimersByTime(249);
+    expect(prompts).toHaveLength(sent0);
+
+    useGameStore.setState({ engineBusy: false }); // 引擎收尾完成
+    vi.advanceTimersByTime(1); // 重试到点：这次引擎空着
+    expect(prompts.at(-1)).toBe("溜进座位");
+    expect(useGameStore.getState().autoAdvanceDeadline).toBeNull();
+    expect(useGameStore.getState().options).toBeNull(); // 走的是同一条 send：选项随即收起
+  });
+
+  it("自动前进：重试预算用尽仍忙才作废；用户交互取消照旧立即生效", () => {
+    vi.useFakeTimers();
+    const armed = {
+      screen: "game" as const,
+      typingDone: true,
+      options: OPTIONS,
+      settings: { ...DEFAULT_SETTINGS, autoAdvance: 3000 as const },
+      autoAdvanceDeadline: null,
+      autoAdvanceMuted: false,
+    };
+    /** 起跑（空闲）→ 引擎忙起来 → 到点，返回起跑前的指令条数 */
+    const armThenBusy = () => {
+      useGameStore.setState({ ...armed, engineBusy: false });
+      useGameStore.getState().armAutoAdvance();
+      expect(useGameStore.getState().autoAdvanceDeadline).not.toBeNull(); // 起跑成功才谈得上「到点撞忙」
+      useGameStore.setState({ engineBusy: true });
+    };
+
+    const sent0 = prompts.length;
+    // 引擎一直忙：到点先进入重试窗口（不作废），累计 ~2s 后才放弃
+    armThenBusy();
+    vi.advanceTimersByTime(3000);
+    expect(useGameStore.getState().autoAdvanceDeadline).not.toBeNull(); // 到点只是开始重试，不是作废
+    expect(prompts).toHaveLength(sent0);
+    vi.advanceTimersByTime(2000); // 预算用尽
+    expect(prompts).toHaveLength(sent0);
+    expect(useGameStore.getState().autoAdvanceDeadline).toBeNull();
+
+    vi.advanceTimersByTime(10_000);
+    expect(prompts).toHaveLength(sent0); // 作废后不会再补发
+
+    // 用户交互取消：重试窗口里的倒计时同样一处清掉（语义与 v1.6 一致）
+    armThenBusy();
+    vi.advanceTimersByTime(3000); // 到点 → 进入重试
+    expect(useGameStore.getState().autoAdvanceDeadline).not.toBeNull();
+    useGameStore.getState().cancelAutoAdvance();
+    expect(useGameStore.getState()).toMatchObject({ autoAdvanceDeadline: null, autoAdvanceMuted: true });
+    useGameStore.setState({ engineBusy: false }); // 即便引擎随后空下来，被取消的倒计时也不许复活
+    vi.advanceTimersByTime(10_000);
+    expect(prompts).toHaveLength(sent0);
+  });
+
+  it("isTypingTarget：输入控件让路、滑杆不算（设置屏聚焦滑杆时快捷键照旧可用）", () => {
+    // node 环境没有 DOM：用最小形状的假元素（判据只看 tagName/type/isContentEditable）
+    const el = (tagName: string, extra: Record<string, unknown> = {}) =>
+      ({ tagName, isContentEditable: false, ...extra }) as unknown as EventTarget;
+
+    expect(isTypingTarget(el("INPUT"))).toBe(true);
+    expect(isTypingTarget(el("INPUT", { type: "text" }))).toBe(true);
+    expect(isTypingTarget(el("TEXTAREA"))).toBe(true);
+    expect(isTypingTarget(el("DIV", { isContentEditable: true }))).toBe(true);
+    expect(isTypingTarget(el("INPUT", { type: "range" }))).toBe(false); // 滑杆：Esc 链与数字键都不该被它挡住
+    expect(isTypingTarget(el("BUTTON"))).toBe(false);
+    expect(isTypingTarget(null)).toBe(false);
+    expect(isTypingTarget({} as EventTarget)).toBe(false); // 没有 tagName 的目标（window 等）
   });
 });

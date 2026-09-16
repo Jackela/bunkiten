@@ -56,7 +56,26 @@ async function createWindow() {
   }
 }
 
-app.whenReady().then(createWindow);
+// 自动更新：仅打包态启用（开发态没有 app-update.yml，也不该联网查更新）；动态 import 让 electron-updater
+// 只在需要时才加载。electron-builder.yml 的 publish.github 是 update channel 的来源。
+// 已知限制：未签名 mac 包无法自动更新（Squirrel.Mac 要求新旧包签名一致），本仓库默认发布的正是未签名包——
+// 这条路径在 mac 上只会静默失败；升级方式以 docs/ARCHITECTURE.md「打包布局 / 已知限制」为准。
+async function checkForUpdates() {
+  if (!app.isPackaged || process.env.BUNKITEN_DISABLE_UPDATE === "1") return;
+  try {
+    const updater = await import("electron-updater"); // CJS 包：具名导出经 ESM 互操作暴露
+    const autoUpdater = updater.autoUpdater ?? updater.default?.autoUpdater;
+    if (!autoUpdater) return;
+    await autoUpdater.checkForUpdatesAndNotify().catch(() => {});
+  } catch {
+    // electron-updater 未随包分发（例如 --dir 预检产物）时静默降级，不影响启动
+  }
+}
+
+app.whenReady().then(async () => {
+  await createWindow();
+  void checkForUpdates(); // 不阻塞开窗
+});
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();

@@ -1,5 +1,7 @@
 // 剧情树布局纯函数：把 TreeChapter 的节点/出边算成二维坐标 + SVG 路径。
 // 不依赖 React/DOM，可直接被 node import 做单测；输出确定（同输入必得同输出）。
+// v1.6 追加画布视图（缩放/平移）纯函数：TreeView + fitView/zoomViewAt/panView/viewBoxOf，
+// 图屏的滚轮缩放（指针锚点）、拖拽平移、放大/缩小/适应按钮与 +/-/0 快捷键都只调它们。
 import type { TreeChapter, TreeNode } from "./parser";
 
 /** 布局后的单个节点：保留原始 TreeNode，附层号与左上角坐标 */
@@ -203,4 +205,86 @@ export function layoutTree(chapter: TreeChapter | null, opts: LayoutOptions = {}
   });
 
   return { nodes, edges, width, height };
+}
+
+// —— 画布视图（缩放/平移，v1.6）：用「中心点 + 缩放倍数」表达 SVG viewBox ——
+// 纯函数、不碰 DOM：缩放以指针为锚点、平移只挪中心、中心恒被夹在布局内（拖不出边界）。
+// zoom=1 即「适应」：viewBox 恰好是 `0 0 width height`，与 v1.5 的默认输出逐字一致。
+
+/** 画布视图：cx/cy 是**视图中心**在布局坐标系里的位置（不是左上角），zoom 相对「适应」的倍数 */
+export interface TreeView {
+  cx: number;
+  cy: number;
+  zoom: number;
+}
+
+/** 缩放下限（比适应再退一点，留出看全貌的余量） */
+export const TREE_ZOOM_MIN = 0.5;
+/** 缩放上限（再放大只是把像素拉成马赛克，没有新信息） */
+export const TREE_ZOOM_MAX = 4;
+
+/** 缩放收敛进 [MIN, MAX]；非有限数（NaN/Infinity）回适应 */
+export function clampZoom(z: number): number {
+  if (!Number.isFinite(z)) return 1;
+  return Math.min(TREE_ZOOM_MAX, Math.max(TREE_ZOOM_MIN, z));
+}
+
+/** 「适应」视图：整张布局正好铺满画布 */
+export function fitView(width: number, height: number): TreeView {
+  return { cx: width / 2, cy: height / 2, zoom: 1 };
+}
+
+/** 单轴夹取：视图比布局窄就夹在 [half, size-half]；视图比布局宽（缩得比适应还小）只能居中 */
+function clampAxis(c: number, size: number, half: number): number {
+  if (!(half > 0) || size <= half * 2) return size / 2;
+  return Math.min(size - half, Math.max(half, c));
+}
+
+/** 收敛一个视图：zoom 合法 + 中心不出画布 */
+function clampView(v: TreeView, width: number, height: number): TreeView {
+  const zoom = clampZoom(v.zoom);
+  const halfW = width / (2 * zoom);
+  const halfH = height / (2 * zoom);
+  const cx = Number.isFinite(v.cx) ? clampAxis(v.cx, width, halfW) : width / 2;
+  const cy = Number.isFinite(v.cy) ? clampAxis(v.cy, height, halfH) : height / 2;
+  return { cx, cy, zoom };
+}
+
+/**
+ * 以视图内归一化锚点缩放：锚点下的那一点布局坐标保持不动（滚轮缩放跟手的关键）。
+ * @param {TreeView} v 当前视图
+ * @param {number} factor 缩放倍数（>1 放大、<1 缩小；会被 clampZoom 收敛）
+ * @param {number} fx 锚点横坐标比例（0=视图左缘，1=右缘；越界收敛到 [0,1]——指针落在边距上时）
+ * @param {number} fy 锚点纵坐标比例（同上）
+ * @param {number} width 布局宽（= 适应时的画布宽）
+ * @param {number} height 布局高
+ * @returns {TreeView} 新视图（中心已夹进布局）
+ */
+export function zoomViewAt(v: TreeView, factor: number, fx: number, fy: number, width: number, height: number): TreeView {
+  const zoom = clampZoom(v.zoom * factor);
+  const ax = Math.min(1, Math.max(0, fx));
+  const ay = Math.min(1, Math.max(0, fy));
+  // 锚点下的布局坐标：视图中心 ± 半个视图宽（高）
+  const px = v.cx + (ax - 0.5) * (width / v.zoom);
+  const py = v.cy + (ay - 0.5) * (height / v.zoom);
+  // 反解新中心：同一个布局坐标仍落在同一个比例位置上
+  return clampView({ cx: px - (ax - 0.5) * (width / zoom), cy: py - (ay - 0.5) * (height / zoom), zoom }, width, height);
+}
+
+/**
+ * 平移视图：dx/dy 是**视图内布局坐标**的位移（拖拽方向即内容移动方向，与手指一致）。
+ * @returns {TreeView} 新视图（中心已夹进布局）
+ */
+export function panView(v: TreeView, dx: number, dy: number, width: number, height: number): TreeView {
+  return clampView({ ...v, cx: v.cx - dx, cy: v.cy - dy }, width, height);
+}
+
+/**
+ * 视图 → SVG viewBox 字符串（缩放平移的唯一出口，组件不再自己拼）。
+ * @returns {string} 形如 `x y w h`；适应态即 `0 0 width height`
+ */
+export function viewBoxOf(v: TreeView, width: number, height: number): string {
+  const w = width / v.zoom;
+  const h = height / v.zoom;
+  return `${round1(v.cx - w / 2)} ${round1(v.cy - h / 2)} ${round1(w)} ${round1(h)}`;
 }

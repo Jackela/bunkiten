@@ -133,14 +133,16 @@ test("章节制作冒烟：规划第 1 章后跳过并开演 @slow", async () =>
 
   // 待命回合结束 → 自动发「规划：第 1 章。」进入 planning：大纲槽位转「撰写大纲与剧情树…」
   // （init 阶段槽位文案是「排队中」，此文案是 planning 子阶段独有；等待需覆盖整个待命回合）
-  await expect(page.getByText("撰写大纲与剧情树…")).toBeVisible({ timeout: 600_000 });
+  // v1.6 起状态文案同时出现在可见状态条与 sr-only 播报区（StatusAnnouncer），
+  // getByText 会命中两个元素触发 strict mode——按 testid 精确锁定可见槽位
+  await expect(page.getByTestId("crafting-plan-slot")).toHaveText("撰写大纲与剧情树…", { timeout: 600_000 });
 
   // 立即跳过，不等清单解析与真实出图：规划回合进行中点跳过 → 回合结束后自动发「开演。」
   await page.getByRole("button", { name: "跳过剩余，立即开演" }).click();
 
   // 跳过生效信号：规划回合终结后制作中屏 status 转「引擎演绎中…」（「开演。」已发出）。
   // 规划回合要写剧情树，受引擎耗时影响，给足 600s。
-  await expect(page.getByText("引擎演绎中…")).toBeVisible({ timeout: 600_000 });
+  await expect(page.getByTestId("crafting-status")).toContainText("引擎演绎中…", { timeout: 600_000 });
 
   // 开场回合演完 → 制作中屏收尾切 game 屏；status 元素只在 game 屏 TopBar，出现即回合已定稿
   await expect(page.getByTestId("status")).toHaveText("就绪", { timeout: 600_000 });
