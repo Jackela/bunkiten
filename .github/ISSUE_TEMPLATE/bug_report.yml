@@ -8,7 +8,7 @@ body:
       value: |
         感谢反馈。请把「现象 → 复现步骤 → 期望」写清楚，附原文日志。
 
-        ⚠️ **安全问题不要发公开 issue**：请走 [Security Advisories](https://github.com/Jackela/bunkiten/security/advisories/new) 私密渠道，见 [SECURITY.md](../SECURITY.md)。
+        ⚠️ **安全问题不要发公开 issue**：请走 [Security Advisories](https://github.com/Jackela/bunkiten/security/advisories/new) 私密渠道，见 [SECURITY.md](https://github.com/Jackela/bunkiten/blob/main/SECURITY.md)。
 
   - type: textarea
     id: symptom
