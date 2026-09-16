@@ -9,6 +9,7 @@ publish:
   url: https://localhost/unused
 directories:
   output: release
+  buildResources: build # 应用图标等打包资源（build/icon.png ≥512，electron-builder 自动派生 .icns/.ico）
 files:
   - dist/**
   - electron/**
