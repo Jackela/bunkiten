@@ -7,5 +7,8 @@ export default defineConfig({
   test: {
     setupFiles: ["tests/setup-react-act.mjs"],
     exclude: ["node_modules/**", "tests/e2e/**"],
+    // 显式钉 NODE_ENV=test：本机 shell 若导出 NODE_ENV=production，React 会解析生产构建，
+    // 组件测试（@testing-library + act 垫片）行为随之漂移；测试环境必须自洽、不依赖外部 shell。
+    env: { NODE_ENV: "test" },
   },
 });

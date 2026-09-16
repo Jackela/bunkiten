@@ -108,6 +108,8 @@ npm install
 npm run dev:electron
 ```
 
+> 环境自洽：若你的 shell 导出了 `NODE_ENV=production`，本仓库的 `.npmrc` 会强制安装 devDependencies、`vitest.config.ts` 也会自钉 `NODE_ENV=test`——不需要额外处理。
+
 三步进游戏：克隆 → `npm install` → `npm run dev:electron`。需要本机已登录 grok CLI（`grok login`）。
 
 ## 文档导航
