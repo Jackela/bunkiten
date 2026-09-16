@@ -1,0 +1,17 @@
+node_modules/
+dist/
+dist-electron/
+release/
+test-results/
+playwright-report/
+*.log
+*.tsbuildinfo
+.DS_Store
+
+# 运行时数据：引擎按世界线写入 state/worlds/<worldId>/（只保留说明文件）
+state/worlds/
+state/*.md
+!state/README.md
+
+# ACP 会话指针（断线续档用，本机生成）
+.shell-session.json

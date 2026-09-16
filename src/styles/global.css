@@ -1,0 +1,29 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #07080c;
+  --ink: #ece7db;
+  /* 默认（aurora 兜底）主题色；App 按当前剧本 theme 注入覆盖 */
+  --accent: #c9a86a;
+  --accent2: #e7d5ae;
+}
+
+/* 暴露为 tailwind 主题色：gold 是旧类名，跟随 accent 保持全站主题化 */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-ink: var(--ink);
+  --color-gold: var(--accent);
+  --color-accent: var(--accent);
+  --color-accent2: var(--accent2);
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--ink);
+}
+
+/* 胶片颗粒（Atmosphere）：CSS 生成的 feTurbulence 噪点，不引外部图片 */
+.grain {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+}

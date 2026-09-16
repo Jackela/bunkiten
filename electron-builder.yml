@@ -1,0 +1,36 @@
+# 布局原则：可写数据（.grok/presets/state）与打包前端必须在 asar 外（extraResources），
+# 代码（electron/server）进 asar；dist 同时保留在 asar 内只是冗余备份，运行时走 resources/app-dist。
+appId: com.local.bunkiten
+productName: Bunkiten # ASCII，规避 NSIS/非 UTF-8 终端对中文 productName 的兼容风险
+# 占位 publish：新版 electron-builder 无 publish 配置时 update-info 环节会拿到 null channel 崩溃；
+# 本应用不做自动更新，latest*.yml 产物忽略即可
+publish:
+  provider: generic
+  url: https://localhost/unused
+directories:
+  output: release
+files:
+  - dist/**
+  - electron/**
+  - server/**
+  - package.json
+extraResources:
+  - from: .grok
+    to: game/.grok
+  - from: presets
+    to: game/presets
+  - from: state
+    to: game/state
+    filter: ["README.md"] # 只带说明文件，绝不打包本地进度
+  - from: dist
+    to: app-dist # acp-server 的 /app 托管目录
+win:
+  target:
+    - nsis
+    - portable
+  signAndEditExecutable: false # 不签名不改 PE 元数据
+mac:
+  target:
+    - dmg
+    - zip
+  identity: null # 不签名；arch 由 dist:mac 脚本 --arm64 --x64 传入
