@@ -5,7 +5,8 @@
 #   避免 electron-builder 与 action 争抢同一个 release。
 # - 平台清单写 SHA256SUMS-<platform>.txt（不是同名 SHA256SUMS.txt）：download-artifact 的 merge-multiple
 #   会把两个 artifact 解到同一目录，同名文件会互相覆盖；最终 SHA256SUMS.txt 由 release job 合并生成。
-# - 签名/公证全部条件化：secrets 缺失时 CSC_IDENTITY_AUTO_DISCOVERY=false，走未签名路径，构建照样成功。
+# - 签名/公证全部条件化：secrets 缺失时先 unset 空环境变量（空 CSC_LINK 会被 electron-builder 当成
+#   证书路径而失败）再走未签名构建，构建照样成功。
 #   已知限制：未签名 mac 包无法自动更新（Squirrel.Mac 要求签名一致），见 docs/ARCHITECTURE.md「已知限制」。
 # - guard job 是唯一测试门禁：npm test（单测 + 集成，约 10s；e2e 不进 CI）不过就不发版。放 guard 只跑一次，
 #   两个平台的 GB 级打包不受影响，也不算重复算力。
@@ -113,8 +114,10 @@ jobs:
         run: npm run build
 
       # 签名/公证条件化：有证书（CSC_LINK）才开启 identity 自动发现，否则显式走未签名路径。
-      # secrets 缺失 → 空字符串 → CSC_IDENTITY_AUTO_DISCOVERY=false → electron-builder 跳过签名，
-      # afterSign 钩子（electron/notarize.cjs）在三件套不全时也直接 return。
+      # 关键坑（v1.6.0 首跑实测）：secrets 缺失时注入的是**空字符串而不是未定义**，electron-builder
+      # 见到 CSC_LINK 存在就进入签名流程（`empty password will be used for code signing`），随后拿
+      # 空路径失败（`⨯ … not a file`）——所以先把空值 unset 再打包。afterSign 钩子
+      # （electron/notarize.cjs）在三件套不全时也直接 return，两条路径都能走通未签名构建。
       - name: Package（mac dmg + zip，arm64 + x64）
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -123,7 +126,13 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.CSC_LINK != '' && 'true' || 'false' }}
-        run: npx electron-builder --mac --arm64 --x64 --publish never
+        run: |
+          if [ -z "$CSC_LINK" ]; then unset CSC_LINK; fi
+          if [ -z "$CSC_KEY_PASSWORD" ]; then unset CSC_KEY_PASSWORD; fi
+          if [ -z "$APPLE_ID" ]; then unset APPLE_ID; fi
+          if [ -z "$APPLE_APP_SPECIFIC_PASSWORD" ]; then unset APPLE_APP_SPECIFIC_PASSWORD; fi
+          if [ -z "$APPLE_TEAM_ID" ]; then unset APPLE_TEAM_ID; fi
+          npx electron-builder --mac --arm64 --x64 --publish never
 
       - name: Checksums（dmg/zip/exe/latest*.yml）
         run: |
