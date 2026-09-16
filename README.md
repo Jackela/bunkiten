@@ -1,3 +1,5 @@
+<p align="center"><img src="build/icon.png" width="120" alt="bunkiten 图标：金色分岔线与分岔点的暖光"></p>
+
 # bunkiten（分岐点）
 
 > v1.5.1 —— 给单人定制的 LLM 互动 AVG（文字冒险 / 视觉小说）完整产品：Electron 桌面壳 + React 前端 + grok CLI（ACP）叙事引擎；本版让资产随故事走（立绘/背景落进当前剧本的 `presets/<id>/assets/`）并兼容旧档资产路径，项目更名为 bunkiten（分岐点）。
@@ -19,6 +21,8 @@
 ## 两种运行方式
 
 交付形态只有一种：Electron 桌面应用（MVP 期的终端 TUI 已删除）。下表两列是同一种形态的两种跑法。
+
+> 不想从源码跑？直接下载安装包：[Releases](https://github.com/Jackela/bunkiten/releases)（未签名：macOS 首次打开需右键「打开」，Windows 会有 SmartScreen 提示）。
 
 | | 桌面安装包（给朋友） | 开发模式（给自己） |
 |---|---|---|
