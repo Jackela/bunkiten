@@ -29,7 +29,9 @@ win:
   target:
     - nsis
     - portable
-  signAndEditExecutable: false # 不签名不改 PE 元数据
+  # 只跳过签名，保留图标与版本元数据写入：若用 signAndEditExecutable:false，PE 资源编辑会一并跳过，
+  # 应用 exe 会留在 Electron 默认图标与「Electron」版本串（安装器图标仍是新的，容易漏检）
+  signExecutable: false
 mac:
   target:
     - dmg

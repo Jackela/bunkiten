@@ -4,6 +4,17 @@
   "version": "1.5.1",
   "description": "bunkiten（分岐点）—— LLM 互动 AVG（文字冒险/视觉小说）脚手架：Electron 桌面壳 + React 前端 + ACP 叙事引擎",
   "license": "MIT",
+  "author": {
+    "name": "Jackela"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Jackela/bunkiten.git"
+  },
+  "homepage": "https://github.com/Jackela/bunkiten#readme",
+  "bugs": {
+    "url": "https://github.com/Jackela/bunkiten/issues"
+  },
   "type": "module",
   "main": "electron/main.js",
   "scripts": {
