@@ -1,15 +1,17 @@
-// 契约 lint（v1.6 防漂移门禁）：文本协议是一组逐字字符串，散在四处——
+// 契约 lint（v1.6 起防漂移门禁）：文本协议是一组逐字字符串，散在多处——
 // 引擎提示词（.grok/skills/bunkiten/SKILL.md）、服务端（server/acp-server.mjs）、
-// 客户端（src/lib/parser.ts、src/lib/settings.ts）、文档（docs/ARCHITECTURE.md、README.md、AGENTS.md）。
+// 客户端（src/lib/parser.ts、src/lib/settings.ts）、共享真源（shared/protocol.mjs，v1.7 起）、
+// 文档（docs/ARCHITECTURE.md、README.md、AGENTS.md）。
 // 任何单点改动都会让引擎与客户端对不上，所以这里把「谁必须和谁一字不差」收进一个文件，
 // 失败信息一律写明「谁和谁不一致、现在各是什么」，而不是只说 toBe 失败。
 //
-// 覆盖五组断言（与 docs/ARCHITECTURE.md「文本协议契约」开头那段声明同源）：
-//   ① 协议头集合唯一真源：PROTOCOL_HEADS ↔ isProtocolLine 正则 ↔ server/parser 解析出口 ↔ SKILL 备忘 ↔ 文档
-//   ② RULES 逐字副本：server 常量 ↔ ARCHITECTURE 的 RULES 代码块（6 句，第 6 句音频纪律）
+// 覆盖六组断言（与 docs/ARCHITECTURE.md「文本协议契约」开头那段声明同源）：
+//   ① 协议头集合唯一真源：shared/protocol.mjs 的 PROTOCOL_HEADS ↔ isProtocolLine 正则（parser.ts 构造）↔ server/parser 解析出口 ↔ SKILL 备忘 ↔ 文档
+//   ② RULES 逐字副本：server 常量 ↔ ARCHITECTURE 的 RULES 代码块（6 句，第 6 句音频纪律；引擎只读 .grok/ 不 import 代码，这份天然双份）
 //   ③ 指令字符串双处存在：src/lib/parser.ts 源码 ↔ SKILL.md
 //   ④ 用例数：README/AGENTS/ARCHITECTURE 声明的分组数字 ↔ 各测试文件实际用例数
-//   ⑤ 设置键与音频扩展名：settings.ts / server 源码 / 文档三处一致
+//   ⑤ 设置键与音频扩展名：settings.ts / shared 真源 / 文档三处一致
+//   ⑥ 指令前缀与主题白名单（v1.7）：DIRECTIVE_PREFIX_RE 单一真源（pickEffort/isMainTurn 都消费）；server 与 theme.ts 的字体/对话框白名单与兜底主题同集
 //
 // 纯 node：只读文件 + import 已导出的模块（不 spawn、不联网、不写盘），整体 <1s。
 // 注意：本文件自身也被 `npm test` 收录，但**不计入**文档声明的合计口径（数字以 CASE_TOTAL 为准；tests/e2e/** 同样不在口径内），见第 ④ 组。
@@ -19,6 +21,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AUDIO_KINDS, PROTOCOL_HEADS, isProtocolLine, parseChapterMark, parseManifest } from "../src/lib/parser";
+import { DIRECTIVE_PREFIX_RE as SHARED_DIRECTIVE_RE, PROTOCOL_HEADS as SHARED_HEADS } from "../shared/protocol.mjs";
 import { SETTINGS_STORAGE_KEY } from "../src/lib/settings";
 
 /** 仓库根（本文件在 tests/ 下） */
@@ -76,14 +79,18 @@ const HEAD_PROBES: { head: string; from: string; name: string; sample: string; o
 const headsText = (): string => HEADS.map((h) => `【${h}】`).join("");
 
 describe("① 协议头集合唯一真源：PROTOCOL_HEADS ↔ isProtocolLine ↔ 解析出口 ↔ SKILL 备忘 ↔ 文档", () => {
-  it("PROTOCOL_HEADS 逐字等于契约清单（9 项）", () => {
+  it("PROTOCOL_HEADS 逐字等于契约清单（9 项；shared 真源经 parser re-export 双侧钉住）", () => {
     expect(
       [...PROTOCOL_HEADS],
       `协议头集合不一致：src/lib/parser.ts 的 PROTOCOL_HEADS 现在是 [${[...PROTOCOL_HEADS].join("、")}]（${PROTOCOL_HEADS.length} 项），契约声明是 [${HEADS.join("、")}]（9 项）`,
     ).toEqual(HEADS);
+    expect(
+      [...SHARED_HEADS],
+      `协议头集合不一致：shared/protocol.mjs 的 PROTOCOL_HEADS 现在是 [${[...SHARED_HEADS].join("、")}]（${SHARED_HEADS.length} 项），契约声明是 [${HEADS.join("、")}]（9 项）——真源与 parser 的 re-export 已分叉`,
+    ).toEqual(HEADS);
   });
 
-  it("isProtocolLine 的正则由 PROTOCOL_HEADS 构造（没有第二份手写头表）", () => {
+  it("isProtocolLine 的正则由 PROTOCOL_HEADS 构造（真源在 shared，没有第二份手写头表）", () => {
     const parserSrc = read("src/lib/parser.ts");
     const FROM_HEADS = '${PROTOCOL_HEADS.join("|")}';
     expect(
@@ -92,6 +99,22 @@ describe("① 协议头集合唯一真源：PROTOCOL_HEADS ↔ isProtocolLine �
     ).toContain(FROM_HEADS);
     const uses = parserSrc.split(FROM_HEADS).length - 1;
     expect(uses, `PROTOCOL_HEADS 的 join 在 src/lib/parser.ts 里出现 ${uses} 次（应为 1 次）：多出来的那份就是第二真源，两边一分叉就说不清哪个才对`).toBe(1);
+    // v1.7 真源搬家：parser 只许 import + re-export，不许再留数组字面量（第二真源）
+    expect(
+      parserSrc,
+      `src/lib/parser.ts 应从 shared/protocol.mjs import PROTOCOL_HEADS（v1.7 起真源在那）：找不到对应的 import 语句`,
+    ).toContain('from "../../shared/protocol.mjs"');
+    expect(parserSrc, `src/lib/parser.ts 里出现了 PROTOCOL_HEADS 的数组字面量：真源已在 shared/protocol.mjs，这里再写一份就是第二真源`).not.toContain("PROTOCOL_HEADS = [");
+    // 真源本体：shared 的数组字面量逐字等于契约清单（源码级钉住）
+    const sharedRel = "shared/protocol.mjs";
+    const sharedSrc = read(sharedRel);
+    const decl = /export const PROTOCOL_HEADS = \[([^\]]+)\]/.exec(sharedSrc);
+    if (!decl) throw new Error(`${sharedRel} 里找不到 \`export const PROTOCOL_HEADS = [...]\`：协议头集合没有真源（v1.7 起从 src/lib/parser.ts 搬来），无法与文档/解析出口比对`);
+    const sharedHeads = [...decl[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    expect(
+      sharedHeads,
+      `${sharedRel} 的 PROTOCOL_HEADS 与契约清单不一致：现在是 [${sharedHeads.join("、")}]（${sharedHeads.length} 项），契约声明是 [${HEADS.join("、")}]（谁和谁不一致：shared 真源 ↔ 契约清单）`,
+    ).toEqual(HEADS);
     // 行为层再复述一遍：9 个头都认，「前缀像但头不同」的不认
     for (const head of HEADS) {
       expect(isProtocolLine(`【${head}】…`), `isProtocolLine("【${head}】…") 应为 true（【${head}】是真源里的协议头，过滤清单漏了它）`).toBe(true);
@@ -405,7 +428,7 @@ function extTokens(line: string): string[] {
   return [...new Set([...line.matchAll(/\b(mp3|ogg|m4a|wav|flac)\b/g)].map((m) => m[1]))].sort();
 }
 
-describe("⑤ 设置键与音频扩展名：settings.ts / server 源码 / 文档三处一致", () => {
+describe("⑤ 设置键与音频扩展名：settings.ts / shared 真源 / 文档三处一致", () => {
   it("设置键 bunkiten.settings.v1 在 settings.ts 与文档里一致", () => {
     expect(SETTINGS_STORAGE_KEY, `src/lib/settings.ts 的 SETTINGS_STORAGE_KEY 是「${SETTINGS_STORAGE_KEY}」，契约键是「${SETTINGS_KEY}」`).toBe(SETTINGS_KEY);
     for (const doc of ["docs/ARCHITECTURE.md", "README.md"]) {
@@ -413,24 +436,30 @@ describe("⑤ 设置键与音频扩展名：settings.ts / server 源码 / 文档
     }
   });
 
-  it("音频扩展名：server 的 AUDIO_EXTS / AUDIO_MIME / 直服白名单同集，且文档逐字写全", () => {
-    const rel = "server/acp-server.mjs";
-    const server = read(rel);
+  it("音频扩展名：shared 的 AUDIO_EXTS / AUDIO_MIME / 直服白名单同集，且文档逐字写全", () => {
+    const rel = "shared/protocol.mjs";
+    const shared = read(rel);
     // 真源一：扩展名数组
-    const decl = /const AUDIO_EXTS = \[([^\]]+)\]/.exec(server);
-    if (!decl) throw new Error(`${rel} 里找不到 \`const AUDIO_EXTS = [...]\`：音频扩展名没有真源，无法与文档/客户端比对`);
-    const serverExts = [...decl[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
-    expect(serverExts, `${rel} 的 AUDIO_EXTS 与契约集合不一致：现在是 [${serverExts.join(", ")}]，契约是 [${EXTS.join(", ")}]`).toEqual(EXTS);
+    const decl = /const AUDIO_EXTS = \[([^\]]+)\]/.exec(shared);
+    if (!decl) throw new Error(`${rel} 里找不到 \`const AUDIO_EXTS = [...]\`：音频扩展名没有真源（v1.7 起从 server/acp-server.mjs 搬来），无法与文档/客户端比对`);
+    const sharedExts = [...decl[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    expect(sharedExts, `${rel} 的 AUDIO_EXTS 与契约集合不一致：现在是 [${sharedExts.join(", ")}]，契约是 [${EXTS.join(", ")}]`).toEqual(EXTS);
     // 真源二：MIME 表的键必须与扩展名同集（漏一个 = 直服时回落到 octet-stream）
-    const mimeDecl = /const AUDIO_MIME = \{([^}]+)\}/.exec(server);
+    const mimeDecl = /const AUDIO_MIME = \{([^}]+)\}/.exec(shared);
     if (!mimeDecl) throw new Error(`${rel} 里找不到 \`const AUDIO_MIME = {...}\`：直服的 MIME 表没了`);
     const mimeKeys = [...mimeDecl[1].matchAll(/([a-z0-9]+)\s*:/g)].map((m) => m[1]).sort();
-    expect(mimeKeys, `${rel} 的 AUDIO_MIME 键与 AUDIO_EXTS 不同集：MIME 表 [${mimeKeys.join(", ")}]、扩展名 [${serverExts.join(", ")}]`).toEqual([...serverExts].sort());
+    expect(mimeKeys, `${rel} 的 AUDIO_MIME 键与 AUDIO_EXTS 不同集：MIME 表 [${mimeKeys.join(", ")}]、扩展名 [${sharedExts.join(", ")}]`).toEqual([...sharedExts].sort());
     // 白名单/文件名正则都由真源构造（不是手写第二份）
-    expect(server, `${rel} 的 AUDIO_REL_RE 不再由 AUDIO_EXTS 构造：直服白名单会与扩展名真源脱钩`).toMatch(/const AUDIO_REL_RE = new RegExp\(`[^`]*\$\{AUDIO_EXTS\.join\("\|"\)\}/);
-    const fileRe = /const AUDIO_FILE_RE = new RegExp\(`[^`]*`\)/.exec(server)?.[0] ?? "";
+    expect(shared, `${rel} 的 AUDIO_REL_RE 不再由 AUDIO_EXTS 构造：直服白名单会与扩展名真源脱钩`).toMatch(/const AUDIO_REL_RE = new RegExp\(`[^`]*\$\{AUDIO_EXTS\.join\("\|"\)\}/);
+    const fileRe = /const AUDIO_FILE_RE = new RegExp\(`[^`]*`\)/.exec(shared)?.[0] ?? "";
     expect(fileRe, `${rel} 的 AUDIO_FILE_RE 不再由 AUDIO_KINDS 构造：现在是「${fileRe}」`).toContain('${AUDIO_KINDS.join("|")}');
     expect(fileRe, `${rel} 的 AUDIO_FILE_RE 不再由 AUDIO_EXTS 构造：现在是「${fileRe}」`).toContain('${AUDIO_EXTS.join("|")}');
+    // server 消费真源（import 自 shared），不得再自持第二份扩展名/MIME 声明
+    const serverRel = "server/acp-server.mjs";
+    const serverSrc = read(serverRel);
+    expect(serverSrc, `${serverRel} 应从 shared/protocol.mjs import 音频常量（真源在那）：找不到对应的 import 语句`).toContain('from "../shared/protocol.mjs"');
+    expect(serverSrc, `${serverRel} 里出现了第二份 AUDIO_EXTS 声明：真源已在 ${rel}`).not.toMatch(/const AUDIO_EXTS = \[/);
+    expect(serverSrc, `${serverRel} 里出现了第二份 AUDIO_MIME 声明：真源已在 ${rel}`).not.toMatch(/const AUDIO_MIME = \{/);
     // 文档：每份文档都要有一行把同一集合逐字写全（README/ARCHITECTURE 各有一处）
     const want = [...EXTS].sort().join("/");
     for (const doc of ["docs/ARCHITECTURE.md", "README.md"]) {
@@ -453,15 +482,101 @@ describe("⑤ 设置键与音频扩展名：settings.ts / server 源码 / 文档
     );
     expect(
       offenders,
-      `客户端不该自己维护音频扩展名白名单（server 的 AUDIO_EXTS 是唯一真源，客户端只认 /api/audio 索引里的 url，缺失即静默）：现在这些行列了 ≥3 个扩展名 —— ${offenders.join("、")}`,
+      `客户端不该自己维护音频扩展名白名单（shared/protocol.mjs 的 AUDIO_EXTS 是唯一真源，客户端只认 /api/audio 索引里的 url，缺失即静默）：现在这些行列了 ≥3 个扩展名 —— ${offenders.join("、")}`,
     ).toEqual([]);
   });
 
-  it("音频类型集合（曲/环境/音效）server 与 parser 同序同字面", () => {
-    const rel = "server/acp-server.mjs";
+  it("音频类型集合（曲/环境/音效）shared 与 parser 同序同字面", () => {
+    const rel = "shared/protocol.mjs";
     const decl = /const AUDIO_KINDS = \[([^\]]+)\]/.exec(read(rel));
-    if (!decl) throw new Error(`${rel} 里找不到 \`const AUDIO_KINDS = [...]\`：音频类型字面没有真源`);
-    const serverKinds = [...decl[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
-    expect(serverKinds, `${rel} 的 AUDIO_KINDS 与 src/lib/parser.ts 的 AUDIO_KINDS 不一致：server [${serverKinds.join("、")}]、parser [${[...AUDIO_KINDS].join("、")}]`).toEqual([...AUDIO_KINDS]);
+    if (!decl) throw new Error(`${rel} 里找不到 \`const AUDIO_KINDS = [...]\`：音频类型字面没有真源（v1.7 起从 server/acp-server.mjs 搬来）`);
+    const sharedKinds = [...decl[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    expect(sharedKinds, `${rel} 的 AUDIO_KINDS 与 src/lib/parser.ts 的 AUDIO_KINDS 不一致：shared [${sharedKinds.join("、")}]、parser [${[...AUDIO_KINDS].join("、")}]（parser 应 re-export 真源，分叉即第二真源）`).toEqual([...AUDIO_KINDS]);
+  });
+});
+
+// ——————————————————————— ⑥ 指令前缀与主题白名单（v1.7） ———————————————————————
+
+describe("⑥ 指令前缀与主题白名单：shared 真源 ↔ server 消费点；server ↔ theme.ts 同集", () => {
+  it("DIRECTIVE_PREFIX_RE 单一真源：pickEffort 与 isMainTurn 都消费它，server 源码无第二份前缀字面", () => {
+    const sharedRel = "shared/protocol.mjs";
+    const sharedSrc = read(sharedRel);
+    expect(
+      sharedSrc,
+      `${sharedRel} 里找不到 DIRECTIVE_PREFIX_RE 的正则字面：指令前缀（推理分档 pickEffort 与正戏回合判定 isMainTurn 共用）没有真源`,
+    ).toContain("export const DIRECTIVE_PREFIX_RE = /^(规划：|美术：|剧情：|装配。|创作模式：)/");
+    // 行为层：5 个前缀命中；开局/续玩/自由输入不命中（前缀集若被扩进来，档位与快照语义就变了）
+    for (const hit of ["规划：第 1 章。", "美术：立绘 薇拉", "剧情：把这段改冷一点。", "装配。", "创作模式：进入剧本创作。"]) {
+      expect(SHARED_DIRECTIVE_RE.test(hit), `DIRECTIVE_PREFIX_RE 应命中「${hit}」：分档/快照判定漏了这个前缀`).toBe(true);
+    }
+    for (const miss of ["推开门看看。", "开局：《雨巷》。", "继续世界：w1。"]) {
+      expect(SHARED_DIRECTIVE_RE.test(miss), `DIRECTIVE_PREFIX_RE 不该命中「${miss}」：开局/续玩是正戏回合（「待命：」才是非正戏的后缀判定），前缀集合失之过宽`).toBe(false);
+    }
+    // server：两个消费点都在函数体内引用真源
+    const serverRel = "server/acp-server.mjs";
+    const serverSrc = read(serverRel);
+    const pickBody = /export function pickEffort\([\s\S]*?\n\}/.exec(serverSrc)?.[0] ?? "";
+    expect(
+      pickBody,
+      `${serverRel} 的 pickEffort 函数体没有引用 DIRECTIVE_PREFIX_RE：推理分档脱离了真源（现在函数体是「${pickBody.trim().split("\n").join(" ")}」）`,
+    ).toContain("DIRECTIVE_PREFIX_RE");
+    const mainBody = /function isMainTurn\([\s\S]*?\n {2}\}/.exec(serverSrc)?.[0] ?? "";
+    expect(
+      mainBody,
+      `${serverRel} 的 isMainTurn 函数体没有引用 DIRECTIVE_PREFIX_RE：正戏回合判定脱离了真源（现在函数体是「${mainBody.trim().split("\n").join(" ")}」）`,
+    ).toContain("DIRECTIVE_PREFIX_RE");
+    const literal = "规划：|美术：";
+    const copies = serverSrc.split(literal).length - 1;
+    expect(
+      copies,
+      `${serverRel} 里前缀字面「${literal}」出现 ${copies} 次（应为 0 次）：第二份手写正则回来了，pickEffort 与 isMainTurn 两处分叉就说不清哪个才对`,
+    ).toBe(0);
+  });
+
+  it("主题白名单：server 与 theme.ts 的 font/dialog 白名单同集，两份兜底主题逐键一致", () => {
+    const serverRel = "server/acp-server.mjs";
+    const themeRel = "src/theme.ts";
+    const serverSrc = read(serverRel);
+    const themeSrc = read(themeRel);
+    // 白名单数组：两侧源码各抽数组字面量（server 的 normalizeTheme 与 theme.ts 的 getTheme/dialogClass 都按它兜底）
+    const arrayLiterals = (src: string, name: string, from: string): string[] => {
+      const decl = new RegExp(`const ${name}[^\\n]*= \\[([^\\]]+)\\]`).exec(src);
+      if (!decl) throw new Error(`${from} 里找不到 \`const ${name} = [...]\`：字体/对话框白名单没有可比对的字面量`);
+      return [...decl[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    };
+    for (const name of ["FONT_PRESETS", "DIALOG_TEXTURES"]) {
+      const serverList = arrayLiterals(serverSrc, name, serverRel);
+      const clientList = arrayLiterals(themeSrc, name, themeRel);
+      expect(
+        [...serverList].sort(),
+        `${name} 白名单不一致：${serverRel} 是 [${serverList.join(", ")}]、${themeRel} 是 [${clientList.join(", ")}]（谁和谁不一致：server normalizeTheme ↔ 客户端 getTheme/dialogClass 的兜底集合）`,
+      ).toEqual([...clientList].sort());
+    }
+    // 兜底主题：server DEFAULT_THEME（normalizeTheme 逐键兜底，/api/presets 出口填的就是它）
+    // ↔ theme.ts FALLBACK_THEME（客户端更严一层校验的回退值）逐键一致——分叉时同一个非法 theme 会渲染成两种颜色
+    const objOf = (text: string): Record<string, string> => {
+      const out: Record<string, string> = {};
+      for (const m of text.matchAll(/([a-z0-9]+):\s*"([^"]+)"/g)) out[m[1]] = m[2];
+      return out;
+    };
+    const serverSlice = serverSrc.slice(serverSrc.indexOf("const DEFAULT_THEME"));
+    const serverObj = serverSlice.slice(0, serverSlice.indexOf("})"));
+    if (!serverObj.includes("accent2")) throw new Error(`${serverRel} 里找不到完整的 DEFAULT_THEME 对象字面量：兜底主题没有可比对的副本`);
+    const themeSlice = themeSrc.slice(themeSrc.indexOf("export const FALLBACK_THEME"));
+    const clientObj = themeSlice.slice(0, themeSlice.indexOf("};"));
+    if (!clientObj.includes("accent2")) throw new Error(`${themeRel} 里找不到完整的 FALLBACK_THEME 对象字面量：兜底主题没有可比对的副本`);
+    expect(
+      objOf(serverObj),
+      `兜底主题不一致：${serverRel} 的 DEFAULT_THEME 是 ${JSON.stringify(objOf(serverObj))}、${themeRel} 的 FALLBACK_THEME 是 ${JSON.stringify(objOf(clientObj))}（server 填进 /api/presets 的兜底值必须与客户端回退值同色）`,
+    ).toEqual(objOf(clientObj));
+    // 第三份字面：global.css 的 CSS 初始变量（首帧/无注入态的兜底色）——改兜底色时三处必须同批改
+    const cssSrc = read("src/styles/global.css");
+    for (const key of ["accent", "accent2"]) {
+      const expected = objOf(serverObj)[key];
+      expect(
+        cssSrc,
+        `src/styles/global.css 的 --${key} 初始值与兜底主题分叉：DEFAULT_THEME/${key} 是 ${expected}，CSS 初始变量应写同值（改兜底色时 server · theme.ts · global.css 三处同批改）`,
+      ).toContain(`--${key}: ${expected};`);
+    }
   });
 });

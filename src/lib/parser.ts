@@ -79,19 +79,18 @@ export function finalMarkers(text: string): Marker[] {
   return out;
 }
 
-/**
- * 协议头集合（**唯一真源**）：`isProtocolLine` 的正则由它构造，契约 lint 也断言这一项。
- * 顺序即契约声明顺序（CONTRACTS §6），改这里前先同步 SKILL.md / ARCHITECTURE.md 的备忘与表格，
- * 以及 server 侧对应的各 parse*（协议是四处一致的字符串契约，不是各自实现的巧合）。
- */
-export const PROTOCOL_HEADS = ["图", "清单", "章", "立绘", "新剧本", "树", "曲", "环境", "音效"] as const;
+// 协议常量唯一真源（v1.7，docs/adr/0012）：PROTOCOL_HEADS 与 AUDIO_KINDS 的值住在 shared/protocol.mjs
+//（server 也 import 同一份）。这里 re-export 维持公共 API 逐字不变——store 与测试仍从 src/lib/parser import。
+// 顺序即契约声明顺序（CONTRACTS §6）；改真源前先同步 SKILL.md / ARCHITECTURE.md 的备忘与表格，
+// 以及 server 侧对应的各 parse*（协议是四处一致的字符串契约，不是各自实现的巧合）。
+import { AUDIO_KINDS, PROTOCOL_HEADS } from "../../shared/protocol.mjs";
+
+export { AUDIO_KINDS, PROTOCOL_HEADS };
 
 /**
  * 音频协议行的三种类型字面（v1.6）：【曲】切 BGM、【环境】切环境音、【音效】一次性音效。
  * 名必须与 `presets/<剧本 id>/audio/<类型>-<名>.<ext>` 的文件名一致；客户端不做路径拼接解析（走 /api/audio 索引）。
  */
-export const AUDIO_KINDS = ["曲", "环境", "音效"] as const;
-
 export type AudioKind = (typeof AUDIO_KINDS)[number];
 
 /** 协议行正则：由 {@link PROTOCOL_HEADS} 构造（新增协议头只改那一个数组，别手写第二份） */

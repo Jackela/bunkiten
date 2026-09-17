@@ -96,9 +96,9 @@ SSE 事件全集（`/events`）：`turn_start` / `seg{seg,label}` / `chunk{seg,t
 
 ## 文本协议契约（最重要）
 
-引擎输出的是纯文本，客户端靠字符串约定驱动 UI。**以下每一条字符串都是跨进程契约，改动必须五处同步**（`SKILL.md` / `parser.ts` / `acp-server.mjs` / `store` / `tests` 快照，见「修改指引」）；v1.6 起再加一道机器门禁——**契约 lint**（`tests/contract.test.ts`）断言五件事：`RULES` 逐字副本（server 常量 ↔ 本节代码块）、`PROTOCOL_HEADS` 集合（真源 ↔ server/parser 解析出口 ↔ SKILL 备忘 ↔ 本文档）、指令字符串双处存在（`parser.ts` ↔ `SKILL.md`）、用例数与本文档/`README.md`/`AGENTS.md` 声明的分组数字一致、设置键与音频扩展名三处一致。改了契约字符串，这几处断言必须同批改（只改一处会被 lint 挡在测试里）。**该 lint 自身不计入文档里声明的合计口径**。
+引擎输出的是纯文本，客户端靠字符串约定驱动 UI。**以下每一条字符串都是跨进程契约，改动必须五处同步**（`SKILL.md` / `parser.ts` / `acp-server.mjs` / `store` / `tests` 快照，见「修改指引」）；协议常量（协议头集合、音频白名单与直服正则、指令前缀正则）的**唯一真源是 `shared/protocol.mjs`**（v1.7：`src/lib/parser.ts` re-export、`server/acp-server.mjs` import 同一份值——此前双侧各一份、只靠 lint 比对两份源码文本，见 `docs/adr/0012`）。机器门禁是**契约 lint**（`tests/contract.test.ts`）断言六组契约：`RULES` 逐字副本（server 常量 ↔ 本节代码块——引擎只读 `.grok/` 提示词、不会 import 代码，这份天然双份）、`PROTOCOL_HEADS` 集合（shared 真源 ↔ server/parser 解析出口 ↔ SKILL 备忘 ↔ 本文档）、指令字符串双处存在（`parser.ts` ↔ `SKILL.md`）、指令前缀正则 `DIRECTIVE_PREFIX_RE` 单一真源（`pickEffort` 与 `isMainTurn` 都消费它）、主题白名单与兜底主题（server ↔ `src/theme.ts` 同集）、用例数与本文档/`README.md`/`AGENTS.md` 声明的分组数字一致、设置键与音频扩展名三处一致。改了契约字符串，这几处断言必须同批改（只改一处会被 lint 挡在测试里）。**该 lint 自身不计入文档里声明的合计口径**。
 
-**协议头集合（唯一真源）**：`src/lib/parser.ts` 的 `PROTOCOL_HEADS = ["图", "清单", "章", "立绘", "新剧本", "树", "曲", "环境", "音效"]`（v1.6 起 9 项，按其构造 `isProtocolLine` 的正则）。这 9 个头与 server 侧各 `parse*`、SKILL.md 备忘、本文档表格四处必须一致——契约 lint 会断言。
+**协议头集合（唯一真源）**：`shared/protocol.mjs` 的 `PROTOCOL_HEADS = ["图", "清单", "章", "立绘", "新剧本", "树", "曲", "环境", "音效"]`（v1.6 起 9 项；`src/lib/parser.ts` re-export 并由它构造 `isProtocolLine` 的正则）。这 9 个头与 server 侧各 `parse*`、SKILL.md 备忘、本文档表格四处必须一致——契约 lint 会断言。
 
 ### 开局指令（客户端 → 引擎，四种变体）
 
@@ -335,7 +335,7 @@ state/worlds/<worldId>/history/0001.json     # 4 位递增、append-only
 ```
 
 - **写入时机**：`sendPrompt` 内、`flushArtLines()` 之后、`busy = false` 之前（此刻本轮所有落盘都已定型）。
-- **只为正戏回合写**（`isMainTurn`）：prompt 不以 `规划：`/`美术：`/`剧情：`/`装配。`/`创作模式：` 开头、且不含 `待命：` 才算正戏；规划/美术/编辑/创作回合不产生快照。
+- **只为正戏回合写**（`isMainTurn`）：prompt 不以 `规划：`/`美术：`/`剧情：`/`装配。`/`创作模式：` 开头（前缀正则 `DIRECTIVE_PREFIX_RE`，真源 `shared/protocol.mjs`、与 `pickEffort` 共用）、且不含 `待命：` 才算正戏；规划/美术/编辑/创作回合不产生快照。
 - **世界来源**：server 跟踪 `currentWorldId`（在 `sniffPreset` 里与剧本 id 一并落定；指令没给世界段时保持上次值）；世界 id 非法或尚未定下时不写。
 - **去重**：与上一条快照 `files` 逐字全等则跳过（不产生重复条目）；`dedupe: false` 只给 `backup` 用（备份必须落盘，否则恢复不可撤）。
 - **上限**：`seq > 9999` 不再写并 `warn once`（文件名保持 4 位）。
@@ -539,7 +539,7 @@ presets/<剧本 id>/audio/环境-旅店大堂.mp3   # 环境音（循环）
 presets/<剧本 id>/audio/音效-门响.wav       # 一次性音效
 ```
 
-- **命名**：`<类型>-<名>.<扩展名>`，类型 ∈ `曲 | 环境 | 音效`（`AUDIO_KINDS`），扩展名 ∈ `mp3 | ogg | m4a | wav | flac`（`AUDIO_EXTS`）；`<名>` 可含中文，不得含 `|` 与换行。文件名解析正则 `AUDIO_FILE_RE`；不匹配的文件被忽略。
+- **命名**：`<类型>-<名>.<扩展名>`，类型 ∈ `曲 | 环境 | 音效`（`AUDIO_KINDS`），扩展名 ∈ `mp3 | ogg | m4a | wav | flac`（`AUDIO_EXTS`；这些常量与下面的 `AUDIO_FILE_RE`/`AUDIO_REL_RE`/`AUDIO_MIME` 真源都在 `shared/protocol.mjs`，server import）；`<名>` 可含中文，不得含 `|` 与换行。文件名解析正则 `AUDIO_FILE_RE`；不匹配的文件被忽略。
 - **目录不存在 = 该剧本没有音频**：`scanPresetAudio` 返回空数组，**不报错**；音频不进 `assetRegistry`、不落盘、不生成——`/api/assets` 也从不列音频（音频与美术资产是两条独立管线）。
 - **缺失静默**（端到端）：引擎侧「没有对应文件就静默不发」是 SKILL【音频】的硬规则；客户端侧 `AudioManager` 在索引里查不到「类型|名」就是 `console.debug` 一行、no-op——**玩家感知到的只是没有音乐，剧情照常推进**。
 - **`GET /api/audio?preset=<id>`** → `{ items: [{ kind, name, file, url }] }`（按文件名排序）；`preset` 必填且须过 `PRESET_ID_RE`，缺失或非法 → 400（与 `/api/assets` 同款）。`url` 是服务端拼好的 `/audio?p=…`，文件名做了百分号编码（名字里可能有 `&`、空格）。
@@ -739,16 +739,17 @@ theme:
 
 ### 改引擎协议（高危）
 
-文本协议契约散在五处，任何字符串改动必须同步：
+文本协议契约散在多处（协议常量的值只有 `shared/protocol.mjs` 一份，其余是消费点与镜像），任何字符串改动必须同步：
 
 | 文件 | 持有的契约 |
 |---|---|
 | `.grok/skills/bunkiten/SKILL.md` | 引擎侧行为：开局指令与分项美术指令识别、章节规划指令与剧情树纪律（【清单】含差分项/【章】输出）、素材重绘与创作模式指令、每轮协议的【立绘】切换行、**行动**降级格式、【图】标记（三段+重绘段）与预载例外、生成前缓存硬规则、段静默纪律；v1.5 世界线（【世界线】【启动流程】、世界段/续玩指令、世界纪律、fork.md 回退）与剧情编辑（【剧情编辑指令】、【树】行）；v1.6 音频（【音频】小节：文件名口径、频率纪律、缺失静默，与【导演层】第 9 条同源） |
-| `src/lib/parser.ts` | 客户端解析/构造：开局指令与分项美术/重绘/章节规划/创作模式指令模板（逐字，含待命/跳过后缀、`美术：` 指令、`开演。`、`规划：第 N 章。`、`ENTER_CREATION`/`BUILD_ASSEMBLE`）、`**行动**` 正则与 `stripOptionsBlock`、标记/清单/章标记正则与差分名拆分、**协议头集合 `PROTOCOL_HEADS`**（`isProtocolLine` 的正则由它构造，9 项含【曲】【环境】【音效】）；v1.5 世界段（`build*Opening` worldId）/续玩 `buildResumeCommand`/剧情编辑 `buildTreeEditCommand`/`parseStoryTree`/`assetNameMatches`；v1.6 音频（`AUDIO_KINDS` 类型） |
+| `src/lib/parser.ts` | 客户端解析/构造：开局指令与分项美术/重绘/章节规划/创作模式指令模板（逐字，含待命/跳过后缀、`美术：` 指令、`开演。`、`规划：第 N 章。`、`ENTER_CREATION`/`BUILD_ASSEMBLE`）、`**行动**` 正则与 `stripOptionsBlock`、标记/清单/章标记正则与差分名拆分、**协议头集合 `PROTOCOL_HEADS`**（re-export 自 `shared/protocol.mjs` 真源，`isProtocolLine` 的正则由它构造，9 项含【曲】【环境】【音效】）；v1.5 世界段（`build*Opening` worldId）/续玩 `buildResumeCommand`/剧情编辑 `buildTreeEditCommand`/`parseStoryTree`/`assetNameMatches`；v1.6 音频（`AUDIO_KINDS` 类型） |
 | `src/store/game.ts` + `src/store/slices/*` | 事件编排（v1.6 按 slice 分文件，入口仍是 `store/game.ts`；跨片共享闭包与定时器单例在 `store/context.ts`）：段过滤重置逻辑、标记→画面应用、`expression` 表情切换与 `presetAdded` 刷新、章节制作流水线推进（规划→清单→队列→开演→【章】切章）、画廊单项/批量重绘与批量删除、创作装配状态机、`awaitCommand` 切屏；世界线（`beginNewWorld`/`resumeWorld`/`updateWorld`/`importWorldText`）与剧情图 overlay（`openTree`/`forkAt`/`treeEdited`/`restoreSnapshot`、编辑回合不进历史）；v1.6 设置（`updateSettings`）与自动前进（`armAutoAdvance`） |
-| `server/acp-server.mjs` | `RULES` 原文（注入 agent 的客户端补丁，含「世界纪律」与「音频纪律」句）、协议行解析导出（`parseArtLine`/`parseExpressionLine`/`parsePresetAddedLine`/`parseTreeLine`/`parseAudioLine`）与 `handleArtLine` 分流（分支顺序 art → expression → tree → presetAdded → audio）、`listAssets(presetId)` 资产形状（每条回填 `preset`；`inUse` 只扫该剧本的世界）、资产落盘纪律（`resolvePersistPreset` 是唯一「落哪个剧本」判定；`assetRelPath`/`assetTargetFile` 是唯一路径构造；封面走 `presets/<id>/cover.jpg`）；世界线（`readWorldsIndex`/`listWorlds`/`createWorld`/`forkWorld`/`deleteWorld`/`updateWorld`/`migrateLegacyState` 与 `/api/worlds`、`/api/tree` 端点）；v1.6 快照（`writeSnapshot`/`readSnapshot`/`readSnapshots`/`normalizeSnapshot`/`selectSnapshotForNode`/`restoreWorld`/`exportWorld`/`importWorld` + `/api/history`、`/api/worlds/export`）、音频（`scanPresetAudio`/`AUDIO_FILE_RE`/`AUDIO_REL_RE`/`AUDIO_MIME` + `/api/audio`、`/audio`）、本地端点两道闸（`isCrossSiteRequest`/`readBodyText` + `MAX_BODY_BYTES`）、素材删除（`POST /api/assets`） |
+| `server/acp-server.mjs` | `RULES` 原文（注入 agent 的客户端补丁，含「世界纪律」与「音频纪律」句）、协议行解析导出（`parseArtLine`/`parseExpressionLine`/`parsePresetAddedLine`/`parseTreeLine`/`parseAudioLine`）与 `handleArtLine` 分流（分支顺序 art → expression → tree → presetAdded → audio）、`listAssets(presetId)` 资产形状（每条回填 `preset`；`inUse` 只扫该剧本的世界）、资产落盘纪律（`resolvePersistPreset` 是唯一「落哪个剧本」判定；`assetRelPath`/`assetTargetFile` 是唯一路径构造；封面走 `presets/<id>/cover.jpg`）；世界线（`readWorldsIndex`/`listWorlds`/`createWorld`/`forkWorld`/`deleteWorld`/`updateWorld`/`migrateLegacyState` 与 `/api/worlds`、`/api/tree` 端点）；v1.6 快照（`writeSnapshot`/`readSnapshot`/`readSnapshots`/`normalizeSnapshot`/`selectSnapshotForNode`/`restoreWorld`/`exportWorld`/`importWorld` + `/api/history`、`/api/worlds/export`）、音频（`scanPresetAudio` + `/api/audio`、`/audio`；`AUDIO_FILE_RE`/`AUDIO_REL_RE`/`AUDIO_MIME` import 自 `shared/protocol.mjs`）、本地端点两道闸（`isCrossSiteRequest`/`readBodyText` + `MAX_BODY_BYTES`）、素材删除（`POST /api/assets`） |
+| `shared/protocol.mjs` | 协议常量唯一真源（v1.7，见 `docs/adr/0012`）：`PROTOCOL_HEADS`（9 头）、`AUDIO_KINDS`/`AUDIO_EXTS`/`AUDIO_MIME`/`AUDIO_FILE_RE`/`AUDIO_REL_RE`（音频白名单与直服正则，后两者由前两者构造）、`DIRECTIVE_PREFIX_RE`（指令前缀正则，`pickEffort` 推理分档与 `isMainTurn` 正戏回合判定共用）。`src/lib/parser.ts` re-export（公共 API 不变）、`server/acp-server.mjs` import（并 re-export `AUDIO_KINDS`/`AUDIO_EXTS` 给 `scripts/doctor.mjs`）；`shared/protocol.d.mts` 是手写类型声明（tsc -b 按 `.mjs`→`.d.mts` 解析；vite/vitest/electron 运行时直接吃 `.mjs`）。`RULES` 刻意不收编：引擎只读 `.grok/` 提示词、不会 import 代码，server↔SKILL.md 双份 + lint 逐字比对仍是正确机制 |
 | `tests/parser.test.ts`、`tests/crafting.test.ts`、`tests/server.test.ts`、`tests/treeLayout.test.ts`、`tests/genealogy.test.ts`、`tests/diff.test.ts`、`tests/doctor.test.ts`、`tests/ui.test.tsx`、`tests/integration/*` | 契约字符串快照与单测：开局指令四变体（含世界段）/续玩/剧情编辑、分项美术/重绘/章节规划/创作模式指令、`开演。`、清单（含差分项）/章标记与选项解析期望值（parser 65 例）、章节制作流水线指令序列（crafting 52 例，stub fetch）、世界线/资产落盘判定/协议解析/快照与导出导入/剧本导出包（往返/重名/文件名安全/扩展名与 base64 校验）/state.md 容错解析与 `/api/state` 路由判定（server 99 例）、布局纯函数（treeLayout 7 例 + genealogy 8 例：家谱森林分层、孤儿 missingParent、fork 环终止、层内排序确定性与键盘步进）、快照对比纯函数（diff 8 例：全等/全增/全删/替换块相对顺序/空输入/空行/典型 state.md 好感度一行）、剧本体检查纯函数（doctor 12 例：tmp 根造 preset 覆盖七组判定、theme 双层回退与 checkAllPresets 汇总，见「剧本体检查」节）、组件含设置屏、自动前进与回退后分割线/待重同步、动效降级打字机、主题字体族与对话框质感、重掷本回合全链、角色面板渲染/秘密折叠/turn_end 重拉/空态、世界线家谱视图、快照对比面板、标题屏剧本导出/导入（ui 109 例）；另有真 server 子进程的集成测试 21 例（`integration/pipeline` 10、`integration/audio-history` 8、`integration/http-guard` 3——音频事件、快照落盘与精确回退、世界线与剧本的导出/导入往返、来源校验 403 与 body 上限 413、引擎 error response 的 409 传播） |
-| `tests/contract.test.ts` | v1.6 契约 lint（防漂移门禁，读源码与文档、不起子进程）：`PROTOCOL_HEADS` 唯一真源 ↔ server/parser 解析出口 ↔ `SKILL.md`「标记格式备忘」/本文档、`RULES` 逐字副本（server 常量 ↔ 本节代码块）、指令字符串双处存在（`parser.ts` ↔ `SKILL.md`）、各测试文件的 `it(`/`test(` 用例数与上面那行声明的分组数字逐一比对、设置键 `bunkiten.settings.v1` 与音频扩展名三处一致。**它自己的用例不计入上面那组合计口径**（`tests/e2e/**` 同样不在口径内） |
+| `tests/contract.test.ts` | v1.6 起契约 lint（防漂移门禁，读源码与文档、不起子进程）：`PROTOCOL_HEADS` 唯一真源（`shared/protocol.mjs` 源码字面 + import 值 + parser re-export 链三方钉住）↔ server/parser 解析出口 ↔ `SKILL.md`「标记格式备忘」/本文档、`RULES` 逐字副本（server 常量 ↔ 本节代码块）、指令字符串双处存在（`parser.ts` ↔ `SKILL.md`）、`DIRECTIVE_PREFIX_RE` 单一真源（`pickEffort`/`isMainTurn` 函数体都引用它、server 无第二份前缀字面）、主题白名单与兜底主题（server ↔ `src/theme.ts` 同集同值）、各测试文件的 `it(`/`test(` 用例数与上面那行声明的分组数字逐一比对、设置键 `bunkiten.settings.v1` 与音频扩展名三处一致（音频常量断言指向 `shared/protocol.mjs` 真源）。**它自己的用例不计入上面那组合计口径**（`tests/e2e/**` 同样不在口径内） |
 
 v1.3 三组新契约的同步点速查（同一改动五处联动的具体落点）：
 
@@ -770,7 +771,7 @@ v1.6 音频 / 快照 / 世界线管理 / 设置的同步点速查：
 
 | 契约 | 同步点 |
 |---|---|
-| 音频三行（`【曲】<名>` / `【环境】<名>` / `【音效】<名>`） | `SKILL.md`【音频】+【导演层】第 9 条 + `RULES` 第 6 句（音频纪律） · `parser.ts` `PROTOCOL_HEADS`（9 项）/`AUDIO_KINDS`/`isProtocolLine` · `acp-server.mjs` `parseAudioLine` → `handleArtLine` 末位分支 → `audio` 事件、`scanPresetAudio`/`AUDIO_FILE_RE` 与 `/api/audio`、`AUDIO_REL_RE`/`AUDIO_MIME` 与 `/audio` · `lib/audio.ts` `AudioManager`（「类型\|名 → 文件」索引、缺失静默）· `store/slices/gameplay.ts` `handleEvent` 的 `audio` 分支 · `lib/settings.ts` 音量键 · `tests/integration/audio-history.test.ts` 集成断言 |
+| 音频三行（`【曲】<名>` / `【环境】<名>` / `【音效】<名>`） | `SKILL.md`【音频】+【导演层】第 9 条 + `RULES` 第 6 句（音频纪律） · `shared/protocol.mjs` 的 `PROTOCOL_HEADS`（9 项）/`AUDIO_KINDS`（唯一真源；`parser.ts` re-export 并构造 `isProtocolLine`）· `acp-server.mjs` `parseAudioLine` → `handleArtLine` 末位分支 → `audio` 事件、`scanPresetAudio`/`AUDIO_FILE_RE` 与 `/api/audio`、`AUDIO_REL_RE`/`AUDIO_MIME` 与 `/audio`（常量 import 自 shared）· `lib/audio.ts` `AudioManager`（「类型\|名 → 文件」索引、缺失静默）· `store/slices/gameplay.ts` `handleEvent` 的 `audio` 分支 · `lib/settings.ts` 音量键 · `tests/integration/audio-history.test.ts` 集成断言 |
 | 快照与回退（`state/worlds/<worldId>/history/NNNN.json` 路径与条目结构） | `acp-server.mjs` `writeSnapshot`/`readSnapshot`/`readSnapshots`/`normalizeSnapshot`/`latestSnapshot`/`selectSnapshotForNode`/`forkWorld(seq)`/`restoreWorld`/`exportWorld`/`importWorld`/`writeWorldFiles`（null=删文件）与 `/api/history`、`/api/worlds {fork,restore,import}`、`/api/worlds/export` 端点 · `lib/acp.ts` `fetchHistory`/`fetchSnapshot`/`postWorldRestore`/`worldExportUrl`/`postWorldImport` · `store/slices/tree.ts` `restoreSnapshot`（成功后自增 `treeStamp` 并补发 `继续世界：<worldId>。`）/`forkAt` · `StoryTreeScreen` 节点「快照 #seq · 第 N 轮」标注、两段确认回退、有快照的分叉带 seq · `tests/server.test.ts` + `tests/integration/audio-history.test.ts` |
 | 世界线 `label` / `note` | `state/worlds/index.json` 字段 · `acp-server.mjs` `updateWorld`（≤60 / ≤200，空串=清除）/`importWorld`（note 追加「（导入）」）/`forkWorld`（自动写「分叉自 …」）/`listWorlds`（老索引补 `label:""`） · `lib/acp.ts` `postWorldUpdate` · `store/slices/world.ts` `updateWorld`/`importWorldText`/`parseWorldBundle` · `WorldsScreen` 行内改名编辑器与 `worldDisplayName`（`label → note → worldId`）· `tests/server.test.ts`+`tests/ui.test.tsx` |
 | 设置键（`bunkiten.settings.v1`） | `lib/settings.ts` `SETTINGS_STORAGE_KEY`/`DEFAULT_SETTINGS`/`normalizeSettings`/`loadSettings`/`saveSettings`/`TEXT_SPEED_MS`/`AUTO_ADVANCE_OPTIONS` · `store/slices/nav.ts` `updateSettings`（唯一写入方：AudioManager + localStorage）· `SettingsScreen` 控件 · `DialogueBox`（文字速度）/`OptionList`（自动前进）· `App.tsx`（启动时把设置喂给 AudioManager）· `tests/ui.test.tsx` |
