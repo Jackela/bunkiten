@@ -22,9 +22,6 @@ jobs:
       - name: Install
         run: npm ci
 
-      - name: Unit tests（parser/crafting/server/treeLayout/ui）
-        run: npm test
-
       - name: Build（tsc -b && vite build）
         run: npm run build
 
@@ -32,6 +29,19 @@ jobs:
       # 独立于 src 的 tsconfig.json；tsc 已在 devDependencies，无新依赖）
       - name: Server typecheck（checkJs）
         run: npm run typecheck:server
+
+      # 单测 + 覆盖率（同一套测试文件，coverage provider 只是加仪表——替代原 `npm test` 步骤而非并列，
+      # 避免 CI 双跑同一套测试拖 2 倍时长）。thresholds = 基线 - 2pp 的防下滑线（vitest.config.ts）。
+      - name: Unit tests + coverage（parser/crafting/server/treeLayout/genealogy/diff/doctor/ui + 集成层）
+        run: npm run test:coverage
+
+      # 覆盖率 HTML 报告留档（测试红也要能看到差多少；if: always() 覆盖阈值未过的场景）
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
 
       # UI e2e（npm run test:e2e:ui）走假引擎确定性栈（tests/e2e-ui/：假 ACP 引擎 + 真 acp-server
       # + vite dev，进程自起自停），不需要 grok 登录，可以进 CI；浏览器用默认 chromium，不依赖本机 Chrome。
