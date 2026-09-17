@@ -30,10 +30,12 @@ export const FALLBACK_THEME: Theme = {
   dialog: "plain",
 };
 
-const MOTIFS: readonly string[] = ["summer", "rune", "imperial", "aurora"];
+// MOTIFS/HEX_RE 导出给 scripts/doctor.mjs 复用：体检查 theme 时要叠加客户端这层更严的回退判定
+//（server 的 isColor 放行 3-8 位 hex、motif 只要求非空——落到客户端才会被这里拦下），不抄第二份。
+export const MOTIFS: readonly string[] = ["summer", "rune", "imperial", "aurora"];
 const FONT_PRESETS: readonly string[] = ["serif", "song", "kai", "hei"];
 const DIALOG_TEXTURES: readonly string[] = ["plain", "silk", "paper", "glass"];
-const HEX_RE = /^#[0-9a-fA-F]{6}$/;
+export const HEX_RE = /^#[0-9a-fA-F]{6}$/;
 
 /**
  * 系统字体栈（离线应用，不引任何 webfont）：每档都是「mac 名 → Windows 名 → Linux Noto 兜底」

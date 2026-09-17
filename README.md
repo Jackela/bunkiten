@@ -47,6 +47,8 @@ bunkiten/
 │  └─ notarize.cjs          # afterSign 公证钩子：APPLE_* 三件套不齐直接 return（本地与未配 secrets 的构建照常成功）
 ├─ server/
 │  └─ acp-server.mjs        # ACP 客户端 + HTTP/SSE + /img 图片服务 + /audio 音频直服 + 资产持久化 + 世界线/剧情树/逐轮快照接口（零依赖）
+├─ scripts/
+│  └─ doctor.mjs            # 剧本体检查 CLI（npm run doctor，作者侧、不进 CI）：frontmatter/正文/封面/资产与音频命名/孤儿素材，退出码非 0 ⟺ 有 error
 ├─ src/                     # React 前端
 │  ├─ App.tsx               # 屏幕切换 + SSE 接入 + 主题变量注入
 │  ├─ store/                # 全局状态机（zustand），按动作切片，共享一个模块级单例
@@ -85,8 +87,9 @@ bunkiten/
 │  ├─ treeLayout.test.ts    # 剧情树分层布局与缩放视口纯函数单测（7 例）
 │  ├─ genealogy.test.ts     # 世界线家谱布局与键盘步进纯函数单测（8 例）
 │  ├─ diff.test.ts          # 快照对比行级 LCS 纯函数单测（8 例）
+│  ├─ doctor.test.ts        # 剧本体检查纯函数单测（tmp 根造 preset，12 例）
 │  ├─ ui.test.tsx           # 组件测试（TopBar/世界线（含家谱视图）/剧情图（含快照对比）/设置/Creation/Assets/主题/重掷/角色面板/标题屏剧本导出导入，109 例）
-│  ├─ contract.test.ts      # 契约 lint（防漂移门禁：协议头唯一真源/RULES 逐字副本/指令字符串/用例数/设置键与音频扩展名；自身不计入 369 口径）
+│  ├─ contract.test.ts      # 契约 lint（防漂移门禁：协议头唯一真源/RULES 逐字副本/指令字符串/用例数/设置键与音频扩展名；自身不计入 381 口径）
 │  ├─ integration/          # 假引擎集成层（假 ACP 引擎 + 真 acp-server 子进程，21 例、秒级）
 │  │  ├─ harness.mjs        # 起全栈：临时 game root/HOME/PORT + path 垫片，收 SSE 事件与断言辅助
 │  │  ├─ fake-engine.mjs    # 最小 ACP 假引擎（按脚本队列回 session/update，可制造段切换）
@@ -129,7 +132,8 @@ bunkiten/
 | `npm run dev` | 仅 vite 前端（浏览器调试，需另起 acp-server） |
 | `npm run dev:electron` | vite + Electron 并行开发 |
 | `npm run build` | `tsc -b && vite build`（类型检查 + 前端构建） |
-| `npm test` | 单测 + 集成全量 369 例：parser 65 + server 99 + crafting 52 + treeLayout 7 + genealogy 8 + diff 8 + ui 109 + integration 21（含假引擎集成层，整体秒级；改协议字符串必须同步快照）；另跑契约 lint `tests/contract.test.ts`（防漂移门禁，**不计入这 369**） |
+| `npm test` | 单测 + 集成全量 381 例：parser 65 + server 99 + crafting 52 + treeLayout 7 + genealogy 8 + diff 8 + doctor 12 + ui 109 + integration 21（含假引擎集成层，整体秒级；改协议字符串必须同步快照）；另跑契约 lint `tests/contract.test.ts`（防漂移门禁，**不计入这 381**） |
+| `npm run doctor` | 剧本体检查（作者侧工具，按需跑、不进 CI）：`node scripts/doctor.mjs` 校验 `presets/` 每个剧本的结构健康度——frontmatter 必填键与 id=目录名、theme 逐键回退预警、`# 主要角色` 与角色建议字段、封面、assets/audio 文件名契约、孤儿素材；输出 `[ok]`/`[warn]`/`[error]` 明细报告，**退出码非 0 当且仅当有 error**（warning 不影响——孤儿素材这类可解释项不拦你发布） |
 | `npm run test:e2e` | 真引擎 E2E 冒烟（约 6 分钟，2 回合） |
 | `npm run dist:win` | build 后打 Windows x64 包（nsis + portable，不签名） |
 | `npm run dist:mac` | build 后打 macOS 包（dmg + zip，arm64 + x64，不签名） |
@@ -165,6 +169,8 @@ npm run dev:electron
 复制 `presets/` 下任意子目录改 `preset.md`，无需改代码。frontmatter 必填 `id` / `title`；`# 主要角色` 每人一节（含 `art_prompt`）；`# protagonist_card` 每行 `- 问题: 选项A / 选项B`。这个目录就是这个故事的全部：封面 `cover.jpg` 与运行时生成的立绘/背景（`assets/<类型>-<名字>.jpg`）都落在这里，拷走整个文件夹即可分享，删掉它也就删掉了这个故事的美术。想加声音就再建一个 `presets/<id>/audio/`，文件名按 `<类型>-<名>.<ext>` 放（类型是 `曲` / `环境` / `音效`，扩展名 `mp3` / `ogg` / `m4a` / `wav` / `flac`，例：`曲-雨夜.mp3`、`环境-旅店大堂.mp3`、`音效-门响.wav`）；引擎在场景切换时会发【曲】/【环境】/【音效】行点名播放，名对不上或没放文件就静默跳过——引擎绝不生成音频、也绝不在标记里写路径。也可以不改文件——标题屏右下「创作新剧本」用自然语言和引擎聊出一份新剧本（见 [QUICKSTART.md](QUICKSTART.md)）。完整字段表与消费方说明见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#修改指引)。
 
 **分享剧本（v1.7）**：不用拷文件夹也能分享——标题屏当前卡带右上角「导出」下载一个 `<剧本 id>.preset.json`（preset.md、全部立绘/背景/封面与音频都打在里面，导入单包上限 50MB）；对方在标题屏右下角「导入剧本」选这个文件即可，剧本立刻进轮播。导入遇到重名会自动落成 `<id>-2`，不会覆盖你已有的剧本；包格式与安全规则见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 的「剧本导出包」一节。
+
+**给剧本体检（v1.7）**：手写或创作模式装配出剧本后，跑 `npm run doctor` 当场检查结构健康度——frontmatter 必填键（id/title 缺失剧本进不了轮播；tagline/genre/rating 缺失只是标题屏栏位为空）与 id=目录名、theme 坏值回退预警（server 与客户端两层判定：`#rrggbb` 6 位 hex、motif 四母题闭集都会被查）、`# 主要角色` 角色节与建议字段（`art_prompt`/`agenda`）、封面（只认 `cover.jpg`，手放成 `.jpeg` 会被点名改名）、`assets/` 与 `audio/` 的文件名契约、孤儿素材（不被任何世界 state.md 引用、也不被任何 preset.md 提及的图）。每个剧本一行小结（`<id> ✓ N 项通过 · M 警告 · K 错误`）加 `[ok]`/`[warn]`/`[error]` 明细；**进程退出码非 0 当且仅当存在 error**（文件名非法、id/title 缺键这类会让剧本进不了轮播或素材永远 404 的问题），warning 只是提示、不影响发布。
 
 ## 内容与责任
 
