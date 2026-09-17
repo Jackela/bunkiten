@@ -6,6 +6,7 @@
 //      世界线屏改名/导出/导入（含 listbox 语义）与画廊选择模式/批量重绘队列/批量删除/预览模态；
 // v1.6 第二段：剧情图快照标注/原地回退/分叉带 seq、>40 节点列表降级与缩放平移、节点 roving tabIndex、
 //      游戏键盘（数字键选选项 / 空格补全 / 自动前进倒计时标记）与 App 的状态播报区（aria-live）。
+// v1.7 新增主题深化：preset 声明字体族（--font-preset 系统字体栈）与对话框质感（dialog-* 类映射）。
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import React from "react";
@@ -23,6 +24,7 @@ import { useGameStore } from "../src/store/game";
 import { FADE_MS, MAX_SFX, SFX_TIMEOUT_MS, audioManager } from "../src/lib/audio";
 import { DEFAULT_SETTINGS, SETTINGS_STORAGE_KEY, loadSettings } from "../src/lib/settings";
 import { TREE_ZOOM_MAX, clampZoom, fitView, panView, viewBoxOf, zoomViewAt } from "../src/lib/treeLayout";
+import { FONT_STACKS, dialogClass, getTheme, themeVars } from "../src/theme";
 import type { AssetEntry, AudioItem, Preset, WorldEntry, WorldSnapshotMeta } from "../src/lib/acp";
 
 /** ui 测试用的最小剧本 fixture（与世界线屏/顶栏的展示字段对齐） */
@@ -2397,5 +2399,68 @@ describe("回退后玩家继续走：普通指令不冒充重同步（v1.7）", 
     expect(s.resyncFailed).toBe(false); // 玩家指令的失败不再记账到重同步头上
     expect(s.treeNotice).not.toContain("HTTP 500"); // 也不追加新的「重同步失败」文案
     expect(s.status).toBe("出错：HTTP 500"); // 普通出错文案照常
+  });
+});
+
+// ————————————————————— 主题深化：字体族与对话框质感（v1.7） —————————————————————
+
+describe("theme：字体族与对话框质感（v1.7）", () => {
+  /** 带 theme 的剧本 fixture（font/dialog 两键是本组的主角） */
+  const themed = (theme: Partial<NonNullable<Preset["theme"]>>): Preset => ({ ...PRESET, theme: { accent: "#f0b95a", accent2: "#f7e3b0", motif: "summer", ...theme } });
+
+  it("themeVars 产出 --font-preset：缺省走 serif 栈，font 档位切换对应系统字体栈", () => {
+    const base = themeVars(getTheme(null)) as Record<string, string>;
+    expect(base["--font-preset"]).toBe(FONT_STACKS.serif);
+    const hei = themeVars(getTheme(themed({ font: "hei" }))) as Record<string, string>;
+    expect(hei["--font-preset"]).toBe(FONT_STACKS.hei);
+    // 颜色键照旧（扩展键不挤掉旧契约）
+    expect(base["--accent"]).toBe("#c9a86a");
+    expect(hei["--accent"]).toBe("#f0b95a");
+  });
+
+  it("getTheme：非法 font/dialog 回退 serif/plain，合法四档透传（accent 等旧键互不影响）", () => {
+    expect(getTheme(themed({ font: "comic-sans", dialog: "neon" }))).toMatchObject({ font: "serif", dialog: "plain" });
+    expect(getTheme(themed({ font: "song" }))).toMatchObject({ font: "song", dialog: "plain" }); // 只配 font：dialog 缺省
+    expect(getTheme(themed({ dialog: "paper" }))).toMatchObject({ font: "serif", dialog: "paper" }); // 只配 dialog：font 缺省
+    for (const font of ["serif", "song", "kai", "hei"] as const) expect(getTheme(themed({ font })).font).toBe(font);
+    for (const dialog of ["plain", "silk", "paper", "glass"] as const) expect(getTheme(themed({ dialog })).dialog).toBe(dialog);
+  });
+
+  it("dialogClass：四档映射 dialog-*，非法/缺省一律 dialog-plain（CSS 里 plain 无规则=现状）", () => {
+    expect(dialogClass("silk")).toBe("dialog-silk");
+    expect(dialogClass("paper")).toBe("dialog-paper");
+    expect(dialogClass("glass")).toBe("dialog-glass");
+    expect(dialogClass("plain")).toBe("dialog-plain");
+    expect(dialogClass("neon")).toBe("dialog-plain");
+    expect(dialogClass(undefined)).toBe("dialog-plain");
+  });
+
+  it("DialogueBox：容器质感类跟随当前剧本 theme.dialog（未配 theme 的剧本=现状 dialog-plain）", () => {
+    useGameStore.setState({ selected: PRESET }); // 无 theme → plain
+    const { unmount } = render(<DialogueBox />);
+    const plainBox = screen.getByTestId("dialogue-text").parentElement as HTMLElement;
+    expect(plainBox.className).toContain("dialog-plain");
+    unmount();
+
+    useGameStore.setState({ selected: themed({ dialog: "silk" }) });
+    render(<DialogueBox />);
+    const silkBox = screen.getByTestId("dialogue-text").parentElement as HTMLElement;
+    expect(silkBox.className).toContain("dialog-silk");
+  });
+
+  it("App 根节点消费 --font-preset：fontFamily 挂 var、不再写死 font-serif 工具类", () => {
+    vi.stubGlobal(
+      "EventSource",
+      class {
+        onmessage: ((e: MessageEvent) => void) | null = null;
+        close() {}
+      },
+    );
+    useGameStore.setState({ selected: themed({ font: "hei", dialog: "glass" }), screen: "title" });
+    render(<App />);
+    const root = screen.getByTestId("sr-status").parentElement as HTMLElement; // 根 div 是播报区的父节点
+    expect(root.className).not.toContain("font-serif"); // 字体唯一真源是 --font-preset
+    expect(root.style.fontFamily).toBe("var(--font-preset)");
+    expect(root.style.getPropertyValue("--font-preset")).toBe(FONT_STACKS.hei);
   });
 });

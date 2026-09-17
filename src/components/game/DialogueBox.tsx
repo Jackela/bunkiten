@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { visibleTarget } from "../../lib/parser";
 import { TEXT_SPEED_MS } from "../../lib/settings";
 import { isTypingTarget, useGameStore } from "../../store/game";
+import { dialogClass, getTheme } from "../../theme";
 
 /** 追赶步长分母：落后文本过多时加速补齐，上限约 3 秒（预载屏转场后正文已积累的场景） */
 const CATCH_UP_DIVISOR = 125;
@@ -43,6 +44,8 @@ export default function DialogueBox() {
   // v1.7 动效降级：系统开了「减少动态效果」时按瞬间档**呈现**（不改用户设置——OS 级偏好不重复发明开关）
   const textSpeed = useGameStore((s) => s.settings.textSpeed);
   const interval = usePrefersReducedMotion() ? 0 : TEXT_SPEED_MS[textSpeed];
+  // v1.7 对话框质感：当前剧本 theme.dialog → global.css 的 dialog-* 类（plain 无规则=现状）
+  const texture = useGameStore((s) => dialogClass(getTheme(s.selected).dialog));
 
   const target = visibleTarget(received, finalText);
   const [shown, setShown] = useState("");
@@ -107,7 +110,7 @@ export default function DialogueBox() {
   return (
     <div
       onClick={completeNow}
-      className="relative min-h-32 cursor-pointer rounded-xl border border-white/10 border-t-gold/35 bg-[rgba(10,12,18,.72)] p-5 pb-4 shadow-[0_20px_60px_rgba(0,0,0,.5)] backdrop-blur-xl"
+      className={`relative min-h-32 cursor-pointer rounded-xl border border-white/10 border-t-gold/35 bg-[rgba(10,12,18,.72)] p-5 pb-4 shadow-[0_20px_60px_rgba(0,0,0,.5)] backdrop-blur-xl ${texture}`}
     >
       {/* 顶部主题色发丝线 */}
       <span

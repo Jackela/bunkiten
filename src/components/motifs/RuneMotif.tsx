@@ -32,7 +32,7 @@ export function RuneMotif({ dense = false }: { dense?: boolean }) {
       {RUNES.map((r, i) => (
         <motion.span
           key={i}
-          className="absolute font-serif"
+          className="absolute"
           style={{ left: r.l, top: r.t, color: "#46d6b0", textShadow: "0 0 10px rgba(70,214,176,.8)" }}
           animate={{
             y: [0, -18, 0],

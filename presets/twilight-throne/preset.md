@@ -10,6 +10,8 @@ theme:
   accent: "#d4574e"
   accent2: "#e8b04b"
   motif: imperial
+  font: song
+  dialog: paper
 ---
 
 # 世界观

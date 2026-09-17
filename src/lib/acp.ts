@@ -6,6 +6,10 @@ export interface PresetTheme {
   accent: string;
   accent2: string;
   motif: string;
+  /** 字体族档位 serif|song|kai|hei（v1.7；白名单与 theme.ts / acp-server.mjs 一致） */
+  font?: string;
+  /** 对话框质感档位 plain|silk|paper|glass（v1.7） */
+  dialog?: string;
 }
 
 /** /api/presets 返回的单个剧本（字段与 server/acp-server.mjs scanPresets 对齐） */

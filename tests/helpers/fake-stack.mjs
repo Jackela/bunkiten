@@ -112,6 +112,9 @@ export async function startFakeStack(options = {}) {
   const stop = async () => {
     if (stopped) return;
     stopped = true;
+    // 摘掉兜底监听：9 个 spec 各自起停一套栈，不摘会累积 27 个 once 监听并触发
+    // MaxListenersExceededWarning（removeListener 对已触发/未触发都安全；正常收尾走这里）
+    for (const ev of ["exit", "SIGINT", "SIGTERM"]) process.removeListener(ev, emergencyKill);
     await stopVite(); // 先关页面入口，再停后端并删临时目录（理由见文件头）
     await stack.stop();
   };

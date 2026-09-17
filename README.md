@@ -79,10 +79,10 @@ bunkiten/
 │  ├─ setup-react-act.mjs   # vitest 环境：React act() 兼容补丁
 │  ├─ parser.test.ts        # 文本协议契约快照单测（65 例）
 │  ├─ crafting.test.ts      # 章节制作与创作/画廊编排单测（52 例）
-│  ├─ server.test.ts        # server 协议行与世界线/快照/音频接口单测（76 例）
+│  ├─ server.test.ts        # server 协议行与世界线/快照/音频接口单测（79 例）
 │  ├─ treeLayout.test.ts    # 剧情树分层布局与缩放视口纯函数单测（7 例）
-│  ├─ ui.test.tsx           # 组件测试（TopBar/世界线/剧情图/设置/Creation/Assets，83 例）
-│  ├─ contract.test.ts      # 契约 lint（防漂移门禁：协议头唯一真源/RULES 逐字副本/指令字符串/用例数/设置键与音频扩展名；自身不计入 302 口径）
+│  ├─ ui.test.tsx           # 组件测试（TopBar/世界线/剧情图/设置/Creation/Assets/主题，88 例）
+│  ├─ contract.test.ts      # 契约 lint（防漂移门禁：协议头唯一真源/RULES 逐字副本/指令字符串/用例数/设置键与音频扩展名；自身不计入 310 口径）
 │  ├─ integration/          # 假引擎集成层（假 ACP 引擎 + 真 acp-server 子进程，19 例、秒级）
 │  │  ├─ harness.mjs        # 起全栈：临时 game root/HOME/PORT + path 垫片，收 SSE 事件与断言辅助
 │  │  ├─ fake-engine.mjs    # 最小 ACP 假引擎（按脚本队列回 session/update，可制造段切换）
@@ -125,7 +125,7 @@ bunkiten/
 | `npm run dev` | 仅 vite 前端（浏览器调试，需另起 acp-server） |
 | `npm run dev:electron` | vite + Electron 并行开发 |
 | `npm run build` | `tsc -b && vite build`（类型检查 + 前端构建） |
-| `npm test` | 单测 + 集成全量 302 例：parser 65 + server 76 + crafting 52 + treeLayout 7 + ui 83 + integration 19（含假引擎集成层，整体秒级；改协议字符串必须同步快照）；另跑契约 lint `tests/contract.test.ts`（防漂移门禁，**不计入这 302**） |
+| `npm test` | 单测 + 集成全量 310 例：parser 65 + server 79 + crafting 52 + treeLayout 7 + ui 88 + integration 19（含假引擎集成层，整体秒级；改协议字符串必须同步快照）；另跑契约 lint `tests/contract.test.ts`（防漂移门禁，**不计入这 310**） |
 | `npm run test:e2e` | 真引擎 E2E 冒烟（约 6 分钟，2 回合） |
 | `npm run dist:win` | build 后打 Windows x64 包（nsis + portable，不签名） |
 | `npm run dist:mac` | build 后打 macOS 包（dmg + zip，arm64 + x64，不签名） |

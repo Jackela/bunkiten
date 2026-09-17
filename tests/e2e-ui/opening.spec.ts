@@ -112,4 +112,11 @@ test("开局全链路：捏人填卡→跳过美术开演→正文/选项/立绘
   const bg = await page.evaluate(() => document.querySelector('div[class*="bg-cover"]')?.style.backgroundImage ?? "");
   expect(decodeURIComponent(bg)).toContain("背景");
   expect(decodeURIComponent(bg)).toContain("教堂");
+
+  // 主题深化（v1.7）：demo 剧本没配 theme → 兜底 serif 栈注入 --font-preset 且根容器实际消费，
+  // 对话框质感落到 dialog-plain 类（CSS 里 plain 无规则=现状）
+  const root = page.getByTestId("sr-status").locator("..");
+  await expect(root).toHaveCSS("font-family", /Georgia/);
+  expect(await root.evaluate((el) => el.style.getPropertyValue("--font-preset"))).toContain('"Songti SC"');
+  await expect(page.getByTestId("dialogue-text").locator("..")).toHaveClass(/dialog-plain/);
 });

@@ -9,6 +9,8 @@ theme:
   accent: "#4fd8c4"
   accent2: "#a8f0e4"
   motif: rune
+  font: serif
+  dialog: silk
 ---
 
 # 世界观

@@ -10,6 +10,8 @@ theme:
   accent: "#4fd0d8"
   accent2: "#e8b86a"
   motif: aurora
+  font: hei
+  dialog: silk
 ---
 
 # 世界观
