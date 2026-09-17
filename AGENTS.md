@@ -24,13 +24,13 @@ LLM 互动 AVG（文字冒险 / 视觉小说）：Electron 壳 + React 前端 + 
 | `state/worlds/<worldId>/` | 世界线运行时进度：state.md / summary.md / story-tree.md 三文件 + `history/NNNN.json` 逐轮快照（4 位递增、append-only，存正戏回合的三文件全文），父级 `state/worlds/index.json` 存元数据（worldId/preset/title/chapterNo/lastPlayed/label/note/forkedFrom），引擎的 SSOT；旧扁平 `state/*.md` 首次启动一次性迁入 worlds/main/ |
 | `presets/<id>/assets/` | 美术资产随剧本走：`<类型>-<名字>.jpg`（差分 `立绘-<角色>-<变体>.jpg`），封面同级 `cover.jpg`；顶层全局 `assets/` 池自 v1.5.1 起不再存在，老存档里的 `assets/<文件>.jpg` 只在当前剧本目录内只读兼容直服（不跨剧本扫描）。音频是**另一条管线**：同级 `presets/<id>/audio/`，不进 `assetRegistry`、`/api/assets` 不列 |
 | `presets/<id>/audio/` | 剧本自带音频素材（v1.6，作者手放；仓库里四个 preset 默认都没有此目录 = 静默不播）：`<类型>-<名>.<ext>`，类型 ∈ 曲/环境/音效，ext ∈ mp3/ogg/m4a/wav/flac；server 只扫描（`scanPresetAudio`）与直服，不生成、不落盘、不进 assetRegistry |
-| `tests/` | 单测：`parser.test.ts` 契约快照与协议头断言、`crafting.test.ts` 章节制作流水线与 store 公共 API、`server.test.ts` 世界线/协议解析/快照子系统/音频扫描、`treeLayout.test.ts` 布局与视图纯函数、`ui.test.tsx` 组件（jsdom）、`contract.test.ts` 契约 lint（v1.6 防漂移门禁：协议头唯一真源/RULES 逐字副本/指令字符串双处/用例数与文档比对/设置键与音频扩展名，自身不计入 294 口径）；`setup-react-act.mjs` 为 react 19.3 缺失 `React.act` 打测试垫片；`e2e/smoke.spec.ts` 真引擎冒烟；`helpers/stack.mjs` 进程编排 |
+| `tests/` | 单测：`parser.test.ts` 契约快照与协议头断言、`crafting.test.ts` 章节制作流水线与 store 公共 API、`server.test.ts` 世界线/协议解析/快照子系统/音频扫描、`treeLayout.test.ts` 布局与视图纯函数、`ui.test.tsx` 组件（jsdom）、`contract.test.ts` 契约 lint（v1.6 防漂移门禁：协议头唯一真源/RULES 逐字副本/指令字符串双处/用例数与文档比对/设置键与音频扩展名，自身不计入 294 口径）；`setup-react-act.mjs` 为 react 19.3 缺失 `React.act` 打测试垫片；`e2e/smoke.spec.ts` 真引擎冒烟；`helpers/stack.mjs` 进程编排；`tests/e2e-ui/`（`opening`/`settings` spec + `flow.ts` 屏幕流 helper，`playwright.ui.config.ts` 默认 chromium）假引擎确定性 UI e2e，进程由 `helpers/fake-stack.mjs` 编排（复用 `tests/integration/harness.mjs` 起假引擎+真 acp-server，再起 vite dev 代理过去） |
 | `tests/integration/` | 进程级集成层（v1.6）：假 ACP 引擎（`fake-engine.mjs`，脚本化 `session/update`）+ 临时 PATH 垫片 `grok` + 真 `acp-server.mjs` 子进程（`harness.mjs` 注入 `GROK_GAME_ROOT`/`HOME`/`PORT`，SIGTERM 收尾），秒级、**随 `npm test` 跑**；`pipeline.test.ts`（【图】落盘/路径穿越/【立绘】/【新剧本】/【树】/sniffPreset/API 冒烟）、`audio-history.test.ts`（音频三行与 `/api/audio`·`/audio`、逐轮快照、精确 fork/restore、导出导入、label/note、素材删除）、`http-guard.test.ts`（跨站 403、body 413、history seq） |
 | `vitest.config.ts` | 单测配置：`setupFiles` 加载 react act 垫片、排除 `tests/e2e/**`（e2e 走 Playwright）、钉 `NODE_ENV=test` |
 | `docs/ARCHITECTURE.md` | 架构真相：ACP 契约、文本协议契约（含【曲】【环境】【音效】三行）、世界线与状态文件布局、逐轮状态快照与精确回退、世界线导出包、API/SSE 一览、资产与音频管线、打包布局与已知限制、修改指引 |
 | `docs/adr/0001-0011` | 裁决记录（kebab-case，编号递增）：剧情树骨架、全分支预生成、差分分层、表情由引擎驱动、缓存权威、世界线与分叉、剧情图、资产随故事走、逐轮快照与精确分叉、音频协议、打 tag 即发版 |
 | `CONTEXT.md` | 领域词表（术语 → 定义 → _Avoid_ 反例），改术语先改这里 |
-| `.github/workflows/ci.yml` | CI：push/PR 跑 `npm ci` + `npm test`（含集成层）+ `npm run build`（e2e 不在 CI，需本机登录引擎） |
+| `.github/workflows/ci.yml` | CI：push/PR 跑 `npm ci` + `npm test`（含集成层）+ `npm run build` + `npx playwright install chromium` + `npm run test:e2e:ui`（假引擎确定性 UI e2e，随 CI 跑；真引擎 e2e 仍不在 CI，需本机登录引擎） |
 | `.github/workflows/release.yml` | 发版（v1.6）：push `v*` tag（或手动 dispatch）→ guard 校验 tag == `v<package.json version>` 且 `npm test` 绿 → mac/win 矩阵打包（都 `--publish never`）→ 合并纯 LF `SHA256SUMS.txt` → 建/更新 GitHub Release |
 | `docs/releases/` | 每版一篇发布说明 `docs/releases/<tag>.md`；release job 优先拿它当 Release body（其次是 gh api 自动 notes、最后兜底文案） |
 
@@ -64,11 +64,12 @@ LLM 互动 AVG（文字冒险 / 视觉小说）：Electron 壳 + React 前端 + 
 ## 门禁
 
 - 交付前跑 `npm run build`（`tsc -b && vite build`）。
-- `npm test`（`vitest run --exclude "tests/e2e/**"`）：parser 65 + server 76 + crafting 52 + treeLayout 7 + ui 76 + integration 18（pipeline 7 + audio-history 8 + http-guard 3），**共 294 例**，秒级——默认含集成层，改契约字符串必须同步改快照；另跑契约 lint `tests/contract.test.ts`（v1.6 防漂移门禁，**不计入这 294**——它断言的就是上面这些数字与协议真源）。
+- `npm test`（`vitest run --exclude "tests/e2e/**" --exclude "tests/e2e-ui/**"`）：parser 65 + server 76 + crafting 52 + treeLayout 7 + ui 76 + integration 18（pipeline 7 + audio-history 8 + http-guard 3），**共 294 例**，秒级——默认含集成层，改契约字符串必须同步改快照；另跑契约 lint `tests/contract.test.ts`（v1.6 防漂移门禁，**不计入这 294**——它断言的就是上面这些数字与协议真源）。
 - `npm run test:e2e`：真引擎冒烟（约 6 分钟，2 个回合），改前端流程/协议后跑。
+- `npm run test:e2e:ui`：假引擎确定性 UI e2e（`tests/e2e-ui/`，默认 chromium、不重试，秒级），改前端流程/协议/harness 后跑；CI 也会跑（先 `npx playwright install chromium --with-deps`）。
 - 打包预检：`npm run dist:win` / `npm run dist:mac`，产物在 `release/`；`npm run dist:mac:dir` 只出 `.app` 目录（**不含 `app-update.yml`**，electron-updater 会静默降级）。
 - 发版：打 `v<package.json version>` tag 即触发 `.github/workflows/release.yml`（guard 先校验 tag 与 `package.json` version 一致、并跑 `npm test`，两个平台 job 都 `needs: guard`）；本地 `dist:*` 只作预检，正式产物由 CI 双平台矩阵出。签名/公证条件化：`CSC_LINK` / `APPLE_*` 缺失时显式走未签名路径，构建照常成功。
-- CI（`.github/workflows/ci.yml`）在 push/PR 上跑 `npm ci` + `npm test`（含集成层）+ `npm run build`；e2e 需要本机登录 grok CLI，只在开发机跑。
+- CI（`.github/workflows/ci.yml`）在 push/PR 上跑 `npm ci` + `npm test`（含集成层）+ `npm run build` + 假引擎 UI e2e（`test:e2e:ui`，CI 内自装 chromium）；真引擎 e2e 需要本机登录 grok CLI，只在开发机跑。
 
 ## 深入材料
 

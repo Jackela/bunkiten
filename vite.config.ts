@@ -15,6 +15,7 @@ export default defineConfig({
       "/events": acpTarget,
       "/prompt": acpTarget,
       "/img": acpTarget,
+      "/audio": acpTarget,
     },
   },
 });

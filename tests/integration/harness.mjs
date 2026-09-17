@@ -26,8 +26,9 @@ const BOOT_TIMEOUT_MS = 20000;
 // 单引号 shell 转义（垫片脚本里嵌路径用）
 const shQuote = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
 
-// 预置剧本：frontmatter id/title + `# 主要角色`（server parseCharacters 按 `## 名` 抓取）
-function presetMarkdown(id, title) {
+// 预置剧本：frontmatter id/title + `# 主要角色`（server parseCharacters 按 `## 名` 抓取）；
+// body 追加在角色小节之后的额外小节（如 `# protagonist_card`，供 UI e2e 走捏人开局）
+function presetMarkdown(id, title, body = "") {
   return [
     "---",
     `id: ${id}`,
@@ -47,35 +48,89 @@ function presetMarkdown(id, title) {
     "",
     "开朗。",
     "",
+    ...(body ? [body, ""] : []),
   ].join("\n");
 }
 
-// 临时 game root 的预置数据：presets/<id>/{preset.md,assets/} + state/worlds/index.json 与 w1 三文件
-function seedStack(root, presets) {
-  mkdirSync(path.join(root, "presets"), { recursive: true });
-  mkdirSync(path.join(root, "state", "worlds"), { recursive: true });
-  for (const id of presets) {
-    const dir = path.join(root, "presets", id);
-    mkdirSync(path.join(dir, "assets"), { recursive: true });
-    writeFileSync(path.join(dir, "preset.md"), presetMarkdown(id, id === "demo" ? "示例剧本" : "对照剧本"));
-  }
-  // 世界线索引 + 一个 demo 世界 w1（sniffPreset 用它把 w1 → demo）
+// 预置剧本元素形态：string（只给 id）或 { id, title?, body? }
+const presetIdOf = (p) => (typeof p === "string" ? p : p?.id);
+const presetTitleOf = (p) =>
+  typeof p === "string" ? undefined : typeof p?.title === "string" ? p.title : undefined;
+
+// 单个世界的三文件 + 返回 index 条目（w1 与追加世界共用一套生成逻辑）
+function seedWorld(worldsRoot, worldId, preset, title, meta = {}) {
+  const dir = path.join(worldsRoot, worldId);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, "state.md"), `# 剧情状态\n- preset: ${preset}\n- 场景: 教堂\n`);
+  writeFileSync(path.join(dir, "summary.md"), "# 前情摘要（滚动）\n");
   writeFileSync(
-    path.join(root, "state", "worlds", "index.json"),
-    JSON.stringify(
-      [{ worldId: "w1", preset: "demo", title: "示例剧本", chapterNo: 1, lastPlayed: 1_700_000_000_000, note: "", forkedFrom: null }],
-      null,
-      2,
-    ) + "\n",
-  );
-  const w1 = path.join(root, "state", "worlds", "w1");
-  mkdirSync(w1, { recursive: true });
-  writeFileSync(path.join(w1, "state.md"), "# 剧情状态\n- preset: demo\n- 场景: 教堂\n");
-  writeFileSync(path.join(w1, "summary.md"), "# 前情摘要（滚动）\n");
-  writeFileSync(
-    path.join(w1, "story-tree.md"),
+    path.join(dir, "story-tree.md"),
     "# 剧情树\n## 第 1 章：起点\n- 当前进度: 节点 1-1（已走 0 轮）\n\n### 节点 1-1（门口）\n- 地点: 教堂\n- 状态: 可达\n",
   );
+  return {
+    worldId,
+    preset,
+    title,
+    chapterNo: meta.chapterNo ?? 1,
+    lastPlayed: meta.lastPlayed ?? 1_700_000_000_000,
+    note: meta.note ?? "",
+    forkedFrom: meta.forkedFrom ?? null,
+  };
+}
+
+// 临时 game root 的预置数据：presets/<id>/{preset.md,assets/} + state/worlds/index.json 与 w1 三文件。
+// extra 全部可选（不传 = 与历史行为逐字一致）：
+//   · assets:     { presetId: [{name, bytes}] }        → 写 presets/<id>/assets/<name>
+//   · audioFiles: { presetId: [{name, bytes}] }        → 写 presets/<id>/audio/<name>
+//   · trees:      { worldId: "story-tree.md 全文" }     → 覆盖对应世界的树文件（须先有该世界）
+//   · worlds:     [{id, title?, preset?, forkedFrom?}] → 追加世界（复用 w1 三文件逻辑）
+//   · snapshots:  { worldId: [{seq,at?,kind,nodeId,chapterNo,files}] } → 写 state/worlds/<id>/history/NNNN.json
+//                 （条目形状与 server writeSnapshot 的磁盘格式一致：files = {state,summary,tree}）
+function seedStack(root, presets, extra = {}) {
+  const { assets = {}, audioFiles = {}, trees = {}, worlds = [], snapshots = {} } = extra;
+  mkdirSync(path.join(root, "presets"), { recursive: true });
+  const worldsRoot = path.join(root, "state", "worlds");
+  mkdirSync(worldsRoot, { recursive: true });
+  for (const p of presets) {
+    const id = presetIdOf(p);
+    const dir = path.join(root, "presets", id);
+    mkdirSync(path.join(dir, "assets"), { recursive: true });
+    const title = presetTitleOf(p) ?? (id === "demo" ? "示例剧本" : "对照剧本");
+    writeFileSync(path.join(dir, "preset.md"), presetMarkdown(id, title, typeof p === "object" && p ? p.body : ""));
+    for (const f of assets[id] ?? []) writeFileSync(path.join(dir, "assets", f.name), f.bytes);
+    if (audioFiles[id]?.length) {
+      const audioDir = path.join(dir, "audio");
+      mkdirSync(audioDir, { recursive: true });
+      for (const f of audioFiles[id]) writeFileSync(path.join(audioDir, f.name), f.bytes);
+    }
+  }
+  // 世界线索引 + 一个 demo 世界 w1（sniffPreset 用它把 w1 → demo）+ 可选追加世界
+  const index = [seedWorld(worldsRoot, "w1", "demo", "示例剧本")];
+  for (const w of worlds) {
+    index.push(
+      seedWorld(worldsRoot, w.id, w.preset ?? "demo", w.title ?? "示例剧本", {
+        forkedFrom: w.forkedFrom,
+        chapterNo: w.chapterNo,
+        lastPlayed: w.lastPlayed,
+        note: w.note,
+      }),
+    );
+  }
+  writeFileSync(path.join(worldsRoot, "index.json"), JSON.stringify(index, null, 2) + "\n");
+  // 树覆盖（w1 或追加世界的 story-tree.md 换成调用方全文）
+  for (const [worldId, text] of Object.entries(trees)) {
+    writeFileSync(path.join(worldsRoot, worldId, "story-tree.md"), text);
+  }
+  // 逐轮快照（server writeSnapshot 的磁盘形状：NNNN.json = {seq,at,kind,nodeId,chapterNo,files}）
+  for (const [worldId, entries] of Object.entries(snapshots)) {
+    for (const e of entries) {
+      const entry = { at: new Date().toISOString(), ...e }; // at 可省，缺省给当前时间
+      const name = `${String(entry.seq).padStart(4, "0")}.json`;
+      const dir = path.join(worldsRoot, worldId, "history");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(path.join(dir, name), JSON.stringify(entry, null, 2) + "\n");
+    }
+  }
 }
 
 function withTimeout(promise, ms, label) {
@@ -158,11 +213,27 @@ async function httpOk(url) {
  * 起一套集成栈（假引擎 + 真 acp-server），返回可供断言/收尾的句柄。
  * @param {object} [opts]
  * @param {Array} [opts.turns] fake-engine 的脚本队列（见 fake-engine.mjs 顶部说明）
- * @param {string[]} [opts.presets] 预置的剧本 id 列表（默认 demo + other 对照）
+ * @param {Array<(string|{id: string, title?: string, body?: string})>} [opts.presets]
+ *   预置的剧本列表（默认 demo + other 对照）；元素为 string 时只给 id，对象形态可覆盖标题并追加 body 小节
  * @param {Record<string, string|Buffer>} [opts.sessionImages] 预置会话图片：文件名 → 内容
+ * @param {Record<string, Array<{name: string, bytes: Buffer}>>} [opts.assets] 预置资产：presetId → presets/<id>/assets/ 下的文件
+ * @param {Record<string, Array<{name: string, bytes: Buffer}>>} [opts.audioFiles] 预置音频：presetId → presets/<id>/audio/ 下的文件
+ * @param {Record<string, string>} [opts.trees] 覆盖世界树：worldId → story-tree.md 全文
+ * @param {Array<{id: string, title?: string, preset?: string, forkedFrom?: string|null}>} [opts.worlds] 追加世界（复用 w1 三文件生成逻辑）
+ * @param {Record<string, Array<{seq: number, at?: string, kind: "turn"|"backup", nodeId: string|null, chapterNo: number|null, files: {state: string|null, summary: string|null, tree: string|null}}>>} [opts.snapshots]
+ *   预置逐轮快照：worldId → history/NNNN.json 条目（形状与 server writeSnapshot 落盘格式一致）
  * @returns {Promise<object>} stack 句柄（root/home/events/waitFor/prompt/stop 等）
  */
-export async function startStack({ turns = [], presets = ["demo", "other"], sessionImages = {} } = {}) {
+export async function startStack({
+  turns = [],
+  presets = ["demo", "other"],
+  sessionImages = {},
+  assets = {},
+  audioFiles = {},
+  trees = {},
+  worlds = [],
+  snapshots = {},
+} = {}) {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "bunkiten-it-"));
   const root = path.join(tmp, "game");
   const home = path.join(tmp, "home");
@@ -170,7 +241,11 @@ export async function startStack({ turns = [], presets = ["demo", "other"], sess
   mkdirSync(root, { recursive: true });
   mkdirSync(home, { recursive: true });
   mkdirSync(binDir, { recursive: true });
-  seedStack(root, presets);
+  // server 的 /api/auth 只检查 ~/.grok/auth.json 是否存在（开发机上有真登录态，临时 home 没有）；
+  // UI e2e 的 boot 屏靠它放行进 title——占位内容无所谓，写一个空 JSON 即可
+  mkdirSync(path.join(home, ".grok"), { recursive: true });
+  writeFileSync(path.join(home, ".grok", "auth.json"), "{}\n");
+  seedStack(root, presets, { assets, audioFiles, trees, worlds, snapshots });
 
   // 会话图片目录：server 用 os.homedir()（=HOME）+ encodeURIComponent(GAME_ROOT) + sessionId 拼接
   const sessionImagesDir = path.join(home, ".grok", "sessions", encodeURIComponent(root), SESSION_ID, "images");

@@ -3,6 +3,7 @@ dist/
 dist-electron/
 release/
 test-results/
+test-results-ui/
 playwright-report/
 *.log
 *.tsbuildinfo

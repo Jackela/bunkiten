@@ -28,5 +28,13 @@ jobs:
       - name: Build（tsc -b && vite build）
         run: npm run build
 
-      # e2e（npm run test:e2e）需要本机已登录的 grok CLI + 真引擎回合，只在开发机跑：
+      # UI e2e（npm run test:e2e:ui）走假引擎确定性栈（tests/e2e-ui/：假 ACP 引擎 + 真 acp-server
+      # + vite dev，进程自起自停），不需要 grok 登录，可以进 CI；浏览器用默认 chromium，不依赖本机 Chrome。
+      - name: Install Playwright chromium
+        run: npx playwright install chromium --with-deps
+
+      - name: UI e2e（假引擎确定性）
+        run: npm run test:e2e:ui
+
+      # 真引擎 e2e（npm run test:e2e）需要本机已登录的 grok CLI + 真引擎回合，只在开发机跑：
       #   npm run test:e2e
