@@ -17,8 +17,9 @@ import path from "path";
  * @param {string} opts.effort 初始推理档位（entry.EFFORT）
  * @param {(text: string) => void} opts.onChunk agent_message_chunk 的文本（入口做标记扫描 + broadcast）
  * @param {(label: string) => void} opts.onSeg tool_call/tool_call_update 的进度标题（入口 seg+=1 + broadcast）
- * @returns {{proc: import("child_process").ChildProcess, request: Function, boot: Function,
- *   resolveImage: Function, sessionId: string|null}} sessionId 是 getter——sendPrompt 与 /img 路由经它读当前会话
+ * @returns {{proc: import("child_process").ChildProcess, request: (method: string, params?: object|null, timeoutMs?: number) => Promise<any>,
+ *   boot: () => Promise<void>, resolveImage: (name: string) => string|null, sessionId: string|null}} sessionId 是 getter——
+ *   sendPrompt 与 /img 路由经它读当前会话；request 的 Promise resolve 整个响应 msg（result/error 都在）
  */
 export function createAcpSession({ gameRoot, sessionFile, rules, effort, onChunk, onSeg }) {
   const proc = spawn("grok", ["agent", "--always-approve", "stdio"], { cwd: gameRoot });
@@ -27,7 +28,9 @@ export function createAcpSession({ gameRoot, sessionFile, rules, effort, onChunk
   const rl = readline.createInterface({ input: proc.stdout });
 
   let nextId = 1;
+  /** @type {Map<number, (m: any) => void>} */
   const pending = new Map();
+  /** @type {string|null} */
   let sessionId = null;
 
   rl.on("line", (line) => {
@@ -52,6 +55,12 @@ export function createAcpSession({ gameRoot, sessionFile, rules, effort, onChunk
     }
   });
 
+  /**
+   * @param {string} method JSON-RPC 方法名
+   * @param {object|null} [params]
+   * @param {number} [timeoutMs]
+   * @returns {Promise<any>} resolve 整个响应 msg（result/error 都在里面，由调用方分辨）
+   */
   function request(method, params, timeoutMs = 120000) {
     const id = nextId++;
     return new Promise((resolve, reject) => {
@@ -62,11 +71,13 @@ export function createAcpSession({ gameRoot, sessionFile, rules, effort, onChunk
   }
 
   function sessionImagesDir() {
-    const base = path.join(os.homedir(), ".grok", "sessions", encodeURIComponent(gameRoot), sessionId);
+    // 调用点（resolveImage）都在会话已 boot 后才进来；boot 完成前 sessionId 必为 null——cast 表达这个顺序不变式
+    const base = path.join(os.homedir(), ".grok", "sessions", encodeURIComponent(gameRoot), /** @type {string} */ (sessionId));
     return path.join(base, "images");
   }
 
   // 图片落在 per-session 目录：当前会话没有时，扫所有历史会话取最新（跨会话续档）
+  /** @param {string} name 图片文件名 @returns {string|null} 绝对路径；找不到时 null */
   function resolveImage(name) {
     const cur = path.join(sessionImagesDir(), name);
     if (fs.existsSync(cur)) return cur;

@@ -139,7 +139,16 @@ export function pickEffort(text, main = EFFORT, planning = EFFORT_PLANNING) {
 }
 
 // ---------- server ----------
+/**
+ * startServer 的句柄（listenWithRetry 的 resolve 值）。
+ * @typedef {Object} ServerHandle
+ * @property {number} port 实际监听端口（EADDRINUSE 重试后可能与 BASE_PORT 不同）
+ * @property {import("http").Server} server
+ * @property {import("child_process").ChildProcess} proc grok 子进程
+ */
+/** @type {Promise<ServerHandle>|null} */
 let instance = null;
+/** @type {(() => Promise<void>)|null} */
 let stopServerFn = null;
 
 // 优雅退出：停 HTTP server（先断 SSE）+ kill grok 子进程；幂等，供 Electron will-quit 与信号处理复用
@@ -153,15 +162,29 @@ export function startServer() {
   let seg = 0;
   let busy = false;
 
-  // assets registry：<剧本 id>|type|sanitizedName -> {type,name,rawName,presetId,file,srcRel,ready,regen}；磁盘真况见 listAssets()
+  // assets registry：<剧本 id>|type|sanitizedName -> AssetEntry；磁盘真况见 listAssets()
+  /**
+   * @typedef {Object} AssetEntry
+   * @property {string} type 立绘 | 背景 | 封面
+   * @property {string} name sanitize 后的名字（差分形如 `薇拉-微笑`）
+   * @property {string} rawName 标记里的原始名
+   * @property {string} presetId 落盘剧本 id（拿不到剧本的占位条目为空串）
+   * @property {string} file 落盘目标相对路径（占位条目为空串）
+   * @property {string} srcRel 标记里的原始路径
+   * @property {boolean} ready 目标文件是否已就绪
+   * @property {boolean} [regen] 第四段「重绘」：覆盖同名文件
+   */
+  /** @type {Map<string, AssetEntry>} */
   const assetRegistry = new Map();
   let currentPresetId = ""; // 当前剧本 id（sendPrompt 嗅探世界段得出；/img 的旧档直服与嗅探比对用它）
-  let currentWorldId = null; // 当前世界 id（sniffPreset 一并保存；逐轮快照按它落盘 history/NNNN.json）
+  /** @type {string|null} */ let currentWorldId = null; // 当前世界 id（sniffPreset 一并保存；逐轮快照按它落盘 history/NNNN.json）
   let lastEffort = EFFORT; // 上次已生效的推理档位（boot 已设 EFFORT；档位变化才再发 set_config_option）
   let turnText = ""; // 当前回合 chunk 文本累积，用于流式解析【图】标记行
   let artScanPos = 0;
 
+  /** @type {Set<import("http").ServerResponse>} */
   const clients = new Set();
+  /** @param {object} obj 广播事件（JSON.stringify 后走 SSE） */
   function broadcast(obj) {
     const s = `data: ${JSON.stringify(obj)}\n\n`;
     for (const res of clients) res.write(s);
@@ -188,6 +211,7 @@ export function startServer() {
   // 「拿不到剧本」告警去重（同一 key 只警告一次）：回合末补扫、每条 /img 预载都会反复走到同一资产，
   // 不去重会把控制台刷爆，真正的告警反而看不见。
   const warnedPresetless = new Set();
+  /** @param {string} type @param {string} name sanitize 后的名字 @param {string} rawName 标记里的原始名 */
   function warnPresetlessOnce(type, name, rawName) {
     const key = `${type}|${name}`;
     if (warnedPresetless.has(key)) return;
@@ -196,6 +220,7 @@ export function startServer() {
   }
   // 旧档路径提示去重（预载/轮播会反复命中同一条老路径）
   const warnedLegacyPaths = new Set();
+  /** @param {string} rel 旧档相对路径 */
   function warnLegacyPathOnce(rel) {
     if (warnedLegacyPaths.has(rel)) return;
     warnedLegacyPaths.add(rel);
@@ -262,6 +287,7 @@ export function startServer() {
     return true;
   }
 
+  /** @param {string} line 已到达完整行的协议行候选 */
   function handleArtLine(line) {
     const art = parseArtLine(line);
     if (art) { persistAsset(art.type, art.name, art.srcRel, art.regen); return; }
@@ -289,6 +315,7 @@ export function startServer() {
   }
 
   // 只解析已到达完整行（\n 结尾）的部分，避免流式 chunk 截断标记
+  /** @param {string} text agent_message_chunk 的文本增量 */
   function ingestChunkText(text) {
     turnText += text;
     let nl;
@@ -317,13 +344,16 @@ export function startServer() {
    * @returns {Array<object>} 资产项列表
    */
   function listAssets(presetId) {
+    /** @type {string[]} */
     const stateTexts = [];
     for (const e of readWorldsIndex(WORLDS_ROOT)) {
       if (e.preset !== presetId) continue;
       try { stateTexts.push(fs.readFileSync(path.join(WORLDS_ROOT, e.worldId, "state.md"), "utf8")); } catch {}
     }
+    /** @param {string} name */
     const inUse = (name) => stateTexts.some((t) => t.includes(name));
     const out = new Map();
+    /** @param {string} key @param {string} type @param {string} rest @param {string} file @param {boolean} ready */
     const push = (key, type, rest, file, ready) => {
       const { name, variant } = splitAssetVariant(rest);
       // preset 必填：客户端画廊按它做防御性过滤（跨剧本条目一律丢弃并告警）
@@ -392,6 +422,7 @@ export function startServer() {
    * 2. 世界 → 剧本先查 `state/worlds/index.json`，查不到或记录里的 preset 不合法时
    *    回退读该世界 `state.md` 的 `- preset: <id>`（与 SKILL 的「当前剧本 id」口径一致，可自愈索引缺失）；
    *    仍然拿不到就保持原值不动（宁可沿用上一局，也不乱归档）并告警。
+   * @param {string} text 发给引擎的提示词原文
    */
   function sniffPreset(text) {
     if (!isDirectivePrompt(text)) return;
@@ -401,7 +432,8 @@ export function startServer() {
     // 逐轮快照的落盘目录随之确定（否则快照会写进错误的世界）。
     currentWorldId = worldId;
     const entry = readWorldsIndex(WORLDS_ROOT).find((e) => e.worldId === worldId);
-    let preset = PRESET_ID_RE.test(entry?.preset || "") ? entry.preset : "";
+    // 真分支意味着上面的 `entry?.preset || ""` 非空（entry 必已存在），`?.` 在此处与 `.` 等价——checkJs 逼出的等价收窄
+    let preset = PRESET_ID_RE.test(entry?.preset || "") ? entry?.preset : "";
     if (!preset) {
       preset = presetFromStateFile(worldId);
       if (preset) console.warn(`[acp] 世界 ${worldId} 未在 index.json 里记到合法 preset，改用其 state.md 的 preset: ${preset}`);
@@ -418,6 +450,7 @@ export function startServer() {
 
   // 档位分档（CONTRACTS §4）：正戏/自由输入走 EFFORT，规划/建档类走 EFFORT_PLANNING；
   // 与上次已生效的档位不同才发 set_config_option，失败静默（不支持就保持现状，下次变化再试）。
+  /** @param {string} text 发给引擎的提示词原文 */
   async function applyEffort(text) {
     const effort = pickEffort(text);
     if (effort === lastEffort) return;
@@ -433,6 +466,7 @@ export function startServer() {
   // 正戏回合判定（纯逻辑，CONTRACTS §2）：规划/美术/剧情/装配/创作模式回合（前缀正则与 pickEffort 同一份
   // 真源 shared/protocol.mjs 的 DIRECTIVE_PREFIX_RE，v1.7 统一两份手写副本）、以及带「待命：」的开局指令
   // 都不推进剧情正文，不该产生逐轮快照（「待命：」是后缀判定，不属前缀集合，保持原地）。
+  /** @param {string} text 发给引擎的提示词原文 @returns {boolean} 是否正戏回合 */
   function isMainTurn(text) {
     const s = String(text || "").trim();
     if (DIRECTIVE_PREFIX_RE.test(s)) return false;
@@ -442,6 +476,7 @@ export function startServer() {
 
   // 逐轮快照（CONTRACTS §2）：正戏回合结束后把当前世界三文件全文存一份 history/NNNN.json。
   // 调用点固定在 flushArtLines() 之后、busy=false 之前——此刻本轮所有落盘都已定型，内容不会再多变。
+  /** @param {string} text 发给引擎的提示词原文 */
   function writeTurnSnapshot(text) {
     if (!isMainTurn(text)) return;
     const worldId = currentWorldId;
@@ -456,6 +491,11 @@ export function startServer() {
     if (res.ok) console.log(`[acp] snapshot written: ${worldId}/history/${String(res.seq).padStart(4, "0")}.json`);
   }
 
+  /**
+   * 发一个游戏回合给引擎（POST /prompt 的落地）。
+   * @param {string} text 提示词原文
+   * @returns {Promise<{ok: boolean, error?: string}>} error 在回合失败（busy/引擎未就绪/引擎回 error/超时）时给出
+   */
   async function sendPrompt(text) {
     if (busy || !acp.sessionId) return { ok: false, error: busy ? "上一回合还在进行" : "引擎未就绪" };
     sniffPreset(text);
@@ -507,9 +547,11 @@ export function startServer() {
     get sessionId() { return acp.sessionId; },
   }));
 
+  /** @param {number} attempt 端口重试序号（0 = BASE_PORT 本尊） @returns {Promise<ServerHandle>} */
   function listenWithRetry(attempt) {
     return new Promise((resolve, reject) => {
       const port = BASE_PORT + attempt;
+      /** @param {Error & {code?: string}} e EADDRINUSE 等系统错误带 code */
       const onError = (e) => {
         if (e.code === "EADDRINUSE" && attempt < PORT_MAX_RETRY) {
           server.removeListener("error", onError);
@@ -524,7 +566,8 @@ export function startServer() {
         // 端口以**实际监听结果**为准：双栈/被占重试时，早先 attempt 的回调可能迟到触发，
         // 用闭包 port 会打印出假的「第一行」（真实 socket 可能在下一个端口），
         // 进而骗过按首行解析端口的测试编排（tests/helpers/stack.mjs）。
-        const actualPort = server.address()?.port ?? port;
+        // TCP 监听的 address() 恒为 AddressInfo（string 分支是 IPC/pipe 才有的）——cast 表达这个分支不变式
+        const actualPort = /** @type {import("net").AddressInfo|null} */ (server.address())?.port ?? port;
         console.log(`[acp] http://localhost:${actualPort}  (game root: ${GAME_ROOT})`);
         resolve({ port: actualPort, server, proc: acp.proc });
       });
@@ -544,14 +587,16 @@ export function startServer() {
     try { handle = await instance; } catch { /* 启动失败也要清理子进程 */ }
     for (const res of clients) res.destroy(); // SSE 长连接会拖住 server.close 回调
     clients.clear();
-    if (handle) await new Promise((resolve) => handle.server.close(() => resolve()));
+    if (handle) await /** @type {Promise<void>} */ (new Promise((resolve) => handle.server.close(() => resolve())));
     try { acp.proc.kill(); } catch {}
     setTimeout(() => { try { acp.proc.kill("SIGKILL"); } catch {} }, 1500).unref(); // SIGTERM 不退则强杀
   };
 
+  /** @param {string} sig 信号名（SIGINT/SIGTERM） */
   const signalExit = (sig) => {
     console.log(`[acp] ${sig} received, shutting down`);
-    stopServerFn().catch(() => {}).finally(() => process.exit(0));
+    // signalExit 只在 startServer 已赋值 stopServerFn 之后才可能被进程信号触发——cast 表达这个顺序不变式
+    /** @type {() => Promise<void>} */ (stopServerFn)().catch(() => {}).finally(() => process.exit(0));
   };
   process.on("SIGINT", () => signalExit("SIGINT"));
   process.on("SIGTERM", () => signalExit("SIGTERM"));

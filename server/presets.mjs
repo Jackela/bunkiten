@@ -15,15 +15,53 @@ import { FONT_PRESETS, DIALOG_TEXTURES, DEFAULT_THEME } from "./acp-server.mjs";
 
 // ---------- presets 解析（手写简易解析，不引依赖） ----------
 // FM_KEYS/THEME_KEYS 同样导出（doctor 的必填键与 theme 逐键对比与 server 解析口径同源）
+/** @type {readonly ["id", "title", "tagline", "genre", "rating"]} */
 export const FM_KEYS = ["id", "title", "tagline", "genre", "rating"];
+/** @type {readonly ["accent", "accent2", "motif", "font", "dialog"]} */
 export const THEME_KEYS = ["accent", "accent2", "motif", "font", "dialog"];
 
+/**
+ * preset.md 的 frontmatter 解析结果（值未校验，坏键由调用方兜底）。
+ * @typedef {Object} Frontmatter
+ * @property {string} [id]
+ * @property {string} [title]
+ * @property {string} [tagline]
+ * @property {string} [genre]
+ * @property {string} [rating]
+ * @property {Record<string, string>} [theme] 块形式的缩进子键（只支持块形式，内联值视为坏格式）
+ */
+
+/**
+ * normalizeTheme 的产物（逐键兜底后的完整主题；与 src/theme.ts 的 Theme 同键集）。
+ * @typedef {Object} ThemeInfo
+ * @property {string} accent
+ * @property {string} accent2
+ * @property {string} motif
+ * @property {string} font
+ * @property {string} dialog
+ */
+
+/**
+ * scanPresets 收进轮播的一个剧本。
+ * @typedef {Object} PresetInfo
+ * @property {string} id
+ * @property {string} title
+ * @property {string} tagline
+ * @property {string} genre
+ * @property {string} rating
+ * @property {string[]} characters `# 主要角色` 小节的角色名列表
+ * @property {string[]} protagonist_card
+ * @property {ThemeInfo} theme
+ */
+
 // parseFrontmatter/parseCharacters/parseSectionLines 导出给 scripts/doctor.mjs 复用（体检查 preset.md 用同一解析口径，不抄第二份）
+/** @param {string} text preset.md 全文 @returns {Frontmatter|null} null = 缺失或格式坏（调用方校验必填字段） */
 export function parseFrontmatter(text) {
   const lines = text.split(/\r?\n/);
   if (lines[0]?.trim() !== "---") return null;
   const end = lines.indexOf("---", 1);
   if (end === -1) return null;
+  /** @type {Frontmatter} */
   const fm = {};
   let inTheme = false;
   for (const line of lines.slice(1, end)) {
@@ -33,7 +71,9 @@ export function parseFrontmatter(text) {
       const i = line.indexOf(":");
       if (i === -1) continue;
       const key = line.slice(0, i).trim();
-      if (THEME_KEYS.includes(key)) fm.theme[key] = line.slice(i + 1).trim().replace(/^["']|["']$/g, "");
+      // inTheme 为真时 theme 块必已初始化（下方 `fm.theme = {}` 与 inTheme 同步）——cast 只表达这个不变式；
+      // includes 的入参 cast 同理：把 string 键交给字面元组的 includes 前先声明「命中也是这五个之一才有意义」
+      if (THEME_KEYS.includes(/** @type {"accent"|"accent2"|"motif"|"font"|"dialog"} */ (key))) /** @type {Record<string, string>} */ (fm.theme)[key] = line.slice(i + 1).trim().replace(/^["']|["']$/g, "");
       continue;
     }
     const i = line.indexOf(":");
@@ -41,15 +81,23 @@ export function parseFrontmatter(text) {
     const key = line.slice(0, i).trim();
     inTheme = key === "theme"; // 顶层 key 到来即离开 theme 块
     if (inTheme) fm.theme = {}; // 只支持块形式；内联值视为坏格式，由 normalizeTheme 逐键兜底
-    else if (FM_KEYS.includes(key)) fm[key] = line.slice(i + 1).trim();
+    // THEME_KEYS/FM_KEYS 的 includes 入参 cast：字面元组的 includes 只收键联合，先声明键集合归属（见上一处注释）
+    else if (FM_KEYS.includes(/** @type {"id"|"title"|"tagline"|"genre"|"rating"} */ (key))) fm[/** @type {"id"|"title"|"tagline"|"genre"|"rating"} */ (key)] = line.slice(i + 1).trim();
   }
   return fm; // 调用方校验必填字段
 }
 
-// theme 逐键兜底：accent/accent2 要求 #hex 颜色，motif 非空，font/dialog 走白名单；坏值用对应默认键，不抛错
+/**
+ * theme 逐键兜底：accent/accent2 要求 #hex 颜色，motif 非空，font/dialog 走白名单；坏值用对应默认键，不抛错。
+ * @param {Frontmatter} fm
+ * @returns {ThemeInfo}
+ */
 export function normalizeTheme(fm) {
+  /** @type {Record<string, any>} */
   const raw = fm.theme && typeof fm.theme === "object" ? fm.theme : {};
+  /** @param {unknown} v */
   const isColor = (v) => typeof v === "string" && /^#[0-9a-fA-F]{3,8}$/.test(v);
+  /** @param {unknown} v @param {readonly string[]} list */
   const inList = (v, list) => (typeof v === "string" && list.includes(v.trim()) ? v.trim() : null);
   return {
     accent: isColor(raw.accent) ? raw.accent : DEFAULT_THEME.accent,
@@ -60,12 +108,25 @@ export function normalizeTheme(fm) {
   };
 }
 
-// ## <角色名>（…）小节只出现在「# 主要角色」之下。名字抽取规则（去行尾括注、trim、空名跳过）
-// 只在 parseCharacterSections 这一份；parseCharacters 是它名字列的投影（scanPresets 消费），
-// doctor 消费带正文的 sections 检查角色节字段——两侧同口径，不抄第二份规则。
+/**
+ * `## <角色名>` 角色节（名字 + 正文行）。
+ * @typedef {Object} CharacterSection
+ * @property {string} name
+ * @property {string[]} body 角色节正文行（非空行，到下一个 ## / # 为止）
+ */
+
+/**
+ * ## <角色名>（…）小节只出现在「# 主要角色」之下。名字抽取规则（去行尾括注、trim、空名跳过）
+ * 只在 parseCharacterSections 这一份；parseCharacters 是它名字列的投影（scanPresets 消费），
+ * doctor 消费带正文的 sections 检查角色节字段——两侧同口径，不抄第二份规则。
+ * @param {string[]} lines 正文行（text.split(/\r?\n/)）
+ * @returns {CharacterSection[]}
+ */
 export function parseCharacterSections(lines) {
+  /** @type {CharacterSection[]} */
   const out = [];
   let inCast = false;
+  /** @type {CharacterSection|null} */
   let cur = null;
   for (const line of lines) {
     if (/^# [^#]/.test(line)) {
@@ -87,11 +148,13 @@ export function parseCharacterSections(lines) {
   return out;
 }
 
+/** @param {string[]} lines 正文行 @returns {string[]} 角色名列表（parseCharacterSections 的投影） */
 export function parseCharacters(lines) {
   return parseCharacterSections(lines).map((s) => s.name);
 }
 
 // 取 `# <heading 前缀>` 小节的正文行（到下一个一级标题为止）
+/** @param {string[]} lines 正文行 @param {string} headingPrefix 一级标题前缀（如 "# protagonist_card"） @returns {string[]} */
 export function parseSectionLines(lines, headingPrefix) {
   const out = [];
   let inSection = false;
@@ -107,9 +170,10 @@ export function parseSectionLines(lines, headingPrefix) {
  * I2：id 直接参与路径拼接（presets/<id>/assets/…、presets/<id>/cover.jpg），
  * 所以 id 非法（含 `/`、`..`、中文等）的 preset 一律**丢弃**——进 errors 并告警，不进轮播。
  * @param {string} [root] 游戏根目录（缺省 GAME_ROOT）
- * @returns {{presets: Array<object>, errors: Array<{dir: string, error: string}>}}
+ * @returns {{presets: PresetInfo[], errors: Array<{dir: string, error: string}>}}
  */
 export function scanPresets(root = GAME_ROOT) {
+  /** @type {PresetInfo[]} */
   const presets = [];
   const errors = [];
   const dir = path.join(root, "presets");
@@ -226,15 +290,26 @@ function decodeBase64Field(v) {
 }
 
 /**
+ * 剧本导出包（format:"bunkiten-preset" v1）。
+ * @typedef {Object} PresetBundle
+ * @property {string} format
+ * @property {number} version
+ * @property {string} id
+ * @property {string} title
+ * @property {string} exportedAt
+ * @property {string} presetMd
+ * @property {Record<string, string>} assets 文件名 → base64
+ * @property {Record<string, string>} audio 文件名 → base64
+ */
+
+/**
  * 打包一个剧本为可迁移 bundle（v1.7，导出纯函数，root 可注入以便单测）。
  * 收文件：preset.md 全文；assets/ 下全部 jpe?g（跳过 cover.jpe?g——那是死路径，封面在 preset 根）；
  * preset 根的 cover.jpe?g；audio/ 下全部 AUDIO_EXTS 文件。子目录、不认识的扩展名与 0 字节文件一律跳过
  * （保证导出的包能原样导回）。文件名排序收集，同目录的导出结果确定。
  * @param {string} root 游戏根目录
  * @param {string} id 剧本 id
- * @returns {{bundle: {format: string, version: number, id: string, title: string, exportedAt: string,
- *   presetMd: string, assets: Record<string,string>, audio: Record<string,string>}}|{error: string}}
- *   id 非法或 preset.md 不存在（目录缺失）时 error
+ * @returns {{bundle?: PresetBundle, error?: string}} 成功时 bundle、失败时 error（HTTP 层按字段有无分流）
  */
 export function buildPresetBundle(root, id) {
   const pid = String(id || "").trim();
@@ -248,7 +323,9 @@ export function buildPresetBundle(root, id) {
   }
   const title = parseFrontmatter(presetMd)?.title || "";
   // 以扩展名收文件：目录不存在 = 空（audio 可选、assets 目录也未必有）；withFileTypes 跳过子目录
+  /** @param {string} sub 子目录名（"." = preset 根） @param {RegExp} re 扩展名白名单 @returns {Record<string, string>} */
   const collect = (sub, re) => {
+    /** @type {Record<string, string>} */
     const out = {};
     let entries = [];
     try {
@@ -291,8 +368,9 @@ export function buildPresetBundle(root, id) {
  * 临时目录后**返回 error 而不抛出**——readBodyText 的回调没有兜底，冒泡即 uncaughtException，
  * 而 Electron 主进程同进程 import 入口，等于整应用闪退。
  * @param {string} root 游戏根目录
- * @param {object} bundle 导出体
- * @returns {{ok: true, id: string}|{error: string}} id = 实际落地的剧本 id（可能已重名改名）
+ * @param {{format?: unknown, version?: unknown, id?: unknown, presetMd?: unknown,
+ *   assets?: Record<string, unknown>|null, audio?: Record<string, unknown>|null}} bundle 导出体（JSON 直入，函数内逐字段校验）
+ * @returns {{ok?: true, id?: string, error?: string}} id = 实际落地的剧本 id（可能已重名改名）
  */
 export function importPresetBundle(root, bundle) {
   if (!bundle || typeof bundle !== "object") return { error: "bundle 校验失败" };

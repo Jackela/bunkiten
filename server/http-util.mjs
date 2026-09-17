@@ -34,6 +34,7 @@ export function isCrossSiteRequest(req) {
  * @param {number} [maxBytes] 累积上限（缺省 MAX_BODY_BYTES=5MB）
  */
 export function readBodyText(req, res, onEnd, maxBytes = MAX_BODY_BYTES) {
+  /** @type {Buffer[]} */
   const chunks = [];
   let size = 0;
   let done = false;
@@ -62,6 +63,8 @@ export function readBodyText(req, res, onEnd, maxBytes = MAX_BODY_BYTES) {
   });
 }
 
+// 扩展名 → Content-Type（键即 MIME 表，任意扩展名可查、查不到回落 octet-stream——所以是 Record 而非字面量键集）
+/** @type {Record<string, string>} */
 const MIME = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",

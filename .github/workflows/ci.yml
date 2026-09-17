@@ -28,6 +28,11 @@ jobs:
       - name: Build（tsc -b && vite build）
         run: npm run build
 
+      # server/shared/scripts 的 checkJs 门禁（tsconfig.server.json：strict + JSDoc 类型，
+      # 独立于 src 的 tsconfig.json；tsc 已在 devDependencies，无新依赖）
+      - name: Server typecheck（checkJs）
+        run: npm run typecheck:server
+
       # UI e2e（npm run test:e2e:ui）走假引擎确定性栈（tests/e2e-ui/：假 ACP 引擎 + 真 acp-server
       # + vite dev，进程自起自停），不需要 grok 登录，可以进 CI；浏览器用默认 chromium，不依赖本机 Chrome。
       - name: Install Playwright chromium

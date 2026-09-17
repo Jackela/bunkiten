@@ -55,13 +55,16 @@ function listFileNames(dir) {
     .sort();
 }
 
+/** @param {string} message @returns {Finding} */
 const ok = (message) => ({ level: "ok", message });
+/** @param {string} message @returns {Finding} */
 const warn = (message) => ({ level: "warn", message });
+/** @param {string} message @returns {Finding} */
 const error = (message) => ({ level: "error", message });
 
 /**
  * frontmatter 组：必填键齐全且非空、id 过白名单且等于目录名。
- * @param {object|null} fm parseFrontmatter 的产物（null = 缺失/格式坏）
+ * @param {import("../server/presets.mjs").Frontmatter|null} fm parseFrontmatter 的产物（null = 缺失/格式坏）
  * @param {string} dirName preset 目录名
  * @returns {Finding[]}
  */
@@ -94,7 +97,7 @@ function checkFrontmatter(fm, dirName) {
  * ① server 层：normalizeTheme 逐键对比原值，凡将被 server 替换为默认值的键报 warning「将被 server 回退」；
  * ② 客户端层（更严）：accent/accent2 只认 6 位 hex（src/theme.ts 的 HEX_RE——server 的 isColor 放行 3-8 位）、
  *    motif 是 4 项闭集（MOTIFS——server 只要求非空）；server 放行但客户端会拦下的值报 warning「将被客户端回退」。
- * @param {object|null} fm parseFrontmatter 的产物
+ * @param {import("../server/presets.mjs").Frontmatter|null} fm parseFrontmatter 的产物
  * @returns {Finding[]}
  */
 function checkTheme(fm) {
@@ -203,9 +206,11 @@ function checkAssetNames(assets) {
 function checkOrphans(assets, ref) {
   const valid = assets.filter((f) => ASSET_FILE_RE.test(f));
   if (!valid.length) return [ok("孤儿素材：无（没有可查的素材）")];
+  /** @type {string[]} */
   const orphans = [];
   for (const f of valid) {
-    const name = ASSET_FILE_RE.exec(f)[2];
+    // valid 已按同一正则过滤，exec 必命中——cast 只表达这个不变式
+    const name = /** @type {RegExpExecArray} */ (ASSET_FILE_RE.exec(f))[2];
     // 差分基础名与 splitAssetVariant 同口径：第一个 - 分隔（立绘-薇拉-微笑 → 薇拉）
     const base = name.includes("-") ? name.slice(0, name.indexOf("-")) : name;
     const referenced =
@@ -289,12 +294,23 @@ function collectReferences(root) {
  * 检查分七组：frontmatter / theme / 正文小节 / 封面 / 资产命名 / 孤儿素材 / 音频；
  * 每组干净时恰好产出一条 [ok]，所以「N 项通过」= 通过的组数。
  * preset.md 缺失时只报一条 error（其余组无从谈起）。
+ * @typedef {Object} DoctorResult
+ * @property {string} dir
+ * @property {string} id
+ * @property {Finding[]} findings
+ * @property {number} passed
+ * @property {number} warnings
+ * @property {number} errors
+ */
+
+/**
  * @param {string} presetDir preset 目录绝对路径
  * @param {string} [root] 游戏根目录（孤儿判定要扫全库引用面；缺省 GAME_ROOT）
- * @returns {{dir: string, id: string, findings: Finding[], passed: number, warnings: number, errors: number}}
+ * @returns {DoctorResult}
  */
 export function checkPreset(presetDir, root = GAME_ROOT) {
   const dirName = path.basename(String(presetDir));
+  /** @type {string|null} */
   let text = null;
   try {
     text = fs.readFileSync(path.join(presetDir, "preset.md"), "utf8");
@@ -316,7 +332,7 @@ export function checkPreset(presetDir, root = GAME_ROOT) {
     checkOrphans(assets, ref),
     checkAudio(listFileNames(path.join(presetDir, "audio"))),
   ].flat();
-  const count = (level) => groups.filter((f) => f.level === level).length;
+  const count = /** @param {"ok"|"warn"|"error"} level */ (level) => groups.filter((f) => f.level === level).length;
   return {
     dir: dirName,
     id,
@@ -331,10 +347,11 @@ export function checkPreset(presetDir, root = GAME_ROOT) {
  * 体检 presets/ 下全部剧本（导出供测试直测）：跳过点前缀目录（导入中的 .tmp-* 残片、.DS_Store 类），
  * 按目录名排序保证报告确定。
  * @param {string} [root] 游戏根目录（缺省 GAME_ROOT）
- * @returns {{root: string, results: Array<object>, passed: number, warnings: number, errors: number}}
+ * @returns {{root: string, results: DoctorResult[], passed: number, warnings: number, errors: number}}
  */
 export function checkAllPresets(root = GAME_ROOT) {
   const presetsRoot = path.join(root, "presets");
+  /** @type {string[]} */
   let names = [];
   try {
     names = fs
@@ -344,6 +361,7 @@ export function checkAllPresets(root = GAME_ROOT) {
       .sort();
   } catch {}
   const results = names.map((name) => checkPreset(path.join(presetsRoot, name), root));
+  /** @param {"passed"|"warnings"|"errors"} k */
   const sum = (k) => results.reduce((n, r) => n + r[k], 0);
   return { root, results, passed: sum("passed"), warnings: sum("warnings"), errors: sum("errors") };
 }

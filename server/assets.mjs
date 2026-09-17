@@ -7,6 +7,7 @@ import path from "path";
 import { GAME_ROOT } from "./config.mjs";
 
 // 文件名安全字符：名字里的路径分隔符与引号类字符一律替换为 _
+/** @param {string} name 标记里的原始名 @returns {string} 净化后的安全文件名（空名兜底 unnamed） */
 export function sanitizeAssetName(name) {
   const safe = String(name).replace(/[\\/:*?"<>|「」『』\r\n\t]/g, "_").trim();
   return safe || "unnamed";
@@ -95,11 +96,13 @@ export function resolvePersistPreset({ queryPreset = "", srcRel = "", currentPre
 }
 
 // 差分文件名解析：<名>[-<变体>]（第一个 - 分隔；无 - 即基础版 variant=""）
+/** @param {string} rest 已去类型的名字段 @returns {{name: string, variant: string}} */
 export function splitAssetVariant(rest) {
   const i = rest.indexOf("-");
   return i === -1 ? { name: rest, variant: "" } : { name: rest.slice(0, i), variant: rest.slice(i + 1) };
 }
 
+/** @param {string} file 绝对路径 @returns {number} mtime 毫秒；读不到（不存在）为 0 */
 export function mtimeOf(file) {
   try { return fs.statSync(file).mtimeMs; } catch { return 0; }
 }

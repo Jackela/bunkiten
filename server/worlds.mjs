@@ -30,7 +30,21 @@ import {
 // 因为回收站不能让「删除」这个操作本身失败（回退的 rmSync 若也失败则原样抛出，两个调用方
 // /api/assets 与 /api/worlds delete 都在各自路由里 catch 成 4xx/5xx，绝不冒泡成 uncaughtException——
 // server 在 Electron 主进程内运行，冒泡即应用闪退）。
+/**
+ * state/worlds/index.json 的一条世界元数据（listWorlds 的返回在此基础上再补 exists/自愈字段）。
+ * @typedef {Object} WorldIndexEntry
+ * @property {string} worldId
+ * @property {string} preset
+ * @property {string} title
+ * @property {string} [label] 展示名（v1.6 起可选；老索引缺失时 listWorlds 补空串）
+ * @property {string} [note]
+ * @property {number} chapterNo
+ * @property {number} lastPlayed
+ * @property {{worldId: string, nodeId: string, seq?: number}|null} [forkedFrom]
+ */
+
 // label：可选归属标注（素材删除传 presetId）——跨剧本同名文件在 trash 里靠它区分该挪回哪个剧本。
+/** @param {string} root 游戏根目录 @param {string[]} rel 相对 root 的路径段 @param {string} [label] @returns {{trashed: boolean, fallback?: string}} */
 export function moveToTrash(root, rel, label = "") {
   const src = path.join(root, ...rel);
   if (!fs.existsSync(src)) return { trashed: false }; // 本来就没有可挪的东西（如索引在、目录已被手删），不谎报也不占位
@@ -46,6 +60,7 @@ export function moveToTrash(root, rel, label = "") {
   }
 }
 
+/** @param {string} root 世界根目录 @returns {WorldIndexEntry[]} 坏 JSON / 非数组时为空数组 */
 export function readWorldsIndex(root) {
   try {
     const data = JSON.parse(fs.readFileSync(path.join(root, "index.json"), "utf8"));
@@ -55,6 +70,7 @@ export function readWorldsIndex(root) {
   }
 }
 
+/** @param {string} root 世界根目录 @param {WorldIndexEntry[]} list 完整索引（整体覆写） */
 export function writeWorldsIndex(root, list) {
   fs.mkdirSync(root, { recursive: true });
   fs.writeFileSync(path.join(root, "index.json"), JSON.stringify(list, null, 2) + "\n");
@@ -79,6 +95,7 @@ export function presetFromStateFile(worldId, root = WORLDS_ROOT) {
 }
 
 // 当前章号从树文件正文取（最后一个 `## 第 N 章`）；读不到回退 index 记录
+/** @param {string} md story-tree.md 全文（null/undefined 视同空文本） @returns {number} */
 export function worldChapterNo(md) {
   let n = 1;
   for (const m of String(md || "").matchAll(/^##\s*第\s*(\d+)\s*章/gm)) n = Number(m[1]);
@@ -94,7 +111,8 @@ const STATE_KV_RE = /^-\s*([^:：]+?)\s*[:：]\s*(.*)$/;
 /** 未回收伏笔行尾的轮次标注：`（埋于第 N 轮）`（全半角括号都认） */
 const FORESHADOW_TURN_RE = /[（(]埋于第\s*(\d+)\s*轮[）)]\s*$/;
 
-/** 好感度解析：取行内第一个整数并夹进 [0,100]（引擎可能写出界）；解析不出（如「很高」）→ null */
+/** 好感度解析：取行内第一个整数并夹进 [0,100]（引擎可能写出界）；解析不出（如「很高」）→ null
+ *  @param {unknown} raw @returns {number|null} */
 function parseFavor(raw) {
   const m = /-?\d+/.exec(String(raw ?? ""));
   if (!m) return null;
@@ -102,13 +120,40 @@ function parseFavor(raw) {
   return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : null;
 }
 
-/** 行内整数（周目）；解析不出 → null */
+/** 行内整数（周目）；解析不出 → null
+ *  @param {unknown} raw @returns {number|null} */
 function parseIntOrNull(raw) {
   const m = /-?\d+/.exec(String(raw ?? ""));
   return m && Number.isFinite(Number(m[0])) ? Number(m[0]) : null;
 }
 
-/** 空角色卡（角色卡的缺省形状：字符串字段空串、好感度 null） */
+/**
+ * 角色面板里的单张角色卡（parseStateFile 的 characters 元素）。
+ * @typedef {Object} CharacterCard
+ * @property {string} name
+ * @property {string} role 身份
+ * @property {string} traits 性格关键词
+ * @property {string} catchphrase 口癖
+ * @property {number|null} favor 好感度（夹 0-100，解析不出 null）
+ * @property {string} artFile
+ * @property {string} expression 表情
+ * @property {string} secret 秘密
+ * @property {string} recentInteraction 最近互动
+ */
+
+/**
+ * 世界 state.md 解析出的角色面板视图（GET /api/state 的响应体骨架）。
+ * @typedef {Object} WorldStateView
+ * @property {{preset: string|null, playthrough: number|null, time: string|null, scene: string|null}} status
+ * @property {Record<string, string>} protagonist
+ * @property {Record<string, string>} director
+ * @property {CharacterCard[]} characters
+ * @property {Array<{name: string, value: string}>} flags
+ * @property {Array<{text: string, turn: number|null}>} foreshadowing
+ */
+
+/** 空角色卡（角色卡的缺省形状：字符串字段空串、好感度 null）
+ *  @param {string} name @returns {CharacterCard} */
 function newCharacterCard(name) {
   return { name, role: "", traits: "", catchphrase: "", favor: null, artFile: "", expression: "", secret: "", recentInteraction: "" };
 }
@@ -121,13 +166,10 @@ function newCharacterCard(name) {
  * 好感度→favor（夹 0-100，解析不出 null）、art_file→artFile、表情→expression、秘密→secret、最近互动→recentInteraction；
  * art_prompt 等未知键忽略）；`# Flags` → flags；`# 未回收伏笔` → foreshadowing（行尾「埋于第 N 轮」拆出 turn，缺省 null）。
  * @param {string} text state.md 全文（null/undefined 视同空文本）
- * @returns {{status: {preset: string|null, playthrough: number|null, time: string|null, scene: string|null},
- *   protagonist: Record<string,string>, director: Record<string,string>,
- *   characters: Array<{name: string, role: string, traits: string, catchphrase: string, favor: number|null,
- *     artFile: string, expression: string, secret: string, recentInteraction: string}>,
- *   flags: Array<{name: string, value: string}>, foreshadowing: Array<{text: string, turn: number|null}>}}
+ * @returns {WorldStateView}
  */
 export function parseStateFile(text) {
+  /** @type {WorldStateView} */
   const out = {
     status: { preset: null, playthrough: null, time: null, scene: null },
     protagonist: {},
@@ -136,7 +178,9 @@ export function parseStateFile(text) {
     flags: [],
     foreshadowing: [],
   };
+  /** @type {Record<string, "preset"|"playthrough"|"time"|"scene">} */
   const STATUS_KEYS = { preset: "preset", 周目: "playthrough", 时间: "time", 场景: "scene" };
+  /** @type {Record<string, "role"|"traits"|"catchphrase"|"favor"|"artFile"|"expression"|"secret"|"recentInteraction">} */
   const CHARACTER_KEYS = {
     身份: "role",
     性格关键词: "traits",
@@ -148,7 +192,7 @@ export function parseStateFile(text) {
     最近互动: "recentInteraction",
   };
   let section = ""; // 当前一级小节名（未知小节也跟踪，只是不解析内容）
-  let character = null; // 角色卡小节里当前的 ## 角色（其它小节恒为 null）
+  /** @type {CharacterCard|null} */ let character = null; // 角色卡小节里当前的 ## 角色（其它小节恒为 null）
   for (const rawLine of String(text ?? "").split(/\r?\n/)) {
     const line = rawLine.trim();
     const h2 = /^##(?!#)\s*(.+?)\s*$/.exec(line);
@@ -194,6 +238,7 @@ export function parseStateFile(text) {
     } else if (section === "未回收伏笔" && line.startsWith("-")) {
       let t = line.replace(/^-\s*/, "").trim();
       if (!t) continue;
+      /** @type {number|null} */
       let turn = null;
       const m = FORESHADOW_TURN_RE.exec(t);
       if (m) {
@@ -225,7 +270,8 @@ export function stateViewFor(worldId, root = WORLDS_ROOT) {
   return { code: 200, body: { worldId, ...parseStateFile(md) } };
 }
 
-/** 新建世界（分配 id、建目录、写索引）；新世界的三份文件由引擎在开局/规划时初始化 */
+/** 新建世界（分配 id、建目录、写索引）；新世界的三份文件由引擎在开局/规划时初始化
+ *  @param {string} root 世界根目录 @param {string} preset 剧本 id @param {string} [title] @returns {WorldIndexEntry} */
 export function createWorld(root, preset, title = "") {
   const list = readWorldsIndex(root);
   const base = String(preset || "world").replace(/[^A-Za-z0-9_-]/g, "-") || "world";
@@ -248,6 +294,7 @@ export function createWorld(root, preset, title = "") {
 }
 
 // 选精确回退源（纯逻辑）：显式 seq 命中优先；否则按 nodeId 取最早匹配快照；都没有 → null（走兼容路径）
+/** @param {import("./snapshots.mjs").SnapshotEntry[]} snaps @param {string} nodeId @param {number|string|null} seq @returns {import("./snapshots.mjs").SnapshotEntry|null} */
 function pickForkSnapshot(snaps, nodeId, seq) {
   if (seq != null && seq !== "") {
     const hit = snaps.find((s) => s.seq === Number(seq));
@@ -259,6 +306,7 @@ function pickForkSnapshot(snaps, nodeId, seq) {
 // 手动分叉（v1.6 支持精确快照源）：
 //   有快照（显式 seq 或按 nodeId 最早匹配）→ 精确：以快照三文件建新世界（仍写 fork.md，引擎只校准树）；
 //   无快照 → 兼容路径：复制当前三文件 + 本地回退进度指针（既有行为，字节不变）。
+/** @param {string} root 世界根目录 @param {string} originId 来源世界 id @param {string} nodeId 分叉节点 id @param {number|null} [seq] 显式快照 seq @returns {{worldId: string, entry: WorldIndexEntry|undefined}|{error: string}} */
 export function forkWorld(root, originId, nodeId, seq = null) {
   const origin = readWorldsIndex(root).find((e) => e.worldId === originId);
   if (!origin) return { error: "来源世界不存在" };
@@ -357,7 +405,7 @@ export function updateWorld(root, worldId, patch = {}) {
  * 打包一个世界（含全部快照）为可迁移 bundle（CONTRACTS §2）。
  * @param {string} root 世界根目录
  * @param {string} worldId 世界 id
- * @returns {{bundle: object}|{error: string}}
+ * @returns {{bundle?: object, error?: string}} 成功时 bundle、失败时 error（HTTP 层按字段有无分流）
  */
 export function exportWorld(root, worldId) {
   if (!WORLD_ID_RE.test(String(worldId || ""))) return { error: "参数不合法" };
@@ -391,8 +439,11 @@ export function exportWorld(root, worldId) {
  * 导入一个 bundle：校验 format/version/worldId → 重名时加 `-2/-3…` 后缀 → 写文件 + 快照 + 索引（note 追加「（导入）」）。
  * 校验口径与导出对称，任何字段不合法一律拒绝（不写半个世界）。
  * @param {string} root 世界根目录
- * @param {object} bundle 导出体
- * @returns {{worldId: string}|{error: string}}
+ * @param {{format?: unknown, version?: unknown, world?: {
+ *   worldId?: unknown, preset?: unknown, title?: unknown, label?: unknown, note?: unknown, chapterNo?: unknown,
+ *   files?: {state?: unknown, summary?: unknown, tree?: unknown},
+ *   snapshots?: unknown[]|null}}} bundle 导出体（JSON 直入，函数内逐字段校验）
+ * @returns {{worldId?: string, error?: string}}
  */
 export function importWorld(root, bundle) {
   const w = bundle && typeof bundle === "object" ? bundle.world : null;
@@ -450,6 +501,7 @@ export function importWorld(root, bundle) {
   return { worldId: id };
 }
 
+/** @param {string} root 世界根目录 @param {string} worldId @returns {{ok: true, trashed: boolean, fallback?: string}|{error: string}} */
 export function deleteWorld(root, worldId) {
   const list = readWorldsIndex(root);
   if (!list.some((e) => e.worldId === worldId)) return { error: "世界不存在" };
@@ -461,6 +513,7 @@ export function deleteWorld(root, worldId) {
 }
 
 // 列表：index 为准，磁盘自愈（chapterNo 读树、lastPlayed 取三文件最新 mtime）；按最近游玩倒序
+/** @param {string} root 世界根目录 @param {string|null} [presetFilter] 按剧本 id 过滤 @returns {Array<WorldIndexEntry & {exists: boolean}>} */
 export function listWorlds(root, presetFilter = null) {
   return readWorldsIndex(root)
     .filter((e) => !presetFilter || e.preset === presetFilter)
@@ -480,6 +533,7 @@ export function listWorlds(root, presetFilter = null) {
 }
 
 // 旧版扁平 state/*.md 一次性迁入 state/worlds/main/（幂等：index.json 已存在即跳过；无旧数据返回 false）
+/** @param {string} stateDir 旧 state 目录 @param {string} worldsRoot 世界根目录 @returns {boolean} 是否真的迁移了 */
 export function migrateLegacyState(stateDir, worldsRoot) {
   if (fs.existsSync(path.join(worldsRoot, "index.json"))) return false;
   let files = [];
