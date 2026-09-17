@@ -9,6 +9,8 @@ theme:
   accent: "#f0b95a"
   accent2: "#f7e3b0"
   motif: summer
+  font: hei
+  dialog: glass
 ---
 
 # 世界观

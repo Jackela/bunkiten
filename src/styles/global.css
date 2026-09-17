@@ -51,9 +51,46 @@ body {
   outline: none;
 }
 
-/* 胶片颗粒（Atmosphere）：CSS 生成的 feTurbulence 噪点，不引外部图片 */
+/* 胶片颗粒（Atmosphere）：CSS 生成的 feTurbulence 噪点，不引外部图片。
+   噪点 URI 提为变量单源：.grain（全屏 Atmosphere）与 .dialog-paper::before（对话框纸纹）共用同一份 */
+:root {
+  --grain-url: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
 .grain {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-image: var(--grain-url);
+}
+
+/* 对话框质感（v1.7）：theme.dialog → DialogueBox 容器的 dialog-* 类；plain 无规则（=现状半透明面板）。
+   三档都只做加法装饰，不动面板底色（rgba(10,12,18,.72)）与文字色——上方 ink-* 对比度阶梯不许回退；
+   毛玻璃的 backdrop-blur 由容器基线类 backdrop-blur-xl 提供（所有档位共享），档位差异只在纹理/高光。 */
+.dialog-silk {
+  /* 缎面：纵向极淡的 accent 色调高光（顶 6% → 透明 → 底 3% 微光） */
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--accent) 6%, transparent),
+    transparent 38%,
+    color-mix(in oklab, var(--accent2) 3%, transparent)
+  );
+}
+
+/* 纸纹：同一份 feTurbulence 噪点只铺对话框（Atmosphere 的全屏颗粒照旧、不叠加增强），
+   透明度压到 .04 并真正垫在文字之下（z-index:-1 画在 in-flow 内容之前、容器背景之后；
+   绝对定位伪元素若不加负 z-index 会画在文字之上——DOM 顺序不决定这两者的绘制序） */
+.dialog-paper::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: -1;
+  opacity: 0.04;
+  background-image: var(--grain-url);
+}
+
+.dialog-glass {
+  /* 毛玻璃：blur 基线之上再叠一层顶部内侧高光反射（accent2 8% → 24% 处淡出） */
+  background-image: linear-gradient(180deg, color-mix(in oklab, var(--accent2) 8%, transparent), transparent 24%);
 }
 
 /* 动效降级（v1.7）：系统开了「减少动态效果」（prefers-reduced-motion: reduce）时关停装饰性动画。

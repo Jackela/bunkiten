@@ -280,9 +280,12 @@ const MIME = {
 
 // ---------- presets 解析（手写简易解析，不引依赖） ----------
 const FM_KEYS = ["id", "title", "tagline", "genre", "rating"];
-const THEME_KEYS = ["accent", "accent2", "motif"];
+const THEME_KEYS = ["accent", "accent2", "motif", "font", "dialog"];
+// 字体族/对话框质感白名单（v1.7）：与 src/theme.ts 的 FONT_PRESETS/DIALOG_TEXTURES 同集
+const FONT_PRESETS = ["serif", "song", "kai", "hei"];
+const DIALOG_TEXTURES = ["plain", "silk", "paper", "glass"];
 // theme 兜底：块缺失或格式坏时整套默认（aurora 为兜底母题）
-const DEFAULT_THEME = Object.freeze({ accent: "#c9a86a", accent2: "#e8e4da", motif: "aurora" });
+const DEFAULT_THEME = Object.freeze({ accent: "#c9a86a", accent2: "#e8e4da", motif: "aurora", font: "serif", dialog: "plain" });
 
 function parseFrontmatter(text) {
   const lines = text.split(/\r?\n/);
@@ -293,7 +296,7 @@ function parseFrontmatter(text) {
   let inTheme = false;
   for (const line of lines.slice(1, end)) {
     if (line.startsWith(" ") || line.startsWith("\t")) {
-      // theme 块的缩进子键（accent/accent2/motif）；其余缩进行照旧忽略
+      // theme 块的缩进子键（accent/accent2/motif/font/dialog）；其余缩进行照旧忽略
       if (!inTheme) continue;
       const i = line.indexOf(":");
       if (i === -1) continue;
@@ -311,14 +314,17 @@ function parseFrontmatter(text) {
   return fm; // 调用方校验必填字段
 }
 
-// theme 逐键兜底：accent/accent2 要求 #hex 颜色，motif 非空；坏值用对应默认键，不抛错
-function normalizeTheme(fm) {
+// theme 逐键兜底：accent/accent2 要求 #hex 颜色，motif 非空，font/dialog 走白名单；坏值用对应默认键，不抛错
+export function normalizeTheme(fm) {
   const raw = fm.theme && typeof fm.theme === "object" ? fm.theme : {};
   const isColor = (v) => typeof v === "string" && /^#[0-9a-fA-F]{3,8}$/.test(v);
+  const inList = (v, list) => (typeof v === "string" && list.includes(v.trim()) ? v.trim() : null);
   return {
     accent: isColor(raw.accent) ? raw.accent : DEFAULT_THEME.accent,
     accent2: isColor(raw.accent2) ? raw.accent2 : DEFAULT_THEME.accent2,
     motif: typeof raw.motif === "string" && raw.motif.trim() ? raw.motif.trim() : DEFAULT_THEME.motif,
+    font: inList(raw.font, FONT_PRESETS) ?? DEFAULT_THEME.font,
+    dialog: inList(raw.dialog, DIALOG_TEXTURES) ?? DEFAULT_THEME.dialog,
   };
 }
 

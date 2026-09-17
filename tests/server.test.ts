@@ -22,6 +22,7 @@ import {
   listWorlds,
   migrateLegacyState,
   normalizeSnapshot,
+  normalizeTheme,
   parseArtLine,
   parseAudioLine,
   parseExpressionLine,
@@ -961,5 +962,48 @@ describe("server restoreWorld：先备份再覆盖（CONTRACTS §2，临时 root
     const cf = forkWorld(root, plain.worldId, "2-2") as any;
     expect(cf.entry.forkedFrom).toEqual({ worldId: plain.worldId, nodeId: "2-2" });
     expect(readFileSync(path.join(root, cf.worldId, "story-tree.md"), "utf8")).toContain("节点 2-2（已走 0 轮）");
+  });
+});
+
+// ————————————————————— theme 新键：字体族与对话框质感（v1.7） —————————————————————
+
+describe("server normalizeTheme：theme 新键 font/dialog（v1.7）", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), "theme-"));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("font/dialog 合法值透传（白名单与 src/theme.ts 同集；首尾空白被容忍）", () => {
+    const t = normalizeTheme({ theme: { accent: "#4fd8c4", accent2: "#a8f0e4", motif: "rune", font: " kai ", dialog: "paper" } }) as Record<string, string>;
+    expect(t.font).toBe("kai");
+    expect(t.dialog).toBe("paper");
+    expect(t.accent).toBe("#4fd8c4"); // 旧键照旧
+  });
+
+  it("font/dialog 非法或缺省回退 serif/plain：旧 preset 不配这两键，返回形状向后兼容", () => {
+    const old = normalizeTheme({ theme: { accent: "#f0b95a", accent2: "#f7e3b0", motif: "summer" } }) as Record<string, string>;
+    expect(old.font).toBe("serif");
+    expect(old.dialog).toBe("plain");
+    const bad = normalizeTheme({ theme: { font: "comic-sans", dialog: "neon" } }) as Record<string, string>;
+    expect(bad.font).toBe("serif");
+    expect(bad.dialog).toBe("plain");
+    expect(bad.accent).toBe("#c9a86a"); // 坏值逐键兜底，互不连坐
+  });
+
+  it("frontmatter theme 块的 font/dialog 子键被收进 preset.theme（scanPresets 端到端）", () => {
+    const d = path.join(root, "presets", "rain-rejection");
+    mkdirSync(d, { recursive: true });
+    writeFileSync(
+      path.join(d, "preset.md"),
+      '---\nid: rain-rejection\ntitle: 雨巷排异\ntheme:\n  accent: "#4fd0d8"\n  accent2: "#e8b86a"\n  motif: aurora\n  font: hei\n  dialog: silk\n---\n# 主要角色\n',
+    );
+    const r = scanPresets(root) as { presets: Array<{ theme: Record<string, string> }>; errors: unknown[] };
+    expect(r.errors).toEqual([]);
+    expect(r.presets[0].theme).toMatchObject({ font: "hei", dialog: "silk", motif: "aurora" });
   });
 });

@@ -108,7 +108,7 @@ export default function App() {
     // 13 的语义保留——淡入本身是 WCAG 推荐的降级替代。CSS keyframes 与打字机的降级分别在
     // global.css 与 DialogueBox（见 docs/ARCHITECTURE.md「动效降级」）。
     <MotionConfig reducedMotion="user">
-      <div className="fixed inset-0 overflow-hidden bg-bg font-serif text-ink" style={themeVars(theme)}>
+      <div className="fixed inset-0 overflow-hidden bg-bg text-ink" style={{ ...themeVars(theme), fontFamily: "var(--font-preset)" }}>
         <StatusAnnouncer />
         <BgLayer />
         <div className="pointer-events-none absolute inset-0">
