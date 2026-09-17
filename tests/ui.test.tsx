@@ -7,6 +7,7 @@
 // v1.6 第二段：剧情图快照标注/原地回退/分叉带 seq、>40 节点列表降级与缩放平移、节点 roving tabIndex、
 //      游戏键盘（数字键选选项 / 空格补全 / 自动前进倒计时标记）与 App 的状态播报区（aria-live）。
 // v1.7 新增主题深化：preset 声明字体族（--font-preset 系统字体栈）与对话框质感（dialog-* 类映射）。
+// v1.7 续：重掷本回合（reroll）——次新 turn 快照 restore、reason:"reroll" 分割线、重同步收尾后排队重发同一玩家输入。
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import React from "react";
@@ -2399,6 +2400,260 @@ describe("回退后玩家继续走：普通指令不冒充重同步（v1.7）", 
     expect(s.resyncFailed).toBe(false); // 玩家指令的失败不再记账到重同步头上
     expect(s.treeNotice).not.toContain("HTTP 500"); // 也不追加新的「重同步失败」文案
     expect(s.status).toBe("出错：HTTP 500"); // 普通出错文案照常
+  });
+});
+
+// ————————————————————— 重掷本回合（v1.7） —————————————————————
+
+describe("重掷本回合：次新 turn 快照 restore + 重同步收尾后重发同一玩家输入（v1.7）", () => {
+  /** POST /prompt 的返回开关（用例内切 false 制造 409 投递失败） */
+  let promptOk: boolean;
+  /** POST /prompt 收到的指令（按顺序） */
+  let prompts: string[];
+  /** POST /api/worlds 收到的动作 */
+  let worldPosts: Record<string, unknown>[];
+  /** GET /api/history 返回的快照索引（用例内改写，模拟重掷后的新账本） */
+  let historySnapshots: WorldSnapshotMeta[];
+
+  /** 一条快照元信息（nodeId/chapterNo 对重掷无意义，占位） */
+  const snap = (seq: number, kind: "turn" | "backup"): WorldSnapshotMeta => ({ seq, at: "2026-09-17T00:00:00.000Z", kind, nodeId: null, chapterNo: 1 });
+
+  beforeEach(() => {
+    promptOk = true;
+    prompts = [];
+    worldPosts = [];
+    // 升序三条：turn 2 / backup 3 / turn 5——重掷只认 kind:"turn"，最新 5 = 刚结束的本回合，次新 = 2
+    historySnapshots = [snap(2, "turn"), snap(3, "backup"), snap(5, "turn")];
+    useGameStore.setState({
+      worldId: "campus-summer-1",
+      worldLabel: "campus-summer-1",
+      screen: "game",
+      screenReturn: null,
+      status: "就绪",
+      treeStamp: 0,
+      treeNotice: null,
+      treeFocus: null,
+      forkResult: null,
+      engineBusy: false,
+      pendingTreeMessage: null,
+      pendingResync: null,
+      resyncFailed: false,
+      resyncing: false,
+      lastTurnPrompt: "推门进去",
+      pendingTurnPrompt: null,
+      pendingRerollPrompt: null,
+      history: [{ n: "第 3 幕", t: "回合甲：门轴一声闷响。" }],
+      turnNo: 3,
+      segs: { 0: "" },
+      curSeg: 0,
+      typingDone: true,
+      options: null,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/prompt") {
+          prompts.push((JSON.parse(String(init?.body)) as { text: string }).text);
+          return jsonResponse(promptOk ? { ok: true } : { ok: false, error: "上一回合还在进行" }, promptOk ? 200 : 409);
+        }
+        if (url.pathname === "/api/history") return jsonResponse({ worldId: "campus-summer-1", snapshots: historySnapshots });
+        if (url.pathname === "/api/worlds" && init?.method === "POST") {
+          const body = JSON.parse(String(init.body)) as { action: string };
+          worldPosts.push(body);
+          if (body.action === "restore") return jsonResponse({ ok: true, backupSeq: 12 });
+          return jsonResponse({ ok: true });
+        }
+        return jsonResponse({}, 404);
+      }),
+    );
+  });
+
+  it("重掷全链：restore 取次新 turn 快照（backup 不算）、分割线标 reroll、重同步回合收尾后自动重发同一输入", async () => {
+    render(<TopBar />);
+    const btn = screen.getByTestId("reroll");
+    expect(btn.getAttribute("aria-label")).toBe("重掷本回合");
+
+    await act(async () => {
+      fireEvent.click(btn);
+    });
+    // 次新 turn = seq 2（最新 turn 5 是刚结束的本回合；backup 3 不参与计数）
+    expect(worldPosts).toStrictEqual([{ action: "restore", worldId: "campus-summer-1", seq: 2 }]);
+    expect(prompts).toEqual(["继续世界：campus-summer-1。"]);
+    const s1 = useGameStore.getState();
+    expect(s1.pendingResync).toEqual({ worldId: "campus-summer-1", seq: 2 });
+    expect(s1.pendingRerollPrompt).toBe("推门进去");
+    expect(s1.history[1]).toMatchObject({ kind: "rollback", seq: 2, reason: "reroll" });
+    expect(screen.queryByTestId("reroll")).toBeNull(); // 待重同步期间不显示重掷
+
+    // 重同步回合成功收尾 → 清徽章 + 排队跟进立即重发玩家输入（走玩家回合路径）
+    act(() => {
+      useGameStore.setState({ segs: { 0: "重读档完成" }, curSeg: 0 });
+      useGameStore.getState().handleEvent({ type: "turn_end" });
+    });
+    expect(prompts).toEqual(["继续世界：campus-summer-1。", "推门进去"]);
+    expect(useGameStore.getState().pendingResync).toBeNull();
+    expect(useGameStore.getState().pendingRerollPrompt).toBeNull();
+
+    // 重掷出的新回合（回合乙）收尾：lastTurnPrompt 定格为重发的输入——连掷的弹药还在
+    act(() => {
+      useGameStore.setState({ segs: { 0: "回合乙：这次门后传来脚步声。" }, curSeg: 0 });
+      useGameStore.getState().handleEvent({ type: "turn_end" });
+    });
+    const s2 = useGameStore.getState();
+    expect(s2.lastTurnPrompt).toBe("推门进去");
+    expect(s2.status).toBe("就绪");
+
+    // 分割线文案走 reroll 措辞；旧幕（回合甲）在分割线之前置灰、新幕正常
+    useGameStore.setState({ drawerOpen: true });
+    render(<HistoryDrawer />);
+    expect(screen.getByTestId("history-rollback").textContent).toContain("重掷本回合（回到快照 #2）");
+    const acts = screen.getAllByTestId("history-act");
+    expect(acts[0].textContent).toContain("回合乙"); // 抽屉倒序：最新在上
+    expect(acts[0].className).not.toContain("opacity-50");
+    expect(acts[acts.length - 1].textContent).toContain("回合甲");
+    expect(acts[acts.length - 1].className).toContain("opacity-50");
+  });
+
+  it("快照不足（本世界第一回合）：不 restore、不重发、不插分割线，status 反馈不可重掷", async () => {
+    historySnapshots = [snap(1, "turn"), snap(2, "backup")]; // turn 只有一条：没有「上一回合结束态」可回
+    render(<TopBar />);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("reroll"));
+    });
+    expect(worldPosts).toEqual([]);
+    expect(prompts).toEqual([]);
+    const s = useGameStore.getState();
+    expect(s.pendingResync).toBeNull();
+    expect(s.pendingRerollPrompt).toBeNull();
+    expect(s.history).toHaveLength(1); // 没有插分割线
+    expect(s.status).toContain("无法重掷");
+    expect(screen.queryByTestId("reroll")).toBeNull(); // 状态行已离开「就绪」：入口收起
+  });
+
+  it("连掷：第一次重掷完整走完后，再点重掷取此刻账本的次新 turn 快照", async () => {
+    render(<TopBar />);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("reroll"));
+    });
+    act(() => {
+      // 重同步回合收尾 → 自动重发
+      useGameStore.setState({ segs: { 0: "重读档完成" }, curSeg: 0 });
+      useGameStore.getState().handleEvent({ type: "turn_end" });
+    });
+    act(() => {
+      // 重掷出的回合乙收尾 → 就绪，重掷入口回来
+      useGameStore.setState({ segs: { 0: "回合乙正文" }, curSeg: 0 });
+      useGameStore.getState().handleEvent({ type: "turn_end" });
+    });
+    // 服务器侧的新账本：旧两条 turn + 第一次重掷的 backup(12) + 回合乙的 turn(14)
+    historySnapshots = [snap(2, "turn"), snap(3, "backup"), snap(5, "turn"), snap(12, "backup"), snap(14, "turn")];
+    const btn = screen.getByTestId("reroll");
+    await act(async () => {
+      fireEvent.click(btn);
+    });
+    // turn 序列 [2,5,14]：最新 14 = 回合乙，次新 5 = 原回合甲——第二次重掷按新账本退到 5
+    expect(worldPosts).toStrictEqual([
+      { action: "restore", worldId: "campus-summer-1", seq: 2 },
+      { action: "restore", worldId: "campus-summer-1", seq: 5 },
+    ]);
+    expect(prompts).toEqual(["继续世界：campus-summer-1。", "推门进去", "继续世界：campus-summer-1。"]);
+    expect(useGameStore.getState().pendingRerollPrompt).toBe("推门进去"); // 又排了一次重发
+  });
+
+  it("重同步投递失败后玩家改发普通指令：排队重发作废，重发的玩家文本不出现第二次", async () => {
+    promptOk = false; // restore 后补发的续档指令 409：进入「待重同步 + 已排队重发」态
+    render(<TopBar />);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("reroll"));
+    });
+    await waitFor(() => expect(useGameStore.getState().resyncFailed).toBe(true));
+    expect(useGameStore.getState().pendingRerollPrompt).toBe("推门进去"); // 前置：排队重发还挂着
+
+    promptOk = true;
+    await act(async () => {
+      useGameStore.getState().sendPlayerTurn("原地等待");
+    });
+    act(() => {
+      useGameStore.setState({ segs: { 0: "门在雨里纹丝不动。" }, curSeg: 0 });
+      useGameStore.getState().handleEvent({ type: "turn_end" });
+    });
+    // 普通指令回合的收尾不认领排队重发（认领条件是 resyncing 收尾）：玩家文本只出现一次，
+    // 排队的「推门进去」已随 pendingResync 在 send 入口静默作废
+    expect(prompts).toEqual(["继续世界：campus-summer-1。", "原地等待"]);
+    expect(prompts.filter((p) => p === "推门进去")).toHaveLength(0);
+    const s = useGameStore.getState();
+    expect(s.pendingRerollPrompt).toBeNull();
+    expect(s.lastTurnPrompt).toBe("原地等待"); // 新的玩家输入照常定格
+  });
+
+  it("重同步投递失败后点「再同步」：成功收尾后玩家文本恰好重发一次", async () => {
+    promptOk = false; // 续档指令 409：徽章 + 「再同步」入口
+    render(<TopBar />);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("reroll"));
+    });
+    await waitFor(() => expect(useGameStore.getState().resyncFailed).toBe(true));
+    expect(useGameStore.getState().pendingRerollPrompt).toBe("推门进去"); // 排队重发保留：还有救
+
+    promptOk = true;
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("resync-retry"));
+    });
+    // 再同步回合成功收尾：清徽章 + 排队跟进立即重发玩家文本（且只有这一次）
+    act(() => {
+      useGameStore.setState({ segs: { 0: "重读档完成" }, curSeg: 0 });
+      useGameStore.getState().handleEvent({ type: "turn_end" });
+    });
+    expect(prompts).toEqual(["继续世界：campus-summer-1。", "继续世界：campus-summer-1。", "推门进去"]);
+    expect(prompts.filter((p) => p === "推门进去")).toHaveLength(1); // 恰好一次
+    const s = useGameStore.getState();
+    expect(s.pendingRerollPrompt).toBeNull();
+    expect(s.pendingResync).toBeNull();
+    expect(s.lastTurnPrompt).toBeNull(); // 重同步回合不携带玩家输入（resyncing 分支清空）；重发回合收尾时会重新定格
+  });
+
+  it("玩家入口记账：sendPlayerTurn 定格 lastTurnPrompt、指令回合不覆盖、投递失败即在途作废；无输入不渲染入口", async () => {
+    useGameStore.setState({ lastTurnPrompt: null });
+    await act(async () => {
+      useGameStore.getState().sendPlayerTurn("推门进去");
+    });
+    expect(useGameStore.getState().pendingTurnPrompt).toBe("推门进去");
+    act(() => {
+      useGameStore.setState({ segs: { 0: "回合甲正文" }, curSeg: 0 });
+      useGameStore.getState().handleEvent({ type: "turn_end" });
+    });
+    expect(useGameStore.getState().lastTurnPrompt).toBe("推门进去");
+    expect(useGameStore.getState().pendingTurnPrompt).toBeNull();
+
+    // 指令回合（画廊重绘类）收尾：lastTurnPrompt 保持上一个玩家回合的值
+    await act(async () => {
+      useGameStore.getState().send("美术：重绘 背景 中殿");
+    });
+    act(() => {
+      useGameStore.setState({ segs: { 0: "已重绘" }, curSeg: 0 });
+      useGameStore.getState().handleEvent({ type: "turn_end" });
+    });
+    expect(useGameStore.getState().lastTurnPrompt).toBe("推门进去");
+    expect(useGameStore.getState().pendingTurnPrompt).toBeNull();
+
+    // 投递失败（409）：回合没有开始，在途输入作废，不许污染 lastTurnPrompt
+    promptOk = false;
+    await act(async () => {
+      useGameStore.getState().sendPlayerTurn("往前走");
+    });
+    await waitFor(() => expect(useGameStore.getState().status).toContain("出错"));
+    expect(useGameStore.getState().pendingTurnPrompt).toBeNull();
+    expect(useGameStore.getState().lastTurnPrompt).toBe("推门进去");
+
+    // TopBar：有上一回合输入才渲染重掷入口
+    promptOk = true;
+    cleanup();
+    useGameStore.setState({ status: "就绪" });
+    render(<TopBar />);
+    expect(screen.getByTestId("reroll")).toBeTruthy();
+    act(() => useGameStore.setState({ lastTurnPrompt: null }));
+    expect(screen.queryByTestId("reroll")).toBeNull();
   });
 });
 

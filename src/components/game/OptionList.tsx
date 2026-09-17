@@ -32,7 +32,8 @@ function useAutoAdvanceLeft(deadline: number | null): number {
 export default function OptionList() {
   const options = useGameStore((s) => s.options);
   const typingDone = useGameStore((s) => s.typingDone);
-  const send = useGameStore((s) => s.send);
+  // 玩家叙事入口：走 sendPlayerTurn 记录在途输入（重掷「重发同一输入」的数据源），不裸调 send
+  const sendPlayerTurn = useGameStore((s) => s.sendPlayerTurn);
   const autoAdvance = useGameStore((s) => s.settings.autoAdvance);
   const autoAdvanceDeadline = useGameStore((s) => s.autoAdvanceDeadline);
   const armAutoAdvance = useGameStore((s) => s.armAutoAdvance);
@@ -61,11 +62,11 @@ export default function OptionList() {
       const opt = options[digit - 1];
       if (!opt) return; // 只有两个选项时按 9：什么都不做，别吞按键
       e.preventDefault();
-      send(opt.t);
+      sendPlayerTurn(opt.t);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [visible, options, send]);
+  }, [visible, options, sendPlayerTurn]);
 
   if (!visible || !options) return null;
 
@@ -83,7 +84,7 @@ export default function OptionList() {
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: Math.min(i * 0.08, 0.32), ease: "easeOut" }}
-          onClick={() => send(o.t)}
+          onClick={() => sendPlayerTurn(o.t)}
           className="group flex items-center justify-center gap-2.5 rounded-lg border border-transparent bg-[rgba(10,12,18,.55)] px-5 py-2 text-center text-[15.5px] tracking-[.03em] text-ink/85 backdrop-blur-md transition-[color,border-color,transform,background-color] duration-200 hover:-translate-y-0.5 hover:border-[color:var(--accent)] hover:bg-[rgba(16,19,28,.8)] hover:text-ink"
         >
           <span className="text-[10px] leading-none text-[color:var(--accent)]/80 transition-transform duration-200 group-hover:rotate-90">

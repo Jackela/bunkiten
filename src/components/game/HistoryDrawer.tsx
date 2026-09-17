@@ -3,7 +3,8 @@ import { X } from "lucide-react";
 import { useGameStore } from "../../store/game";
 
 /** 历史抽屉：右滑入，最新一幕在最上（对齐旧版 #drawer）。
- * 回退是非破坏式的：分割线（—— 已回退到快照 #N ——）之前的幕原样保留、只降不透明度。 */
+ * 回退是非破坏式的：分割线（—— 已回退到快照 #N ——／重掷时「—— 重掷本回合（回到快照 #N）——」）
+ * 之前的幕原样保留、只降不透明度。 */
 export default function HistoryDrawer() {
   const open = useGameStore((s) => s.drawerOpen);
   const history = useGameStore((s) => s.history);
@@ -24,7 +25,7 @@ export default function HistoryDrawer() {
             data-testid="history-rollback"
             className="border-y border-white/[.08] py-2 text-center text-[11px] tracking-[.25em] text-ink-hint"
           >
-            —— 已回退到快照 #{h.seq} ——
+            —— {h.reason === "reroll" ? `重掷本回合（回到快照 #${h.seq}）` : `已回退到快照 #${h.seq}`} ——
           </p>
         );
       }
