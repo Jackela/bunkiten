@@ -40,8 +40,9 @@ export function presetAssetsDir(presetId) {
 }
 
 // ---------- 音频素材（v1.6，CONTRACTS §1）：作者手放到 presets/<id>/audio/，server 只扫描+直服，不生成不落盘 ----------
-const AUDIO_KINDS = ["曲", "环境", "音效"];
-const AUDIO_EXTS = ["mp3", "ogg", "m4a", "wav", "flac"];
+// AUDIO_KINDS/AUDIO_EXTS 导出给 scripts/doctor.mjs 复用（剧本体检查音频文件名用同一集合，不抄第二份）
+export const AUDIO_KINDS = ["曲", "环境", "音效"];
+export const AUDIO_EXTS = ["mp3", "ogg", "m4a", "wav", "flac"];
 // 文件名 <类型>-<名>.<ext>；类型与扩展名都过白名单（名可含中文，不含路径分隔符）
 const AUDIO_FILE_RE = new RegExp(`^(${AUDIO_KINDS.join("|")})-(.+)\\.(${AUDIO_EXTS.join("|")})$`);
 // 直服白名单（与 /img 同款思路）：相对路径形态 + 无子目录 + 扩展名合法——resolve 前缀校验是第二道闸
@@ -279,15 +280,17 @@ const MIME = {
 };
 
 // ---------- presets 解析（手写简易解析，不引依赖） ----------
-const FM_KEYS = ["id", "title", "tagline", "genre", "rating"];
-const THEME_KEYS = ["accent", "accent2", "motif", "font", "dialog"];
+// FM_KEYS/THEME_KEYS 同样导出（doctor 的必填键与 theme 逐键对比与 server 解析口径同源）
+export const FM_KEYS = ["id", "title", "tagline", "genre", "rating"];
+export const THEME_KEYS = ["accent", "accent2", "motif", "font", "dialog"];
 // 字体族/对话框质感白名单（v1.7）：与 src/theme.ts 的 FONT_PRESETS/DIALOG_TEXTURES 同集
 const FONT_PRESETS = ["serif", "song", "kai", "hei"];
 const DIALOG_TEXTURES = ["plain", "silk", "paper", "glass"];
 // theme 兜底：块缺失或格式坏时整套默认（aurora 为兜底母题）
 const DEFAULT_THEME = Object.freeze({ accent: "#c9a86a", accent2: "#e8e4da", motif: "aurora", font: "serif", dialog: "plain" });
 
-function parseFrontmatter(text) {
+// parseFrontmatter/parseCharacters/parseSectionLines 导出给 scripts/doctor.mjs 复用（体检查 preset.md 用同一解析口径，不抄第二份）
+export function parseFrontmatter(text) {
   const lines = text.split(/\r?\n/);
   if (lines[0]?.trim() !== "---") return null;
   const end = lines.indexOf("---", 1);
@@ -328,25 +331,39 @@ export function normalizeTheme(fm) {
   };
 }
 
-// ## <角色名>（…）小节只出现在「# 主要角色」之下
-function parseCharacters(lines) {
-  const names = [];
+// ## <角色名>（…）小节只出现在「# 主要角色」之下。名字抽取规则（去行尾括注、trim、空名跳过）
+// 只在 parseCharacterSections 这一份；parseCharacters 是它名字列的投影（scanPresets 消费），
+// doctor 消费带正文的 sections 检查角色节字段——两侧同口径，不抄第二份规则。
+export function parseCharacterSections(lines) {
+  const out = [];
   let inCast = false;
+  let cur = null;
   for (const line of lines) {
-    if (/^# [^#]/.test(line)) inCast = line.trim().startsWith("# 主要角色");
+    if (/^# [^#]/.test(line)) {
+      inCast = line.trim().startsWith("# 主要角色");
+      cur = null; // 一级标题结束当前角色节
+      continue;
+    }
     if (inCast && line.startsWith("## ")) {
       let name = line.slice(3);
       const paren = name.search(/[（(]/);
       if (paren > 0) name = name.slice(0, paren);
       name = name.trim();
-      if (name) names.push(name);
+      cur = name ? { name, body: [] } : null;
+      if (cur) out.push(cur);
+      continue;
     }
+    if (cur != null && line.trim()) cur.body.push(line); // 角色节正文（非空行，到下一个 ## / # 为止）
   }
-  return names;
+  return out;
+}
+
+export function parseCharacters(lines) {
+  return parseCharacterSections(lines).map((s) => s.name);
 }
 
 // 取 `# <heading 前缀>` 小节的正文行（到下一个一级标题为止）
-function parseSectionLines(lines, headingPrefix) {
+export function parseSectionLines(lines, headingPrefix) {
   const out = [];
   let inSection = false;
   for (const line of lines) {

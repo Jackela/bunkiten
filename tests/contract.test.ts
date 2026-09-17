@@ -253,7 +253,7 @@ describe("③ 指令字符串双处存在：src/lib/parser.ts 源码 ↔ SKILL.m
 
 // ——————————————————————— ④ 用例数 ———————————————————————
 
-/** 文档口径的分组（README / AGENTS / ARCHITECTURE 三处声明），合计 369 例；不含 e2e 与本文件 */
+/** 文档口径的分组（README / AGENTS / ARCHITECTURE 三处声明），合计 381 例；不含 e2e 与本文件 */
 const CASE_GROUPS = [
   { name: "parser", files: ["tests/parser.test.ts"], declared: 65 },
   { name: "server", files: ["tests/server.test.ts"], declared: 99 },
@@ -261,6 +261,7 @@ const CASE_GROUPS = [
   { name: "treeLayout", files: ["tests/treeLayout.test.ts"], declared: 7 },
   { name: "genealogy", files: ["tests/genealogy.test.ts"], declared: 8 },
   { name: "diff", files: ["tests/diff.test.ts"], declared: 8 },
+  { name: "doctor", files: ["tests/doctor.test.ts"], declared: 12 },
   { name: "ui", files: ["tests/ui.test.tsx"], declared: 109 },
   {
     name: "integration",
@@ -280,7 +281,7 @@ const CASE_SUB_GROUPS = [
 const CONTRACT_FILE = "tests/contract.test.ts";
 
 /** 文档声明的合计口径 */
-const CASE_TOTAL = 369;
+const CASE_TOTAL = 381;
 
 /** 三份声明口径的文档 */
 const DOCS = ["README.md", "AGENTS.md", "docs/ARCHITECTURE.md"];
@@ -301,8 +302,8 @@ function countCases(rel: string): number {
  * ③ ARCHITECTURE 的「另有真 server 子进程的集成测试 18 例」——这句里没有 integration 字面
  */
 const DOC_GROUP_RES: { re: RegExp; group: (m: RegExpExecArray) => string }[] = [
-  { re: /\b(parser|crafting|server|treeLayout|genealogy|diff|ui|integration)[ \t]+(\d+)\b/g, group: (m) => m[1] },
-  { re: /\b(parser|crafting|server|treeLayout|genealogy|diff|ui|integration)(?:\.test\.(?:ts|tsx)|\/)[^\n]{0,80}?(\d+)\s*例/g, group: (m) => m[1] },
+  { re: /\b(parser|crafting|server|treeLayout|genealogy|diff|doctor|ui|integration)[ \t]+(\d+)\b/g, group: (m) => m[1] },
+  { re: /\b(parser|crafting|server|treeLayout|genealogy|diff|doctor|ui|integration)(?:\.test\.(?:ts|tsx)|\/)[^\n]{0,80}?(\d+)\s*例/g, group: (m) => m[1] },
   { re: /集成测试\s*(\d+)\s*例/g, group: () => "integration" },
 ];
 
@@ -312,7 +313,7 @@ const DOC_SUB_RE = /(pipeline|audio-history|http-guard)`?\s*(\d+)/g;
 const DOC_TOTAL_RE = /(?:共|全量)\s*(?:\*\*)?(\d+)(?:\*\*)?\s*例/g;
 
 describe("④ 用例数：文档声明的分组数字 ↔ 各文件实际用例数", () => {
-  it("八个分组的实际用例数逐项等于文档口径", () => {
+  it("九个分组的实际用例数逐项等于文档口径", () => {
     for (const group of CASE_GROUPS) {
       const actual = group.files.reduce((n, file) => n + countCases(file), 0);
       expect(
@@ -332,9 +333,9 @@ describe("④ 用例数：文档声明的分组数字 ↔ 各文件实际用例�
     expect(sum, `integration 的分组口径自相矛盾：三个子文件相加 ${sum} 例，文档写 integration ${integration?.declared} 例`).toBe(integration?.declared);
   });
 
-  it("八个分组合计等于文档口径 369，且本文件不计入其中", () => {
+  it("九个分组合计等于文档口径 381，且本文件不计入其中", () => {
     const sum = CASE_GROUPS.reduce((n, g) => n + g.declared, 0);
-    expect(sum, `文档的分组口径自相矛盾：八个分组相加 ${sum} 例，文档合计写的是 ${CASE_TOTAL} 例`).toBe(CASE_TOTAL);
+    expect(sum, `文档的分组口径自相矛盾：九个分组相加 ${sum} 例，文档合计写的是 ${CASE_TOTAL} 例`).toBe(CASE_TOTAL);
     const self = countCases(CONTRACT_FILE);
     expect(self, `本文件 ${CONTRACT_FILE} 一个用例都没数到（${self} 例）：契约 lint 空跑等于没有门禁`).toBeGreaterThan(0);
     for (const group of CASE_GROUPS) {
@@ -367,7 +368,7 @@ describe("④ 用例数：文档声明的分组数字 ↔ 各文件实际用例�
       const missing = expectedNames.filter((n) => !seen.has(n));
       expect(
         missing,
-        `${doc} 没有声明这些分组的用例数（分组口径必须八项齐全，好让 lint 逐项比对）：${missing.join("、")}——现在只声明了 ${[...seen].sort().join("、")}`,
+        `${doc} 没有声明这些分组的用例数（分组口径必须九项齐全，好让 lint 逐项比对）：${missing.join("、")}——现在只声明了 ${[...seen].sort().join("、")}`,
       ).toEqual([]);
     }
   });
