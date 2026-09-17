@@ -39,6 +39,28 @@ const WORLD_FILE_KEY = { "state.md": "state", "summary.md": "summary", "story-tr
  */
 let warnedSnapshotOverflow = false; // 溢出告警只打一次（每回合都会触发判断，不去重会刷屏）
 
+// readSnapshots 的列表缓存（v1.7 读路径索引化）：/api/history 列表形态会 strip 掉 files，
+// 却照样为每次读付出「逐文件 readFileSync + JSON.parse 全文（含 files 大字符串）」——
+// 长世界 history 目录上百条时每次打开剧情图都要全量解析一遍。
+/**
+ * @typedef {Object} SnapshotCacheSlot
+ * @property {SnapshotEntry[]} entries 已按 seq 升序的规范化条目（缓存内部形状；出口一律给浅拷贝）
+ * @property {Map<string, number>} stamp 文件名 → mtimeMs（失效判据：名字集合或任一 mtime 变了就全量重解析）
+ */
+/** @type {Map<string, SnapshotCacheSlot>} */
+const snapCache = new Map(); // key = history 目录绝对路径
+// 测试探针计数（__snapshotCacheStats 用；下划线开头表意仅测试消费）
+const cacheStats = { parses: 0, hits: 0 };
+
+/**
+ * readSnapshots 缓存计数探针（**仅测试用**，tests/server.test.ts 断言缓存行为；
+ * 产品代码不要依赖——它的存在就是为了让「缓存真的命中了」可断言）。
+ * @returns {{parses: number, hits: number}} parses = 全量重解析次数、hits = stamp 一致命中次数
+ */
+export function __snapshotCacheStats() {
+  return { ...cacheStats };
+}
+
 /**
  * 从 story-tree.md 解析当前进度指针（纯函数）：`- 当前进度: 节点 <id>（已走 X 轮）` → `<id>`。
  * 节点 id 到全角括号或空白为止（与 forkTreeMarkdown 写出的格式互为逆运算）。
@@ -127,27 +149,64 @@ export function isSnapshotEntry(obj) {
 
 /**
  * 读某世界全部快照（升序）。文件名即 seq 来源；坏 JSON / 越界文件名一律跳过（不让单条坏档拖垮回退界面）。
+ * 列表缓存（v1.7）：目录项「名字集合 + 逐文件 mtimeMs」与缓存 stamp 逐项一致 → 直接回缓存；
+ * 不一致（新增/删除/覆盖快照文件）→ 全量重解析并更新缓存。出口条目一律拷贝（含 files 一层）——
+ * 调用方拿到的是自己的数组与自己的条目对象，任何属性赋值都改不到缓存。
  * @param {string} worldId 世界 id（调用方先用 WORLD_ID_RE 校验）
  * @param {string} [root] 世界根目录（缺省 WORLDS_ROOT）
  * @returns {SnapshotEntry[]} 规范化后的快照条目（含 files），按 seq 升序
  */
 export function readSnapshots(worldId, root = WORLDS_ROOT) {
   if (!WORLD_ID_RE.test(String(worldId || ""))) return [];
-  let names = [];
+  const dir = path.join(root, worldId, HISTORY_DIRNAME);
+  let dirents = [];
   try {
-    names = fs.readdirSync(path.join(root, worldId, HISTORY_DIRNAME));
+    dirents = fs.readdirSync(dir, { withFileTypes: true });
   } catch {
     return [];
   }
-  const out = [];
-  for (const name of names) {
-    if (!/^\d{1,4}\.json$/.test(name)) continue;
+  // stamp：候选文件（合法 NNNN.json 且是普通文件）→ mtimeMs；stat 不到的文件不进 stamp，
+  // 交给下面的重解析路径处理（那里 readFileSync 同样会跳过它）
+  /** @type {Map<string, number>} */
+  const stamp = new Map();
+  for (const d of dirents) {
+    if (!d.isFile() || !/^\d{1,4}\.json$/.test(d.name)) continue;
     try {
-      const entry = normalizeSnapshot(JSON.parse(fs.readFileSync(path.join(root, worldId, HISTORY_DIRNAME, name), "utf8")));
+      stamp.set(d.name, fs.statSync(path.join(dir, d.name)).mtimeMs);
+    } catch {}
+  }
+  const cached = snapCache.get(dir);
+  if (cached && stamp.size === cached.stamp.size && [...stamp].every(([n, t]) => cached.stamp.get(n) === t)) {
+    cacheStats.hits += 1;
+    return copyEntries(cached.entries); // 深一层拷 files：出口不脏缓存由结构保证，不靠调用方自觉
+  }
+  cacheStats.parses += 1;
+  const out = [];
+  for (const name of stamp.keys()) {
+    try {
+      const entry = normalizeSnapshot(JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")));
       if (entry.seq >= 1) out.push(entry);
     } catch {}
   }
-  return out.sort((a, b) => a.seq - b.seq);
+  out.sort((a, b) => a.seq - b.seq);
+  snapCache.set(dir, { entries: out, stamp });
+  return copyEntries(out);
+}
+
+// 出口拷贝：条目浅拷 + files 三键再拷一层（成本是三个 string 引用赋值），调用方对返回值做任何
+// 属性赋值都改不到缓存里的条目——把「只读契约」从注释不变式升级成结构保证。
+/** @param {SnapshotEntry[]} entries @returns {SnapshotEntry[]} */
+function copyEntries(entries) {
+  return entries.map((e) => ({ ...e, files: { ...e.files } }));
+}
+
+/** 主动失效某个世界的快照缓存（writeSnapshot 写盘后与 deleteWorld 删目录后都调：
+ *  mtime 比对已可兜底，但写方/删方主动失效让同进程下一次读立刻见新/释放内存，不等下次 readdir）。
+ * @param {string} worldId 世界 id
+ * @param {string} [root] 世界根目录（缺省 WORLDS_ROOT） */
+export function invalidateSnapshots(worldId, root = WORLDS_ROOT) {
+  if (!WORLD_ID_RE.test(String(worldId || ""))) return;
+  snapCache.delete(path.join(root, worldId, HISTORY_DIRNAME));
 }
 
 // 历史目录里 seq 最大的一条（只看文件名 O(目录项数)，不读文件内容）。没有合法文件时 {seq:0, file:null}。
@@ -240,6 +299,9 @@ export function writeSnapshot(root, worldId, entry, { dedupe = true } = {}) {
   const final = { ...norm, seq };
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, `${String(seq).padStart(4, "0")}.json`), JSON.stringify(final, null, 2) + "\n");
+  // 写方主动失效：mtime 比对已可兜底（新文件名必然不在 stamp 里），但同进程读要立刻见新，
+  // 不等下一次 readSnapshots 的 readdir/stat 比对——逐轮落盘后紧跟着的 /api/history 就是这个场景
+  invalidateSnapshots(worldId, root);
   return { ok: true, seq, entry: final };
 }
 

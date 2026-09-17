@@ -13,7 +13,7 @@
 //
 // 扩展点见 tests/integration/harness.mjs 顶部注释（wave2 加音频/快照断言时复用 stack 句柄）。
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { startStack } from "./harness.mjs";
 
@@ -227,6 +227,29 @@ describe("集成：假 ACP 引擎 + 真 acp-server（CONTRACTS §8 1–5、7–8
     const got = stack.events.slice(from);
     expect(got.some((e: any) => e.type === "turn_end")).toBe(false); // 失败回合不许走成功收尾
     expect(countSnapshots()).toBe(before); // 也不落快照：失败回合不产生「这一轮」的档
+  }, 15000);
+
+  it("resolveImage 会话图索引：当前会话没有时跨会话同名取 mtime 最新（v1.7 读路径索引化）", async () => {
+    // 在临时 HOME 的会话根下造两个「历史会话」目录，放同名 9.jpg、不同 mtime 与内容；
+    // 当前会话目录（harness 已建）没有 9.jpg → /img 走 resolveImage 的跨会话路径
+    const sessionsRoot = path.join(stack.home, ".grok", "sessions", encodeURIComponent(stack.root));
+    const oldDir = path.join(sessionsRoot, "old-session", "images");
+    const newDir = path.join(sessionsRoot, "new-session", "images");
+    mkdirSync(oldDir, { recursive: true });
+    mkdirSync(newDir, { recursive: true });
+    writeFileSync(path.join(oldDir, "9.jpg"), fakeJpeg("stale"));
+    writeFileSync(path.join(newDir, "9.jpg"), fakeJpeg("fresh"));
+    const older = new Date(Date.now() - 60_000);
+    utimesSync(path.join(oldDir, "9.jpg"), older, older); // 显式回拨：避免两次写入同毫秒让「最新」判定抖动
+
+    // 第一次请求：索引未建 → 全量扫描重建 → 同名取 mtime 新的那份
+    const r = await stack.getBytes(imgUrl({ p: "images/9.jpg" }));
+    expect(r.status).toBe(200);
+    expect(r.bytes.equals(fakeJpeg("fresh"))).toBe(true);
+    // 第二次请求：索引已建 → 命中缓存路径，结果一致
+    const again = await stack.getBytes(imgUrl({ p: "images/9.jpg" }));
+    expect(again.status).toBe(200);
+    expect(again.bytes.equals(fakeJpeg("fresh"))).toBe(true);
   }, 15000);
 });
 

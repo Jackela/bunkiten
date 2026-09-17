@@ -71,6 +71,7 @@ export {
   selectSnapshotForNode,
   forkTreeMarkdown,
   forkNote,
+  __snapshotCacheStats, // 测试探针（仅 tests/server.test.ts 断言缓存命中用，不是对外 API）
 } from "./snapshots.mjs";
 export {
   moveToTrash,

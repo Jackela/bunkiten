@@ -3,7 +3,7 @@
 // 注意：行完整性（半行不生效）由上游 flushArtLines 的换行累积保证，不在这些函数的职责内——
 // 这里只测「给定一行」的解析契约。
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -50,6 +50,7 @@ import {
   updateWorld,
   worldChapterNo,
   writeSnapshot,
+  __snapshotCacheStats,
   WORLD_FILES,
 } from "../server/acp-server.mjs";
 
@@ -804,6 +805,107 @@ describe("server 快照子系统纯函数（CONTRACTS §2）", () => {
       expect(r.backupSeq).toBe(2);
       expect(existsSync(path.join(dir, "summary.md"))).toBe(false);
       expect(readFileSync(path.join(dir, "state.md"), "utf8")).toBe("# 状态 v1\n");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("server readSnapshots 列表缓存（v1.7 读路径索引化：mtime stamp 比对失效 + 写方主动失效）", () => {
+  // 缓存是模块级（key = history 目录绝对路径），计数探针只看**每次调用前后的增量**，
+  // 不依赖其他用例有没有碰过 readSnapshots（每个用例各自 mkdtemp 出独立目录，互不串）。
+  const seedSnap = (root: string, seq: number, state: string) => {
+    const hdir = path.join(root, "w1", "history");
+    mkdirSync(hdir, { recursive: true });
+    writeFileSync(
+      path.join(hdir, `${String(seq).padStart(4, "0")}.json`),
+      JSON.stringify({ seq, at: `2026-01-01T00:00:0${seq}.000Z`, kind: "turn", nodeId: `1-${seq}`, chapterNo: 1, files: { state, summary: null, tree: null } }) + "\n",
+    );
+  };
+
+  it("stamp 一致 → 第二次读命中缓存：不再 JSON.parse（parses 不变、hits +1）", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "snapcache-"));
+    try {
+      seedSnap(root, 1, "s1");
+      const before = __snapshotCacheStats();
+      expect((readSnapshots("w1", root) as any[]).map((s) => s.seq)).toEqual([1]); // 第一次：全量解析
+      const mid = __snapshotCacheStats();
+      expect(mid.parses).toBe(before.parses + 1);
+      expect(mid.hits).toBe(before.hits);
+      expect((readSnapshots("w1", root) as any[]).map((s) => s.seq)).toEqual([1]); // 第二次：命中缓存
+      const after = __snapshotCacheStats();
+      expect(after.parses).toBe(mid.parses);
+      expect(after.hits).toBe(mid.hits + 1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("目录新增快照文件（外部写入，不经 writeSnapshot）→ stamp 失效，读到新条目", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "snapcache-add-"));
+    try {
+      seedSnap(root, 1, "s1");
+      expect((readSnapshots("w1", root) as any[]).map((s) => s.seq)).toEqual([1]); // 先填缓存
+      const before = __snapshotCacheStats();
+      seedSnap(root, 2, "s2"); // 新文件名不在 stamp 里 → 下次读必须全量重解析
+      const snaps = readSnapshots("w1", root) as any[];
+      const after = __snapshotCacheStats();
+      expect(snaps.map((s) => s.seq)).toEqual([1, 2]);
+      expect(snaps[1].files.state).toBe("s2");
+      expect(after.parses).toBe(before.parses + 1); // 失效后重解析，而不是回旧缓存
+      expect(after.hits).toBe(before.hits);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("出口浅拷贝：调用方改返回条目的顶层字段（seq）后再读不脏缓存", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "snapcache-copy-"));
+    try {
+      seedSnap(root, 1, "s1");
+      const first = readSnapshots("w1", root) as any[];
+      first[0].seq = 999; // 污染返回值
+      expect((readSnapshots("w1", root) as any[])[0].seq).toBe(1); // 缓存条目不受影响
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("同名覆盖写（文件名集合不变、mtime 变）→ stamp 逐文件比对失效，读到新内容", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "snapcache-mtime-"));
+    try {
+      seedSnap(root, 1, "s1");
+      expect((readSnapshots("w1", root) as any[])[0].files.state).toBe("s1"); // 先填缓存
+      const before = __snapshotCacheStats();
+      // 外部覆盖同一文件名、内容不同，并显式回拨 mtime 保证跨平台确定性（否则同秒覆盖可能漏判）
+      const file = path.join(root, "w1", "history", "0001.json");
+      writeFileSync(file, JSON.stringify({ seq: 1, at: "2026-01-02T00:00:00.000Z", kind: "turn", nodeId: "1-1", chapterNo: 1, files: { state: "s1-改", summary: null, tree: null } }) + "\n");
+      const t = new Date(Date.now() - 60_000);
+      utimesSync(file, t, t);
+      const snaps = readSnapshots("w1", root) as any[];
+      const after = __snapshotCacheStats();
+      expect(snaps[0].files.state).toBe("s1-改"); // mtime 比对兜住了「只比名字集合」抓不到的覆盖写
+      expect(after.parses).toBe(before.parses + 1);
+      expect(after.hits).toBe(before.hits);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("writeSnapshot 写盘后主动失效：紧跟的 readSnapshots 重解析见新条目（不等 mtime 比对兜底）", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "snapcache-write-"));
+    try {
+      seedSnap(root, 1, "s1");
+      expect((readSnapshots("w1", root) as any[]).map((s) => s.seq)).toEqual([1]); // 先填缓存
+      const before = __snapshotCacheStats();
+      // writeSnapshot（与正戏回合落盘同一条路径）写入 seq=2；即便文件系统 mtime 粒度粗到与 stamp 同值，主动失效也保证见新
+      const w = writeSnapshot(root, "w1", { kind: "turn", nodeId: "1-2", chapterNo: 1, files: { state: "s2", summary: null, tree: null } }) as any;
+      expect(w.seq).toBe(2);
+      const snaps = readSnapshots("w1", root) as any[];
+      const after = __snapshotCacheStats();
+      expect(snaps.map((s) => s.seq)).toEqual([1, 2]);
+      expect(after.parses).toBe(before.parses + 1); // 写方删了缓存，读必须重解析
+      expect(after.hits).toBe(before.hits);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
