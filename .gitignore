@@ -2,6 +2,7 @@ node_modules/
 dist/
 dist-electron/
 release/
+coverage/
 test-results/
 test-results-ui/
 playwright-report/

@@ -3253,3 +3253,27 @@ describe("TitleScreen：剧本导出/导入（v1.7）", () => {
     expect(presetGets).toBe(1); // 失败不重取轮播
   });
 });
+
+describe("store handleEvent：未知事件类型兜底（v1.7 表驱动分发的运行时护栏）", () => {
+  it("未知 type 只 console.warn 一条、不污染任何 state 字段（服务端比客户端新时不崩不脏）", () => {
+    const warns: unknown[][] = [];
+    const orig = console.warn;
+    console.warn = (...args: unknown[]) => warns.push(args);
+    try {
+      const before = useGameStore.getState();
+      const snap = { ...before } as Record<string, unknown>;
+      // @ts-expect-error 故意投一个 AcpEvent 联合之外的类型：SSE JSON.parse 是盲转，这条路径真实可达
+      useGameStore.getState().handleEvent({ type: "bogus-probe" });
+      const after = useGameStore.getState() as Record<string, unknown>;
+      expect(warns.length).toBe(1);
+      expect(String(warns[0][0])).toContain("bogus-probe");
+      // 除监听器/函数引用外，任何数据字段都不被未知事件改写
+      for (const key of Object.keys(snap)) {
+        if (typeof snap[key] === "function") continue;
+        expect(after[key], `未知事件不该改写 ${key}`).toEqual(snap[key]);
+      }
+    } finally {
+      console.warn = orig;
+    }
+  });
+});
