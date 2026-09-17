@@ -51,9 +51,9 @@ jobs:
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -101,9 +101,9 @@ jobs:
     needs: guard
     runs-on: macos-14 # arm64 runner：--mac --arm64 --x64 双架构产物
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -165,9 +165,9 @@ jobs:
     needs: guard
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -219,7 +219,7 @@ jobs:
     permissions:
       contents: write # 创建/更新 GitHub Release 与上传产物
     steps:
-      - uses: actions/checkout@v5 # 仅为读取 docs/releases/<tag>.md（wave7 起的发布说明文件）
+      - uses: actions/checkout@v7 # 仅为读取 docs/releases/<tag>.md（wave7 起的发布说明文件）
 
       - name: Download artifacts
         uses: actions/download-artifact@v4
