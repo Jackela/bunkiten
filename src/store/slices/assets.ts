@@ -51,10 +51,12 @@ export function createAssetsSlice(
       if (!preset || files.length === 0) return;
       set({ assetsBusy: true, assetsNotice: null });
       const failed: string[] = [];
-      // 逐条删（不并发）：失败项要能按文件点名，且服务端 unlink 的顺序与玩家勾选顺序一致，日志可对
+      let purged = 0; // trashed:false 的条数（回收站失败被服务端回退直删，文案不能承诺找回）
+      // 逐条删（不并发）：失败项要能按文件点名，且服务端删除的顺序与玩家勾选顺序一致，日志可对
       for (const file of files) {
         const r = await postAssetDelete({ preset, file });
         if (!r.ok) failed.push(`${file}（${r.error ?? "未知错误"}）`);
+        else if (r.trashed === false) purged += 1;
       }
       const ok = files.length - failed.length;
       set({
@@ -64,7 +66,9 @@ export function createAssetsSlice(
         assetsNotice:
           failed.length > 0
             ? { kind: "error", text: `已删除 ${ok}/${files.length} 项，${failed.length} 项失败：${failed.join("、")}` }
-            : { kind: "ok", text: `已删除 ${ok} 项素材` },
+            : purged > 0
+              ? { kind: "ok", text: `已删除 ${ok} 项素材（其中 ${purged} 项未能进回收站、已被直接删除，其余在 state/trash/ 可手工找回）` }
+              : { kind: "ok", text: `已删除 ${ok} 项素材（已移入回收站 state/trash/，可手工找回）` },
       });
     },
 

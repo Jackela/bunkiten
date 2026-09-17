@@ -221,6 +221,8 @@ export interface WorldPostResult {
   entry?: WorldEntry;
   /** restore 先写的那条 kind:"backup" 快照的 seq */
   backupSeq?: number;
+  /** delete 专属：false = 回收站 rename 失败、服务端已回退直删（UI 文案不能承诺找回） */
+  trashed?: boolean;
   error?: string;
 }
 
@@ -390,7 +392,10 @@ export async function postPresetImport(bundle: PresetBundle): Promise<PresetImpo
  *   （`presets/<id>/assets/<名>.jpg`），内部收敛为单层文件名——服务端只受理该形态（封面不在受理范围）
  * @returns {Promise<{ok: boolean; error?: string}>} 文件不存在（404）等失败在 error 里返回，不抛错
  */
-export async function postAssetDelete(p: { preset: string; file: string }): Promise<{ ok: boolean; error?: string }> {
+export async function postAssetDelete(p: {
+  preset: string;
+  file: string;
+}): Promise<{ ok: boolean; trashed?: boolean; error?: string }> {
   // 服务端只受理单层文件名（ASSET_DELETE_FILE_RE 防穿越，见 ARCHITECTURE「素材删除」契约）；
   // 画廊条目的 file 是完整相对路径（presets/<id>/assets/<名>.jpg），在 HTTP 边界收敛为 basename
   const name = p.file.split(/[\\/]/).pop() ?? p.file;
@@ -399,8 +404,8 @@ export async function postAssetDelete(p: { preset: string; file: string }): Prom
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ action: "delete", preset: p.preset, file: name }),
   });
-  const data = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string };
-  return { ok: r.ok && data.ok !== false, error: data.error || (r.ok ? undefined : `HTTP ${r.status}`) };
+  const data = (await r.json().catch(() => ({}))) as { ok?: boolean; trashed?: boolean; error?: string };
+  return { ok: r.ok && data.ok !== false, trashed: data.trashed, error: data.error || (r.ok ? undefined : `HTTP ${r.status}`) };
 }
 
 /**

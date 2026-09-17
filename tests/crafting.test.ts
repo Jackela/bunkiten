@@ -1062,7 +1062,7 @@ describe("v1.6 批量重绘 / 素材删除 / 世界线管理（store 公共 API 
     const s = useGameStore.getState();
     expect(s.assetsBusy).toBe(false);
     expect(s.assetsStamp).toBe(stamp0 + 1);
-    expect(s.assetsNotice).toEqual({ kind: "ok", text: "已删除 2 项素材" });
+    expect(s.assetsNotice).toEqual({ kind: "ok", text: "已删除 2 项素材（已移入回收站 state/trash/，可手工找回）" });
   });
 
   it("批量删除：部分失败逐条记账（成功项照删），提示点名失败文件并标 error", async () => {

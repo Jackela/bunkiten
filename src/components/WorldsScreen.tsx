@@ -224,6 +224,8 @@ export default function WorldsScreen() {
   const [error, setError] = useState("");
   /** 行内动作（删除/新建/导入文件读取）的错误文案：不占满屏，贴着列表展示 */
   const [actionError, setActionError] = useState("");
+  /** 行内动作的成功提示（v1.7：删除进回收站后的去向说明），与错误同一位展示 */
+  const [actionNotice, setActionNotice] = useState("");
   /** 重取清单的信号：删除/改名/导入成功、点「重试」时自增 */
   const [stamp, setStamp] = useState(0);
   /** 键盘高亮的行下标 */
@@ -338,6 +340,7 @@ export default function WorldsScreen() {
     if (!presetId || creating) return;
     setCreating(true);
     setActionError("");
+    setActionNotice("");
     postWorld({ action: "create", preset: presetId })
       .then((r) => {
         if (!r.ok || !r.worldId) {
@@ -353,11 +356,12 @@ export default function WorldsScreen() {
       });
   };
 
-  /** 删除（第二段确认触发）：成功即重取清单，失败在列表上方行内报错 */
+  /** 删除（第二段确认触发）：成功即重取清单并提示去向（回收站可手工找回），失败在列表上方行内报错 */
   const removeWorld = (entry: WorldEntry) => {
     if (deleting) return;
     setDeleting(entry.worldId);
     setActionError("");
+    setActionNotice("");
     postWorld({ action: "delete", worldId: entry.worldId })
       .then((r) => {
         if (!r.ok) {
@@ -367,6 +371,8 @@ export default function WorldsScreen() {
         }
         setConfirmId(null);
         setDeleting(null);
+        // trashed:false = 回收站 rename 失败、服务端已回退直删——文案不能再说「可手工找回」
+        setActionNotice(r.trashed === false ? "已删除（未能进回收站，无法找回）" : "已移入回收站（state/trash/ 可手工找回）");
         setStamp((v) => v + 1);
       })
       .catch((e: unknown) => {
@@ -378,6 +384,7 @@ export default function WorldsScreen() {
   /** 打开行内改名编辑器：字段初值取服务端现值（缺省空串=未设置），保存时原样回传（空串=清除） */
   const openEdit = (entry: WorldEntry) => {
     setActionError("");
+    setActionNotice("");
     clearWorldNotice();
     setEditLabel(entry.label ?? "");
     setEditNote(entry.note ?? "");
@@ -418,6 +425,7 @@ export default function WorldsScreen() {
     e.target.value = ""; // 允许连续导入同一个文件（不清值浏览器不会再触发 change）
     if (!file || importing) return;
     setActionError("");
+    setActionNotice("");
     clearWorldNotice();
     setImporting(true);
     try {
@@ -516,7 +524,7 @@ export default function WorldsScreen() {
           </button>
         </div>
 
-        {/* 提示位：导入/改名的成功与失败（删除/新建仍在下面的行内错误位） */}
+        {/* 提示位：导入/改名的成功与失败（删除/新建的行内提示在下面） */}
         {worldNotice && (
           <p
             data-testid="worlds-notice"
@@ -531,8 +539,9 @@ export default function WorldsScreen() {
           </p>
         )}
 
-        {/* 行内动作错误 */}
+        {/* 行内动作提示：错误（红）与删除成功的回收站去向（金）各一行 */}
         {actionError && <p className="mt-3 text-sm text-red-400">{actionError}</p>}
+        {actionNotice && <p className="mt-3 text-sm text-gold/80">{actionNotice}</p>}
 
         {/* 加载 / 失败态 */}
         {loading && worlds === null && !error && (
@@ -697,6 +706,7 @@ export default function WorldsScreen() {
                         aria-label={`删除世界线 ${name}`}
                         onClick={() => {
                           setActionError("");
+                          setActionNotice("");
                           setConfirmId(entry.worldId);
                         }}
                         className="rounded-lg border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink-hint transition-colors hover:border-red-400/40 hover:text-red-300"

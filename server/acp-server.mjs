@@ -605,6 +605,29 @@ const WORLDS_ROOT = path.join(GAME_ROOT, "state", "worlds"); // 世界线：每�
 export const WORLD_FILES = ["state.md", "summary.md", "story-tree.md"];
 const WORLD_ID_RE = /^[A-Za-z0-9_-]+$/; // 世界 id 白名单（防路径穿越）
 
+// 回收站（v1.7，ADR-0014）：删除不直删——世界线目录与素材文件先整体挪进 state/trash/，误删可手工找回。
+// trash 长在 state/ 下，天然不在任何扫描面内：scanPresets/scanPresetAudio/listAssets 只看 presets/，
+// listWorlds/快照只看 worlds/ 与 index.json，migrateLegacyState 只读 state/ 本层的 *.md——挪进去即从游戏里消失。
+// 尽力而为：同卷 rename 原子、极端撞名靠随机后缀规避；跨设备（EXDEV）等 rename 失败时回退直删，
+// 因为回收站不能让「删除」这个操作本身失败（回退的 rmSync 若也失败则原样抛出，两个调用方
+// /api/assets 与 /api/worlds delete 都在各自路由里 catch 成 4xx/5xx，绝不冒泡成 uncaughtException——
+// server 在 Electron 主进程内运行，冒泡即应用闪退）。
+// label：可选归属标注（素材删除传 presetId）——跨剧本同名文件在 trash 里靠它区分该挪回哪个剧本。
+export function moveToTrash(root, rel, label = "") {
+  const src = path.join(root, ...rel);
+  if (!fs.existsSync(src)) return { trashed: false }; // 本来就没有可挪的东西（如索引在、目录已被手删），不谎报也不占位
+  const trash = path.join(root, "state", "trash");
+  const tag = label ? `-${label}` : "";
+  try {
+    fs.mkdirSync(trash, { recursive: true });
+    fs.renameSync(src, path.join(trash, `${Date.now()}-${Math.random().toString(36).slice(2, 6).padEnd(4, "0")}${tag}-${path.basename(src)}`));
+    return { trashed: true };
+  } catch {
+    fs.rmSync(src, { recursive: true, force: true });
+    return { trashed: false, fallback: "purged" };
+  }
+}
+
 // ---------- 世界线（state/worlds/<worldId>/）：索引、迁移、建 / 分叉 / 删 ----------
 // 每个世界三份文件：state.md / summary.md / story-tree.md；index.json 记录元数据（chapterNo/lastPlayed 由磁盘自愈）
 // 世界 id 白名单：字母数字与 -_（防路径穿越；id 由 createWorld 生成或来自迁移的 main）
@@ -1263,9 +1286,10 @@ export function deleteWorld(root, worldId) {
   const list = readWorldsIndex(root);
   if (!list.some((e) => e.worldId === worldId)) return { error: "世界不存在" };
   writeWorldsIndex(root, list.filter((e) => e.worldId !== worldId));
-  fs.rmSync(path.join(root, worldId), { recursive: true, force: true });
-  console.log(`[acp] world deleted: ${worldId}`);
-  return { ok: true };
+  // root 是 worlds 根（<gameRoot>/state/worlds）：整个世界目录搬进 <gameRoot>/state/trash/（索引先移除，恢复需手工补条目）
+  const t = moveToTrash(path.dirname(path.dirname(root)), ["state", "worlds", worldId]);
+  console.log(`[acp] world deleted: ${worldId}${t.trashed ? " → state/trash" : ""}`);
+  return { ok: true, ...t };
 }
 
 // 列表：index 为准，磁盘自愈（chapterNo 读树、lastPlayed 取三文件最新 mtime）；按最近游玩倒序
@@ -1928,13 +1952,15 @@ export function startServer() {
         const abs = path.join(GAME_ROOT, "presets", presetId, "assets", file);
         if (!fs.existsSync(abs)) return json(404, { error: "素材不存在" });
         try {
-          fs.unlinkSync(abs);
-        } catch (e) {
-          // ENOENT = 竞态下已被删走 → 仍按「不存在」404；其余（EACCES/EPERM/EBUSY…）才是真失败 → 500
-          return e.code === "ENOENT" ? json(404, { error: "素材不存在" }) : json(500, { error: "素材删除失败" });
+          // 删除进回收站（v1.7）：rename 进 state/trash/，EXDEV 等 rename 失败由 moveToTrash 回退直删；
+          // label 带上 presetId——跨剧本同名素材在 trash 里靠它区分该挪回哪个剧本
+          const t = moveToTrash(GAME_ROOT, ["presets", presetId, "assets", file], presetId);
+          console.log(`[acp] asset deleted: presets/${presetId}/assets/${file}${t.trashed ? " → state/trash" : ""}`);
+          return json(200, { ok: true, trashed: t.trashed });
+        } catch {
+          // trash 与直删都没能完成（EACCES/EPERM/EBUSY…）才是真失败 → 500
+          return json(500, { error: "素材删除失败" });
         }
-        console.log(`[acp] asset deleted: presets/${presetId}/assets/${file}`);
-        return json(200, { ok: true });
       });
       return;
     }
@@ -2031,7 +2057,17 @@ export function startServer() {
           out = importWorld(WORLDS_ROOT, payload.bundle);
         } else if (action === "delete") {
           const worldId = String(payload.worldId || "");
-          out = WORLD_ID_RE.test(worldId) ? deleteWorld(WORLDS_ROOT, worldId) : { error: "参数不合法" };
+          if (!WORLD_ID_RE.test(worldId)) {
+            out = { error: "参数不合法" };
+          } else {
+            try {
+              out = deleteWorld(WORLDS_ROOT, worldId);
+            } catch {
+              // moveToTrash 的直删回退也失败（EACCES/EPERM/EBUSY…）才是真失败 → 500；
+              // 绝不让异常冒泡出 readBodyText 回调（Electron 主进程无 uncaughtException 兜底，冒泡即闪退）
+              return json(500, { error: "世界删除失败" });
+            }
+          }
         } else {
           out = { error: "未知动作" };
         }

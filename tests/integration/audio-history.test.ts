@@ -271,7 +271,13 @@ describe("集成：逐轮快照 + 世界线精确回退/导出导入（CONTRACTS
     const del = await stack.postJSON("/api/assets", { action: "delete", preset: "demo", file: "立绘-可删.jpg" });
     expect(del.status).toBe(200);
     expect(del.body.ok).toBe(true);
+    expect(del.body.trashed).toBe(true); // v1.7：删除进回收站（EXDEV 回退直删时才是 false）
     expect(existsSync(file)).toBe(false);
+    // 回收站：state/trash/<ts>-<rand4>-立绘-可删.jpg 还在（不自动清理），但扫描面看不到它
+    const trashDir = path.join(stack.root, "state", "trash");
+    const trashedItems = readdirSync(trashDir).filter((f) => f.endsWith("-立绘-可删.jpg"));
+    expect(trashedItems.length).toBe(1);
+    expect(existsSync(path.join(trashDir, trashedItems[0]))).toBe(true);
     const after = await stack.getJSON("/api/assets?preset=demo");
     expect(after.body.some((a: any) => a.file === "presets/demo/assets/立绘-可删.jpg")).toBe(false);
 
