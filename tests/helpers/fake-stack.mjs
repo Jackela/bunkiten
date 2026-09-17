@@ -4,7 +4,7 @@
 //      env ACP_PROXY_TARGET 指向 harness 栈端口 + NO_COLOR=1（颜色码会打断 `Local:` 行匹配），
 //      解析 stdout 的 `Local:` 行得 pageUrl，再等 URL http ok。
 // 返回 { stack, pageUrl, stop() }；options 透传 startStack 的全部参数（turns/presets/sessionImages/
-// assets/audioFiles/trees/worlds/snapshots，见 harness.mjs 顶部注释）。
+// assets/audioFiles/trees/stateFiles/worlds/snapshots，见 harness.mjs 顶部注释）。
 //
 // stop 顺序：先停 vite 再 stack.stop()——vite 是页面入口，先关入口避免收尾窗口里浏览器/代理还在向
 // 正在关闭的 acp-server 发请求（ECONNRESET 噪音）；且 stack.stop() 会删临时 game root，vite 若还活着
@@ -88,7 +88,7 @@ function killProc(proc, graceMs = 4000) {
 
 /**
  * 起一套假引擎 UI 栈（假 ACP 引擎 + 真 acp-server + vite dev）。
- * @param {object} [options] 透传 startStack：{turns, presets, sessionImages, assets, audioFiles, trees, worlds, snapshots}
+ * @param {object} [options] 透传 startStack：{turns, presets, sessionImages, assets, audioFiles, trees, stateFiles, worlds, snapshots}
  * @returns {Promise<{stack: object, pageUrl: string, stop: () => Promise<void>}>}
  */
 export async function startFakeStack(options = {}) {

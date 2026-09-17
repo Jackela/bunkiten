@@ -465,6 +465,9 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
       assetsBusy: false,
       worldNotice: null,
       worldBusy: false,
+      // 角色面板视图属于当前世界：换世界/换本/新开局不把旧世界的角色卡带过来
+      charactersOpen: false,
+      stateView: null,
       turnKey: get().turnKey + 1,
       ...patch,
     });

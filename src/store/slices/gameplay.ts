@@ -197,6 +197,8 @@ export function createGameplaySlice(
           });
           // 批量重绘：本轮已结束、引擎空闲，派发队列里的下一条（上面若有排队指令，pump 会让它们先发）
           ctx.pumpRegenQueue();
+          // 角色面板开着：回合收尾即重拉 state.md 视图（好感度/导演手记/伏笔随回合变）；关着不拉
+          if (s.charactersOpen) get().refreshCharacters();
           if (s.screen === "creation") {
             // 创作屏：引擎整轮回复（跨段全文）过滤协议行后进对话流；协议行只驱动画面/事件
             const engineText = Object.values(s.segs)

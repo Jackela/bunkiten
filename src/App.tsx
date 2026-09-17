@@ -65,7 +65,7 @@ export default function App() {
     };
   }, []);
 
-  // Esc 关闭链（画廊预览 → 剧情图节点详情 → 历史抽屉 → 创作退出确认 → 剧情图/设置 → 世界线屏）；
+  // Esc 关闭链（画廊预览 → 剧情图节点详情 → 历史抽屉 → 角色面板 → 创作退出确认 → 剧情图/设置 → 世界线屏）；
   // 只在「正在打字」的输入控件里不拦截（滑杆聚焦时 Esc 仍应能关设置屏）
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -85,6 +85,10 @@ export default function App() {
       }
       if (s.drawerOpen) {
         s.toggleDrawer();
+        return;
+      }
+      if (s.charactersOpen) {
+        s.toggleCharacters();
         return;
       }
       if (s.creationExitPrompt) {

@@ -130,6 +130,57 @@ export interface HistoryResponse {
   snapshots: WorldSnapshotMeta[];
 }
 
+/**
+ * `# 剧情状态` 小节（v1.7 角色面板）：preset/周目/时间/场景的固定键。
+ * 引擎（LLM）维护的 state.md 字段可缺——缺的键为 null，客户端按「有没有」渲染。
+ */
+export interface StateStatus {
+  preset: string | null;
+  /** 周目（引擎写非整数时为 null） */
+  playthrough: number | null;
+  time: string | null;
+  scene: string | null;
+}
+
+/** 角色面板的单张角色卡（`# 角色卡` 的 `## <角色名>` 子节；缺的字符串字段是空串） */
+export interface StateCharacter {
+  name: string;
+  /** 身份 */
+  role: string;
+  /** 性格关键词 */
+  traits: string;
+  /** 口癖 */
+  catchphrase: string;
+  /** 好感度 0-100（服务端夹过界；引擎写了非整数时为 null） */
+  favor: number | null;
+  /** art_file（立绘落盘路径，未生成为空串） */
+  artFile: string;
+  /** 当前差分变体名（基础立绘为空串） */
+  expression: string;
+  /** 秘密原文（引擎写「无」表示没有秘密，是否折叠由组件判断） */
+  secret: string;
+  /** 最近互动一句话 */
+  recentInteraction: string;
+}
+
+/**
+ * GET /api/state?worldId= 的响应（v1.7 角色面板）：世界 state.md 的容错解析视图。
+ * `protagonist`/`director` 是键值原样收录（引擎可自由加字段）；`flags`/`foreshadowing` 是列表；
+ * 解析侧绝不抛错——缺小节/乱序/越界一律静默缺省（见 docs/ARCHITECTURE.md「角色面板」）。
+ */
+export interface StateView {
+  worldId: string;
+  status: StateStatus;
+  /** `# 主角` 的键值行（姓名/性别/身份/出身/特质…，引擎可自由加） */
+  protagonist: Record<string, string>;
+  /** `# 导演手记` 的键值行（张力/本场景目标/下一节拍/玩家画像/NPC 场外进度…） */
+  director: Record<string, string>;
+  characters: StateCharacter[];
+  flags: { name: string; value: string }[];
+  /** 未回收伏笔（`turn` 来自行尾「埋于第 N 轮」，缺省 null） */
+  foreshadowing: { text: string; turn: number | null }[];
+}
+
 /** GET /api/history?worldId=<id>&seq=<n> 的响应（条目附 files；服务端可能仍返回整列，调用方自行取目标 seq） */
 export interface SnapshotResponse {
   worldId: string;
@@ -314,6 +365,19 @@ export async function fetchTree(worldId: string, signal?: AbortSignal): Promise<
   const r = await fetch(`/api/tree?worldId=${encodeURIComponent(worldId)}`, { signal });
   if (!r.ok) throw new Error(`GET /api/tree -> HTTP ${r.status}`);
   return (await r.json()) as { worldId: string; markdown: string };
+}
+
+/**
+ * 角色面板数据（v1.7）：世界 state.md 的容错解析视图。
+ * @param {string} worldId 世界 id
+ * @param {AbortSignal} [signal] 取消
+ * @returns {Promise<StateView>} 解析视图（缺小节/乱序由服务端静默缺省，形状恒完整）
+ * @throws 世界没有 state.md（404）或 HTTP 非 200 时抛错；调用方（角色面板）捕获后走空态文案
+ */
+export async function fetchState(worldId: string, signal?: AbortSignal): Promise<StateView> {
+  const r = await fetch(`/api/state?worldId=${encodeURIComponent(worldId)}`, { signal });
+  if (!r.ok) throw new Error(`GET /api/state -> HTTP ${r.status}`);
+  return (await r.json()) as StateView;
 }
 
 /**

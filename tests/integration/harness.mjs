@@ -83,11 +83,12 @@ function seedWorld(worldsRoot, worldId, preset, title, meta = {}) {
 //   · assets:     { presetId: [{name, bytes}] }        → 写 presets/<id>/assets/<name>
 //   · audioFiles: { presetId: [{name, bytes}] }        → 写 presets/<id>/audio/<name>
 //   · trees:      { worldId: "story-tree.md 全文" }     → 覆盖对应世界的树文件（须先有该世界）
+//   · stateFiles: { worldId: "state.md 全文" }         → 覆盖对应世界的状态文件（须先有该世界；角色面板 e2e 用）
 //   · worlds:     [{id, title?, preset?, forkedFrom?}] → 追加世界（复用 w1 三文件逻辑）
 //   · snapshots:  { worldId: [{seq,at?,kind,nodeId,chapterNo,files}] } → 写 state/worlds/<id>/history/NNNN.json
 //                 （条目形状与 server writeSnapshot 的磁盘格式一致：files = {state,summary,tree}）
 function seedStack(root, presets, extra = {}) {
-  const { assets = {}, audioFiles = {}, trees = {}, worlds = [], snapshots = {} } = extra;
+  const { assets = {}, audioFiles = {}, trees = {}, stateFiles = {}, worlds = [], snapshots = {} } = extra;
   mkdirSync(path.join(root, "presets"), { recursive: true });
   const worldsRoot = path.join(root, "state", "worlds");
   mkdirSync(worldsRoot, { recursive: true });
@@ -120,6 +121,10 @@ function seedStack(root, presets, extra = {}) {
   // 树覆盖（w1 或追加世界的 story-tree.md 换成调用方全文）
   for (const [worldId, text] of Object.entries(trees)) {
     writeFileSync(path.join(worldsRoot, worldId, "story-tree.md"), text);
+  }
+  // 状态文件覆盖（w1 或追加世界的 state.md 换成调用方全文，如带完整角色卡的样例）
+  for (const [worldId, text] of Object.entries(stateFiles)) {
+    writeFileSync(path.join(worldsRoot, worldId, "state.md"), text);
   }
   // 逐轮快照（server writeSnapshot 的磁盘形状：NNNN.json = {seq,at,kind,nodeId,chapterNo,files}）
   for (const [worldId, entries] of Object.entries(snapshots)) {
@@ -219,6 +224,7 @@ async function httpOk(url) {
  * @param {Record<string, Array<{name: string, bytes: Buffer}>>} [opts.assets] 预置资产：presetId → presets/<id>/assets/ 下的文件
  * @param {Record<string, Array<{name: string, bytes: Buffer}>>} [opts.audioFiles] 预置音频：presetId → presets/<id>/audio/ 下的文件
  * @param {Record<string, string>} [opts.trees] 覆盖世界树：worldId → story-tree.md 全文
+ * @param {Record<string, string>} [opts.stateFiles] 覆盖世界状态文件：worldId → state.md 全文（角色面板用）
  * @param {Array<{id: string, title?: string, preset?: string, forkedFrom?: string|null}>} [opts.worlds] 追加世界（复用 w1 三文件生成逻辑）
  * @param {Record<string, Array<{seq: number, at?: string, kind: "turn"|"backup", nodeId: string|null, chapterNo: number|null, files: {state: string|null, summary: string|null, tree: string|null}}>>} [opts.snapshots]
  *   预置逐轮快照：worldId → history/NNNN.json 条目（形状与 server writeSnapshot 落盘格式一致）
@@ -231,6 +237,7 @@ export async function startStack({
   assets = {},
   audioFiles = {},
   trees = {},
+  stateFiles = {},
   worlds = [],
   snapshots = {},
 } = {}) {
@@ -245,7 +252,7 @@ export async function startStack({
   // UI e2e 的 boot 屏靠它放行进 title——占位内容无所谓，写一个空 JSON 即可
   mkdirSync(path.join(home, ".grok"), { recursive: true });
   writeFileSync(path.join(home, ".grok", "auth.json"), "{}\n");
-  seedStack(root, presets, { assets, audioFiles, trees, worlds, snapshots });
+  seedStack(root, presets, { assets, audioFiles, trees, stateFiles, worlds, snapshots });
 
   // 会话图片目录：server 用 os.homedir()（=HOME）+ encodeURIComponent(GAME_ROOT) + sessionId 拼接
   const sessionImagesDir = path.join(home, ".grok", "sessions", encodeURIComponent(root), SESSION_ID, "images");

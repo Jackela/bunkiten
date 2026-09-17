@@ -23,6 +23,7 @@ import { create } from "zustand";
 import { loadSettings } from "../lib/settings";
 import { createStoreContext } from "./context";
 import { createAssetsSlice } from "./slices/assets";
+import { createCharactersSlice } from "./slices/characters";
 import { createCraftingSlice } from "./slices/crafting";
 import { createCreationSlice } from "./slices/creation";
 import { createGameplaySlice } from "./slices/gameplay";
@@ -90,6 +91,8 @@ export const useGameStore = create<GameStore>()((set, get) => {
     engineBusy: false,
     history: [],
     drawerOpen: false,
+    charactersOpen: false,
+    stateView: null,
     creationMessages: [],
     assembling: false,
     assemblyStalled: false,
@@ -139,6 +142,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
     ...createWorldSlice(ctx),
     ...createTreeSlice(ctx),
     ...createAssetsSlice(ctx),
+    ...createCharactersSlice(ctx),
     ...createCreationSlice(ctx),
     ...createCraftingSlice(ctx),
     ...createGameplaySlice(ctx),
