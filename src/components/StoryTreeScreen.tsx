@@ -5,10 +5,14 @@
 //       自动携带 seq（无快照保持旧载荷）；当前章节点 > 40 默认降级为
 //       列表模式（可切回图形）；图形模式支持滚轮缩放（指针锚点）/拖拽平移/放大·缩小·适应/双击与 +/-/0；
 //       节点 roving tabIndex + 方向键移动 + Enter 开详情。
+// v1.7：快照对比——节点详情「与上一快照对比」拉当前 + 前一条快照（GET /api/history?seq=），
+//       用 lib/diff 的 diffLines 逐行 diff 三个 tab（剧情状态/前情摘要/剧情树），equal 行默认折叠
+//       成上下文 ±2 行 + 「…共 N 行未变」可展开。
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import { motion } from "framer-motion";
 import { Maximize2, RefreshCw, ZoomIn, ZoomOut } from "lucide-react";
-import { fetchHistory, fetchTree, type WorldSnapshotMeta } from "../lib/acp";
+import { fetchHistory, fetchSnapshot, fetchTree, type WorldSnapshotMeta } from "../lib/acp";
+import { diffLines, diffStats, type DiffRow } from "../lib/diff";
 import {
   parseStoryTree,
   type StoryTree,
@@ -87,6 +91,62 @@ export function earliestSnapshotByNode(snapshots: WorldSnapshotMeta[]): Map<stri
     out.set(id, { seq: snap.seq, turn: snapshotTurnNo(snapshots, snap.seq) });
   }
   return out;
+}
+
+/**
+ * 快照对比的基线（v1.7）：同世界 history 里 **seq 更小的最近一条**，kind 不限——backup
+ * （回退前的自动备份）也是合法基线：它恰恰是「上一份不同的内容」，排除它会让回退后的
+ * 第一个对比找不到基线。全局最小的快照没有基线，返回 null（UI 不显示对比按钮）。
+ * @param {WorldSnapshotMeta[]} snapshots 快照索引（顺序不敏感）
+ * @param {number} seq 目标快照序号
+ * @returns {number | null} 基线快照的 seq；没有更早的快照时 null
+ */
+export function prevSnapshotSeq(snapshots: WorldSnapshotMeta[], seq: number): number | null {
+  let prev: number | null = null;
+  for (const s of snapshots) {
+    if (s.seq < seq && (prev === null || s.seq > prev)) prev = s.seq;
+  }
+  return prev;
+}
+
+/** diff 折叠视图里 add/remove 前后各保留几行 equal（上下文） */
+const DIFF_CONTEXT = 2;
+
+/** 折叠视图的一段：rows=保留的行；gap=被折叠的连续 equal（count 行） */
+type DiffPart = { kind: "rows"; rows: DiffRow[] } | { kind: "gap"; count: number };
+
+/**
+ * diff 行数组 → 「保留段 + 折叠段」分区（快照对比面板的默认视图）：add/remove 行与其
+ * 前后 {@link DIFF_CONTEXT} 行 equal 保留，其余连续 equal 折成 gap（「…共 N 行未变」，可展开）。
+ * 纯函数：面板测试与渲染共用同一规则。
+ * @param {DiffRow[]} rows diffLines 的输出
+ * @returns {DiffPart[]} 交替的保留段与折叠段（首尾可为 gap；无改动时整段一个 gap）
+ */
+function partitionDiff(rows: DiffRow[]): DiffPart[] {
+  // 先标记：每个 add/remove 位置把 [p-ctx, p+ctx] 的 equal 也点亮
+  const keep = rows.map((r) => r.type !== "equal");
+  rows.forEach((r, p) => {
+    if (r.type === "equal") return;
+    for (let k = Math.max(0, p - DIFF_CONTEXT); k <= Math.min(rows.length - 1, p + DIFF_CONTEXT); k++) keep[k] = true;
+  });
+  // 再把连续 keep 段收集成 parts，被裁掉的连续 equal 合并成 gap
+  const parts: DiffPart[] = [];
+  let gap = 0;
+  rows.forEach((r, i) => {
+    if (!keep[i]) {
+      gap += 1;
+      return;
+    }
+    if (gap > 0) {
+      parts.push({ kind: "gap", count: gap });
+      gap = 0;
+    }
+    const last = parts[parts.length - 1];
+    if (last?.kind === "rows") last.rows.push(r);
+    else parts.push({ kind: "rows", rows: [r] });
+  });
+  if (gap > 0) parts.push({ kind: "gap", count: gap });
+  return parts;
 }
 
 /**
@@ -471,14 +531,51 @@ function DetailRow({ label, value }: { label: string; value: string }) {
   );
 }
 
+/** diff 面板的三个 tab（与快照三文件一一对应；顺序即渲染顺序） */
+const DIFF_TABS: { key: DiffTabKey; label: string }[] = [
+  { key: "state", label: "剧情状态" },
+  { key: "summary", label: "前情摘要" },
+  { key: "tree", label: "剧情树" },
+];
+
+/** diff 的 tab 键（state/summary/tree ↔ 快照三文件） */
+type DiffTabKey = "state" | "summary" | "tree";
+
+/** 一行 diff：remove=红（a 独有）、add=绿（b 新增）、equal=ink-hint——颜色只用 tailwind 内置档，不引新 token；
+    equal 行是玩家要读的上下文正文，按对比度阶梯用 hint 档（faint 只留给禁用/装饰），remove/add 用 <del>/<ins> 让屏幕阅读器可辨 */
+function DiffLine({ row }: { row: DiffRow }) {
+  const tone =
+    row.type === "remove"
+      ? "bg-rose-400/10 text-rose-300"
+      : row.type === "add"
+        ? "bg-emerald-400/10 text-emerald-300"
+        : "text-ink-hint";
+  const sign = row.type === "remove" ? "−" : row.type === "add" ? "+" : " ";
+  const body = (
+    <>
+      <span aria-hidden className="mr-1.5 inline-block w-2.5 select-none text-center">{sign}</span>
+      {row.text || "\u00a0"}
+    </>
+  );
+  return (
+    <div data-testid={`diff-row-${row.type}`} className={`whitespace-pre-wrap px-1.5 font-mono text-[12px] leading-relaxed ${tone}`}>
+      {row.type === "remove" ? <del className="no-underline">{body}</del> : row.type === "add" ? <ins className="no-underline">{body}</ins> : body}
+    </div>
+  );
+}
+
 /**
  * 选中节点的详情侧栏：地点/在场/梗概/出边/状态 + 快照标注 + 在此分叉 / 回退到此节点。
  * 回退是破坏性动作（覆盖世界线三份文件）：两段确认，第一段只进确认态。
+ * v1.7 快照对比是**详情区内嵌展开**（不是浮层）：剧情图 overlay 本身已是一层浮层、App 的
+ * Esc 链只管关 overlay——再叠一层浮层要另接 Esc 与遮罩层级；内嵌面板换节点自动收起，链路更短。
  */
 function TreeDetail({
   node,
   engineBusy,
   snapshot,
+  worldId,
+  prevSeq,
   onFork,
   onRestore,
   onClose,
@@ -486,6 +583,10 @@ function TreeDetail({
   node: TreeNode;
   engineBusy: boolean;
   snapshot: SnapshotRef | null;
+  /** 快照对比拉取用的世界 id（fetchSnapshot 直连 /api/history?seq=） */
+  worldId: string;
+  /** 对比基线的 seq（seq 更小的最近一条，kind 不限）；没有更早快照时 null（不显示按钮） */
+  prevSeq: number | null;
   onFork: (id: string, seq?: number) => void;
   onRestore: (seq: number) => void;
   onClose: () => void;
@@ -493,10 +594,56 @@ function TreeDetail({
   const canFork = node.status === "已走过";
   const [confirming, setConfirming] = useState(false);
 
-  // 换节点就把确认态收掉：不该带着上一个节点的「确认回退」去点下一个
+  // 快照对比面板的状态：rows 按 tab 键分桶；diffReqRef 让换节点/重开后的过期应答作废
+  const [diffOpen, setDiffOpen] = useState(false);
+  const [diffTab, setDiffTab] = useState<DiffTabKey>("state");
+  const [diffRows, setDiffRows] = useState<Record<DiffTabKey, DiffRow[]> | null>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [diffError, setDiffError] = useState("");
+  const [diffShowAll, setDiffShowAll] = useState(false);
+  const diffReqRef = useRef(0);
+
+  // 换节点就把确认态与对比面板一起收掉：不该带着上一个节点的状态去点下一个
   useEffect(() => {
     setConfirming(false);
+    diffReqRef.current += 1; // 在途的对比请求作废（应答回来也不许写进新节点的面板）
+    setDiffOpen(false);
+    setDiffTab("state");
+    setDiffRows(null);
+    setDiffLoading(false);
+    setDiffError("");
+    setDiffShowAll(false);
   }, [node.id]);
+
+  /** 拉当前 + 基线两条快照全文并 diff 三文件（失败落在面板内的错误位，不打扰树本体） */
+  const openDiff = () => {
+    if (!snapshot || prevSeq === null) return;
+    const req = diffReqRef.current + 1;
+    diffReqRef.current = req;
+    setDiffOpen(true);
+    setDiffLoading(true);
+    setDiffError("");
+    setDiffRows(null);
+    setDiffTab("state");
+    setDiffShowAll(false);
+    Promise.all([fetchSnapshot(worldId, snapshot.seq), fetchSnapshot(worldId, prevSeq)])
+      .then(([cur, prev]) => {
+        if (diffReqRef.current !== req) return;
+        setDiffRows({
+          state: diffLines(prev.files.state ?? "", cur.files.state ?? ""),
+          summary: diffLines(prev.files.summary ?? "", cur.files.summary ?? ""),
+          tree: diffLines(prev.files.tree ?? "", cur.files.tree ?? ""),
+        });
+      })
+      .catch((e: unknown) => {
+        if (diffReqRef.current !== req) return;
+        setDiffError((e as Error).message || String(e));
+      })
+      .finally(() => {
+        if (diffReqRef.current !== req) return;
+        setDiffLoading(false);
+      });
+  };
 
   return (
     <div data-testid="tree-detail" className="mt-4 rounded-xl border border-white/10 bg-[rgba(12,14,20,.72)] p-4">
@@ -516,6 +663,105 @@ function TreeDetail({
         <p data-testid={`tree-snapshot-${node.id}`} className="mt-2 text-[12px] tracking-[.08em] text-gold/85">
           快照 #{snapshot.seq} · 第 {snapshot.turn} 轮
         </p>
+      )}
+
+      {/* 有基线（seq 更小的最近一条）才给对比入口；全局最小的快照没有可比的对象 */}
+      {snapshot && prevSeq !== null && !diffOpen && (
+        <button
+          type="button"
+          data-testid="snapshot-diff-open"
+          onClick={openDiff}
+          className="mt-2 rounded-lg border border-white/15 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink/70 transition-colors hover:border-gold/40 hover:text-ink"
+        >
+          与上一快照对比（#{prevSeq} → #{snapshot.seq}）
+        </button>
+      )}
+
+      {diffOpen && snapshot && prevSeq !== null && (
+        <div data-testid="snapshot-diff" className="mt-3 rounded-lg border border-white/10 bg-[rgba(8,10,16,.55)] p-3">
+          <div className="flex items-center gap-3">
+            <p className="text-[12px] tracking-[.08em] text-ink/70">
+              快照 #{prevSeq} → #{snapshot.seq}（红=上一份独有，绿=这一份新增）
+            </p>
+            <button
+              type="button"
+              data-testid="snapshot-diff-close"
+              onClick={() => {
+                diffReqRef.current += 1;
+                setDiffOpen(false);
+              }}
+              className="ml-auto rounded-md border border-white/10 px-2.5 py-0.5 text-[11.5px] tracking-[.1em] text-ink/60 transition-colors hover:border-gold/40 hover:text-ink"
+            >
+              关闭对比
+            </button>
+          </div>
+
+          {diffLoading && (
+            <p data-testid="snapshot-diff-loading" className="mt-2 animate-pulse text-[12.5px] text-ink-hint">
+              载入快照对比…
+            </p>
+          )}
+
+          {diffError && (
+            <p data-testid="snapshot-diff-error" className="mt-2 text-[12.5px] text-red-400">
+              快照对比加载失败：{diffError}
+            </p>
+          )}
+
+          {diffRows && (
+            <div className="mt-2">
+              <div role="tablist" aria-label="快照文件对比" className="flex flex-wrap gap-1.5">
+                {DIFF_TABS.map((t) => {
+                  const stats = diffStats(diffRows[t.key]);
+                  const active = diffTab === t.key;
+                  return (
+                    <button
+                      key={t.key}
+                      type="button"
+                      role="tab"
+                      aria-selected={active}
+                      data-testid={`snapshot-diff-tab-${t.key}`}
+                      onClick={() => {
+                        setDiffTab(t.key);
+                        setDiffShowAll(false); // 切 tab 回到折叠视图：每个 tab 独立展开
+                      }}
+                      className={`rounded-md border px-2.5 py-1 text-[12px] tracking-[.08em] transition-colors ${
+                        active ? "border-gold/45 bg-gold/15 text-gold" : "border-white/10 text-ink-hint hover:border-gold/40"
+                      }`}
+                    >
+                      {t.label}
+                      <span className="ml-1.5 text-[11px]">
+                        {stats.added === 0 && stats.removed === 0 ? "无变化" : `+${stats.added} −${stats.removed}`}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="mt-2 max-h-72 overflow-y-auto rounded-md border border-white/[.06] bg-[rgba(12,14,20,.6)] p-2">
+                {((diffShowAll ? [{ kind: "rows", rows: diffRows[diffTab] }] : partitionDiff(diffRows[diffTab])) as DiffPart[]).map((part, i) =>
+                  part.kind === "gap" ? (
+                    <button
+                      key={i}
+                      type="button"
+                      data-testid="snapshot-diff-gap"
+                      onClick={() => setDiffShowAll(true)}
+                      className="my-0.5 block w-full rounded-sm border border-dashed border-white/10 px-2 py-0.5 text-left text-[11.5px] tracking-[.05em] text-ink-hint transition-colors hover:border-gold/30 hover:text-ink"
+                    >
+                      …共 {part.count} 行未变（点击展开）
+                    </button>
+                  ) : (
+                    <div key={i}>
+                      {part.rows.map((r, ri) => (
+                        <DiffLine key={ri} row={r} />
+                      ))}
+                    </div>
+                  ),
+                )}
+              </div>
+            </div>
+          )}
+        </div>
       )}
 
       <dl className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -715,6 +961,10 @@ export default function StoryTreeScreen() {
     return chapter.nodes.find((n) => n.id === treeFocus) ?? null;
   }, [chapter, treeFocus]);
 
+  // 选中节点的快照引用与对比基线（快照对比按钮的出现条件：有快照且有更早的快照）
+  const focusSnapshot = focusNode ? (snapshotOf.get(focusNode.id) ?? null) : null;
+  const focusPrevSeq = focusSnapshot ? prevSnapshotSeq(snapshots, focusSnapshot.seq) : null;
+
   const submit = () => {
     const v = value.trim();
     if (!v) return;
@@ -891,7 +1141,9 @@ export default function StoryTreeScreen() {
             <TreeDetail
               node={focusNode}
               engineBusy={engineBusy}
-              snapshot={snapshotOf.get(focusNode.id) ?? null}
+              snapshot={focusSnapshot}
+              worldId={worldId}
+              prevSeq={focusPrevSeq}
               onFork={forkAt}
               onRestore={(seq) => void restoreSnapshot(seq)}
               onClose={() => setTreeFocus(null)}

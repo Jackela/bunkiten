@@ -58,13 +58,14 @@ bunkiten/
 │  ├─ lib/parser.ts         # 文本协议纯函数（契约字符串与协议头唯一真源，含【曲】【环境】【音效】）
 │  ├─ lib/treeLayout.ts     # 剧情树分层布局纯函数（最长路径分层/抗环/贝塞尔边 + 缩放平移视口，零依赖）
 │  ├─ lib/genealogy.ts      # 世界线家谱布局纯函数（forkedFrom 森林分层/孤儿与环容错 + 键盘步进，零依赖）
+│  ├─ lib/diff.ts           # 快照对比纯函数（行级 LCS diffLines + +N −M 摘要 diffStats，零依赖）
 │  ├─ lib/audio.ts          # 音频管理器单例：BGM/环境音双通道交叉淡入、音效一次性、缺文件静默
 │  ├─ lib/settings.ts       # 玩家设置纯逻辑（音量/静音/文本速度/自动前进）+ localStorage 逐键校验
 │  ├─ lib/acp.ts            # HTTP/SSE 客户端 + 世界线/剧情树/快照/音频/角色面板（state.md 视图）接口
 │  ├─ theme.ts              # 剧本主题（accent/accent2/motif）解析与 CSS 变量注入
 │  └─ components/           # boot/title/worlds/protagonist/crafting/game 各屏 + assets 画廊 / creation 创作 / story-tree 剧情图 / settings 设置四个 overlay 屏、motifs/ 氛围层与 HUD
 │     ├─ WorldsScreen.tsx   # 世界线屏：继续 / 新世界线 / 行内重命名与备注 / 导出导入 .world.json / 两段确认删除 / 列表·家谱视图（forkedFrom 森林）
-│     ├─ StoryTreeScreen.tsx # 剧情图屏：SVG 节点图（缩放平移）/> 40 节点降级列表 / 节点详情 / 精确分叉 / 快照回退 / 一句话改树
+│     ├─ StoryTreeScreen.tsx # 剧情图屏：SVG 节点图（缩放平移）/> 40 节点降级列表 / 节点详情 / 精确分叉 / 快照回退与对比 / 一句话改树
 │     └─ SettingsScreen.tsx # 设置屏：主音量/静音/BGM/环境/音效 + 文本速度/自动前进
 ├─ .grok/
 │  ├─ skills/bunkiten/SKILL.md  # 引擎全部真相：每轮协议/章节与剧情树/世界线/美术/音频/预载/导演层/状态纪律
@@ -83,8 +84,9 @@ bunkiten/
 │  ├─ server.test.ts        # server 协议行与世界线/快照/音频/角色面板接口单测（89 例）
 │  ├─ treeLayout.test.ts    # 剧情树分层布局与缩放视口纯函数单测（7 例）
 │  ├─ genealogy.test.ts     # 世界线家谱布局与键盘步进纯函数单测（8 例）
-│  ├─ ui.test.tsx           # 组件测试（TopBar/世界线（含家谱视图）/剧情图/设置/Creation/Assets/主题/重掷/角色面板，102 例）
-│  ├─ contract.test.ts      # 契约 lint（防漂移门禁：协议头唯一真源/RULES 逐字副本/指令字符串/用例数/设置键与音频扩展名；自身不计入 342 口径）
+│  ├─ diff.test.ts          # 快照对比行级 LCS 纯函数单测（8 例）
+│  ├─ ui.test.tsx           # 组件测试（TopBar/世界线（含家谱视图）/剧情图（含快照对比）/设置/Creation/Assets/主题/重掷/角色面板，106 例）
+│  ├─ contract.test.ts      # 契约 lint（防漂移门禁：协议头唯一真源/RULES 逐字副本/指令字符串/用例数/设置键与音频扩展名；自身不计入 354 口径）
 │  ├─ integration/          # 假引擎集成层（假 ACP 引擎 + 真 acp-server 子进程，19 例、秒级）
 │  │  ├─ harness.mjs        # 起全栈：临时 game root/HOME/PORT + path 垫片，收 SSE 事件与断言辅助
 │  │  ├─ fake-engine.mjs    # 最小 ACP 假引擎（按脚本队列回 session/update，可制造段切换）
@@ -127,7 +129,7 @@ bunkiten/
 | `npm run dev` | 仅 vite 前端（浏览器调试，需另起 acp-server） |
 | `npm run dev:electron` | vite + Electron 并行开发 |
 | `npm run build` | `tsc -b && vite build`（类型检查 + 前端构建） |
-| `npm test` | 单测 + 集成全量 342 例：parser 65 + server 89 + crafting 52 + treeLayout 7 + genealogy 8 + ui 102 + integration 19（含假引擎集成层，整体秒级；改协议字符串必须同步快照）；另跑契约 lint `tests/contract.test.ts`（防漂移门禁，**不计入这 342**） |
+| `npm test` | 单测 + 集成全量 354 例：parser 65 + server 89 + crafting 52 + treeLayout 7 + genealogy 8 + diff 8 + ui 106 + integration 19（含假引擎集成层，整体秒级；改协议字符串必须同步快照）；另跑契约 lint `tests/contract.test.ts`（防漂移门禁，**不计入这 354**） |
 | `npm run test:e2e` | 真引擎 E2E 冒烟（约 6 分钟，2 回合） |
 | `npm run dist:win` | build 后打 Windows x64 包（nsis + portable，不签名） |
 | `npm run dist:mac` | build 后打 macOS 包（dmg + zip，arm64 + x64，不签名） |

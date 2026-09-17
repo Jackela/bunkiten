@@ -19,7 +19,7 @@ import OptionList from "../src/components/game/OptionList";
 import CreationScreen from "../src/components/CreationScreen";
 import AssetsScreen from "../src/components/AssetsScreen";
 import WorldsScreen, { relativeTime, worldDisplayName } from "../src/components/WorldsScreen";
-import StoryTreeScreen, { earliestSnapshotByNode, snapshotTurnNo } from "../src/components/StoryTreeScreen";
+import StoryTreeScreen, { earliestSnapshotByNode, prevSnapshotSeq, snapshotTurnNo } from "../src/components/StoryTreeScreen";
 import SettingsScreen from "../src/components/SettingsScreen";
 import App, { StatusAnnouncer } from "../src/App";
 import { useGameStore } from "../src/store/game";
@@ -1745,6 +1745,158 @@ describe("StoryTreeScreen：快照标注、原地回退与分叉带 seq（v1.6�
     // 乱序输入也按 seq 取最早
     expect(earliestSnapshotByNode([SNAPSHOTS[1], SNAPSHOTS[0]]).get("2-1")).toEqual({ seq: 3, turn: 1 });
     expect(earliestSnapshotByNode([]).size).toBe(0);
+  });
+});
+
+describe("StoryTreeScreen：快照对比 diff 面板（v1.7）", () => {
+  /** 两节点小树：2-1 / 2-2 已走过且都有快照（v1.6 组同款形状，独立维护免得两组耦合） */
+  const TREE_MD = [
+    "# 剧情树",
+    "## 第 2 章：雨夜来客",
+    "- 当前进度: 节点 2-2（已走 2 轮）",
+    "",
+    "### 节点 2-1（来客敲门）",
+    "- 地点: 旅店",
+    "- 状态: 已走过",
+    "",
+    "### 节点 2-2（门外的雨声）",
+    "- 地点: 旅店",
+    "- 状态: 已走过",
+  ].join("\n");
+
+  /** 快照索引：#1 挂 2-1（全局最小，没有对比基线）、#3 挂 2-2（基线是 #1） */
+  const SNAPSHOTS: WorldSnapshotMeta[] = [
+    { seq: 1, at: "2026-01-01T00:00:00.000Z", kind: "turn", nodeId: "2-1", chapterNo: 2 },
+    { seq: 3, at: "2026-01-01T01:00:00.000Z", kind: "turn", nodeId: "2-2", chapterNo: 2 },
+  ];
+
+  /** state.md 造 10 行 equal 前缀 + 改动行 + 10 行 equal 后缀（折叠视图需要足够长的未变段） */
+  const STATE_PREFIX = ["# 剧情状态", "周目: 1", "时间: 深夜", "场景: 旅店大堂", "张力: 中", "在场: 沈屿、来客", "天气: 雨", "道具: 信", "线索: 缺页", "地点: 二楼"].join("\n");
+  const STATE_SUFFIX = ["伏笔: 拖拽声", "目标: 拆穿", "好感: 中立", "信任: 低", "警觉: 高", "体力: 正常", "情绪: 平稳", "衣着: 湿透", "照明: 烛火", "门: 关"].join("\n");
+  /** seq → 三文件全文（fetchSnapshot mock 数据；tree 两边全等 → 「无变化」tab） */
+  const FILES: Record<number, { state: string; summary: string; tree: string }> = {
+    1: { state: `${STATE_PREFIX}\n好感度: 42\n${STATE_SUFFIX}`, summary: "第 1 轮：门口初遇。", tree: TREE_MD },
+    3: { state: `${STATE_PREFIX}\n好感度: 55\n${STATE_SUFFIX}`, summary: "第 2 轮：门外的雨声。", tree: TREE_MD },
+  };
+
+  /** 打开后让单条快照拉取 404（失败态用例打开） */
+  let snapshotFail = false;
+
+  beforeEach(() => {
+    snapshotFail = false;
+    useGameStore.setState({
+      worldId: "campus-summer-1",
+      worldLabel: "campus-summer-1",
+      screen: "tree",
+      screenReturn: "game",
+      treeStamp: 0,
+      treeNotice: null,
+      treeFocus: null,
+      forkResult: null,
+      engineBusy: false,
+      pendingTreeMessage: null,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/api/tree") return jsonResponse({ worldId: "campus-summer-1", markdown: TREE_MD });
+        if (url.pathname === "/api/history") {
+          const seq = Number(url.searchParams.get("seq") ?? "");
+          if (seq) {
+            // fetchSnapshot 的单条全文（面板拉当前 + 基线各一次）
+            const files = FILES[seq];
+            if (!files || snapshotFail) return jsonResponse({ error: "not found" }, 404);
+            const meta = SNAPSHOTS.find((s) => s.seq === seq)!;
+            return jsonResponse({ worldId: "campus-summer-1", snapshots: [{ ...meta, files }] });
+          }
+          return jsonResponse({ worldId: "campus-summer-1", snapshots: SNAPSHOTS });
+        }
+        return jsonResponse({}, 404);
+      }),
+    );
+  });
+
+  it("按钮出现条件：全局最小快照（无基线）不显示，有更早快照才显示；基线取 seq 更小的最近一条（kind 不限）", async () => {
+    // 纯函数：#1 没有基线；#3 的基线是 #1；backup 混在中间也算基线（回退后的第一个对比有得比）
+    expect(prevSnapshotSeq(SNAPSHOTS, 1)).toBeNull();
+    expect(prevSnapshotSeq(SNAPSHOTS, 3)).toBe(1);
+    expect(
+      prevSnapshotSeq([...SNAPSHOTS, { seq: 2, at: "2026-01-01T00:30:00.000Z", kind: "backup", nodeId: "2-1", chapterNo: 2 }], 3),
+    ).toBe(2);
+
+    render(<StoryTreeScreen />);
+    await waitFor(() => expect(screen.getByTestId("tree-canvas")).toBeTruthy());
+
+    // 2-1 的快照 #1 是全局最小：有快照标注但没有对比入口
+    fireEvent.click(screen.getByTestId("tree-node-2-1"));
+    expect(screen.getByTestId("tree-snapshot-2-1").textContent).toContain("快照 #1");
+    expect(screen.queryByTestId("snapshot-diff-open")).toBeNull();
+
+    // 2-2 的快照 #3 有基线 #1：入口出现并写明区间
+    fireEvent.click(screen.getByTestId("tree-node-2-2"));
+    expect(screen.getByTestId("snapshot-diff-open").textContent).toContain("#1 → #3");
+  });
+
+  it("打开面板：三 tab（state/summary/tree）+ tab 头 +N −M / 无变化，remove/add 行按基线→当前着色", async () => {
+    render(<StoryTreeScreen />);
+    await waitFor(() => expect(screen.getByTestId("tree-canvas")).toBeTruthy());
+
+    fireEvent.click(screen.getByTestId("tree-node-2-2"));
+    fireEvent.click(screen.getByTestId("snapshot-diff-open"));
+
+    await waitFor(() => expect(screen.getByTestId("snapshot-diff")).toBeTruthy());
+    // 默认 tab 是剧情状态：好感度一行被替换（remove 旧值在前、add 新值在后）
+    expect(screen.getByTestId("diff-row-remove").textContent).toContain("好感度: 42");
+    expect(screen.getByTestId("diff-row-add").textContent).toContain("好感度: 55");
+    expect(screen.queryByTestId("snapshot-diff-loading")).toBeNull();
+
+    // 三个 tab 都在；state 头 +1 −1，tree 两边全等显示「无变化」
+    expect(screen.getByTestId("snapshot-diff-tab-state").textContent).toContain("+1 −1");
+    expect(screen.getByTestId("snapshot-diff-tab-summary").textContent).toContain("+1 −1");
+    expect(screen.getByTestId("snapshot-diff-tab-tree").textContent).toContain("无变化");
+
+    // 切到前情摘要：换一组的改动行
+    fireEvent.click(screen.getByTestId("snapshot-diff-tab-summary"));
+    expect(screen.getByTestId("diff-row-remove").textContent).toContain("第 1 轮");
+    expect(screen.getByTestId("diff-row-add").textContent).toContain("第 2 轮");
+  });
+
+  it("equal 折叠：默认只留改动行上下 ±2 行 + 「…共 N 行未变」，点 gap 展开全部", async () => {
+    render(<StoryTreeScreen />);
+    await waitFor(() => expect(screen.getByTestId("tree-canvas")).toBeTruthy());
+
+    fireEvent.click(screen.getByTestId("tree-node-2-2"));
+    fireEvent.click(screen.getByTestId("snapshot-diff-open"));
+    await waitFor(() => expect(screen.getByTestId("snapshot-diff")).toBeTruthy());
+
+    // 21 行 state（10 equal + remove + add + 10 equal）：默认上下各 2 行 equal 保留，前后各 8 行折叠
+    expect(screen.getAllByTestId("diff-row-equal").length).toBe(4);
+    const gaps = screen.getAllByTestId("snapshot-diff-gap");
+    expect(gaps.map((g) => g.textContent)).toEqual(["…共 8 行未变（点击展开）", "…共 8 行未变（点击展开）"]);
+
+    fireEvent.click(gaps[0]!);
+    // 展开后全部 20 行 equal 在场、gap 消失（切 tab 才回到折叠视图）
+    expect(screen.getAllByTestId("diff-row-equal").length).toBe(20);
+    expect(screen.queryByTestId("snapshot-diff-gap")).toBeNull();
+  });
+
+  it("失败态：单条快照 404 → 面板内明确提示；关闭回到详情（按钮回来、面板消失）", async () => {
+    snapshotFail = true;
+    render(<StoryTreeScreen />);
+    await waitFor(() => expect(screen.getByTestId("tree-canvas")).toBeTruthy());
+
+    fireEvent.click(screen.getByTestId("tree-node-2-2"));
+    fireEvent.click(screen.getByTestId("snapshot-diff-open"));
+
+    await waitFor(() => expect(screen.getByTestId("snapshot-diff-error").textContent).toContain("快照对比加载失败"));
+    expect(screen.getByTestId("snapshot-diff-error").textContent).toContain("HTTP 404");
+    expect(screen.queryByTestId("diff-row-add")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("snapshot-diff-close"));
+    expect(screen.queryByTestId("snapshot-diff")).toBeNull();
+    expect(screen.getByTestId("tree-detail")).toBeTruthy(); // 详情本体还在，只是收起对比
+    expect(screen.getByTestId("snapshot-diff-open")).toBeTruthy();
   });
 });
 
