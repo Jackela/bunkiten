@@ -21,6 +21,7 @@ import {
   selectSnapshotForNode,
   forkTreeMarkdown,
   forkNote,
+  invalidateSnapshots,
 } from "./snapshots.mjs";
 
 // 回收站（v1.7，ADR-0014）：删除不直删——世界线目录与素材文件先整体挪进 state/trash/，误删可手工找回。
@@ -506,6 +507,8 @@ export function deleteWorld(root, worldId) {
   const list = readWorldsIndex(root);
   if (!list.some((e) => e.worldId === worldId)) return { error: "世界不存在" };
   writeWorldsIndex(root, list.filter((e) => e.worldId !== worldId));
+  // 顺手释放该世界的快照缓存（长世界的 files 字符串可达 MB 级，别让它在 Electron 长驻进程里滞留）
+  invalidateSnapshots(worldId, root);
   // root 是 worlds 根（<gameRoot>/state/worlds）：整个世界目录搬进 <gameRoot>/state/trash/（索引先移除，恢复需手工补条目）
   const t = moveToTrash(path.dirname(path.dirname(root)), ["state", "worlds", worldId]);
   console.log(`[acp] world deleted: ${worldId}${t.trashed ? " → state/trash" : ""}`);

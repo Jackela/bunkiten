@@ -288,4 +288,18 @@ describe("集成：逐轮快照 + 世界线精确回退/导出导入（CONTRACTS
     expect((await stack.postJSON("/api/assets", { action: "delete", preset: "../etc", file: "a.jpg" })).status).toBe(400); // preset 非法
     expect((await stack.postJSON("/api/assets", { action: "nope", preset: "demo", file: "a.jpg" })).status).toBe(400);
   }, 15000);
+
+  it("⑨ /api/history 列表连读两次逐字相等（v1.7 列表缓存：命中与重解析的出口形状必须一致）", async () => {
+    // 探针在集成子进程里拿不到，这里只断言可观察行为：同一 worldId 连续两次列表响应体逐字相等，
+    // 且列表形态不回 files（缓存正确性——命中不出岔子——由 server.test.ts 的探针用例覆盖）。
+    const first = await stack.getText("/api/history?worldId=w1");
+    const second = await stack.getText("/api/history?worldId=w1");
+    expect(first.status).toBe(200);
+    expect(second.body).toBe(first.body);
+    for (const r of [first, second]) {
+      const meta = JSON.parse(r.body);
+      expect(meta.snapshots.length).toBeGreaterThan(0); // w1 此时已有 turn + backup 两条
+      expect(meta.snapshots.every((s: any) => s.files === undefined)).toBe(true);
+    }
+  }, 15000);
 });

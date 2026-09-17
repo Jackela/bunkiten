@@ -71,25 +71,71 @@ export function createAcpSession({ gameRoot, sessionFile, rules, effort, onChunk
   }
 
   function sessionImagesDir() {
-    // 调用点（resolveImage）都在会话已 boot 后才进来；boot 完成前 sessionId 必为 null——cast 表达这个顺序不变式
+    // 唯一调用点 resolveImage 入口有 `!sessionId → return null` 守卫（boot 完成前的【图】补落盘路径曾违反
+    // 旧不变式直接 TypeError），走到这里时 sessionId 必非空——cast 依赖该守卫，删守卫前先改这里。
     const base = path.join(os.homedir(), ".grok", "sessions", encodeURIComponent(gameRoot), /** @type {string} */ (sessionId));
     return path.join(base, "images");
   }
 
-  // 图片落在 per-session 目录：当前会话没有时，扫所有历史会话取最新（跨会话续档）
-  /** @param {string} name 图片文件名 @returns {string|null} 绝对路径；找不到时 null */
-  function resolveImage(name) {
-    const cur = path.join(sessionImagesDir(), name);
-    if (fs.existsSync(cur)) return cur;
+  // 会话图索引（v1.7 读路径索引化）：imageName → 该名字最新的一份（跨会话续档时 /img 反复来查，
+  // 原先每次未命中都 readdirSync 扫全部历史会话目录逐个 statSync）。挂在会话实例闭包而非模块级：
+  // gameRoot/sessionId 都是本工厂的入参与状态，换一个会话实例索引自然隔离，不会串根。
+  /** @type {Map<string, {absPath: string, mtimeMs: number}>} */
+  const imageIndex = new Map();
+  let imageIndexScannedAt = 0; // 上次全量重建的时间戳（TTL 节流用）
+  const IMAGE_INDEX_TTL_MS = 5000;
+
+  // 全量重建索引：扫会话根下所有会话目录的 images/，同名取 mtime 最新
+  function rebuildImageIndex() {
+    imageIndex.clear();
     const base = path.join(os.homedir(), ".grok", "sessions", encodeURIComponent(gameRoot));
-    let best = null, bestT = 0;
     try {
-      for (const d of fs.readdirSync(base)) {
-        const f = path.join(base, d, "images", name);
-        try { const st = fs.statSync(f); if (st.mtimeMs > bestT) { bestT = st.mtimeMs; best = f; } } catch {}
+      for (const d of fs.readdirSync(base, { withFileTypes: true })) {
+        if (!d.isDirectory()) continue;
+        const imagesDir = path.join(base, d.name, "images");
+        let names = [];
+        try {
+          names = fs.readdirSync(imagesDir);
+        } catch {
+          continue;
+        }
+        for (const name of names) {
+          const f = path.join(imagesDir, name);
+          try {
+            const st = fs.statSync(f);
+            const prev = imageIndex.get(name);
+            if (!prev || st.mtimeMs > prev.mtimeMs) imageIndex.set(name, { absPath: f, mtimeMs: st.mtimeMs });
+          } catch {}
+        }
       }
     } catch {}
-    return best;
+    imageIndexScannedAt = Date.now();
+  }
+
+  // 图片落在 per-session 目录：当前会话没有时，查会话图索引（miss 才全量重建）
+  /** @param {string} name 图片文件名 @returns {string|null} 绝对路径；找不到时 null */
+  function resolveImage(name) {
+    // boot 前 / 无会话：安全返回 null（此前 sessionId 为 null 时 path.join(..., null) 会抛 TypeError，
+    // flushArtLines 的【图】补落盘路径没有守卫，这个修复让 /img 走正常 404 而不是 500）
+    if (!sessionId) return null;
+    const cur = path.join(sessionImagesDir(), name);
+    if (fs.existsSync(cur)) return cur;
+    const hit = imageIndex.get(name);
+    if (hit) {
+      try {
+        fs.statSync(hit.absPath); // 命中但文件还在才算数
+        return hit.absPath;
+      } catch {
+        imageIndex.delete(name); // 已被删：剔除后走下面的重扫找次新
+      }
+    } else if (Date.now() - imageIndexScannedAt < IMAGE_INDEX_TTL_MS) {
+      // /img 未命中是低频路径：会话目录被外部清掉后不该每个请求都全量重扫一遍——
+      // TTL 内的 miss 直接判 miss。选 TTL 而非目录 mtime 是因为多层父目录的 mtime 不可靠（下级变化不一定冒泡）。
+      return null;
+    }
+    rebuildImageIndex();
+    const again = imageIndex.get(name);
+    return again ? again.absPath : null;
   }
 
   function saveSessionId() {

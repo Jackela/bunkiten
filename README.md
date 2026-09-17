@@ -86,14 +86,14 @@ bunkiten/
 │  ├─ setup-react-act.mjs   # vitest 环境：React act() 兼容补丁
 │  ├─ parser.test.ts        # 文本协议契约快照单测（65 例）
 │  ├─ crafting.test.ts      # 章节制作与创作/画廊编排单测（52 例）
-│  ├─ server.test.ts        # server 协议行与世界线/快照/音频/剧本导出包/角色面板接口单测（99 例）
+│  ├─ server.test.ts        # server 协议行与世界线/快照/音频/剧本导出包/角色面板接口单测（104 例）
 │  ├─ treeLayout.test.ts    # 剧情树分层布局与缩放视口纯函数单测（7 例）
 │  ├─ genealogy.test.ts     # 世界线家谱布局与键盘步进纯函数单测（8 例）
 │  ├─ diff.test.ts          # 快照对比行级 LCS 纯函数单测（8 例）
 │  ├─ doctor.test.ts        # 剧本体检查纯函数单测（tmp 根造 preset，12 例）
 │  ├─ ui.test.tsx           # 组件测试（TopBar/世界线（含家谱视图）/剧情图（含快照对比）/设置/Creation/Assets/主题/重掷/角色面板/标题屏剧本导出导入，109 例）
-│  ├─ contract.test.ts      # 契约 lint（防漂移门禁：协议头/音频白名单/指令前缀真源断言（shared/protocol.mjs）/RULES 逐字副本/指令字符串/主题白名单/用例数/设置键；自身不计入 381 口径）
-│  ├─ integration/          # 假引擎集成层（假 ACP 引擎 + 真 acp-server 子进程，21 例、秒级）
+│  ├─ contract.test.ts      # 契约 lint（防漂移门禁：协议头/音频白名单/指令前缀真源断言（shared/protocol.mjs）/RULES 逐字副本/指令字符串/主题白名单/用例数/设置键；自身不计入 388 口径）
+│  ├─ integration/          # 假引擎集成层（假 ACP 引擎 + 真 acp-server 子进程，23 例、秒级）
 │  │  ├─ harness.mjs        # 起全栈：临时 game root/HOME/PORT + path 垫片，收 SSE 事件与断言辅助
 │  │  ├─ fake-engine.mjs    # 最小 ACP 假引擎（按脚本队列回 session/update，可制造段切换）
 │  │  └─ *.test.ts          # 图片落盘与目录穿越防护 / 音频索引与逐轮快照 / 编译-落盘-事件管线
@@ -135,7 +135,7 @@ bunkiten/
 | `npm run dev` | 仅 vite 前端（浏览器调试，需另起 acp-server） |
 | `npm run dev:electron` | vite + Electron 并行开发 |
 | `npm run build` | `tsc -b && vite build`（类型检查 + 前端构建） |
-| `npm test` | 单测 + 集成全量 381 例：parser 65 + server 99 + crafting 52 + treeLayout 7 + genealogy 8 + diff 8 + doctor 12 + ui 109 + integration 21（含假引擎集成层，整体秒级；改协议字符串必须同步快照）；另跑契约 lint `tests/contract.test.ts`（防漂移门禁：协议常量真源断言 + 双侧逐字比对，**不计入这 381**） |
+| `npm test` | 单测 + 集成全量 388 例：parser 65 + server 104 + crafting 52 + treeLayout 7 + genealogy 8 + diff 8 + doctor 12 + ui 109 + integration 23（含假引擎集成层，整体秒级；改协议字符串必须同步快照）；另跑契约 lint `tests/contract.test.ts`（防漂移门禁：协议常量真源断言 + 双侧逐字比对，**不计入这 388**） |
 | `npm run doctor` | 剧本体检查（作者侧工具，按需跑、不进 CI）：`node scripts/doctor.mjs` 校验 `presets/` 每个剧本的结构健康度——frontmatter 必填键与 id=目录名、theme 逐键回退预警、`# 主要角色` 与角色建议字段、封面、assets/audio 文件名契约、孤儿素材；输出 `[ok]`/`[warn]`/`[error]` 明细报告，**退出码非 0 当且仅当有 error**（warning 不影响——孤儿素材这类可解释项不拦你发布） |
 | `npm run test:e2e` | 真引擎 E2E 冒烟（约 6 分钟，2 回合） |
 | `npm run dist:win` | build 后打 Windows x64 包（nsis + portable，不签名） |

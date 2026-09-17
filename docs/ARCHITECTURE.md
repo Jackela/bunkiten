@@ -352,7 +352,7 @@ state/worlds/<worldId>/history/0001.json     # 4 位递增、append-only
 
 - **客户端纪律**：`restoreSnapshot` 在引擎忙或有排队指令时**拒绝**（回退覆盖的正是引擎此刻可能正在写的文件），提示「引擎忙，等这一轮回完再回退」；回退是破坏性动作，图屏两段确认（首点进确认态、二点才发）。
 - **图屏呈现**：快照索引（`GET /api/history`）驱动节点上的「快照 #seq · 第 N 轮」标注与「回退到此节点」按钮；有快照的节点「在此分叉」自动携带该 seq。`snapshotTurnNo` 数「seq ≤ 目标的 turn 快照条数」（backup 不算新的一轮）。
-- **history 性能取舍**：列表请求只回元信息（不回 `files`）；`GET /api/history?worldId=&seq=<n>` 只读目标文件、只回那一条（预览/重建很热，不为附 `files` 全量 parse 整个目录）。
+- **history 性能取舍**：列表请求只回元信息（不回 `files`）；`GET /api/history?worldId=&seq=<n>` 只读目标文件、只回那一条（预览/重建很热，不为附 `files` 全量 parse 整个目录）。列表读取带**元信息缓存**（v1.7，`server/snapshots.mjs`）：目录项「文件名集合 + 逐文件 mtime」与缓存 stamp 逐项一致 → 直接回缓存（省掉逐文件 readFileSync + JSON.parse 全文）；不一致（新增/删除/覆盖快照文件）→ 全量重解析该目录并更新缓存；`writeSnapshot` 落盘后主动失效，同进程读立刻见新。缓存出口给条目浅拷贝，调用方改返回值不脏缓存。
 
 ### 回退后的客户端语义（v1.7）
 
@@ -485,7 +485,7 @@ ADR-0007 许诺的「看两份存档差在哪」：剧情图节点详情在快�
 ```
 标记行 【图】立绘|薇拉|images/12.jpg
   → server parseArtLine → persistAsset("立绘", "薇拉", "images/12.jpg")
-  → resolveImage("12.jpg")：当前会话目录 → 扫全部历史会话取 mtime 最新
+  → resolveImage("12.jpg")：当前会话目录 → 会话图索引（跨会话同名取 mtime 最新；索引 miss 才全量重扫，5s TTL 节流）
   → 拷贝到 GAME_ROOT/presets/rift-mark/assets/立绘-薇拉.jpg
   → 前端 <img src="/img?p=images%2F12.jpg&t=立绘&n=薇拉&preset=rift-mark">
 
@@ -512,7 +512,7 @@ ADR-0007 许诺的「看两份存档差在哪」：剧情图节点详情在快�
 
 1. 当前剧本判定：显式 `&preset=` 合法则用它；否则回退嗅探出的 `currentPresetId`（**只用于旧档只读探测**；落盘一律要求显式来源：`&preset=`、标记路径或【新剧本】）。
 2. 带 `t`&`n` 且有当前剧本：`presets/<剧本 id>/assets/<t>-<sanitized(n)>.jpg` 存在 → 直接返回（该剧本永久命中优先）。
-3. 否则 `p` 形如 `images/<N>.jpg` 且有 sessionId：`resolveImage`（当前会话 → 跨会话最新 mtime）；带 `t`&`n` 时顺手落盘到当前剧本的 `assets/` 再返回。
+3. 否则 `p` 形如 `images/<N>.jpg` 且有 sessionId：`resolveImage`（当前会话 → 跨会话最新 mtime）；带 `t`&`n` 时顺手落盘到当前剧本的 `assets/` 再返回。跨会话查找走**会话图索引**（v1.7，`server/acp.mjs`，每会话实例一份）：imageName → mtime 最新路径；索引命中且文件仍在 → 直接返回，索引 miss（或条目指向的文件已被删）→ 全量扫会话根下所有会话目录重建索引再查一次，重建后 5s 内的后续 miss 直接 404（`/img` 未命中是低频路径，防会话目录被清后每个请求都重扫；选 TTL 而非目录 mtime 是因为多层父目录的 mtime 不可靠）。sessionId 为 null（boot 前）安全返回不命中，不再抛 TypeError。
 4. 旧档兼容（只读）：`p` 形如 `assets/<文件>.jpg` 时在**当前剧本目录**内探测一次——命中直服，未命中 404（不跨剧本扫描、不迁落）。
 5. 已落盘资产直服白名单：`p` 匹配 `presets/<id>/assets/<文件>.jpg` 或 `presets/<id>/cover.jpg`（差分立绘、封面与画廊预览走这里，可带 `v=` 破缓存戳）——resolve 后必须仍在 GAME_ROOT 内。
 6. 都不命中 → 404。
@@ -748,7 +748,7 @@ theme:
 | `src/store/game.ts` + `src/store/slices/*` | 事件编排（v1.6 按 slice 分文件，入口仍是 `store/game.ts`；跨片共享闭包与定时器单例在 `store/context.ts`）：段过滤重置逻辑、标记→画面应用、`expression` 表情切换与 `presetAdded` 刷新、章节制作流水线推进（规划→清单→队列→开演→【章】切章）、画廊单项/批量重绘与批量删除、创作装配状态机、`awaitCommand` 切屏；世界线（`beginNewWorld`/`resumeWorld`/`updateWorld`/`importWorldText`）与剧情图 overlay（`openTree`/`forkAt`/`treeEdited`/`restoreSnapshot`、编辑回合不进历史）；v1.6 设置（`updateSettings`）与自动前进（`armAutoAdvance`） |
 | `server/acp-server.mjs` | `RULES` 原文（注入 agent 的客户端补丁，含「世界纪律」与「音频纪律」句）、协议行解析导出（`parseArtLine`/`parseExpressionLine`/`parsePresetAddedLine`/`parseTreeLine`/`parseAudioLine`）与 `handleArtLine` 分流（分支顺序 art → expression → tree → presetAdded → audio）、`listAssets(presetId)` 资产形状（每条回填 `preset`；`inUse` 只扫该剧本的世界）、资产落盘纪律（`resolvePersistPreset` 是唯一「落哪个剧本」判定；`assetRelPath`/`assetTargetFile` 是唯一路径构造；封面走 `presets/<id>/cover.jpg`）；世界线（`readWorldsIndex`/`listWorlds`/`createWorld`/`forkWorld`/`deleteWorld`/`updateWorld`/`migrateLegacyState` 与 `/api/worlds`、`/api/tree` 端点）；v1.6 快照（`writeSnapshot`/`readSnapshot`/`readSnapshots`/`normalizeSnapshot`/`selectSnapshotForNode`/`restoreWorld`/`exportWorld`/`importWorld` + `/api/history`、`/api/worlds/export`）、音频（`scanPresetAudio` + `/api/audio`、`/audio`；`AUDIO_FILE_RE`/`AUDIO_REL_RE`/`AUDIO_MIME` import 自 `shared/protocol.mjs`）、本地端点两道闸（`isCrossSiteRequest`/`readBodyText` + `MAX_BODY_BYTES`）、素材删除（`POST /api/assets`） |
 | `shared/protocol.mjs` | 协议常量唯一真源（v1.7，见 `docs/adr/0012`）：`PROTOCOL_HEADS`（9 头）、`AUDIO_KINDS`/`AUDIO_EXTS`/`AUDIO_MIME`/`AUDIO_FILE_RE`/`AUDIO_REL_RE`（音频白名单与直服正则，后两者由前两者构造）、`DIRECTIVE_PREFIX_RE`（指令前缀正则，`pickEffort` 推理分档与 `isMainTurn` 正戏回合判定共用）。`src/lib/parser.ts` re-export（公共 API 不变）、`server/acp-server.mjs` import（并 re-export `AUDIO_KINDS`/`AUDIO_EXTS` 给 `scripts/doctor.mjs`）；`shared/protocol.d.mts` 是手写类型声明（tsc -b 按 `.mjs`→`.d.mts` 解析；vite/vitest/electron 运行时直接吃 `.mjs`）。`RULES` 刻意不收编：引擎只读 `.grok/` 提示词、不会 import 代码，server↔SKILL.md 双份 + lint 逐字比对仍是正确机制 |
-| `tests/parser.test.ts`、`tests/crafting.test.ts`、`tests/server.test.ts`、`tests/treeLayout.test.ts`、`tests/genealogy.test.ts`、`tests/diff.test.ts`、`tests/doctor.test.ts`、`tests/ui.test.tsx`、`tests/integration/*` | 契约字符串快照与单测：开局指令四变体（含世界段）/续玩/剧情编辑、分项美术/重绘/章节规划/创作模式指令、`开演。`、清单（含差分项）/章标记与选项解析期望值（parser 65 例）、章节制作流水线指令序列（crafting 52 例，stub fetch）、世界线/资产落盘判定/协议解析/快照与导出导入/剧本导出包（往返/重名/文件名安全/扩展名与 base64 校验）/state.md 容错解析与 `/api/state` 路由判定（server 99 例）、布局纯函数（treeLayout 7 例 + genealogy 8 例：家谱森林分层、孤儿 missingParent、fork 环终止、层内排序确定性与键盘步进）、快照对比纯函数（diff 8 例：全等/全增/全删/替换块相对顺序/空输入/空行/典型 state.md 好感度一行）、剧本体检查纯函数（doctor 12 例：tmp 根造 preset 覆盖七组判定、theme 双层回退与 checkAllPresets 汇总，见「剧本体检查」节）、组件含设置屏、自动前进与回退后分割线/待重同步、动效降级打字机、主题字体族与对话框质感、重掷本回合全链、角色面板渲染/秘密折叠/turn_end 重拉/空态、世界线家谱视图、快照对比面板、标题屏剧本导出/导入（ui 109 例）；另有真 server 子进程的集成测试 21 例（`integration/pipeline` 10、`integration/audio-history` 8、`integration/http-guard` 3——音频事件、快照落盘与精确回退、世界线与剧本的导出/导入往返、来源校验 403 与 body 上限 413、引擎 error response 的 409 传播） |
+| `tests/parser.test.ts`、`tests/crafting.test.ts`、`tests/server.test.ts`、`tests/treeLayout.test.ts`、`tests/genealogy.test.ts`、`tests/diff.test.ts`、`tests/doctor.test.ts`、`tests/ui.test.tsx`、`tests/integration/*` | 契约字符串快照与单测：开局指令四变体（含世界段）/续玩/剧情编辑、分项美术/重绘/章节规划/创作模式指令、`开演。`、清单（含差分项）/章标记与选项解析期望值（parser 65 例）、章节制作流水线指令序列（crafting 52 例，stub fetch）、世界线/资产落盘判定/协议解析/快照与导出导入/剧本导出包（往返/重名/文件名安全/扩展名与 base64 校验）/state.md 容错解析与 `/api/state` 路由判定（server 104 例）、布局纯函数（treeLayout 7 例 + genealogy 8 例：家谱森林分层、孤儿 missingParent、fork 环终止、层内排序确定性与键盘步进）、快照对比纯函数（diff 8 例：全等/全增/全删/替换块相对顺序/空输入/空行/典型 state.md 好感度一行）、剧本体检查纯函数（doctor 12 例：tmp 根造 preset 覆盖七组判定、theme 双层回退与 checkAllPresets 汇总，见「剧本体检查」节）、组件含设置屏、自动前进与回退后分割线/待重同步、动效降级打字机、主题字体族与对话框质感、重掷本回合全链、角色面板渲染/秘密折叠/turn_end 重拉/空态、世界线家谱视图、快照对比面板、标题屏剧本导出/导入（ui 109 例）；另有真 server 子进程的集成测试 23 例（`integration/pipeline` 11、`integration/audio-history` 9、`integration/http-guard` 3——音频事件、快照落盘与精确回退、世界线与剧本的导出/导入往返、来源校验 403 与 body 上限 413、引擎 error response 的 409 传播） |
 | `tests/contract.test.ts` | v1.6 起契约 lint（防漂移门禁，读源码与文档、不起子进程）：`PROTOCOL_HEADS` 唯一真源（`shared/protocol.mjs` 源码字面 + import 值 + parser re-export 链三方钉住）↔ server/parser 解析出口 ↔ `SKILL.md`「标记格式备忘」/本文档、`RULES` 逐字副本（server 常量 ↔ 本节代码块）、指令字符串双处存在（`parser.ts` ↔ `SKILL.md`）、`DIRECTIVE_PREFIX_RE` 单一真源（`pickEffort`/`isMainTurn` 函数体都引用它、server 无第二份前缀字面）、主题白名单与兜底主题（server ↔ `src/theme.ts` 同集同值）、各测试文件的 `it(`/`test(` 用例数与上面那行声明的分组数字逐一比对、设置键 `bunkiten.settings.v1` 与音频扩展名三处一致（音频常量断言指向 `shared/protocol.mjs` 真源）。**它自己的用例不计入上面那组合计口径**（`tests/e2e/**` 同样不在口径内） |
 
 v1.3 三组新契约的同步点速查（同一改动五处联动的具体落点）：
