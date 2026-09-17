@@ -1454,9 +1454,15 @@ export function startServer() {
     broadcast({ type: "turn_start" });
     try {
       await applyEffort(text); // 档位变化才 set_config_option（在 session/prompt 之前）
-      await request("session/prompt", {
+      const r = await request("session/prompt", {
         sessionId, prompt: [{ type: "text", text }],
       }, 600000);
+      // request() 会 resolve 整个响应 msg：引擎按 JSON-RPC 回 error response（而不是断流/超时）时
+      // 以前被当成功回合处理（照写快照、广播 turn_end、HTTP 200）——这里显式抛错，落进下方 catch
+      //（error 事件 + busy 复位 + 不写快照 + POST /prompt 409），与超时/进程崩掉同一错误路径。
+      if (r && r.error) {
+        throw new Error(`引擎回合失败：${r.error.message ?? JSON.stringify(r.error)}`);
+      }
       flushArtLines();
       writeTurnSnapshot(text); // 逐轮快照：flushArtLines 之后、busy=false 之前
       // 先复位再广播：客户端收到 turn_end 会立即发下一条（制作流水线自动推进），

@@ -1,9 +1,12 @@
-// 假引擎确定性 UI e2e ⑦：快照原地回退后的画面重建（成功路径骨架）。
+// 假引擎确定性 UI e2e ⑦：快照原地回退后的画面重建，与回退后重同步的失败/恢复路径。
 // seed w1 两条 kind:"turn" 快照（seq 1/2，state 场景与树文各不相同，nodeId 与树文一致），当前树文含快照 1
 // 的节点 1-1。流程：世界线屏继续 w1 → game 就绪 → 进剧情图 → 点节点 1-1 → 详情见快照标注 →
 // 「回退到此节点（原地）」两段确认 → server 覆盖三文件（先备份）→ store 补发「继续世界：w1。」→
-// fake-engine 以 {match:"继续世界："} 回续演正文。断言（宽松 contains，失败路径与「待重同步」UI 属下一票）：
-// tree-notice 出现「已回退」、返回 game 屏后状态就绪、正文区出现续演文本。
+// fake-engine 以 {match:"继续世界："} 回续演正文。断言（宽松 contains）：
+// tree-notice 出现「已回退」、返回 game 屏后状态就绪、正文区出现续演文本；
+// 第二个 test 让回退后的第一条「继续世界：」命中 {error} → 图屏提示「重同步失败」、返回 game 屏后
+// TopBar 亮待重同步徽章 + 再同步按钮 → 点再同步，第二条同 match 的 turn 回成功正文 → 徽章消失
+//（match 条目不重复消费，天然按序）。
 import { expect, test, type Browser, type Page } from "@playwright/test";
 import { startFakeStack } from "../helpers/fake-stack.mjs";
 
@@ -114,10 +117,16 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
       ],
     },
     turns: [
-      // 进屏时的「继续世界：w1。」
+      // test1 进屏时的「继续世界：w1。」
       { match: "继续世界：", ops: ["雨停了，教堂门口的石阶泛着冷光。\n\n**行动**\n1. 推门进去\n2. 原地等待\n"] },
-      // 回退成功后 store 补发的「继续世界：w1。」→ 引擎按快照一的画面续演
+      // test1 回退成功后 store 补发的「继续世界：w1。」→ 引擎按快照一的画面续演
       { match: "继续世界：", ops: ["续演正文：画面从快照一的教堂门口重新亮起。\n\n**行动**\n1. 前进\n"] },
+      // test2 进屏时的「继续世界：w1。」（match 条目不重复消费，按序取这一条）
+      { match: "继续世界：", ops: ["雨停了，教堂门口的石阶泛着冷光。\n\n**行动**\n1. 推门进去\n2. 原地等待\n"] },
+      // test2 回退后补发的第一条「继续世界：」→ 命中 {error}，制造重同步失败
+      { match: "继续世界：", ops: [{ error: "引擎坏了" }] },
+      // test2 点「再同步」重发的「继续世界：」→ 成功
+      { match: "继续世界：", ops: ["重同步正文：引擎重新读档，画面从快照一再次亮起。\n\n**行动**\n1. 继续\n"] },
     ],
   });
   page = await (await browser.newContext()).newPage();
@@ -158,4 +167,39 @@ test("回退到快照 #1：两段确认→已回退提示→补发续玩→画�
   await page.getByRole("button", { name: "返回", exact: true }).click();
   await expect(page.getByTestId("status")).toHaveText("就绪");
   await expect(page.getByTestId("dialogue-text")).toContainText("续演正文");
+});
+
+test("重同步失败与恢复：回退后首条续玩命中引擎 error → 徽章 + 再同步；重试成功后清除", async () => {
+  await page.goto(stack.pageUrl);
+  const card = page.getByTestId("title-card-center");
+  await expect(card).toBeVisible();
+  await card.click();
+  await expect(page.getByTestId("worlds-screen")).toBeVisible();
+
+  // 继续 w1 → game 就绪（消费第三条「继续世界」应答：成功正文）
+  await page.getByTestId("world-continue-w1").click();
+  await expect(page.getByTestId("status")).toHaveText("就绪");
+  await expect(page.getByTestId("resync-badge")).toHaveCount(0); // 还没回退：无徽章
+
+  // 回退：两条「继续世界」队列里下一条是 {error} → 重同步失败
+  await page.getByRole("button", { name: "剧情图", exact: true }).click();
+  await page.getByTestId("tree-node-1-1").click();
+  await page.getByTestId("tree-restore-1-1").click();
+  await page.getByTestId("tree-restore-confirm-1-1").click();
+
+  // 失败态：图屏提示条说重同步失败（status 与 treeNotice 同说失败，不再互相矛盾）
+  await expect(page.getByTestId("tree-notice")).toContainText("重同步失败");
+  await expect(page.getByTestId("tree-notice")).toContainText("再同步");
+
+  // 返回 game 屏（tree 屏不挂 TopBar）：徽章 + 「再同步」入口出现
+  await page.getByRole("button", { name: "返回", exact: true }).click();
+  await expect(page.getByTestId("resync-badge")).toBeVisible();
+  const retry = page.getByTestId("resync-retry");
+  await expect(retry).toBeVisible();
+
+  // 点再同步：第五条「继续世界」应答成功正文 → 徽章消失、回合就绪、正文可见
+  await retry.click();
+  await expect(page.getByTestId("resync-badge")).toHaveCount(0);
+  await expect(page.getByTestId("status")).toHaveText("就绪");
+  await expect(page.getByTestId("dialogue-text")).toContainText("重同步正文");
 });

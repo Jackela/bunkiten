@@ -52,10 +52,27 @@ export interface PortraitState {
  */
 export type PreloadPhase = "init" | "planning" | "queue" | "starting" | "finished";
 
+/** 正文幕：「第 N 幕」+ 过滤协议行后的回合正文（kind 可选，旧字面量 {n,t} 原样可用） */
 export interface HistoryEntry {
+  kind?: "act";
   n: string;
   t: string;
 }
+
+/**
+ * 回退分割线（非破坏式回退标记）：restoreSnapshot 成功时插进 history，**不删除**之前的任何幕——
+ * 渲染层把标记之前的幕降不透明度、标记本身画成居中细线「—— 已回退到快照 #N ——」。
+ */
+export interface HistoryRollbackMark {
+  kind: "rollback";
+  /** 回退到的目标快照 seq */
+  seq: number;
+  /** 落标记的时刻（ms） */
+  at: number;
+}
+
+/** 历史条目：正文幕（HistoryEntry）或回退分割线（HistoryRollbackMark），按 kind 判别 */
+export type HistoryItem = HistoryEntry | HistoryRollbackMark;
 
 /** 创作模式对话流的一条消息 */
 export interface CreationMessage {
@@ -112,7 +129,7 @@ export interface GameStore {
   /** 引擎回合进行中（turn_start→turn_end/error）；skip 时用来判断能否立即推进 */
   engineBusy: boolean;
 
-  history: HistoryEntry[];
+  history: HistoryItem[];
   drawerOpen: boolean;
 
   // —— 创作模式（creation 屏）——
@@ -185,6 +202,21 @@ export interface GameStore {
   /** 最近一次分叉的结果（图屏提供「切到此世界线」） */
   forkResult: { worldId: string; nodeId: string } | null;
 
+  // —— 回退后的重同步（会话内内存态，不持久化）——
+  /**
+   * 回退成功后补发「继续世界：<worldId>。」的标记：重同步回合（{@link resyncing}）turn_end 成功即清除
+   * （见 gameplay slice），投递/回合失败则保留并置 {@link resyncFailed}；玩家改发普通指令时在 send 入口
+   * 静默清掉（选择继续走，不假称完成重同步）。刻意不持久化——App 重启后玩家走「继续世界线」
+   * 本来就会重发续玩指令重读档，语义自洽，无需跨会话记账。
+   */
+  pendingResync: { worldId: string; seq: number } | null;
+  /** 重同步回合失败（POST 失败或 SSE error 事件）：TopBar 亮「再同步」入口，重试成功后复位 */
+  resyncFailed: boolean;
+  /** 本轮发送的正是重同步指令「继续世界：<worldId>。」（由 restoreSnapshot/retryResync 在发送前置位）：
+   *  只有它收尾的 turn_end 才认领「完成重同步」并清 pendingResync，失败路径也据此区分文案
+   *  （重同步失败 vs 普通出错）；成功/失败收尾都复位，普通回合恒为 false。 */
+  resyncing: boolean;
+
   // —— v1.6 设置（settings overlay）——
   /** 玩家设置（初始值读自 localStorage；updateSettings 是唯一写入方） */
   settings: GameSettings;
@@ -242,6 +274,11 @@ export interface GameStore {
    * @returns {Promise<WorldPostResult>} 失败在 error 里返回，不抛错；结果落 treeNotice
    */
   restoreSnapshot(seq: number): Promise<WorldPostResult>;
+  /**
+   * 重同步重试（TopBar「再同步」按钮）：重发 `继续世界：<pendingResync.worldId>。`，走正常 send 流程——
+   * 成功后由 turn_end 清除 pendingResync（徽章消失），再失败由既有错误路径把 resyncFailed 置回。
+   */
+  retryResync(): void;
   /**
    * 启动自动前进倒计时（选项上屏时由 OptionList 调；重复调用幂等）。
    * 拒绝启动：设置关闭（autoAdvance=0）、本回合已被交互取消、非游戏屏、引擎忙、
