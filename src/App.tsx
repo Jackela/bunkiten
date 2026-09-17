@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { AnimatePresence } from "framer-motion";
+import { AnimatePresence, MotionConfig } from "framer-motion";
 import { subscribeEvents } from "./lib/acp";
 import { audioManager } from "./lib/audio";
 import { useGameStore } from "./store/game";
@@ -103,26 +103,31 @@ export default function App() {
   }, []);
 
   return (
-    <div className="fixed inset-0 overflow-hidden bg-bg font-serif text-ink" style={themeVars(theme)}>
-      <StatusAnnouncer />
-      <BgLayer />
-      <div className="pointer-events-none absolute inset-0">
-        <MotifLayer motif={theme.motif} />
+    // reducedMotion="user"：系统开了「减少动态效果」时，全树 framer-motion 的 transform/opacity
+    // 动画降为瞬时（屏转场/motif 氛围/浮入），布局切换与拖拽手势不受影响——CSS keyframes 与打字机
+    // 的降级分别在 global.css 与 DialogueBox（见 docs/ARCHITECTURE.md「动效降级」）。
+    <MotionConfig reducedMotion="user">
+      <div className="fixed inset-0 overflow-hidden bg-bg font-serif text-ink" style={themeVars(theme)}>
+        <StatusAnnouncer />
+        <BgLayer />
+        <div className="pointer-events-none absolute inset-0">
+          <MotifLayer motif={theme.motif} />
+        </div>
+        <Veil />
+        <AnimatePresence mode="wait">
+          {screen === "boot" && <BootScreen key="boot" />}
+          {screen === "title" && <TitleScreen key="title" />}
+          {screen === "worlds" && <WorldsScreen key="worlds" />}
+          {screen === "protagonist" && <ProtagonistScreen key="protagonist" />}
+          {screen === "crafting" && <CraftingScreen key="crafting" />}
+          {screen === "assets" && <AssetsScreen key="assets" />}
+          {screen === "creation" && <CreationScreen key="creation" />}
+          {screen === "tree" && <StoryTreeScreen key="tree" />}
+          {screen === "settings" && <SettingsScreen key="settings" />}
+          {screen === "game" && <GameStage key="game" />}
+        </AnimatePresence>
+        <Atmosphere />
       </div>
-      <Veil />
-      <AnimatePresence mode="wait">
-        {screen === "boot" && <BootScreen key="boot" />}
-        {screen === "title" && <TitleScreen key="title" />}
-        {screen === "worlds" && <WorldsScreen key="worlds" />}
-        {screen === "protagonist" && <ProtagonistScreen key="protagonist" />}
-        {screen === "crafting" && <CraftingScreen key="crafting" />}
-        {screen === "assets" && <AssetsScreen key="assets" />}
-        {screen === "creation" && <CreationScreen key="creation" />}
-        {screen === "tree" && <StoryTreeScreen key="tree" />}
-        {screen === "settings" && <SettingsScreen key="settings" />}
-        {screen === "game" && <GameStage key="game" />}
-      </AnimatePresence>
-      <Atmosphere />
-    </div>
+    </MotionConfig>
   );
 }

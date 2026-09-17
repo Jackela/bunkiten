@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import React from "react";
 import TopBar from "../src/components/game/TopBar";
 import DialogueBox from "../src/components/game/DialogueBox";
+import HistoryDrawer from "../src/components/game/HistoryDrawer";
 import OptionList from "../src/components/game/OptionList";
 import CreationScreen from "../src/components/CreationScreen";
 import AssetsScreen from "../src/components/AssetsScreen";
@@ -2053,5 +2054,348 @@ describe("App：状态播报区（aria-live，v1.6）", () => {
     expect(useGameStore.getState().autoAdvanceDeadline).toBeNull();
     expect(useGameStore.getState().autoAdvanceMuted).toBe(true);
     expect(screen.queryByTestId("auto-advance")).toBeNull();
+  });
+});
+
+// ————————————————————— 回退语义收尾：history 分割线 / 待重同步徽章 / treeNotice 三态 —————————————————————
+
+describe("回退后的客户端语义：非破坏式分割线、待重同步与再同步（v1.7）", () => {
+  /** POST /prompt 的返回（用例内切换失败→成功） */
+  let promptResp: { ok: boolean; error?: string };
+  /** POST /prompt 收到的指令（按顺序） */
+  let prompts: string[];
+  /** POST /api/worlds 收到的动作 */
+  let worldPosts: Record<string, unknown>[];
+
+  const WORLDS_BODY: { worlds: WorldEntry[] } = {
+    worlds: [
+      {
+        worldId: "campus-summer-1",
+        preset: PRESET.id,
+        title: PRESET.title,
+        chapterNo: 2,
+        lastPlayed: Date.now(),
+        note: "",
+        forkedFrom: null,
+        exists: true,
+      },
+      {
+        worldId: "campus-summer-2",
+        preset: PRESET.id,
+        title: PRESET.title,
+        chapterNo: 1,
+        lastPlayed: Date.now(),
+        note: "",
+        forkedFrom: null,
+        exists: true,
+      },
+    ],
+  };
+
+  beforeEach(() => {
+    promptResp = { ok: true };
+    prompts = [];
+    worldPosts = [];
+    useGameStore.setState({
+      worldId: "campus-summer-1",
+      worldLabel: "campus-summer-1",
+      screen: "game",
+      screenReturn: null,
+      treeStamp: 0,
+      treeNotice: null,
+      treeFocus: null,
+      forkResult: null,
+      engineBusy: false,
+      pendingTreeMessage: null,
+      history: [],
+      turnNo: 0,
+      segs: { 0: "" },
+      curSeg: 0,
+      pendingResync: null,
+      resyncFailed: false,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/prompt") {
+          prompts.push((JSON.parse(String(init?.body)) as { text: string }).text);
+          return jsonResponse(promptResp.ok ? promptResp : { ok: false, error: promptResp.error ?? "HTTP 409" }, promptResp.ok ? 200 : 409);
+        }
+        if (url.pathname === "/api/worlds" && init?.method === "POST") {
+          const body = JSON.parse(String(init.body)) as { action: string };
+          worldPosts.push(body);
+          if (body.action === "restore") return jsonResponse({ ok: true, backupSeq: 12 });
+          return jsonResponse({ ok: true });
+        }
+        if (url.pathname === "/api/worlds") return jsonResponse(WORLDS_BODY);
+        return jsonResponse({}, 404);
+      }),
+    );
+  });
+
+  it("回退成功：history 追加 rollback 分割线（旧幕一条不删），抽屉里旧幕置灰、分割线之后的新幕正常", async () => {
+    useGameStore.setState({
+      history: [
+        { n: "第 1 幕", t: "旧幕一：门口初遇" },
+        { n: "第 2 幕", t: "旧幕二：中殿对话" },
+      ],
+      turnNo: 2,
+    });
+    await act(async () => {
+      await useGameStore.getState().restoreSnapshot(3);
+    });
+    expect(worldPosts).toStrictEqual([{ action: "restore", worldId: "campus-summer-1", seq: 3 }]);
+    expect(useGameStore.getState().history[2]).toMatchObject({ kind: "rollback", seq: 3 }); // 追加，不删除
+
+    // 重同步回合收尾：新一幕叠在分割线之后
+    act(() => {
+      useGameStore.setState({ segs: { 0: "重同步后的正文" }, curSeg: 0 });
+      useGameStore.getState().handleEvent({ type: "turn_end" });
+    });
+    expect(useGameStore.getState().history).toHaveLength(4);
+
+    useGameStore.setState({ drawerOpen: true });
+    render(<HistoryDrawer />);
+    expect(screen.getByTestId("history-rollback").textContent).toContain("已回退到快照 #3");
+    const acts = screen.getAllByTestId("history-act");
+    expect(acts).toHaveLength(3); // 两幕旧 + 一幕新，一条没删
+    // 抽屉倒序渲染：新幕在分割线之后（正常），两幕旧幕在分割线之前（置灰）
+    expect(acts[0].textContent).toContain("重同步后的正文");
+    expect(acts[0].className).not.toContain("opacity-50");
+    expect(acts[1].className).toContain("opacity-50");
+    expect(acts[2].className).toContain("opacity-50");
+  });
+
+  it("重同步失败：TopBar 亮徽章与「再同步」，点击重发续玩指令；成功回合后徽章消失，世界线屏行内也有小标", async () => {
+    // 回退成功、但补发的续玩指令没发出去（409）：立即进入失败态
+    promptResp = { ok: false, error: "上一回合还在进行" };
+    await act(async () => {
+      await useGameStore.getState().restoreSnapshot(7);
+    });
+    await waitFor(() => expect(useGameStore.getState().resyncFailed).toBe(true));
+    expect(prompts).toEqual(["继续世界：campus-summer-1。"]);
+    expect(useGameStore.getState().pendingResync).toEqual({ worldId: "campus-summer-1", seq: 7 }); // 保留：还有救
+    expect(useGameStore.getState().treeNotice).toContain("重同步失败");
+    expect(useGameStore.getState().status).toContain("出错"); // 状态行与提示条同说失败，不再各说各话
+
+    render(<TopBar />);
+    expect(screen.getByTestId("resync-badge").textContent).toBe("待重同步");
+    const retry = screen.getByTestId("resync-retry");
+    expect(retry.textContent).toBe("再同步");
+
+    // 世界线屏：该世界行内亮「待重同步」小标（别的世界不亮）
+    cleanup();
+    useGameStore.setState({ selected: PRESET, screen: "worlds" });
+    render(<WorldsScreen />);
+    await waitFor(() => expect(screen.getByTestId("world-continue-campus-summer-1")).toBeTruthy());
+    expect(screen.getByTestId("world-resync-campus-summer-1").textContent).toBe("待重同步");
+    expect(screen.queryByTestId("world-resync-campus-summer-2")).toBeNull();
+
+    // 点「再同步」：重发同一条续玩指令（走正常 send 流程）
+    cleanup();
+    useGameStore.setState({ screen: "game" });
+    render(<TopBar />);
+    promptResp = { ok: true };
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("resync-retry"));
+    });
+    expect(prompts).toEqual(["继续世界：campus-summer-1。", "继续世界：campus-summer-1。"]);
+    expect(useGameStore.getState().resyncFailed).toBe(false);
+    expect(screen.queryByTestId("resync-retry")).toBeNull(); // 失败入口收起，徽章留到回合收尾
+
+    // 这次回合成功收尾：徽章消失
+    act(() => {
+      useGameStore.setState({ segs: { 0: "重读档完成" }, curSeg: 0 });
+      useGameStore.getState().handleEvent({ type: "turn_end" });
+    });
+    expect(useGameStore.getState().pendingResync).toBeNull();
+    expect(screen.queryByTestId("resync-badge")).toBeNull();
+  });
+
+  it("treeNotice 三态：回退成功→「正在让引擎重读档」；回合收尾→「完成重同步」；引擎 error→「失败可重试」", async () => {
+    // 态一：回退成功、续玩指令已发出（等回合）
+    await act(async () => {
+      await useGameStore.getState().restoreSnapshot(5);
+    });
+    const pending = useGameStore.getState().treeNotice ?? "";
+    expect(pending).toContain("已回退到快照 #5");
+    expect(pending).toContain("正在让引擎重读档");
+
+    // 态二：重同步回合 turn_end → 完成重同步（徽章同回合清除）
+    act(() => {
+      useGameStore.getState().handleEvent({ type: "turn_end" });
+    });
+    expect(useGameStore.getState().treeNotice).toBe("已回退到快照 #5 并完成重同步");
+    expect(useGameStore.getState().pendingResync).toBeNull();
+
+    // 态三：再次回退，这次引擎在回合里回 error（SSE error 事件路径）
+    await act(async () => {
+      await useGameStore.getState().restoreSnapshot(5);
+    });
+    act(() => {
+      useGameStore.getState().handleEvent({ type: "error", message: "引擎回合失败：引擎坏了" });
+    });
+    const s = useGameStore.getState();
+    expect(s.pendingResync).toEqual({ worldId: "campus-summer-1", seq: 5 }); // 保留：徽章与「再同步」还挂着
+    expect(s.resyncFailed).toBe(true);
+    expect(s.treeNotice).toContain("重同步失败：引擎回合失败：引擎坏了");
+    expect(s.treeNotice).toContain("再同步");
+    expect(s.status).toContain("出错");
+  });
+});
+
+// ————————————————————— 动效降级（prefers-reduced-motion，v1.7） —————————————————————
+
+describe("DialogueBox：动效降级（prefers-reduced-motion，v1.7）", () => {
+  /** jsdom 没有 matchMedia 实现：手工挂一个（matches 固定、change 永不触发），测完删掉还原 */
+  const stubMatchMedia = (matches: boolean) => {
+    window.matchMedia = (() => ({ matches, addEventListener: () => {}, removeEventListener: () => {} })) as unknown as typeof window.matchMedia;
+  };
+  const dropMatchMedia = () => {
+    delete (window as { matchMedia?: typeof window.matchMedia }).matchMedia;
+  };
+  afterEach(dropMatchMedia);
+
+  it("系统开了「减少动态效果」：打字机整段显示（无补全提示、光标即隐），用户设置档位不动", async () => {
+    stubMatchMedia(true);
+    const full = "蝉鸣把旧教学楼叫成一锅白粥，她抱着书包站在教室后门，听见里面有人压低嗓子念她的名字。";
+    useGameStore.setState({
+      received: full,
+      finalText: full,
+      turnKey: 51,
+      options: null,
+      typingDone: false,
+      status: "引擎演绎中…",
+      settings: { ...DEFAULT_SETTINGS, textSpeed: "slow" }, // 慢档也照样整段：呈现降级 ≠ 改档位
+    });
+    render(<DialogueBox />);
+    // 无打字过程：一次读取即全文（打字机路径下此刻只会有开头几个字）
+    expect(screen.getByTestId("dialogue-text").textContent).toContain(full);
+    await waitFor(() => expect(useGameStore.getState().typingDone).toBe(true));
+    expect(screen.queryByTestId("dialogue-hint")).toBeNull(); // 打完了就没有「补全」可提示
+    expect(useGameStore.getState().settings.textSpeed).toBe("slow"); // 设置原样，不替用户改档
+  });
+
+  it("matchMedia 不存在（无实现环境）：不降级——照常逐字打字，防御分支不抛错", () => {
+    dropMatchMedia(); // jsdom 本来就没有这个实现
+    const full = "雨声漫过教堂的尖顶，薇拉抱着账册站在门口，没有看你。";
+    useGameStore.setState({
+      received: full,
+      finalText: full,
+      turnKey: 52,
+      options: null,
+      typingDone: false,
+      status: "引擎演绎中…",
+      settings: { ...DEFAULT_SETTINGS, textSpeed: "slow" },
+    });
+    render(<DialogueBox />);
+    expect(screen.getByTestId("dialogue-text").textContent).not.toContain(full); // 才起了个头：降级没发生
+    expect(screen.getByTestId("dialogue-hint").textContent).toBe("空格补全");
+  });
+});
+
+// ————————————————————— 回退后玩家继续走：普通回合不冒充重同步（v1.7） —————————————————————
+
+describe("回退后玩家继续走：普通指令不冒充重同步（v1.7）", () => {
+  /** POST /prompt 的逐条返回（按序消费：先失败制造 resume 投递失败，再按用例切换） */
+  let promptResps: { ok: boolean; error?: string }[];
+  /** POST /prompt 收到的指令（按顺序） */
+  let prompts: string[];
+
+  beforeEach(() => {
+    promptResps = [];
+    prompts = [];
+    useGameStore.setState({
+      worldId: "campus-summer-1",
+      worldLabel: "campus-summer-1",
+      screen: "game",
+      screenReturn: null,
+      treeStamp: 0,
+      treeNotice: null,
+      treeFocus: null,
+      forkResult: null,
+      engineBusy: false,
+      pendingTreeMessage: null,
+      history: [],
+      turnNo: 0,
+      segs: { 0: "" },
+      curSeg: 0,
+      pendingResync: null,
+      resyncFailed: false,
+      resyncing: false,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/prompt") {
+          prompts.push((JSON.parse(String(init?.body)) as { text: string }).text);
+          const resp = promptResps.shift() ?? { ok: true };
+          return jsonResponse(resp.ok ? resp : { ok: false, error: resp.error ?? "HTTP 409" }, resp.ok ? 200 : 409);
+        }
+        if (url.pathname === "/api/worlds" && init?.method === "POST") {
+          const body = JSON.parse(String(init.body)) as { action: string };
+          if (body.action === "restore") return jsonResponse({ ok: true, backupSeq: 12 });
+          return jsonResponse({ ok: true });
+        }
+        if (url.pathname === "/api/worlds") return jsonResponse({ worlds: [] });
+        return jsonResponse({}, 404);
+      }),
+    );
+  });
+
+  it("resume 投递失败后玩家发普通指令并成功：徽章静默消失，不宣告「完成重同步」", async () => {
+    promptResps = [
+      { ok: false, error: "上一回合还在进行" }, // restore 后补发的 resume：投递失败
+      { ok: true }, // 玩家的普通指令：成功
+    ];
+    await act(async () => {
+      await useGameStore.getState().restoreSnapshot(7);
+    });
+    await waitFor(() => expect(useGameStore.getState().resyncFailed).toBe(true));
+    expect(useGameStore.getState().pendingResync).toEqual({ worldId: "campus-summer-1", seq: 7 });
+
+    render(<TopBar />);
+    expect(screen.getByTestId("resync-badge").textContent).toBe("待重同步"); // 前置：徽章在
+
+    // 玩家不理会徽章，直接发普通指令且成功：send 入口静默清 pendingResync，回合照常收尾
+    await act(async () => {
+      useGameStore.getState().send("推门进去");
+    });
+    useGameStore.setState({ segs: { 0: "门后的走廊空无一人。\n\n**行动**\n1. 往前走" }, curSeg: 0 });
+    act(() => {
+      useGameStore.getState().handleEvent({ type: "turn_end" });
+    });
+
+    expect(prompts).toEqual(["继续世界：campus-summer-1。", "推门进去"]);
+    const s = useGameStore.getState();
+    expect(s.pendingResync).toBeNull(); // send 入口静默清，不是回合收尾认领的
+    expect(s.resyncFailed).toBe(false);
+    expect(s.treeNotice).not.toContain("完成重同步"); // 引擎从未重读档：不许假称完成
+    expect(screen.queryByTestId("resync-badge")).toBeNull(); // 徽章消失
+    expect(s.status).toBe("就绪"); // 普通回合收尾一切照旧
+  });
+
+  it("resume 投递失败后玩家自己的指令也失败：不再冒充「重同步失败」", async () => {
+    promptResps = [
+      { ok: false, error: "上一回合还在进行" }, // resume 投递失败
+      { ok: false, error: "HTTP 500" }, // 玩家的普通指令：也失败
+    ];
+    await act(async () => {
+      await useGameStore.getState().restoreSnapshot(7);
+    });
+    await waitFor(() => expect(useGameStore.getState().resyncFailed).toBe(true));
+
+    await act(async () => {
+      useGameStore.getState().send("推门进去");
+    });
+    await waitFor(() => expect(useGameStore.getState().status).toContain("HTTP 500"));
+    const s = useGameStore.getState();
+    expect(prompts).toEqual(["继续世界：campus-summer-1。", "推门进去"]);
+    expect(s.pendingResync).toBeNull(); // send 入口已静默清
+    expect(s.resyncFailed).toBe(false); // 玩家指令的失败不再记账到重同步头上
+    expect(s.treeNotice).not.toContain("HTTP 500"); // 也不追加新的「重同步失败」文案
+    expect(s.status).toBe("出错：HTTP 500"); // 普通出错文案照常
   });
 });
