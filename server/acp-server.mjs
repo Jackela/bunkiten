@@ -1,166 +1,108 @@
-// galgame ACP server — 零依赖 Node，spawn grok agent stdio (ACP)，SSE 推流 + 图片服务 + 静态托管
-// 迁移自 shell/server.mjs（协议逻辑保持不变），扩展：GAME_ROOT 注入、可被 import、端口重试、/api/*、/app
+// galgame ACP server —— 入口与装配（v1.7 拆模块，零依赖 Node）：
+// spawn grok agent stdio (ACP)、SSE 推流、资产落盘流水线、逐轮快照、进程生命周期都在这里的 startServer 闭包装配。
 // 用法：node server/acp-server.mjs  →  http://localhost:7800 ；或 import { startServer }
+//
+// 模块地图（同目录 server/）：
+//   config.mjs 路径/端口（GAME_ROOT/SESSION_FILE/WORLDS_ROOT 等公共依赖，零依赖叶子）
+//   protocol-lines.mjs 注入 agent 的 RULES 原文 + 五种协议行 parse*
+//   assets.mjs 美术资产路径契约纯函数（sanitize/白名单/落盘判定/差分拆分）
+//   presets.mjs preset.md 解析 + assetTargetFile + 剧本导出包（buildPresetBundle/importPresetBundle）
+//   snapshots.mjs 世界三文件与逐轮快照的地基（WORLD_FILES/WORLD_ID_RE/读写/选择/fork 纯函数）
+//   worlds.mjs 世界线索引/CRUD/导出导入/migrateLegacyState/角色面板解析
+//   audio.mjs presets/<id>/audio/ 扫描（AUDIO_KINDS/AUDIO_EXTS re-export 给 doctor）
+//   http-util.mjs 本地端点防护（跨站 403/body 413）+ /app 静态托管的 MIME 与目录解析
+//   acp.mjs ACP 子进程封装（spawn/JSON-RPC request/sessionId 存取/boot/会话图片定位）
+//   routes.mjs HTTP 路由链（createRequestHandler(ctx)，闭包能力由本文件注入）
+// 本文件继续逐名 re-export 拆出的全部符号——外部 import 面（electron/main.js、tests/、scripts/doctor.mjs）
+// 逐字不变。pickEffort 与 isMainTurn 留在这里：契约 lint（tests/contract.test.ts ⑥）从本文件源码
+// 抓它们的函数体（必须引用 shared 真源的 DIRECTIVE_PREFIX_RE）；FONT_PRESETS/DIALOG_TEXTURES/DEFAULT_THEME
+// 同理钉在本文件（契约 lint ⑥ 与 src/theme.ts 比对字面量），presets.mjs 反向 import（仅函数内引用，环形安全）。
 import http from "http";
-import { spawn } from "child_process";
-import readline from "readline";
 import fs from "fs";
-import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
-// 协议常量唯一真源（v1.7，docs/adr/0012）：协议头/音频白名单与直服正则/指令前缀正则都在 shared/protocol.mjs，
-// 与 src/lib/parser.ts（re-export）共用同一份值；本文件不再自持副本（契约 lint ⑤⑥组断言这一点）。
-import { AUDIO_EXTS, AUDIO_FILE_RE, AUDIO_KINDS, AUDIO_MIME, AUDIO_REL_RE, DIRECTIVE_PREFIX_RE } from "../shared/protocol.mjs";
+// 协议常量唯一真源（v1.7，docs/adr/0012）：指令前缀正则在 shared/protocol.mjs，
+// pickEffort 与 isMainTurn 共用同一份值；本文件不再自持副本（契约 lint ⑤⑥组断言这一点）。
+import { DIRECTIVE_PREFIX_RE } from "../shared/protocol.mjs";
+import { GAME_ROOT, BASE_PORT, PORT_MAX_RETRY, SESSION_FILE, WORLDS_ROOT } from "./config.mjs";
+import {
+  PRESET_ID_RE,
+  sanitizeAssetName,
+  splitAssetVariant,
+  mtimeOf,
+  presetAssetsDir,
+  presetIdFromPath,
+  resolvePersistPreset,
+} from "./assets.mjs";
+import { scanPresets, assetTargetFile } from "./presets.mjs";
+import { RULES, parseArtLine, parseExpressionLine, parsePresetAddedLine, parseTreeLine, parseAudioLine } from "./protocol-lines.mjs";
+import { WORLD_ID_RE, parseTreePointer, readWorldFiles, writeSnapshot } from "./snapshots.mjs";
+import { readWorldsIndex, presetFromStateFile, worldChapterNo, migrateLegacyState } from "./worlds.mjs";
+import { createAcpSession } from "./acp.mjs";
+import { createRequestHandler } from "./routes.mjs";
 
-// 开发模式 = 项目根；Electron 打包后由 main 进程注入资源目录
-const GAME_ROOT = process.env.GROK_GAME_ROOT || path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const BASE_PORT = Number(process.env.PORT) || 7800;
-const PORT_MAX_RETRY = 10;
+// ---------- 外部 import 面保活：拆出模块的既有导出符号逐名 re-export（electron/tests/doctor 从这里 import） ----------
+export { PRESET_ID_RE, presetAssetsDir, assetRelPath, presetIdFromPath, legacyAssetCandidates, resolvePersistPreset } from "./assets.mjs";
+export { AUDIO_KINDS, AUDIO_EXTS, scanPresetAudio } from "./audio.mjs";
+export {
+  FM_KEYS,
+  THEME_KEYS,
+  parseFrontmatter,
+  normalizeTheme,
+  parseCharacterSections,
+  parseCharacters,
+  parseSectionLines,
+  scanPresets,
+  assetTargetFile,
+  buildPresetBundle,
+  importPresetBundle,
+} from "./presets.mjs";
+export { RULES_SENTENCES, RULES, parseArtLine, parseExpressionLine, parsePresetAddedLine, parseTreeLine, parseAudioLine } from "./protocol-lines.mjs";
+export {
+  WORLD_FILES,
+  parseTreePointer,
+  readWorldFiles,
+  writeWorldFiles,
+  normalizeSnapshot,
+  isSnapshotEntry,
+  readSnapshots,
+  readSnapshot,
+  writeSnapshot,
+  selectSnapshotForNode,
+  forkTreeMarkdown,
+  forkNote,
+} from "./snapshots.mjs";
+export {
+  moveToTrash,
+  readWorldsIndex,
+  writeWorldsIndex,
+  presetFromStateFile,
+  worldChapterNo,
+  parseStateFile,
+  stateViewFor,
+  createWorld,
+  forkWorld,
+  restoreWorld,
+  updateWorld,
+  exportWorld,
+  importWorld,
+  deleteWorld,
+  listWorlds,
+  migrateLegacyState,
+} from "./worlds.mjs";
+export { isCrossSiteRequest, readBodyText } from "./http-util.mjs";
+
 export const EFFORT = process.env.EFFORT || "medium"; // 正戏回合档位：低推理换节奏，可设 high
 // 建档/规划类回合（出清单、改树、装配）不需要高推理：单独一档更省、更快（v1.6 分档）
 export const EFFORT_PLANNING = process.env.EFFORT_PLANNING || "low";
-const SESSION_FILE = path.join(GAME_ROOT, ".shell-session.json"); // 断线续档：记录 ACP sessionId
 
-// 文件名安全字符：名字里的路径分隔符与引号类字符一律替换为 _
-function sanitizeAssetName(name) {
-  const safe = String(name).replace(/[\\/:*?"<>|「」『』\r\n\t]/g, "_").trim();
-  return safe || "unnamed";
-}
-
-// ---------- 美术资产路径契约（v1.5.1：资产随故事走，不写全局 assets/ 池） ----------
-// 剧本 id 白名单：字母数字与 -_（防路径穿越；id 来自 preset frontmatter 与客户端指令）
-export const PRESET_ID_RE = /^[A-Za-z0-9_-]+$/;
-// 旧档格式：v1.5 之前资产堆在全局 assets/，state.md 与标记里记的是 `assets/<类型>-<名>.jpg`
-const LEGACY_ASSET_RE = /^assets\/([^/]+\.jpe?g)$/;
-
-/**
- * 某剧本的资产目录（绝对路径）：`presets/<presetId>/assets/`。
- * @param {string} presetId 剧本 id（调用方先用 PRESET_ID_RE 校验）
- * @returns {string} 绝对路径
- */
-export function presetAssetsDir(presetId) {
-  return path.join(GAME_ROOT, "presets", presetId, "assets");
-}
-
-// ---------- 音频素材（v1.6，CONTRACTS §1）：作者手放到 presets/<id>/audio/，server 只扫描+直服，不生成不落盘 ----------
-// AUDIO_KINDS/AUDIO_EXTS/AUDIO_FILE_RE/AUDIO_REL_RE/AUDIO_MIME 的真源在 shared/protocol.mjs（上方 import）；
-// 这里 re-export AUDIO_KINDS/AUDIO_EXTS 给 scripts/doctor.mjs（剧本体检查音频文件名用同一集合，不抄第二份）
-export { AUDIO_KINDS, AUDIO_EXTS };
-// 素材删除的文件名白名单（CONTRACTS §3）：单层文件名、jpe?g；cover.jpg 由路由单独排除
-const ASSET_DELETE_FILE_RE = /^[^/\\]+\.jpe?g$/;
-
-/**
- * 扫描 `presets/<id>/audio/`（导出纯读函数，root 可注入以便单测）。
- * 目录不存在 = 该剧本无音频，返回空数组（不报错、不进 assetRegistry——音频不属于美术资产）。
- * @param {string} presetId 剧本 id（非法时返回空数组，绝不拼出目录外路径）
- * @param {string} [root] 游戏根目录（缺省 GAME_ROOT）
- * @returns {Array<{kind: string, name: string, file: string, url: string}>} 音频项（url 供客户端直接播放）
- */
-export function scanPresetAudio(presetId, root = GAME_ROOT) {
-  const pid = String(presetId || "").trim();
-  if (!PRESET_ID_RE.test(pid)) return [];
-  let files = [];
-  try {
-    files = fs.readdirSync(path.join(root, "presets", pid, "audio"));
-  } catch {
-    return []; // 无 audio 目录 = 无音频（契约：不报错）
-  }
-  const out = [];
-  for (const file of files.sort()) {
-    const m = AUDIO_FILE_RE.exec(file);
-    if (!m) continue;
-    // url 里的文件名必须百分号编码：文件名可含 &/?/#/空格，不编码会把查询串截断（AUDIO_REL_RE 在服务端解回）
-    out.push({ kind: m[1], name: m[2], file, url: `/audio?p=presets/${pid}/audio/${encodeURIComponent(file)}` });
-  }
-  return out;
-}
-
-/**
- * 资产的相对路径（posix 分隔符：要原样写进 state.md 与【图】标记）：`presets/<presetId>/assets/<类型>-<名>.jpg`。
- * 封面不走这里——封面仍是 `presets/<id>/cover.jpg`（见 assetTargetFile）。
- * @param {string} type 立绘 | 背景
- * @param {string} name 已 sanitize 的名字（角色名/地点名；差分形如 `薇拉-微笑`）
- * @param {string} presetId 剧本 id
- * @returns {string} 相对 GAME_ROOT 的路径
- */
-export function assetRelPath(type, name, presetId) {
-  return `presets/${presetId}/assets/${type}-${name}.jpg`;
-}
-
-/**
- * 从标记/state 路径里解析剧本 id（容错来源：引擎缓存命中时会直接把 `presets/<id>/…` 写进【图】标记）。
- * @param {string} rel 标记第三段或 state 里的路径
- * @returns {string|null} 剧本 id；不是 `presets/<id>/assets/<文件>.jpg` 或 `presets/<id>/cover.jpg` 时为 null
- */
-export function presetIdFromPath(rel) {
-  const m = /^presets\/([A-Za-z0-9_-]+)\/(?:assets\/[^/]+\.jpe?g|cover\.jpg)$/.exec(String(rel || "").trim());
-  return m ? m[1] : null;
-}
-
-/**
- * 旧档资产路径 → 候选新位置（纯函数）：**只给当前剧本目录**。
- * v1.5.2（I1）：取消「全 presets 同名扫描」——跨剧本探测会让 A 剧本的老路径直服到 B 剧本的同名图（串味），
- * 还会把别剧本的图迁落过来。找不到就 404，由调用方 console.warn 提示老路径。
- * @param {string} rel 旧路径（如 `assets/背景-灰雀镇旅店.jpg`）
- * @param {string} presetId 当前剧本 id（空或非法 → 无候选）
- * @returns {string[]} 候选相对路径（最多一个）；rel 不是旧格式或剧本 id 不合法时为空数组
- */
-export function legacyAssetCandidates(rel, presetId) {
-  const m = LEGACY_ASSET_RE.exec(String(rel || ""));
-  if (!m) return [];
-  const pid = String(presetId || "").trim();
-  if (!PRESET_ID_RE.test(pid)) return [];
-  return [`presets/${pid}/assets/${m[1]}`];
-}
-
-/**
- * 「这次落盘/直服算哪个剧本的」唯一判定（导出纯函数：服务端三处调用点共用，行为必须一致）。
- * 顺序：合法显式 id（/img 的 `&preset=` 或调用方传入）→ 来源路径自带 `presets/<id>/…` → currentPresetId → null。
- * **currentPresetId 只在调用方声明本场景可信（validPreset）时才兜底**：
- * 创作模式装配新剧本时 currentPresetId 还是上一局的剧本，一旦回退就会把新剧本的立绘写进旧剧本目录（B1），
- * 所以标记流与 /img 都传 false —— 拿不到就不落盘，留给【新剧本】<id> 或带 `&preset=` 的请求补落。
- * @param {object} [ctx] 判定上下文
- * @param {string} [ctx.queryPreset] 显式剧本 id（非空且合法时最优先）
- * @param {string} [ctx.srcRel] 来源/标记路径（`presets/<id>/assets/…` 或 `presets/<id>/cover.jpg` 时从中解析）
- * @param {string} [ctx.currentPresetId] 提示词嗅探出的当前剧本 id（仅 validPreset=true 时兜底）
- * @param {boolean} [ctx.validPreset] 本场景是否允许回退 currentPresetId
- * @returns {{presetId: string|null, reason: "query"|"path"|"current"|"query-illegal"|"none"}} 剧本 id 与命中来源
- */
-export function resolvePersistPreset({ queryPreset = "", srcRel = "", currentPresetId = "", validPreset = false } = {}) {
-  const q = String(queryPreset ?? "").trim();
-  if (PRESET_ID_RE.test(q)) return { presetId: q, reason: "query" };
-  const fromPath = presetIdFromPath(srcRel);
-  if (fromPath) return { presetId: fromPath, reason: "path" };
-  if (validPreset) {
-    const cur = String(currentPresetId ?? "").trim();
-    if (PRESET_ID_RE.test(cur)) return { presetId: cur, reason: "current" };
-  }
-  // 显式 id 非空但不合法（调用方已告警）→ 说明「为什么没定下来」，方便排障
-  return { presetId: null, reason: q ? "query-illegal" : "none" };
-}
-
-/**
- * 落盘目标（相对 GAME_ROOT 的 posix 路径，导出纯函数：落盘与单测共用）。
- * 封面走 `presets/<id>/cover.jpg`（契约不变，**不能**用 assetRelPath —— `assets/封面-X.jpg` 是死路径）：
- * id 先按「剧本标题」反查（封面标记的第二段就是标题），查不到才用调用方给的 id。
- * 立绘/背景走 `presets/<id>/assets/<类型>-<名>.jpg`。
- * 最终 id 一律再校验一次白名单（I2）：不合法 → null，调用方不写盘。
- * @param {string} type 立绘 | 背景 | 封面
- * @param {string} rawName 标记里的原始名（立绘/背景=角色或地点名；封面=剧本标题）
- * @param {string} [presetId] 调用方解析出的剧本 id
- * @returns {string|null} 目标相对路径；拿不到合法剧本 id 时为 null
- */
-export function assetTargetFile(type, rawName, presetId = "") {
-  const pid = String(presetId || "").trim();
-  if (type === "封面") {
-    const title = String(rawName ?? "").trim();
-    const byTitle = scanPresets().presets.find((p) => p.title === title)?.id || "";
-    const finalId = PRESET_ID_RE.test(byTitle) ? byTitle : pid;
-    return PRESET_ID_RE.test(finalId) ? `presets/${finalId}/cover.jpg` : null;
-  }
-  // 类型也过 sanitize（与旧实现一致）：`t` 参数里带 `/`「..」时不会拼出 assets/ 目录外的路径
-  return PRESET_ID_RE.test(pid) ? assetRelPath(sanitizeAssetName(type), sanitizeAssetName(rawName), pid) : null;
-}
+// ---------- 主题白名单与兜底（钉在入口源码：契约 lint ⑥ 从这里抓字面量与 src/theme.ts 比对） ----------
+// 字体族/对话框质感白名单（v1.7）：与 src/theme.ts 的 FONT_PRESETS/DIALOG_TEXTURES 同集。
+// 导出给 server/presets.mjs 的 normalizeTheme（逐键兜底的真值），不抄第二份。
+export const FONT_PRESETS = ["serif", "song", "kai", "hei"];
+export const DIALOG_TEXTURES = ["plain", "silk", "paper", "glass"];
+// theme 兜底：块缺失或格式坏时整套默认（aurora 为兜底母题）
+export const DEFAULT_THEME = Object.freeze({ accent: "#c9a86a", accent2: "#e8e4da", motif: "aurora", font: "serif", dialog: "plain" });
 
 /**
  * 提示词里的世界段嗅探（纯函数）：开局指令中段的 `世界：<worldId>。` 与续玩指令的 `继续世界：<worldId>。`。
@@ -196,1169 +138,6 @@ export function pickEffort(text, main = EFFORT, planning = EFFORT_PLANNING) {
   return DIRECTIVE_PREFIX_RE.test(String(text || "")) ? planning : main;
 }
 
-// 导出供契约 lint（tests/contract.test.ts）逐句比对 docs/ARCHITECTURE.md 的副本。
-// 为什么导出「逐句数组」而不是只导出拼接后的串：句内本身含句号（如「世界：<id>。」），
-// 从长串反推句子边界不可靠；RULES_SENTENCES 是 6 句的真源，RULES 仍是它 `.join("")` 的产物
-//（注入 agent 的字符串逐字不变，只是把两个视图都暴露出来）。
-export const RULES_SENTENCES = [
-  "本会话运行在自定义游戏客户端下：ask_user_question 卡片工具不可用，选项一律用文本格式（正文后加粗「**行动**」+ 每行一个编号选项，多问场景每个问题单独从 1 编号）。",
-  "你的每条回复只能是简体中文剧情正文和文本选项，绝不输出过程旁白、计划说明或英文。",
-  "回复最末尾可以追加若干【图】标记行（由 image_gen 产物而来），格式：【图】立绘|角色名|presets/<id>/assets/立绘-角色.jpg、【图】背景|地点名|presets/<id>/assets/背景-地点.jpg 或 【图】封面|剧本标题|presets/<id>/cover.jpg，重绘覆盖旧图时追加第四段|重绘；剧情演出中可穿插【立绘】角色|变体 行切换表情差分，并可穿插【曲】<名> / 【环境】<名> / 【音效】<名> 切换音频，新剧本入轮播后输出【新剧本】<id> 行；规划回合输出【清单】立绘|<名> / 【清单】背景|<地点> 清单行（只列 presets/<剧本 id>/assets/ 缺失项，全命中时输出【清单】空）；终章回合输出【章】第 N 章 完；剧情编辑回合改完树后输出【树】行。这些协议行独立成段，不进剧情正文。",
-  "缓存纪律：任何 image_gen 调用前必须先确认当前剧本 presets/<剧本 id>/assets/ 下无同名文件（唯一例外：美术：重绘）。已有素材绝不重复生成，直接出 presets/<剧本 id>/assets/… 路径标记。",
-  "世界纪律：所有 state 文件读写一律在当前世界目录 state/worlds/<世界 id>/ 内（世界 id 由客户端指令给出——开局指令的「世界：<id>。」段或「继续世界：<id>。」；未给出时用 main）；除世界线分叉说明（fork.md）外绝不读写其他世界目录。",
-  // 第 6 句（音频纪律）逐字来自 CONTRACTS §5：与 SKILL 的【音频】小节、客户端 AudioManager 同一份协议
-  "音频纪律：场景切换或情绪转折时，可用【曲】<名>、【环境】<名>、【音效】<名> 三行切换音频（各自单独成段，不进正文）；每轮【曲】/【环境】至多各一次、【音效】至多两次，无把握就不发；文件由作者放在 presets/<剧本 id>/audio/ 下（命名 <类型>-<名>.<扩展名>），文件不存在时静默不发——绝不生成音频、绝不在标记里写路径。",
-];
-
-/** 注入 agent 的 rules 原文（6 句拼接成一条：`_meta.rules`） */
-export const RULES = RULES_SENTENCES.join("");
-
-// ---------- 协议行解析（模块级导出，供流式 ingest 与单测复用；只有完整行传入才可能命中） ----------
-// 【图】(立绘|背景|封面)|<名>|<路径>[|重绘]：资产标记（封面即剧本标题，重绘要求覆盖同名文件）
-export function parseArtLine(line) {
-  const m = /^\s*【图】(立绘|背景|封面)\|([^|]+)\|([^|]+?)(?:\|(重绘))?\s*$/.exec(line);
-  return m ? { type: m[1], name: m[2], srcRel: m[3], regen: m[4] === "重绘" } : null;
-}
-
-// 【立绘】<角色>|<变体>：表情切换指令，不是资产（server 不持久化，只转发事件）
-export function parseExpressionLine(line) {
-  const m = /^\s*【立绘】([^|]+?)\|([^|]*)\s*$/.exec(line);
-  return m ? { character: m[1].trim(), variant: m[2].trim() } : null;
-}
-
-// 【新剧本】<id>：新剧本入轮播通知
-export function parsePresetAddedLine(line) {
-  const m = /^\s*【新剧本】(.+?)\s*$/.exec(line);
-  return m ? { id: m[1] } : null;
-}
-
-// 【树】：剧情图编辑完成通知（引擎已静默写回 story-tree.md）；行尾可带的摘要按 note 透传
-export function parseTreeLine(line) {
-  const m = /^\s*【树】(.*?)\s*$/.exec(line);
-  return m ? { note: m[1].trim() } : null;
-}
-
-// 【曲】/<名>、【环境】/<名>、【音效】/<名>：音频切换指令（演出指令，与【立绘】同级；server 不落盘，只广播）
-// 行首 trim 后匹配（CONTRACTS §1）：名里不再夹带路径，`停` 也是普通名字（客户端自行处理淡出）
-export function parseAudioLine(line) {
-  const m = /^【(曲|环境|音效)】([^\n]*)$/.exec(String(line ?? "").trim());
-  return m ? { kind: m[1], name: m[2] } : null;
-}
-
-// 差分文件名解析：<名>[-<变体>]（第一个 - 分隔；无 - 即基础版 variant=""）
-function splitAssetVariant(rest) {
-  const i = rest.indexOf("-");
-  return i === -1 ? { name: rest, variant: "" } : { name: rest.slice(0, i), variant: rest.slice(i + 1) };
-}
-
-function mtimeOf(file) {
-  try { return fs.statSync(file).mtimeMs; } catch { return 0; }
-}
-
-// 打包布局（resources/app-dist）优先，开发布局（GAME_ROOT/dist）兜底；都不存在则 /app 返回 404
-function resolveAppDist() {
-  for (const dir of [path.resolve(GAME_ROOT, "..", "app-dist"), path.join(GAME_ROOT, "dist")]) {
-    if (fs.existsSync(path.join(dir, "index.html"))) return dir;
-  }
-  return null;
-}
-
-const MIME = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".ico": "image/x-icon",
-  ".woff": "font/woff",
-  ".woff2": "font/woff2",
-  ".map": "application/json",
-};
-
-// ---------- presets 解析（手写简易解析，不引依赖） ----------
-// FM_KEYS/THEME_KEYS 同样导出（doctor 的必填键与 theme 逐键对比与 server 解析口径同源）
-export const FM_KEYS = ["id", "title", "tagline", "genre", "rating"];
-export const THEME_KEYS = ["accent", "accent2", "motif", "font", "dialog"];
-// 字体族/对话框质感白名单（v1.7）：与 src/theme.ts 的 FONT_PRESETS/DIALOG_TEXTURES 同集
-const FONT_PRESETS = ["serif", "song", "kai", "hei"];
-const DIALOG_TEXTURES = ["plain", "silk", "paper", "glass"];
-// theme 兜底：块缺失或格式坏时整套默认（aurora 为兜底母题）
-const DEFAULT_THEME = Object.freeze({ accent: "#c9a86a", accent2: "#e8e4da", motif: "aurora", font: "serif", dialog: "plain" });
-
-// parseFrontmatter/parseCharacters/parseSectionLines 导出给 scripts/doctor.mjs 复用（体检查 preset.md 用同一解析口径，不抄第二份）
-export function parseFrontmatter(text) {
-  const lines = text.split(/\r?\n/);
-  if (lines[0]?.trim() !== "---") return null;
-  const end = lines.indexOf("---", 1);
-  if (end === -1) return null;
-  const fm = {};
-  let inTheme = false;
-  for (const line of lines.slice(1, end)) {
-    if (line.startsWith(" ") || line.startsWith("\t")) {
-      // theme 块的缩进子键（accent/accent2/motif/font/dialog）；其余缩进行照旧忽略
-      if (!inTheme) continue;
-      const i = line.indexOf(":");
-      if (i === -1) continue;
-      const key = line.slice(0, i).trim();
-      if (THEME_KEYS.includes(key)) fm.theme[key] = line.slice(i + 1).trim().replace(/^["']|["']$/g, "");
-      continue;
-    }
-    const i = line.indexOf(":");
-    if (i === -1) continue;
-    const key = line.slice(0, i).trim();
-    inTheme = key === "theme"; // 顶层 key 到来即离开 theme 块
-    if (inTheme) fm.theme = {}; // 只支持块形式；内联值视为坏格式，由 normalizeTheme 逐键兜底
-    else if (FM_KEYS.includes(key)) fm[key] = line.slice(i + 1).trim();
-  }
-  return fm; // 调用方校验必填字段
-}
-
-// theme 逐键兜底：accent/accent2 要求 #hex 颜色，motif 非空，font/dialog 走白名单；坏值用对应默认键，不抛错
-export function normalizeTheme(fm) {
-  const raw = fm.theme && typeof fm.theme === "object" ? fm.theme : {};
-  const isColor = (v) => typeof v === "string" && /^#[0-9a-fA-F]{3,8}$/.test(v);
-  const inList = (v, list) => (typeof v === "string" && list.includes(v.trim()) ? v.trim() : null);
-  return {
-    accent: isColor(raw.accent) ? raw.accent : DEFAULT_THEME.accent,
-    accent2: isColor(raw.accent2) ? raw.accent2 : DEFAULT_THEME.accent2,
-    motif: typeof raw.motif === "string" && raw.motif.trim() ? raw.motif.trim() : DEFAULT_THEME.motif,
-    font: inList(raw.font, FONT_PRESETS) ?? DEFAULT_THEME.font,
-    dialog: inList(raw.dialog, DIALOG_TEXTURES) ?? DEFAULT_THEME.dialog,
-  };
-}
-
-// ## <角色名>（…）小节只出现在「# 主要角色」之下。名字抽取规则（去行尾括注、trim、空名跳过）
-// 只在 parseCharacterSections 这一份；parseCharacters 是它名字列的投影（scanPresets 消费），
-// doctor 消费带正文的 sections 检查角色节字段——两侧同口径，不抄第二份规则。
-export function parseCharacterSections(lines) {
-  const out = [];
-  let inCast = false;
-  let cur = null;
-  for (const line of lines) {
-    if (/^# [^#]/.test(line)) {
-      inCast = line.trim().startsWith("# 主要角色");
-      cur = null; // 一级标题结束当前角色节
-      continue;
-    }
-    if (inCast && line.startsWith("## ")) {
-      let name = line.slice(3);
-      const paren = name.search(/[（(]/);
-      if (paren > 0) name = name.slice(0, paren);
-      name = name.trim();
-      cur = name ? { name, body: [] } : null;
-      if (cur) out.push(cur);
-      continue;
-    }
-    if (cur != null && line.trim()) cur.body.push(line); // 角色节正文（非空行，到下一个 ## / # 为止）
-  }
-  return out;
-}
-
-export function parseCharacters(lines) {
-  return parseCharacterSections(lines).map((s) => s.name);
-}
-
-// 取 `# <heading 前缀>` 小节的正文行（到下一个一级标题为止）
-export function parseSectionLines(lines, headingPrefix) {
-  const out = [];
-  let inSection = false;
-  for (const line of lines) {
-    if (/^# [^#]/.test(line)) inSection = line.trim().startsWith(headingPrefix);
-    else if (inSection && line.trim()) out.push(line);
-  }
-  return out;
-}
-
-/**
- * 扫描 `presets/<目录>/preset.md`（导出纯读函数，root 可注入以便单测）。
- * I2：id 直接参与路径拼接（presets/<id>/assets/…、presets/<id>/cover.jpg），
- * 所以 id 非法（含 `/`、`..`、中文等）的 preset 一律**丢弃**——进 errors 并告警，不进轮播。
- * @param {string} [root] 游戏根目录（缺省 GAME_ROOT）
- * @returns {{presets: Array<object>, errors: Array<{dir: string, error: string}>}}
- */
-export function scanPresets(root = GAME_ROOT) {
-  const presets = [];
-  const errors = [];
-  const dir = path.join(root, "presets");
-  let entries = [];
-  try {
-    entries = fs.readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
-  } catch {
-    return { presets, errors: [{ dir: "presets", error: "presets 目录不存在" }] };
-  }
-  for (const name of entries.sort()) {
-    try {
-      const file = path.join(dir, name, "preset.md");
-      const text = fs.readFileSync(file, "utf8");
-      const fm = parseFrontmatter(text);
-      if (!fm || !fm.id || !fm.title) throw new Error("frontmatter 缺失或缺少 id/title");
-      if (!PRESET_ID_RE.test(fm.id)) {
-        // 不给轮播、不给落盘：这个 id 一旦拼进路径就可能跑到 presets/ 之外
-        console.warn(`[acp] 丢弃 preset「${name}」：id 非法（只允许字母数字与 -_）: ${fm.id}`);
-        errors.push({ dir: name, error: `preset id 非法（只允许字母数字与 -_）: ${fm.id}` });
-        continue;
-      }
-      const lines = text.split(/\r?\n/);
-      presets.push({
-        id: fm.id,
-        title: fm.title,
-        tagline: fm.tagline || "",
-        genre: fm.genre || "",
-        rating: fm.rating || "",
-        characters: parseCharacters(lines),
-        protagonist_card: parseSectionLines(lines, "# protagonist_card"),
-        theme: normalizeTheme(fm),
-      });
-    } catch (e) {
-      errors.push({ dir: name, error: e.message });
-    }
-  }
-  return { presets, errors };
-}
-
-// ---------- 剧本导出包（v1.7，format:"bunkiten-preset"）：presets/<id>/ 全量打包与落地 ----------
-// 与世界线导出包（exportWorld/importWorld）对称：导出 JSON + attachment 下载、导入先整体校验再重名加 -2/-3。
-// 包体：preset.md 全文 + assets/*.jpe?g（含封面 cover.jpg，封面在 preset 根）+ audio/<AUDIO_EXTS>，二进制一律 base64。
-const PRESET_BUNDLE_FORMAT = "bunkiten-preset";
-const PRESET_BUNDLE_VERSION = 1;
-// 导入包的解码总量上限（50MB）：POST /api/presets 的 body 上限同源（base64 文本约为解码后的 1.37 倍）
-const PRESET_IMPORT_MAX_BYTES = 50 * 1024 * 1024;
-// 导入侧音频文件名白名单（由 AUDIO_EXTS 构造，不抄第二份）：单层文件名 + 合法扩展名
-const PRESET_AUDIO_IMPORT_RE = new RegExp(`^[^/\\\\]+\\.(${AUDIO_EXTS.join("|")})$`);
-// 封面文件名（assets 键里的 cover.jpe?g 落 preset 根，不进 assets/——`assets/封面-X.jpg` 是死路径）
-const COVER_FILE_RE = /^cover\.jpe?g$/;
-// Windows 保留设备名（大小写不敏感）：写成 `CON.jpg` 一样无法落盘/被系统吞掉，跨平台导入必须拒收
-const WIN_RESERVED_STEMS = new Set([
-  "CON", "PRN", "AUX", "NUL",
-  "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-  "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-]);
-
-/**
- * 导入包的文件名安全判定：单层文件名（无路径分隔符、不含 `..`）且扩展名过白名单。
- * 键名要直接拼进 `presets/<id>/{assets,audio}/` 路径，任何穿越形态一律拒绝。
- * 另拒两类「合法字符串、非法文件名」：超长名（主流文件系统单名 255 字节上限，UTF-8 下 CJK 每字 3 字节，
- * >200 字符必然越界，writeFileSync 会抛 ENAMETOOLONG——异常若冒出函数，Electron 主进程 import 了
- * 本文件且无兜底，整应用闪退）；Windows 保留名（按去扩展名的 stem 判，`CON.jpg` 也是保留名）。
- * 长度阈值只是软防线（纯 ASCII 200 字节以内仍可能带扩展越界），真正的兜底是落盘段的 try/catch。
- * @param {string} name bundle 里的文件名键
- * @param {RegExp} re 扩展名白名单正则（assets 用 ASSET_DELETE_FILE_RE，audio 用 PRESET_AUDIO_IMPORT_RE）
- * @returns {boolean} 安全才允许落盘
- */
-function safeBundleFileName(name, re) {
-  if (typeof name !== "string" || name.trim() !== name || name === "" || name.includes("..") || name.length > 200) {
-    return false;
-  }
-  const dot = name.lastIndexOf("."); // 两个白名单正则都要求有扩展名，这里只防手滑传进无扩展名形态
-  const stem = (dot > 0 ? name.slice(0, dot) : name).toUpperCase();
-  return !WIN_RESERVED_STEMS.has(stem) && re.test(name);
-}
-
-const B64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
-
-/**
- * 严格 base64 解码（导入包用）：Node 的 `Buffer.from(str, "base64")` 会**静默丢弃**非法字符，
- * 这里用 round-trip 比对兜住——解码不回原文（夹了私货/截断/别的编码）一律视为非法内容。
- * @param {unknown} v bundle 里的内容字段
- * @returns {Buffer|null} 解码结果；非字符串、非 base64、解码为空时 null
- */
-function decodeBase64Field(v) {
-  if (typeof v !== "string" || !B64_RE.test(v)) return null;
-  const buf = Buffer.from(v, "base64");
-  if (buf.length === 0) return null;
-  return buf.toString("base64").replace(/=+$/, "") === v.replace(/=+$/, "") ? buf : null;
-}
-
-/**
- * 打包一个剧本为可迁移 bundle（v1.7，导出纯函数，root 可注入以便单测）。
- * 收文件：preset.md 全文；assets/ 下全部 jpe?g（跳过 cover.jpe?g——那是死路径，封面在 preset 根）；
- * preset 根的 cover.jpe?g；audio/ 下全部 AUDIO_EXTS 文件。子目录、不认识的扩展名与 0 字节文件一律跳过
- * （保证导出的包能原样导回）。文件名排序收集，同目录的导出结果确定。
- * @param {string} root 游戏根目录
- * @param {string} id 剧本 id
- * @returns {{bundle: {format: string, version: number, id: string, title: string, exportedAt: string,
- *   presetMd: string, assets: Record<string,string>, audio: Record<string,string>}}|{error: string}}
- *   id 非法或 preset.md 不存在（目录缺失）时 error
- */
-export function buildPresetBundle(root, id) {
-  const pid = String(id || "").trim();
-  if (!PRESET_ID_RE.test(pid)) return { error: "参数不合法" };
-  const dir = path.join(root, "presets", pid);
-  let presetMd;
-  try {
-    presetMd = fs.readFileSync(path.join(dir, "preset.md"), "utf8");
-  } catch {
-    return { error: "剧本不存在" };
-  }
-  const title = parseFrontmatter(presetMd)?.title || "";
-  // 以扩展名收文件：目录不存在 = 空（audio 可选、assets 目录也未必有）；withFileTypes 跳过子目录
-  const collect = (sub, re) => {
-    const out = {};
-    let entries = [];
-    try {
-      entries = fs.readdirSync(path.join(dir, sub), { withFileTypes: true });
-    } catch {
-      return out;
-    }
-    for (const ent of entries.sort((a, b) => (a.name < b.name ? -1 : 1))) {
-      if (!ent.isFile() || !re.test(ent.name)) continue;
-      try {
-        const buf = fs.readFileSync(path.join(dir, sub, ent.name));
-        if (buf.length > 0) out[ent.name] = buf.toString("base64");
-      } catch {}
-    }
-    return out;
-  };
-  const assets = { ...collect("assets", /^(?!cover\.jpe?g$)[^/\\]+\.jpe?g$/), ...collect(".", COVER_FILE_RE) };
-  return {
-    bundle: {
-      format: PRESET_BUNDLE_FORMAT,
-      version: PRESET_BUNDLE_VERSION,
-      id: pid,
-      title,
-      exportedAt: new Date().toISOString(),
-      presetMd,
-      assets,
-      audio: collect("audio", PRESET_AUDIO_IMPORT_RE),
-    },
-  };
-}
-
-/**
- * 导入一个剧本 bundle（v1.7）：整体校验 → 重名加 -2/-3 → 落盘。
- * 校验口径与导出对称：format/version/id（PRESET_ID_RE）、presetMd 非空字符串、
- * 文件名单层且扩展名过白名单（assets=jpe?g、audio=AUDIO_EXTS，封面键落 preset 根）、
- * 内容严格 base64、解码总量 ≤50MB——任何一项不合法一律拒绝，**不写半个剧本**。
- * 占用判定以磁盘目录为准（presets 没有索引文件，scanPresets 扫的就是目录）。
- * preset.md 原文落地；frontmatter id 与落地 id 不一致时改写 id 行（见下方内联注释）。
- * 落盘走「临时目录写全量 → 同层 rename 进位」：任何写盘异常（磁盘满/文件名超限/rename 失败）清理
- * 临时目录后**返回 error 而不抛出**——readBodyText 的回调没有兜底，冒泡即 uncaughtException，
- * 而 Electron 主进程同进程 import 本文件，等于整应用闪退。
- * @param {string} root 游戏根目录
- * @param {object} bundle 导出体
- * @returns {{ok: true, id: string}|{error: string}} id = 实际落地的剧本 id（可能已重名改名）
- */
-export function importPresetBundle(root, bundle) {
-  if (!bundle || typeof bundle !== "object") return { error: "bundle 校验失败" };
-  if (bundle.format !== PRESET_BUNDLE_FORMAT || bundle.version !== PRESET_BUNDLE_VERSION) {
-    return { error: "bundle 校验失败" };
-  }
-  const id = String(bundle.id ?? "");
-  if (!PRESET_ID_RE.test(id)) return { error: "bundle 校验失败：id 非法" };
-  if (typeof bundle.presetMd !== "string" || bundle.presetMd.trim() === "") {
-    return { error: "bundle 校验失败：presetMd 必须是非空字符串" };
-  }
-  // 先校验并解码全部文件，再决定落盘目标 id：中途任何失败都不动磁盘
-  const assetsIn = bundle.assets != null && typeof bundle.assets === "object" ? bundle.assets : {};
-  const audioIn = bundle.audio != null && typeof bundle.audio === "object" ? bundle.audio : {};
-  const files = [];
-  let total = 0;
-  for (const [name, b64] of Object.entries(assetsIn)) {
-    if (!safeBundleFileName(name, ASSET_DELETE_FILE_RE)) return { error: `非法的素材文件名: ${name}` };
-    const buf = decodeBase64Field(b64);
-    if (!buf) return { error: `素材内容不是有效的 base64: ${name}` };
-    total += buf.length;
-    files.push({ sub: COVER_FILE_RE.test(name) ? "" : "assets", name, buf });
-  }
-  for (const [name, b64] of Object.entries(audioIn)) {
-    if (!safeBundleFileName(name, PRESET_AUDIO_IMPORT_RE)) return { error: `非法的音频文件名: ${name}` };
-    const buf = decodeBase64Field(b64);
-    if (!buf) return { error: `音频内容不是有效的 base64: ${name}` };
-    total += buf.length;
-    files.push({ sub: "audio", name, buf });
-  }
-  if (total > PRESET_IMPORT_MAX_BYTES) {
-    return { error: `包体解码总量超上限（${Math.round(PRESET_IMPORT_MAX_BYTES / 1024 / 1024)}MB）` };
-  }
-  // 重名后缀：-2、-3…（与 importWorld 同款循环，不覆盖既有剧本）
-  const presetsRoot = path.join(root, "presets");
-  const taken = new Set();
-  try {
-    for (const ent of fs.readdirSync(presetsRoot, { withFileTypes: true })) {
-      if (ent.isDirectory()) taken.add(ent.name);
-    }
-  } catch {}
-  let finalId = id;
-  let n = 1;
-  while (taken.has(finalId)) {
-    n += 1;
-    finalId = `${id}-${n}`;
-  }
-  // 落盘：先写临时目录（presets/.tmp-<id>-<随机>，点前缀就算极端残留也进不了轮播），全量写完再
-  // rename 进位——中途失败（磁盘满/ENAMETOOLONG/被占用）不留半个剧本。整个写盘段包 try/catch，
-  // 异常绝不冒出函数（见函数头注释：冒泡即 uncaughtException，Electron 主进程会同进程闪退）。
-  const dir = path.join(presetsRoot, finalId);
-  const tmp = path.join(presetsRoot, `.tmp-${finalId}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`);
-  try {
-    // preset.md 原文落地；仅当 frontmatter id 与落地目录 id 不一致（重名改名或手写包）时改写 id 行——
-    // scanPresets 按 frontmatter id 进轮播，不改写会出现「目录 demo-2、轮播里还叫 demo」的重复卡带，
-    // 后续美术/音频也会按轮播 id 落错目录。frontmatter 没有合法 id 行时保持原文（scanPresets 会把它报进 errors）。
-    let presetMd = bundle.presetMd;
-    const fmId = parseFrontmatter(presetMd)?.id || "";
-    if (PRESET_ID_RE.test(fmId) && fmId !== finalId) {
-      presetMd = presetMd.replace(/^id:\s*[^\r\n]*$/m, `id: ${finalId}`);
-    }
-    fs.mkdirSync(tmp, { recursive: true });
-    fs.writeFileSync(path.join(tmp, "preset.md"), presetMd);
-    for (const f of files) {
-      const targetDir = f.sub ? path.join(tmp, f.sub) : tmp;
-      fs.mkdirSync(targetDir, { recursive: true });
-      fs.writeFileSync(path.join(targetDir, f.name), f.buf);
-    }
-    fs.renameSync(tmp, dir); // 同层 rename：要么整体进位、要么目录原样不动
-  } catch (e) {
-    fs.rmSync(tmp, { recursive: true, force: true }); // 清掉写了一半的临时目录，不留残留
-    return { error: `包体写入失败：${e.message}` };
-  }
-  console.log(`[acp] preset imported: ${id} → ${finalId}`);
-  return { ok: true, id: finalId };
-}
-
-const WORLDS_ROOT = path.join(GAME_ROOT, "state", "worlds"); // 世界线：每世界一目录，另有 index.json 索引
-export const WORLD_FILES = ["state.md", "summary.md", "story-tree.md"];
-const WORLD_ID_RE = /^[A-Za-z0-9_-]+$/; // 世界 id 白名单（防路径穿越）
-
-// 回收站（v1.7，ADR-0014）：删除不直删——世界线目录与素材文件先整体挪进 state/trash/，误删可手工找回。
-// trash 长在 state/ 下，天然不在任何扫描面内：scanPresets/scanPresetAudio/listAssets 只看 presets/，
-// listWorlds/快照只看 worlds/ 与 index.json，migrateLegacyState 只读 state/ 本层的 *.md——挪进去即从游戏里消失。
-// 尽力而为：同卷 rename 原子、极端撞名靠随机后缀规避；跨设备（EXDEV）等 rename 失败时回退直删，
-// 因为回收站不能让「删除」这个操作本身失败（回退的 rmSync 若也失败则原样抛出，两个调用方
-// /api/assets 与 /api/worlds delete 都在各自路由里 catch 成 4xx/5xx，绝不冒泡成 uncaughtException——
-// server 在 Electron 主进程内运行，冒泡即应用闪退）。
-// label：可选归属标注（素材删除传 presetId）——跨剧本同名文件在 trash 里靠它区分该挪回哪个剧本。
-export function moveToTrash(root, rel, label = "") {
-  const src = path.join(root, ...rel);
-  if (!fs.existsSync(src)) return { trashed: false }; // 本来就没有可挪的东西（如索引在、目录已被手删），不谎报也不占位
-  const trash = path.join(root, "state", "trash");
-  const tag = label ? `-${label}` : "";
-  try {
-    fs.mkdirSync(trash, { recursive: true });
-    fs.renameSync(src, path.join(trash, `${Date.now()}-${Math.random().toString(36).slice(2, 6).padEnd(4, "0")}${tag}-${path.basename(src)}`));
-    return { trashed: true };
-  } catch {
-    fs.rmSync(src, { recursive: true, force: true });
-    return { trashed: false, fallback: "purged" };
-  }
-}
-
-// ---------- 世界线（state/worlds/<worldId>/）：索引、迁移、建 / 分叉 / 删 ----------
-// 每个世界三份文件：state.md / summary.md / story-tree.md；index.json 记录元数据（chapterNo/lastPlayed 由磁盘自愈）
-// 世界 id 白名单：字母数字与 -_（防路径穿越；id 由 createWorld 生成或来自迁移的 main）
-export function readWorldsIndex(root) {
-  try {
-    const data = JSON.parse(fs.readFileSync(path.join(root, "index.json"), "utf8"));
-    return Array.isArray(data) ? data.filter((e) => e && typeof e.worldId === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
-export function writeWorldsIndex(root, list) {
-  fs.mkdirSync(root, { recursive: true });
-  fs.writeFileSync(path.join(root, "index.json"), JSON.stringify(list, null, 2) + "\n");
-}
-
-/**
- * 世界目录 state.md 里的 `- preset: <id>`（导出纯读函数，root 可注入以便单测）。
- * 与 SKILL「当前剧本 id = 本局 state.md 的 `- preset: <id>`」同一口径：
- * index.json 缺该世界（手建世界、索引被删、迁移漏记）时用它自愈「当前剧本」。
- * @param {string} worldId 世界 id（调用方先用 WORLD_ID_RE 校验）
- * @param {string} [root] 世界根目录（缺省 WORLDS_ROOT）
- * @returns {string} 剧本 id；文件/字段缺失或值不合法时为空串
- */
-export function presetFromStateFile(worldId, root = WORLDS_ROOT) {
-  try {
-    const md = fs.readFileSync(path.join(root, worldId, "state.md"), "utf8");
-    const m = /^-\s*preset\s*[:：]\s*([A-Za-z0-9_-]+)\s*$/m.exec(md);
-    return m ? m[1] : "";
-  } catch {
-    return "";
-  }
-}
-
-// 当前章号从树文件正文取（最后一个 `## 第 N 章`）；读不到回退 index 记录
-export function worldChapterNo(md) {
-  let n = 1;
-  for (const m of String(md || "").matchAll(/^##\s*第\s*(\d+)\s*章/gm)) n = Number(m[1]);
-  return n;
-}
-
-// ---------- 角色面板（v1.7）：state.md 容错解析 → GET /api/state ----------
-// state.md 由引擎（LLM）维护：小节可能缺、顺序可能乱、值可能越界——这里只做「尽力解析、缺的静默缺省」，
-// 任何输入都不抛错；未知小节（场景美术等）与角色卡的未知键（art_prompt 等）一律忽略，不进响应。
-
-/** state.md 的键值行：`- <键>: <值>`（冒号全半角都认；值可为空串） */
-const STATE_KV_RE = /^-\s*([^:：]+?)\s*[:：]\s*(.*)$/;
-/** 未回收伏笔行尾的轮次标注：`（埋于第 N 轮）`（全半角括号都认） */
-const FORESHADOW_TURN_RE = /[（(]埋于第\s*(\d+)\s*轮[）)]\s*$/;
-
-/** 好感度解析：取行内第一个整数并夹进 [0,100]（引擎可能写出界）；解析不出（如「很高」）→ null */
-function parseFavor(raw) {
-  const m = /-?\d+/.exec(String(raw ?? ""));
-  if (!m) return null;
-  const n = Number(m[0]);
-  return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : null;
-}
-
-/** 行内整数（周目）；解析不出 → null */
-function parseIntOrNull(raw) {
-  const m = /-?\d+/.exec(String(raw ?? ""));
-  return m && Number.isFinite(Number(m[0])) ? Number(m[0]) : null;
-}
-
-/** 空角色卡（角色卡的缺省形状：字符串字段空串、好感度 null） */
-function newCharacterCard(name) {
-  return { name, role: "", traits: "", catchphrase: "", favor: null, artFile: "", expression: "", secret: "", recentInteraction: "" };
-}
-
-/**
- * 解析世界 state.md 为角色面板视图（纯函数，容错见函数组头注释）。
- * `# 剧情状态` 的固定键 → status（preset/周目→playthrough/时间→time/场景→scene，缺省 null）；
- * `# 主角` / `# 导演手记` 的键值行原样收进 Record（键→值，引擎可自由加字段）；
- * `# 角色卡` 的 `## <角色名>` 子节 → characters（身份→role、性格关键词→traits、口癖→catchphrase、
- * 好感度→favor（夹 0-100，解析不出 null）、art_file→artFile、表情→expression、秘密→secret、最近互动→recentInteraction；
- * art_prompt 等未知键忽略）；`# Flags` → flags；`# 未回收伏笔` → foreshadowing（行尾「埋于第 N 轮」拆出 turn，缺省 null）。
- * @param {string} text state.md 全文（null/undefined 视同空文本）
- * @returns {{status: {preset: string|null, playthrough: number|null, time: string|null, scene: string|null},
- *   protagonist: Record<string,string>, director: Record<string,string>,
- *   characters: Array<{name: string, role: string, traits: string, catchphrase: string, favor: number|null,
- *     artFile: string, expression: string, secret: string, recentInteraction: string}>,
- *   flags: Array<{name: string, value: string}>, foreshadowing: Array<{text: string, turn: number|null}>}}
- */
-export function parseStateFile(text) {
-  const out = {
-    status: { preset: null, playthrough: null, time: null, scene: null },
-    protagonist: {},
-    director: {},
-    characters: [],
-    flags: [],
-    foreshadowing: [],
-  };
-  const STATUS_KEYS = { preset: "preset", 周目: "playthrough", 时间: "time", 场景: "scene" };
-  const CHARACTER_KEYS = {
-    身份: "role",
-    性格关键词: "traits",
-    口癖: "catchphrase",
-    好感度: "favor",
-    art_file: "artFile",
-    表情: "expression",
-    秘密: "secret",
-    最近互动: "recentInteraction",
-  };
-  let section = ""; // 当前一级小节名（未知小节也跟踪，只是不解析内容）
-  let character = null; // 角色卡小节里当前的 ## 角色（其它小节恒为 null）
-  for (const rawLine of String(text ?? "").split(/\r?\n/)) {
-    const line = rawLine.trim();
-    const h2 = /^##(?!#)\s*(.+?)\s*$/.exec(line);
-    if (h2) {
-      // 二级标题：角色卡小节里是角色名（开一张新卡）；其它小节里出现只结束当前上下文。
-      // 同名卡 last-wins 去重：引擎整文件重写时旧卡新卡可能并存，不去重会撞 React key 与 testid。
-      if (section === "角色卡") {
-        const name = h2[1];
-        const prev = out.characters.findIndex((c) => c.name === name);
-        if (prev !== -1) out.characters.splice(prev, 1);
-        character = newCharacterCard(name);
-        out.characters.push(character);
-      } else {
-        character = null;
-      }
-      continue;
-    }
-    const h1 = /^#(?!#)\s*(.+?)\s*$/.exec(line);
-    if (h1) {
-      // 剥行尾括注再比对：SKILL 模板自带「# 角色卡（每个角色一节）」这类写给引擎看的说明，
-      // LLM 拷模板时带上括注是完全可能的漂移——精确匹配会把整节角色卡静默吞掉。
-      section = h1[1].replace(/[（(][^）)]*[）)]\s*$/, "").trim();
-      character = null;
-      continue;
-    }
-    const kv = STATE_KV_RE.exec(line);
-    if (section === "剧情状态" && kv) {
-      const key = STATUS_KEYS[kv[1].trim()];
-      if (!key) continue;
-      const v = kv[2].trim();
-      if (key === "playthrough") out.status.playthrough = parseIntOrNull(v);
-      else out.status[key] = v || null;
-    } else if (section === "主角" && kv) {
-      out.protagonist[kv[1].trim()] = kv[2].trim();
-    } else if (section === "导演手记" && kv) {
-      out.director[kv[1].trim()] = kv[2].trim();
-    } else if (section === "角色卡" && character && kv) {
-      const field = CHARACTER_KEYS[kv[1].trim()];
-      if (field === "favor") character.favor = parseFavor(kv[2]);
-      else if (field) character[field] = kv[2].trim();
-    } else if (section === "Flags" && kv) {
-      out.flags.push({ name: kv[1].trim(), value: kv[2].trim() });
-    } else if (section === "未回收伏笔" && line.startsWith("-")) {
-      let t = line.replace(/^-\s*/, "").trim();
-      if (!t) continue;
-      let turn = null;
-      const m = FORESHADOW_TURN_RE.exec(t);
-      if (m) {
-        turn = Number(m[1]);
-        t = t.slice(0, m.index).trim();
-      }
-      out.foreshadowing.push({ text: t, turn });
-    }
-  }
-  return out;
-}
-
-/**
- * GET /api/state 的路由判定与响应体（导出纯函数，root 可注入以便单测）：
- * worldId 缺失或不过 WORLD_ID_RE → 400；世界没有 state.md → 404；否则 200 + `{worldId, ...parseStateFile}`。
- * @param {string} worldId 查询参数（调用方原样传入，缺失就是空串）
- * @param {string} [root] 世界根目录（缺省 WORLDS_ROOT）
- * @returns {{code: number, body: object}} 路由直接 writeHead/JSON 用
- */
-export function stateViewFor(worldId, root = WORLDS_ROOT) {
-  if (!worldId || !WORLD_ID_RE.test(worldId)) return { code: 400, body: { error: "缺少或非法的 worldId 参数" } };
-  let md = null;
-  try {
-    md = fs.readFileSync(path.join(root, worldId, "state.md"), "utf8");
-  } catch {
-    md = null;
-  }
-  if (md === null) return { code: 404, body: { error: "状态文件不存在" } };
-  return { code: 200, body: { worldId, ...parseStateFile(md) } };
-}
-
-// ---------- 逐轮状态快照与精确回退（v1.6，CONTRACTS §2） ----------
-// 目录 state/worlds/<worldId>/history/NNNN.json（4 位递增、append-only）。存整份文件的全文，
-// 这样「精确回退」= 直接把快照三文件写回，不依赖引擎再推演（兼容路径才让引擎按 fork.md 校准）。
-const HISTORY_DIRNAME = "history";
-const SNAPSHOT_SEQ_MAX = 9999; // 4 位上限：seq > 9999 不再写（warn once），避免文件名溢出 5 位
-const WORLD_FILE_KEY = { "state.md": "state", "summary.md": "summary", "story-tree.md": "tree" };
-let warnedSnapshotOverflow = false; // 溢出告警只打一次（每回合都会触发判断，不去重会刷屏）
-
-/**
- * 从 story-tree.md 解析当前进度指针（纯函数）：`- 当前进度: 节点 <id>（已走 X 轮）` → `<id>`。
- * 节点 id 到全角括号或空白为止（与 forkTreeMarkdown 写出的格式互为逆运算）。
- * @param {string} md 剧情树原文
- * @returns {string|null} 节点 id；无该行时 null
- */
-export function parseTreePointer(md) {
-  const m = /^-\s*当前进度\s*[:：]\s*节点\s*([^\s（(]+)/m.exec(String(md || ""));
-  return m ? m[1] : null;
-}
-
-/**
- * 读世界三文件全文（缺失 = null）。快照条目与导出 bundle 的 files 都用这个形状。
- * @param {string} dir 世界目录绝对路径
- * @returns {{state: string|null, summary: string|null, tree: string|null}}
- */
-export function readWorldFiles(dir) {
-  const out = { state: null, summary: null, tree: null };
-  for (const f of WORLD_FILES) {
-    try {
-      out[WORLD_FILE_KEY[f]] = fs.readFileSync(path.join(dir, f), "utf8");
-    } catch {
-      out[WORLD_FILE_KEY[f]] = null;
-    }
-  }
-  return out;
-}
-
-/**
- * 把三文件写进世界目录（精确回退/精确分叉/导入共用）。
- * 快照三键就是**该时刻磁盘的真实快照**：字符串 = 写入；null/undefined = 当时不存在 → 删除既有文件。
- * 旧写法对 null 跳过不写，会让「当时 summary 还不存在」的快照在回退/精确分叉/导入后留下磁盘上后来才出现的
- * summary.md（「未来」内容），世界自相矛盾。所有调用方传的值都来自 normalizeSnapshot 或同形状对象，
- * 三键一律按「有则写、无则删」处理。
- * @param {string} dir 世界目录绝对路径
- * @param {{state?: string|null, summary?: string|null, tree?: string|null}} files 三文件全文
- */
-export function writeWorldFiles(dir, files) {
-  fs.mkdirSync(dir, { recursive: true });
-  for (const f of WORLD_FILES) {
-    const v = files?.[WORLD_FILE_KEY[f]];
-    if (typeof v === "string") fs.writeFileSync(path.join(dir, f), v);
-    else fs.rmSync(path.join(dir, f), { force: true }); // null/undefined = 快照时该文件不存在 → 一并清掉
-  }
-}
-
-/**
- * 快照条目字段规范化（导出纯函数）：统一 seq 类型、at 默认当前时间、kind 归一、files 三键缺省 null。
- * 写盘与读取都走它，保证磁盘上的条目形状只有一个（导入校验也复用同一形状）。
- * @param {object} [entry] 原始条目
- * @returns {{seq: number, at: string, kind: "turn"|"backup", nodeId: string|null, chapterNo: number|null, files: {state: string|null, summary: string|null, tree: string|null}}}
- */
-export function normalizeSnapshot(entry = {}) {
-  const files = entry.files && typeof entry.files === "object" ? entry.files : {};
-  const str = (v) => (typeof v === "string" ? v : null);
-  const num = Number(entry.seq);
-  return {
-    seq: Number.isFinite(num) ? num : 0,
-    at: typeof entry.at === "string" && entry.at ? entry.at : new Date().toISOString(),
-    kind: entry.kind === "backup" ? "backup" : "turn",
-    nodeId: entry.nodeId == null ? null : String(entry.nodeId),
-    chapterNo: entry.chapterNo == null ? null : Number(entry.chapterNo),
-    files: { state: str(files.state), summary: str(files.summary), tree: str(files.tree) },
-  };
-}
-
-/**
- * 快照条目结构校验（导出纯函数，导入 bundle 用）：字段类型与取值域都必须合法。
- * @param {unknown} obj 待校验对象
- * @returns {boolean} 是否是合法的快照条目
- */
-export function isSnapshotEntry(obj) {
-  if (!obj || typeof obj !== "object") return false;
-  if (!Number.isInteger(obj.seq) || obj.seq < 1 || obj.seq > SNAPSHOT_SEQ_MAX) return false;
-  if (typeof obj.at !== "string" || !obj.at) return false;
-  if (obj.kind !== "turn" && obj.kind !== "backup") return false;
-  if (obj.nodeId != null && typeof obj.nodeId !== "string") return false;
-  if (obj.chapterNo != null && typeof obj.chapterNo !== "number") return false;
-  const f = obj.files;
-  if (!f || typeof f !== "object") return false;
-  return WORLD_FILES.every((name) => f[WORLD_FILE_KEY[name]] === null || typeof f[WORLD_FILE_KEY[name]] === "string");
-}
-
-/**
- * 读某世界全部快照（升序）。文件名即 seq 来源；坏 JSON / 越界文件名一律跳过（不让单条坏档拖垮回退界面）。
- * @param {string} worldId 世界 id（调用方先用 WORLD_ID_RE 校验）
- * @param {string} [root] 世界根目录（缺省 WORLDS_ROOT）
- * @returns {Array<object>} 规范化后的快照条目（含 files），按 seq 升序
- */
-export function readSnapshots(worldId, root = WORLDS_ROOT) {
-  if (!WORLD_ID_RE.test(String(worldId || ""))) return [];
-  let names = [];
-  try {
-    names = fs.readdirSync(path.join(root, worldId, HISTORY_DIRNAME));
-  } catch {
-    return [];
-  }
-  const out = [];
-  for (const name of names) {
-    if (!/^\d{1,4}\.json$/.test(name)) continue;
-    try {
-      const entry = normalizeSnapshot(JSON.parse(fs.readFileSync(path.join(root, worldId, HISTORY_DIRNAME, name), "utf8")));
-      if (entry.seq >= 1) out.push(entry);
-    } catch {}
-  }
-  return out.sort((a, b) => a.seq - b.seq);
-}
-
-// 历史目录里 seq 最大的一条（只看文件名 O(目录项数)，不读文件内容）。没有合法文件时 {seq:0, file:null}。
-function latestSnapshot(dir) {
-  let names = [];
-  try {
-    names = fs.readdirSync(dir);
-  } catch {
-    return { seq: 0, file: null };
-  }
-  let seq = 0;
-  let file = null;
-  for (const name of names) {
-    if (!/^\d{1,4}\.json$/.test(name)) continue;
-    const n = Number(name.slice(0, -5)); // 去掉末尾 ".json"，取数字部分
-    if (n > seq) {
-      seq = n;
-      file = name;
-    }
-  }
-  return { seq, file };
-}
-
-// 读单条快照文件（name 为历史目录下的文件名）；坏档/越界返回 null。
-function readSnapshotFile(dir, name) {
-  try {
-    const entry = normalizeSnapshot(JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")));
-    return entry.seq >= 1 ? entry : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * 读单条快照全文（GET /api/history?seq= 用）：只读目标文件，不 parse 整个 history 目录。
- * @param {string} worldId 世界 id（调用方先用 WORLD_ID_RE 校验）
- * @param {number|string} seq 目标 seq
- * @param {string} [root] 世界根目录（缺省 WORLDS_ROOT）
- * @returns {object|null} 规范化后的快照条目；不存在/坏档时 null
- */
-export function readSnapshot(worldId, seq, root = WORLDS_ROOT) {
-  if (!WORLD_ID_RE.test(String(worldId || ""))) return null;
-  const n = Number(seq);
-  if (!Number.isInteger(n) || n < 1 || n > SNAPSHOT_SEQ_MAX) return null;
-  const dir = path.join(root, worldId, HISTORY_DIRNAME);
-  let names = [];
-  try {
-    names = fs.readdirSync(dir);
-  } catch {
-    return null;
-  }
-  const name = names.find((f) => /^\d{1,4}\.json$/.test(f) && Number(f.slice(0, -5)) === n);
-  return name ? readSnapshotFile(dir, name) : null;
-}
-
-/**
- * 追加一条快照（seq = 上一条 + 1，起始 1）。
- * 去重：与上一条 files 全等则跳过（dedupe=false 时用于 backup——backup 必须落盘，否则恢复不了）。
- * 溢出：seq 将 > 9999 时不再写并 warn once。
- * @param {string} root 世界根目录
- * @param {string} worldId 世界 id
- * @param {object} entry 条目（seq 由本函数分配，忽略传入值）
- * @param {{dedupe?: boolean}} [opts]
- * @returns {{ok: true, seq: number, entry: object}|{skipped: true, reason: string, seq: number|null}}
- */
-export function writeSnapshot(root, worldId, entry, { dedupe = true } = {}) {
-  if (!WORLD_ID_RE.test(String(worldId || ""))) return { skipped: true, reason: "bad-world-id", seq: null };
-  const dir = path.join(root, worldId, HISTORY_DIRNAME);
-  // O(1)：last.seq 只由文件名推出（NNNN.json 里最大者），去重只 parse 这一条——
-  // 不再全量 readFileSync + JSON.parse 整个 history 目录（长世界逐轮会越来越慢，且发生在 turn_end 广播前）。
-  const last = latestSnapshot(dir);
-  const norm = normalizeSnapshot(entry);
-  if (dedupe && last.seq >= 1 && last.file) {
-    const lastEntry = readSnapshotFile(dir, last.file);
-    if (lastEntry && sameFiles(lastEntry.files, norm.files)) {
-      return { skipped: true, reason: "duplicate", seq: last.seq };
-    }
-  }
-  const seq = last.seq + 1;
-  if (seq > SNAPSHOT_SEQ_MAX) {
-    if (!warnedSnapshotOverflow) {
-      warnedSnapshotOverflow = true;
-      console.warn(`[acp] 世界 ${worldId} 的快照已达上限 ${SNAPSHOT_SEQ_MAX}，此后的逐轮快照不再写入`);
-    }
-    return { skipped: true, reason: "overflow", seq: null };
-  }
-  const final = { ...norm, seq };
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, `${String(seq).padStart(4, "0")}.json`), JSON.stringify(final, null, 2) + "\n");
-  return { ok: true, seq, entry: final };
-}
-
-// 三文件全文是否逐字相同（去重判定用；只看内容，不看 at/kind）
-function sameFiles(a, b) {
-  return JSON.stringify(a) === JSON.stringify(b);
-}
-
-/**
- * 从快照列表里按节点挑「最早匹配」的一条（纯函数，CONTRACTS §2 的精确回退源）。
- * @param {Array<object>} snapshots 快照列表（顺序无所谓，内部按 seq 排序）
- * @param {string} nodeId 目标节点 id
- * @returns {object|null} 最早（seq 最小）的那个匹配快照；无匹配时 null
- */
-export function selectSnapshotForNode(snapshots, nodeId) {
-  const list = Array.isArray(snapshots) ? snapshots.filter((s) => s && typeof s === "object") : [];
-  return list.filter((s) => s.nodeId === nodeId).sort((a, b) => a.seq - b.seq)[0] || null;
-}
-
-// 分叉回退（纯函数）：当前进度指针 → 目标节点、轮次清零、已剪枝恢复可达；
-// 分叉点之后的情节视为尚未发生——由引擎按 fork.md 静默校准 state/summary（见 SKILL【世界线】）
-export function forkTreeMarkdown(md, nodeId) {
-  return String(md || "")
-    .replace(/^-\s*当前进度\s*[:：].*$/m, `- 当前进度: 节点 ${nodeId}（已走 0 轮）`)
-    .replace(/^(\s*-\s*状态\s*[:：]\s*)已剪枝\s*$/gm, "$1可达");
-}
-
-/** 分叉说明文件：给引擎的一次性回退指令（处理完引擎自行删除） */
-export function forkNote(originWorldId, nodeId, at = new Date()) {
-  return [
-    "# 分叉说明",
-    `- 来源世界: ${originWorldId}`,
-    `- 分叉节点: ${nodeId}`,
-    `- 分叉时间: ${at.toISOString()}`,
-    "",
-    `本世界由「${originWorldId}」在节点 ${nodeId} 处手动分叉：当前进度指针已回退到该节点，节点之后的情节尚未发生。`,
-    "请在首个回合内静默完成两件事，然后删除本文件，照常续演：",
-    "1. 把 state.md 与 summary.md 回退到分叉节点之前的一致状态（删去分叉点之后的记录，好感度/Flag/伏笔做保守修正）；",
-    "2. 校准 story-tree.md 的节点状态与本世界既有剧情一致。",
-    "绝不向玩家输出任何说明文字。",
-    "",
-  ].join("\n");
-}
-
-/** 新建世界（分配 id、建目录、写索引）；新世界的三份文件由引擎在开局/规划时初始化 */
-export function createWorld(root, preset, title = "") {
-  const list = readWorldsIndex(root);
-  const base = String(preset || "world").replace(/[^A-Za-z0-9_-]/g, "-") || "world";
-  const taken = new Set(list.map((e) => e.worldId));
-  let n = 1;
-  while (taken.has(`${base}-${n}`)) n += 1;
-  const entry = {
-    worldId: `${base}-${n}`,
-    preset: String(preset || ""),
-    title,
-    chapterNo: 1,
-    lastPlayed: Date.now(),
-    note: "",
-    forkedFrom: null,
-  };
-  fs.mkdirSync(path.join(root, entry.worldId), { recursive: true });
-  writeWorldsIndex(root, [...list, entry]);
-  console.log(`[acp] world created: ${entry.worldId}`);
-  return entry;
-}
-
-// 选精确回退源（纯逻辑）：显式 seq 命中优先；否则按 nodeId 取最早匹配快照；都没有 → null（走兼容路径）
-function pickForkSnapshot(snaps, nodeId, seq) {
-  if (seq != null && seq !== "") {
-    const hit = snaps.find((s) => s.seq === Number(seq));
-    if (hit) return hit;
-  }
-  return selectSnapshotForNode(snaps, nodeId);
-}
-
-// 手动分叉（v1.6 支持精确快照源）：
-//   有快照（显式 seq 或按 nodeId 最早匹配）→ 精确：以快照三文件建新世界（仍写 fork.md，引擎只校准树）；
-//   无快照 → 兼容路径：复制当前三文件 + 本地回退进度指针（既有行为，字节不变）。
-export function forkWorld(root, originId, nodeId, seq = null) {
-  const origin = readWorldsIndex(root).find((e) => e.worldId === originId);
-  if (!origin) return { error: "来源世界不存在" };
-  const srcDir = path.join(root, originId);
-  if (!fs.existsSync(srcDir)) return { error: "来源世界目录不存在" };
-
-  const snap = pickForkSnapshot(readSnapshots(originId, root), nodeId, seq);
-  const entry = createWorld(root, origin.preset, origin.title);
-  const dstDir = path.join(root, entry.worldId);
-
-  let chapterNo = entry.chapterNo;
-  let note;
-  let forkedFrom;
-  if (snap) {
-    writeWorldFiles(dstDir, snap.files); // 精确：快照三文件原样落地，不本地改树（引擎按 fork.md 校准）
-    chapterNo = snap.chapterNo != null ? snap.chapterNo : snap.files.tree != null ? worldChapterNo(snap.files.tree) : entry.chapterNo;
-    note = `分叉自 ${originId} @ ${nodeId}（精确快照 #${snap.seq}）`;
-    forkedFrom = { worldId: originId, nodeId, seq: snap.seq };
-  } else {
-    for (const f of WORLD_FILES) {
-      const src = path.join(srcDir, f);
-      if (fs.existsSync(src)) fs.copyFileSync(src, path.join(dstDir, f));
-    }
-    const treeFile = path.join(dstDir, "story-tree.md");
-    const treeText = fs.existsSync(treeFile) ? fs.readFileSync(treeFile, "utf8") : "";
-    if (treeText) fs.writeFileSync(treeFile, forkTreeMarkdown(treeText, nodeId));
-    chapterNo = treeText ? worldChapterNo(forkTreeMarkdown(treeText, nodeId)) : entry.chapterNo;
-    note = `分叉自 ${originId} @ ${nodeId}`;
-    forkedFrom = { worldId: originId, nodeId };
-  }
-  fs.writeFileSync(path.join(dstDir, "fork.md"), forkNote(originId, nodeId));
-  const list = readWorldsIndex(root).map((e) =>
-    e.worldId === entry.worldId ? { ...e, chapterNo, note, forkedFrom, lastPlayed: Date.now() } : e,
-  );
-  writeWorldsIndex(root, list);
-  console.log(`[acp] world forked: ${originId}@${nodeId} → ${entry.worldId}${snap ? ` (精确快照 #${snap.seq})` : ""}`);
-  return { worldId: entry.worldId, entry: list.find((e) => e.worldId === entry.worldId) };
-}
-
-/**
- * 精确回退到某条快照：先写一条 kind:"backup"（当前三文件）再覆盖为目标快照。
- * backup 去重关掉——它就是恢复前的地板，必须落盘，否则这次恢复无法再撤销。
- * @param {string} root 世界根目录
- * @param {string} worldId 世界 id
- * @param {number|string} seq 目标快照 seq
- * @returns {{backupSeq: number}|{error: string}}
- */
-export function restoreWorld(root, worldId, seq) {
-  if (!WORLD_ID_RE.test(String(worldId || ""))) return { error: "参数不合法" };
-  const target = readSnapshots(worldId, root).find((s) => s.seq === Number(seq));
-  if (!target) return { error: "快照不存在" };
-  const dir = path.join(root, worldId);
-  const current = readWorldFiles(dir);
-  const backup = writeSnapshot(root, worldId, {
-    kind: "backup",
-    nodeId: parseTreePointer(current.tree),
-    chapterNo: current.tree != null ? worldChapterNo(current.tree) : null,
-    files: current,
-  }, { dedupe: false });
-  if (!backup.ok) return { error: "写入备份快照失败" };
-  writeWorldFiles(dir, target.files);
-  console.log(`[acp] world restored: ${worldId} → #${target.seq}（备份 #${backup.seq}）`);
-  return { backupSeq: backup.seq };
-}
-
-/**
- * 更新世界索引里的展示字段：label(≤60) / note(≤200)，空串 = 清除。
- * patch 里**出现**该键才改（用 `in` 判定），没出现的键保持原值——避免把「没传」当成「清空」。
- * @param {string} root 世界根目录
- * @param {string} worldId 世界 id
- * @param {{label?: string, note?: string}} patch 待更新字段
- * @returns {{entry: object}|{error: string}}
- */
-export function updateWorld(root, worldId, patch = {}) {
-  if (!WORLD_ID_RE.test(String(worldId || ""))) return { error: "参数不合法" };
-  const list = readWorldsIndex(root);
-  const idx = list.findIndex((e) => e.worldId === worldId);
-  if (idx === -1) return { error: "世界不存在" };
-  const entry = { ...list[idx] };
-  if ("label" in patch) {
-    const label = String(patch.label ?? "").trim();
-    if (label.length > 60) return { error: "label 过长（≤60）" };
-    entry.label = label; // 空串即清除
-  }
-  if ("note" in patch) {
-    const note = String(patch.note ?? "").trim();
-    if (note.length > 200) return { error: "note 过长（≤200）" };
-    entry.note = note;
-  }
-  list[idx] = entry;
-  writeWorldsIndex(root, list);
-  return { entry };
-}
-
-/**
- * 打包一个世界（含全部快照）为可迁移 bundle（CONTRACTS §2）。
- * @param {string} root 世界根目录
- * @param {string} worldId 世界 id
- * @returns {{bundle: object}|{error: string}}
- */
-export function exportWorld(root, worldId) {
-  if (!WORLD_ID_RE.test(String(worldId || ""))) return { error: "参数不合法" };
-  const entry = readWorldsIndex(root).find((e) => e.worldId === worldId);
-  const dir = path.join(root, worldId);
-  if (!entry && !fs.existsSync(dir)) return { error: "世界不存在" };
-  const files = readWorldFiles(dir);
-  const snapshots = readSnapshots(worldId, root).map((s) => ({
-    seq: s.seq, at: s.at, kind: s.kind, nodeId: s.nodeId, chapterNo: s.chapterNo, files: s.files,
-  }));
-  return {
-    bundle: {
-      format: "bunkiten-world",
-      version: 1,
-      exportedAt: new Date().toISOString(),
-      world: {
-        worldId,
-        preset: entry?.preset || "",
-        title: entry?.title || "",
-        label: entry?.label || "",
-        note: entry?.note || "",
-        chapterNo: files.tree != null ? worldChapterNo(files.tree) : entry?.chapterNo || 1,
-        files,
-        snapshots,
-      },
-    },
-  };
-}
-
-/**
- * 导入一个 bundle：校验 format/version/worldId → 重名时加 `-2/-3…` 后缀 → 写文件 + 快照 + 索引（note 追加「（导入）」）。
- * 校验口径与导出对称，任何字段不合法一律拒绝（不写半个世界）。
- * @param {string} root 世界根目录
- * @param {object} bundle 导出体
- * @returns {{worldId: string}|{error: string}}
- */
-export function importWorld(root, bundle) {
-  const w = bundle && typeof bundle === "object" ? bundle.world : null;
-  if (!bundle || bundle.format !== "bunkiten-world" || bundle.version !== 1 || !w || !WORLD_ID_RE.test(String(w.worldId || ""))) {
-    return { error: "bundle 校验失败" };
-  }
-  // files.state 必须是非空字符串：空/缺失的 state 快照会导入出一个不可玩的世界，一律拒绝（不写半个世界）
-  const filesIn = w.files && typeof w.files === "object" ? w.files : null;
-  if (!filesIn || typeof filesIn.state !== "string" || filesIn.state.trim() === "") {
-    return { error: "bundle 校验失败：files.state 必须是非空字符串" };
-  }
-  // label/note 与 updateWorld 同款长度约束（≤60 / ≤200）：超限直接 400，绝不静默截断
-  const label = String(w.label ?? "").trim();
-  if (label.length > 60) return { error: "label 过长（≤60）" };
-  const note = String(w.note ?? "").trim();
-  if (note.length > 200) return { error: "note 过长（≤200）" };
-  const list = readWorldsIndex(root);
-  const taken = new Set(list.map((e) => e.worldId));
-  // 磁盘上已存在但索引缺失的世界目录同样算被占用：否则导入会静默顶替它，把该目录的内容覆盖掉
-  try {
-    for (const ent of fs.readdirSync(root, { withFileTypes: true })) {
-      if (ent.isDirectory()) taken.add(ent.name);
-    }
-  } catch {}
-  let id = String(w.worldId);
-  let n = 1;
-  while (taken.has(id)) {
-    n += 1;
-    id = `${w.worldId}-${n}`; // 重名后缀：-2、-3…（不覆盖既有世界）
-  }
-  const dir = path.join(root, id);
-  fs.mkdirSync(dir, { recursive: true });
-  writeWorldFiles(dir, filesIn); // 三键：字符串写入；null/undefined 删除（新目录下即无操作）
-  const files = readWorldFiles(dir);
-  const snaps = Array.isArray(w.snapshots) ? w.snapshots.filter(isSnapshotEntry) : [];
-  if (snaps.length) {
-    const hdir = path.join(dir, HISTORY_DIRNAME);
-    fs.mkdirSync(hdir, { recursive: true });
-    for (const s of snaps) {
-      fs.writeFileSync(path.join(hdir, `${String(s.seq).padStart(4, "0")}.json`), JSON.stringify(normalizeSnapshot(s), null, 2) + "\n");
-    }
-  }
-  const entry = {
-    worldId: id,
-    preset: String(w.preset || ""),
-    title: String(w.title || ""),
-    label, // 已过 ≤60 校验
-    note: `${note}（导入）`, // 标注来源：一眼看出是导入的世界（note 已过 ≤200 校验）
-    chapterNo: files.tree != null ? worldChapterNo(files.tree) : Number(w.chapterNo) || 1,
-    lastPlayed: Date.now(),
-    forkedFrom: null,
-  };
-  writeWorldsIndex(root, [...list, entry]);
-  console.log(`[acp] world imported: ${w.worldId} → ${id}`);
-  return { worldId: id };
-}
-
-export function deleteWorld(root, worldId) {
-  const list = readWorldsIndex(root);
-  if (!list.some((e) => e.worldId === worldId)) return { error: "世界不存在" };
-  writeWorldsIndex(root, list.filter((e) => e.worldId !== worldId));
-  // root 是 worlds 根（<gameRoot>/state/worlds）：整个世界目录搬进 <gameRoot>/state/trash/（索引先移除，恢复需手工补条目）
-  const t = moveToTrash(path.dirname(path.dirname(root)), ["state", "worlds", worldId]);
-  console.log(`[acp] world deleted: ${worldId}${t.trashed ? " → state/trash" : ""}`);
-  return { ok: true, ...t };
-}
-
-// 列表：index 为准，磁盘自愈（chapterNo 读树、lastPlayed 取三文件最新 mtime）；按最近游玩倒序
-export function listWorlds(root, presetFilter = null) {
-  return readWorldsIndex(root)
-    .filter((e) => !presetFilter || e.preset === presetFilter)
-    .map((e) => {
-      const dir = path.join(root, e.worldId);
-      const exists = fs.existsSync(dir);
-      let chapterNo = e.chapterNo || 1;
-      let lastPlayed = e.lastPlayed || 0;
-      if (exists) {
-        try { chapterNo = worldChapterNo(fs.readFileSync(path.join(dir, "story-tree.md"), "utf8")); } catch {}
-        lastPlayed = Math.max(lastPlayed, ...WORLD_FILES.map((f) => mtimeOf(path.join(dir, f))), 0);
-      }
-      // label 是 v1.6 新增的展示名（update 写入）；老索引没有该字段时补空串，客户端不必判 undefined
-      return { ...e, label: typeof e.label === "string" ? e.label : "", chapterNo, lastPlayed, exists };
-    })
-    .sort((a, b) => (b.lastPlayed || 0) - (a.lastPlayed || 0));
-}
-
-// 旧版扁平 state/*.md 一次性迁入 state/worlds/main/（幂等：index.json 已存在即跳过；无旧数据返回 false）
-export function migrateLegacyState(stateDir, worldsRoot) {
-  if (fs.existsSync(path.join(worldsRoot, "index.json"))) return false;
-  let files = [];
-  try {
-    files = fs.readdirSync(stateDir).filter((f) => f.endsWith(".md") && f !== "README.md");
-  } catch {
-    return false;
-  }
-  if (files.length === 0) return false;
-  const dir = path.join(worldsRoot, "main");
-  fs.mkdirSync(dir, { recursive: true });
-  for (const f of files) fs.renameSync(path.join(stateDir, f), path.join(dir, f));
-  let preset = "";
-  try {
-    preset = (fs.readFileSync(path.join(dir, "state.md"), "utf8").match(/^-\s*preset\s*[:：]\s*(\S+)/m) || [])[1] || "";
-  } catch {}
-  const tree = path.join(dir, "story-tree.md");
-  writeWorldsIndex(worldsRoot, [
-    {
-      worldId: "main",
-      preset,
-      title: scanPresets().presets.find((p) => p.id === preset)?.title || "",
-      chapterNo: fs.existsSync(tree) ? worldChapterNo(fs.readFileSync(tree, "utf8")) : 1,
-      lastPlayed: Date.now(),
-      note: "",
-      forkedFrom: null,
-    },
-  ]);
-  return true;
-}
-
 // ---------- server ----------
 let instance = null;
 let stopServerFn = null;
@@ -1368,75 +147,9 @@ export function stopServer() {
   return stopServerFn ? stopServerFn() : Promise.resolve();
 }
 
-// ---------- 本地端点防护（v1.6）：来源校验 + body 上限 ----------
-// 这个 server 只服务本机（Electron / vite dev / curl），不对外开放。跨站请求一律 403（CSRF/端口探测），
-// 但**无 Origin 的非浏览器客户端（curl/集成测试）与同源请求（Electron 打包态 /app）必须放行**——
-// Electron 生产态从 http://127.0.0.1:<port>/app 同源请求，vite dev 从 http://localhost:5173 请求（同机来源）。
-const MAX_BODY_BYTES = 5 * 1024 * 1024; // POST body 上限 5MB（世界 bundle / 提示词都远小于此）
-const LOCAL_ORIGIN_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/;
-
-/**
- * 是不是应当拒绝的跨站请求：sec-fetch-site=cross-site 一律拒；带了 Origin 就必须是本机来源。
- * 无 Origin（非浏览器客户端）一律放行——这是 curl / 集成测试 / Electron 同源请求的正常形态。
- * @param {import("http").IncomingMessage} req
- * @returns {boolean} 命中即调用方回 403
- */
-export function isCrossSiteRequest(req) {
-  if (String(req.headers["sec-fetch-site"] || "").toLowerCase() === "cross-site") return true;
-  const origin = req.headers.origin;
-  return typeof origin === "string" && origin !== "" && !LOCAL_ORIGIN_RE.test(origin);
-}
-
-/**
- * 读 POST 的 JSON body：累积上限默认 5MB，超限回 413 并断连；否则把原文交给 onEnd（调用方自行 JSON.parse）。
- * 统一入口让 /prompt、/api/worlds、/api/assets 共用同一上限，避免逐路由各写一份累积逻辑。
- * maxBytes 可选（v1.7）：只有 POST /api/presets 导入传 50MB（包里是 base64 图片/音频），其余调用点零改动。
- * @param {import("http").IncomingMessage} req
- * @param {import("http").ServerResponse} res
- * @param {(body: string) => void} onEnd
- * @param {number} [maxBytes] 累积上限（缺省 MAX_BODY_BYTES=5MB）
- */
-export function readBodyText(req, res, onEnd, maxBytes = MAX_BODY_BYTES) {
-  const chunks = [];
-  let size = 0;
-  let done = false;
-  req.on("data", (c) => {
-    if (done) return;
-    size += c.length;
-    if (size > maxBytes) {
-      done = true;
-      res.writeHead(413, { "content-type": "application/json; charset=utf-8" });
-      // 先把 413 刷出去再销毁连接（销毁延后一拍：立即 destroy 会用 RST 把刚发出的响应从客户端接收缓冲里丢掉）
-      res.end(JSON.stringify({ error: `请求体过大（上限 ${Math.round(maxBytes / 1024 / 1024)}MB）` }), () => {
-        const t = setTimeout(() => req.destroy(), 10);
-        t.unref?.();
-      });
-      return;
-    }
-    chunks.push(c);
-  });
-  req.on("end", () => {
-    if (done) return;
-    done = true;
-    onEnd(Buffer.concat(chunks).toString("utf8"));
-  });
-  req.on("error", () => {
-    done = true; // 客户端提前断开：不再回调，静默收尾
-  });
-}
-
 export function startServer() {
   if (instance) return instance;
 
-  // ACP client
-  const proc = spawn("grok", ["agent", "--always-approve", "stdio"], { cwd: GAME_ROOT });
-  proc.stderr.on("data", (d) => process.stderr.write("[grok] " + d.toString().slice(0, 300)));
-  proc.on("exit", (code) => console.error(`[acp] grok agent exited: ${code}`));
-  const rl = readline.createInterface({ input: proc.stdout });
-
-  let nextId = 1;
-  const pending = new Map();
-  let sessionId = null;
   let seg = 0;
   let busy = false;
 
@@ -1454,59 +167,22 @@ export function startServer() {
     for (const res of clients) res.write(s);
   }
 
-  rl.on("line", (line) => {
-    if (!line.trim()) return;
-    let msg;
-    try { msg = JSON.parse(line); } catch { return; }
-    if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
-      const r = pending.get(msg.id);
-      if (r) { pending.delete(msg.id); r(msg); }
-      return;
-    }
-    if (!msg.method) return;
-    if (msg.id !== undefined) {
-      proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "unsupported by game shell" } }) + "\n");
-    }
-    if (msg.method !== "session/update") return;
-    const u = msg.params.update;
-    if (u.sessionUpdate === "agent_message_chunk") {
-      const text = u.content?.text ?? "";
+  // ACP 会话（spawn/JSON-RPC/sessionId/boot 都封装在 acp.mjs）：流式 chunk 与进度 label 回调进本闭包，
+  // 这里才有 assetRegistry 与 SSE clients——标记扫描与 broadcast 因此留在入口（ingestChunkText/handleArtLine）。
+  const acp = createAcpSession({
+    gameRoot: GAME_ROOT,
+    sessionFile: SESSION_FILE,
+    rules: RULES,
+    effort: EFFORT,
+    onChunk: (text) => {
       ingestChunkText(text);
       broadcast({ type: "chunk", seg, text });
-    } else if (u.sessionUpdate === "tool_call" || u.sessionUpdate === "tool_call_update") {
+    },
+    onSeg: (label) => {
       seg += 1;
-      broadcast({ type: "seg", seg, label: String(u.title || u.toolCall?.title || "工作") });
-    }
+      broadcast({ type: "seg", seg, label });
+    },
   });
-
-  function request(method, params, timeoutMs = 120000) {
-    const id = nextId++;
-    return new Promise((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error(`timeout ${method}`)), timeoutMs);
-      pending.set(id, (m) => { clearTimeout(t); resolve(m); });
-      proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
-    });
-  }
-
-  function sessionImagesDir() {
-    const base = path.join(os.homedir(), ".grok", "sessions", encodeURIComponent(GAME_ROOT), sessionId);
-    return path.join(base, "images");
-  }
-
-  // 图片落在 per-session 目录：当前会话没有时，扫所有历史会话取最新（跨会话续档）
-  function resolveImage(name) {
-    const cur = path.join(sessionImagesDir(), name);
-    if (fs.existsSync(cur)) return cur;
-    const base = path.join(os.homedir(), ".grok", "sessions", encodeURIComponent(GAME_ROOT));
-    let best = null, bestT = 0;
-    try {
-      for (const d of fs.readdirSync(base)) {
-        const f = path.join(base, d, "images", name);
-        try { const st = fs.statSync(f); if (st.mtimeMs > bestT) { bestT = st.mtimeMs; best = f; } } catch {}
-      }
-    } catch {}
-    return best;
-  }
 
   // ---------- 资产持久化：按「剧本 + 类型 + 名字」落盘（封面 presets/<id>/cover.jpg；重绘标志覆盖同名文件） ----------
   // 「拿不到剧本」告警去重（同一 key 只警告一次）：回合末补扫、每条 /img 预载都会反复走到同一资产，
@@ -1567,7 +243,7 @@ export function startServer() {
     entry.regen = regen;
     if (regen || !fs.existsSync(abs)) {
       // 标记出现时图片文件应已生成（引擎先 image_gen 再输出标记）；当前会话没有就跨会话扫描
-      const src = resolveImage(path.basename(srcRel));
+      const src = acp.resolveImage(path.basename(srcRel));
       if (!src) {
         entry.ready = false;
         assetRegistry.set(key, entry);
@@ -1707,57 +383,6 @@ export function startServer() {
     return true;
   }
 
-
-  function saveSessionId() {
-    try { fs.writeFileSync(SESSION_FILE, JSON.stringify({ sessionId }) + "\n"); } catch {}
-  }
-
-  function loadSavedSessionId() {
-    try {
-      const data = JSON.parse(fs.readFileSync(SESSION_FILE, "utf8"));
-      return typeof data.sessionId === "string" && data.sessionId ? data.sessionId : null;
-    } catch { return null; }
-  }
-
-  async function boot() {
-    await new Promise((r) => setTimeout(r, 800));
-    await request("initialize", { protocolVersion: 1, clientCapabilities: {} });
-
-    // 断线续档：优先 session/load 复用上次会话，失败降级 session/new 并覆写
-    const savedId = loadSavedSessionId();
-    let booted = false;
-    if (savedId) {
-      try {
-        const r = await request("session/load", {
-          sessionId: savedId, cwd: GAME_ROOT, mcpServers: [], _meta: { yoloMode: true, rules: RULES },
-        }, 60000);
-        if (r.error) throw new Error(r.error.message || "session/load rejected");
-        sessionId = r.result?.sessionId || savedId;
-        booted = true;
-        console.log(`[acp] session/load 复用会话: ${sessionId}`);
-      } catch (e) {
-        console.log(`[acp] session/load 失败（${e.message}），降级 session/new`);
-      }
-    }
-    if (!booted) {
-      const s = await request("session/new", {
-        cwd: GAME_ROOT, mcpServers: [], _meta: { yoloMode: true, rules: RULES },
-      });
-      if (s.error) throw new Error(s.error.message || "session/new rejected");
-      sessionId = s.result.sessionId;
-      console.log(`[acp] session/new 新会话: ${sessionId}`);
-    }
-    saveSessionId();
-    console.log(`[acp] grok session ready: ${sessionId}`);
-    // 游戏回合不需要 high 档推理，降到 medium 提速（失败忽略；load/new 会话同样生效）
-    try {
-      await request("session/set_config_option", {
-        sessionId, configId: "reasoning_effort", value: { value: EFFORT },
-      });
-      console.log(`[acp] reasoning_effort -> ${EFFORT}`);
-    } catch { /* 不支持就保持默认 */ }
-  }
-
   /**
    * 提示词里的世界段 → 当前剧本：开局指令的 `世界：<worldId>。` / 续玩指令的 `继续世界：<worldId>。`
    * 是流式落盘唯一可靠的剧本来源（/img 的 &preset= 与标记路径是另外两条兜底）。
@@ -1797,8 +422,8 @@ export function startServer() {
     const effort = pickEffort(text);
     if (effort === lastEffort) return;
     try {
-      await request("session/set_config_option", {
-        sessionId, configId: "reasoning_effort", value: { value: effort },
+      await acp.request("session/set_config_option", {
+        sessionId: acp.sessionId, configId: "reasoning_effort", value: { value: effort },
       });
       lastEffort = effort;
       console.log(`[acp] reasoning_effort -> ${effort}`);
@@ -1832,7 +457,7 @@ export function startServer() {
   }
 
   async function sendPrompt(text) {
-    if (busy || !sessionId) return { ok: false, error: busy ? "上一回合还在进行" : "引擎未就绪" };
+    if (busy || !acp.sessionId) return { ok: false, error: busy ? "上一回合还在进行" : "引擎未就绪" };
     sniffPreset(text);
     busy = true;
     seg = 0;
@@ -1841,10 +466,10 @@ export function startServer() {
     broadcast({ type: "turn_start" });
     try {
       await applyEffort(text); // 档位变化才 set_config_option（在 session/prompt 之前）
-      const r = await request("session/prompt", {
-        sessionId, prompt: [{ type: "text", text }],
+      const r = await acp.request("session/prompt", {
+        sessionId: acp.sessionId, prompt: [{ type: "text", text }],
       }, 600000);
-      // request() 会 resolve 整个响应 msg：引擎按 JSON-RPC 回 error response（而不是断流/超时）时
+      // acp.request 会 resolve 整个响应 msg：引擎按 JSON-RPC 回 error response（而不是断流/超时）时
       // 以前被当成功回合处理（照写快照、广播 turn_end、HTTP 200）——这里显式抛错，落进下方 catch
       //（error 事件 + busy 复位 + 不写快照 + POST /prompt 409），与超时/进程崩掉同一错误路径。
       if (r && r.error) {
@@ -1871,380 +496,16 @@ export function startServer() {
   }
 
   // ---------- HTTP ----------
-  const server = http.createServer((req, res) => {
-    const url = new URL(req.url, `http://localhost:${BASE_PORT}`);
-
-    // 来源校验（统一入口，先于所有路由）：跨站请求一律 403（无 Origin 的 curl/测试/Electron 同源请求放行）
-    if (isCrossSiteRequest(req)) {
-      res.writeHead(403, { "content-type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ error: "跨站请求被拒绝" }));
-      return;
-    }
-
-    if (req.method === "GET" && url.pathname === "/") {
-      res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
-      // 首页导览：把 v1.6 的新路由（音频列表/直服、历史快照、世界导出）一并列上，方便 curl 排查
-      res.end(
-        "galgame acp-server running. API: /api/presets(GET,POST:import) /api/presets/export?id= /api/auth /api/assets?preset=(GET,POST删除) " +
-          "/api/audio?preset= /api/worlds(POST: create/fork/restore/update/delete/import) /api/worlds/export?worldId= /api/history?worldId=[&seq=] " +
-          "/api/tree /api/state?worldId= /events(SSE) /prompt(POST) /img?p=&t=&n=&preset= /audio?p=. 打包前端见 /app。",
-      );
-      return;
-    }
-
-    if (req.method === "GET" && url.pathname === "/api/presets") {
-      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify(scanPresets()));
-      return;
-    }
-
-    // 剧本导出（v1.7）：GET /api/presets/export?id=<id> → 附件下载 <id>.preset.json（base64 图片/音频在包体里）
-    if (req.method === "GET" && url.pathname === "/api/presets/export") {
-      const id = url.searchParams.get("id") || "";
-      const out = buildPresetBundle(GAME_ROOT, id); // 内部已过 PRESET_ID_RE + preset.md 存在性校验
-      if (out.error) {
-        // 目录/ preset.md 不存在与「id 非法」分开说：前者 404（真路过期的 id），后者 400（坏请求）
-        const status = out.error === "剧本不存在" ? 404 : 400;
-        res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ ok: false, error: out.error }));
-        return;
-      }
-      res.writeHead(200, {
-        "content-type": "application/json; charset=utf-8",
-        "content-disposition": `attachment; filename="${id}.preset.json"`,
-      });
-      res.end(JSON.stringify(out.bundle));
-      return;
-    }
-
-    // 剧本导入（v1.7）：POST /api/presets {action:"import", bundle}——包里是 base64 图片/音频，
-    // 5MB 不够用：本端点单独放宽到 50MB（readBodyText 其余调用点仍走 5MB 缺省）
-    if (req.method === "POST" && url.pathname === "/api/presets") {
-      readBodyText(
-        req,
-        res,
-        (body) => {
-          let payload = {};
-          try { payload = JSON.parse(body) || {}; } catch {}
-          if (String(payload.action || "") !== "import") {
-            res.writeHead(400, { "content-type": "application/json; charset=utf-8" });
-            res.end(JSON.stringify({ ok: false, error: "未知动作" }));
-            return;
-          }
-          const out = importPresetBundle(GAME_ROOT, payload.bundle);
-          res.writeHead(out.error ? 400 : 200, { "content-type": "application/json; charset=utf-8" });
-          res.end(JSON.stringify(out.error ? { ok: false, error: out.error } : { ok: true, id: out.id }));
-        },
-        PRESET_IMPORT_MAX_BYTES,
-      );
-      return;
-    }
-
-    // 画廊数据：资产随剧本走，必须指明剧本（缺失或非法 → 400，绝不给全局池）
-    if (req.method === "GET" && url.pathname === "/api/assets") {
-      const presetId = url.searchParams.get("preset") || "";
-      if (!PRESET_ID_RE.test(presetId)) {
-        res.writeHead(400, { "content-type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ error: "缺少或非法的 preset 参数" }));
-        return;
-      }
-      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify(listAssets(presetId)));
-      return;
-    }
-
-    // 素材批量删除（CONTRACTS §3）：只删 presets/<id>/assets/ 下的单层 jpe?g，封面（cover.jpg）不可删
-    if (req.method === "POST" && url.pathname === "/api/assets") {
-      readBodyText(req, res, (body) => {
-        let payload = {};
-        try { payload = JSON.parse(body) || {}; } catch {}
-        const json = (code, obj) => { res.writeHead(code, { "content-type": "application/json; charset=utf-8" }); res.end(JSON.stringify(obj)); };
-        if (String(payload.action || "") !== "delete") return json(400, { error: "未知动作" });
-        const presetId = String(payload.preset || "");
-        const file = String(payload.file || "");
-        // preset 过白名单、file 单层且是 jpe?g（防穿越）；封面不在 assets/ 也不允许删
-        if (!PRESET_ID_RE.test(presetId) || !ASSET_DELETE_FILE_RE.test(file) || file === "cover.jpg") {
-          return json(400, { error: "参数不合法" });
-        }
-        const abs = path.join(GAME_ROOT, "presets", presetId, "assets", file);
-        if (!fs.existsSync(abs)) return json(404, { error: "素材不存在" });
-        try {
-          // 删除进回收站（v1.7）：rename 进 state/trash/，EXDEV 等 rename 失败由 moveToTrash 回退直删；
-          // label 带上 presetId——跨剧本同名素材在 trash 里靠它区分该挪回哪个剧本
-          const t = moveToTrash(GAME_ROOT, ["presets", presetId, "assets", file], presetId);
-          console.log(`[acp] asset deleted: presets/${presetId}/assets/${file}${t.trashed ? " → state/trash" : ""}`);
-          return json(200, { ok: true, trashed: t.trashed });
-        } catch {
-          // trash 与直删都没能完成（EACCES/EPERM/EBUSY…）才是真失败 → 500
-          return json(500, { error: "素材删除失败" });
-        }
-      });
-      return;
-    }
-
-    // 音频清单（CONTRACTS §1）：preset 必填且过白名单（与 /api/assets 同款；音频随剧本站，不给全局池）
-    if (req.method === "GET" && url.pathname === "/api/audio") {
-      const presetId = url.searchParams.get("preset") || "";
-      if (!PRESET_ID_RE.test(presetId)) {
-        res.writeHead(400, { "content-type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ error: "缺少或非法的 preset 参数" }));
-        return;
-      }
-      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ items: scanPresetAudio(presetId) }));
-      return;
-    }
-
-    // 逐轮状态快照（CONTRACTS §2）：列表只回元信息；带 &seq=<n> 时**只读目标文件**并只回该条（回退预览用）。
-    // 带 seq 的调用很热（预览/重建），不能为了附 files 把整个 history 目录全量 parse。
-    if (req.method === "GET" && url.pathname === "/api/history") {
-      const worldId = url.searchParams.get("worldId") || "";
-      if (!WORLD_ID_RE.test(worldId)) {
-        res.writeHead(400, { "content-type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ error: "缺少或非法的 worldId 参数" }));
-        return;
-      }
-      const seqParam = url.searchParams.get("seq");
-      if (seqParam != null && seqParam !== "") {
-        const one = readSnapshot(worldId, seqParam, WORLDS_ROOT);
-        res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ worldId, snapshots: one ? [one] : [] }));
-        return;
-      }
-      const snapshots = readSnapshots(worldId, WORLDS_ROOT).map((s) => ({
-        seq: s.seq, at: s.at, kind: s.kind, nodeId: s.nodeId, chapterNo: s.chapterNo,
-      }));
-      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ worldId, snapshots }));
-      return;
-    }
-
-    // 世界导出（CONTRACTS §2）：GET /api/worlds/export?worldId=<id> → 附件下载 <worldId>.world.json
-    if (req.method === "GET" && url.pathname === "/api/worlds/export") {
-      const worldId = url.searchParams.get("worldId") || "";
-      const out = exportWorld(WORLDS_ROOT, worldId); // 内部已过 WORLD_ID_RE + 存在性校验
-      if (out.error) {
-        res.writeHead(400, { "content-type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ ok: false, error: out.error }));
-        return;
-      }
-      res.writeHead(200, {
-        "content-type": "application/json; charset=utf-8",
-        "content-disposition": `attachment; filename="${worldId}.world.json"`,
-      });
-      res.end(JSON.stringify(out.bundle));
-      return;
-    }
-
-    // 世界线列表（可选 ?preset=<id> 过滤；chapterNo/lastPlayed 由磁盘自愈）
-    if (req.method === "GET" && url.pathname === "/api/worlds") {
-      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ worlds: listWorlds(WORLDS_ROOT, url.searchParams.get("preset")) }));
-      return;
-    }
-
-    // 世界线管理：create=建新世界（分配 id、写索引）；fork=在指定节点手动分叉（不推演）；delete=删除
-    if (req.method === "POST" && url.pathname === "/api/worlds") {
-      readBodyText(req, res, (body) => {
-        let payload = {};
-        try { payload = JSON.parse(body) || {}; } catch {}
-        const action = String(payload.action || "");
-        let out;
-        if (action === "create") {
-          const id = String(payload.preset || "");
-          out = createWorld(WORLDS_ROOT, id, scanPresets().presets.find((p) => p.id === id)?.title || "");
-        } else if (action === "fork") {
-          const worldId = String(payload.worldId || "");
-          const nodeId = String(payload.nodeId || "");
-          // seq 可选：显式给出时优先用那条快照做精确源（CONTRACTS §2）
-          const seq = payload.seq == null || payload.seq === "" ? null : Number(payload.seq);
-          const seqOk = seq == null || (Number.isInteger(seq) && seq >= 1);
-          out = WORLD_ID_RE.test(worldId) && nodeId && seqOk ? forkWorld(WORLDS_ROOT, worldId, nodeId, seq) : { error: "参数不合法" };
-        } else if (action === "restore") {
-          const worldId = String(payload.worldId || "");
-          const seq = Number(payload.seq);
-          out = WORLD_ID_RE.test(worldId) && Number.isInteger(seq) ? restoreWorld(WORLDS_ROOT, worldId, seq) : { error: "参数不合法" };
-        } else if (action === "update") {
-          const worldId = String(payload.worldId || "");
-          const patch = {};
-          if ("label" in payload) patch.label = payload.label;
-          if ("note" in payload) patch.note = payload.note;
-          out = WORLD_ID_RE.test(worldId) ? updateWorld(WORLDS_ROOT, worldId, patch) : { error: "参数不合法" };
-        } else if (action === "import") {
-          out = importWorld(WORLDS_ROOT, payload.bundle);
-        } else if (action === "delete") {
-          const worldId = String(payload.worldId || "");
-          if (!WORLD_ID_RE.test(worldId)) {
-            out = { error: "参数不合法" };
-          } else {
-            try {
-              out = deleteWorld(WORLDS_ROOT, worldId);
-            } catch {
-              // moveToTrash 的直删回退也失败（EACCES/EPERM/EBUSY…）才是真失败 → 500；
-              // 绝不让异常冒泡出 readBodyText 回调（Electron 主进程无 uncaughtException 兜底，冒泡即闪退）
-              return json(500, { error: "世界删除失败" });
-            }
-          }
-        } else {
-          out = { error: "未知动作" };
-        }
-        const ok = !out.error;
-        res.writeHead(ok ? 200 : 400, { "content-type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ ok, ...out }));
-      });
-      return;
-    }
-
-    // 剧情树原文（剧情图屏解析用）：?worldId=<id>，缺省 main
-    if (req.method === "GET" && url.pathname === "/api/tree") {
-      const worldId = url.searchParams.get("worldId") || "main";
-      let markdown = null;
-      if (WORLD_ID_RE.test(worldId)) {
-        try { markdown = fs.readFileSync(path.join(WORLDS_ROOT, worldId, "story-tree.md"), "utf8"); } catch {}
-      }
-      if (markdown === null) {
-        res.writeHead(404, { "content-type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ error: "剧情树不存在" }));
-        return;
-      }
-      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ worldId, markdown }));
-      return;
-    }
-
-    // 角色面板（v1.7）：读该世界 state.md 并容错解析；?worldId=<id> 必填（缺失/非法 400，无文件 404）
-    if (req.method === "GET" && url.pathname === "/api/state") {
-      const out = stateViewFor(url.searchParams.get("worldId") || "");
-      res.writeHead(out.code, { "content-type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify(out.body));
-      return;
-    }
-
-    if (req.method === "GET" && url.pathname === "/api/auth") {
-      const loggedIn = fs.existsSync(path.join(os.homedir(), ".grok", "auth.json"));
-      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ loggedIn }));
-      return;
-    }
-
-    // 打包后的前端静态托管（生产/开发同构，前端请求一律走相对路径）
-    if (req.method === "GET" && (url.pathname === "/app" || url.pathname.startsWith("/app/"))) {
-      const appDist = resolveAppDist();
-      if (!appDist) { res.writeHead(404, { "content-type": "text/plain; charset=utf-8" }); res.end("app dist not built"); return; }
-      let rel;
-      try { rel = decodeURIComponent(url.pathname.slice("/app/".length)); } catch { rel = ""; }
-      let file = rel ? path.join(appDist, rel) : path.join(appDist, "index.html");
-      if (!path.resolve(file).startsWith(path.resolve(appDist) + path.sep)) { res.writeHead(403); res.end(); return; }
-      if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) file = path.join(appDist, "index.html"); // SPA fallback
-      fs.readFile(file, (err, data) => {
-        if (err) { res.writeHead(404); res.end(); return; }
-        res.writeHead(200, { "content-type": MIME[path.extname(file).toLowerCase()] || "application/octet-stream" });
-        res.end(data);
-      });
-      return;
-    }
-
-    // 音频直服（CONTRACTS §1）：白名单形态 + path.resolve 前缀校验（与 /img 同款两道闸）；
-    // 直接整文件 200（不做 Range——音频文件小，客户端拉全量即可），长缓存。
-    if (req.method === "GET" && url.pathname === "/audio") {
-      const p = url.searchParams.get("p") || "";
-      if (AUDIO_REL_RE.test(p)) {
-        const file = path.resolve(GAME_ROOT, p);
-        if (file.startsWith(path.resolve(GAME_ROOT) + path.sep)) {
-          const ext = path.extname(file).slice(1).toLowerCase();
-          fs.readFile(file, (err, data) => {
-            if (err) { res.writeHead(404); res.end(); return; }
-            res.writeHead(200, {
-              "content-type": AUDIO_MIME[ext] || "application/octet-stream",
-              "cache-control": "public, max-age=86400",
-            });
-            res.end(data);
-          });
-          return;
-        }
-      }
-      res.writeHead(404); res.end();
-      return;
-    }
-
-    if (req.method === "GET" && url.pathname === "/img") {
-      const p = url.searchParams.get("p") || "";
-      const t = url.searchParams.get("t") || "";
-      const n = url.searchParams.get("n") || "";
-      // 当前剧本：只认显式 &preset=（画廊/预载直服会带）或标记路径自带的 presets/<id>/…。
-      // 非法 &preset= 告警后忽略（视为没带）；**绝不回退 currentPresetId**（B1）：
-      // 创作模式装配新剧本时它是上一局的剧本，回退会把新剧本的立绘写进旧剧本目录。
-      const qRaw = url.searchParams.get("preset") || "";
-      const qPreset = PRESET_ID_RE.test(qRaw) ? qRaw : "";
-      if (qRaw && !qPreset) console.warn(`[acp] /img 的 &preset= 非法，已忽略: ${qRaw}`);
-      const { presetId: targetPid } = resolvePersistPreset({ queryPreset: qPreset, srcRel: p });
-      const serve = (file) => fs.readFile(file, (err, data) => {
-        if (err) { res.writeHead(404); res.end(); return; }
-        res.writeHead(200, { "content-type": "image/jpeg", "cache-control": "public, max-age=86400" });
-        res.end(data);
-      });
-      // t&n 齐备时，直服/落盘共用的目标：presets/<剧本 id>/assets/<类型>-<名>.jpg；
-      // 封面（t=封面）走 assetTargetFile 的 presets/<id>/cover.jpg 分支——assets/封面-X.jpg 是死路径
-      const targetRel = t && n ? assetTargetFile(t, n, targetPid || "") : "";
-      const target = targetRel ? path.join(GAME_ROOT, targetRel) : "";
-      // 新契约 ?t=<类型>&n=<名字>[&p=<会话路径>][&preset=<剧本 id>]：该剧本 assets 永久命中优先
-      if (target && fs.existsSync(target)) { serve(target); return; }
-      // 旧契约 / 会话兜底：当前会话 → 跨会话扫描；带 t&n 与剧本时顺手落盘到该剧本的 assets
-      if (/^images\/\d+\.jpe?g$/.test(p) && sessionId) {
-        const file = resolveImage(path.basename(p));
-        if (file) {
-          if (target) {
-            try { persistAssetFromFile(t, n, file, targetPid || "", p); } catch {}
-            if (fs.existsSync(target)) { serve(target); return; }
-          }
-          serve(file);
-          return;
-        }
-      }
-      // 旧档兼容（v1.5 之前老存档里记的是 assets/<类型>-<名>.jpg）：I1 起**只探测当前剧本目录**，
-      // 命中即直服；找不到就 404——不再跨剧本扫同名文件（会串味），也不再迁落别剧本的图。
-      // 这里只读不写：候选本来就落在当前剧本目录里，搬过去是自己搬自己。
-      if (LEGACY_ASSET_RE.test(p)) {
-        warnLegacyPathOnce(p);
-        const legacyPid = qPreset || presetIdFromPath(p) || currentPresetId || "";
-        const rel = legacyAssetCandidates(p, legacyPid)[0];
-        const file = rel ? path.join(GAME_ROOT, rel) : "";
-        if (file && fs.existsSync(file)) { serve(file); return; }
-      }
-      // 已落盘资产直服白名单（统一 jpe?g）：presets/<id>/assets/<文件> 与 presets/<id>/cover.jpg（resolve 后必须仍在 GAME_ROOT 内）
-      if (/^presets\/[A-Za-z0-9_-]+\/assets\/[^/]+\.jpe?g$/.test(p) || /^presets\/[A-Za-z0-9_-]+\/cover\.jpe?g$/.test(p)) {
-        const file = path.resolve(GAME_ROOT, p);
-        if (file.startsWith(path.resolve(GAME_ROOT) + path.sep)) { serve(file); return; }
-      }
-      res.writeHead(404); res.end();
-      return;
-    }
-
-    if (req.method === "GET" && url.pathname === "/events") {
-      res.writeHead(200, {
-        "content-type": "text/event-stream",
-        "cache-control": "no-cache",
-        connection: "keep-alive",
-      });
-      res.write("retry: 2000\n\n");
-      clients.add(res);
-      req.on("close", () => clients.delete(res));
-      return;
-    }
-
-    if (req.method === "POST" && url.pathname === "/prompt") {
-      readBodyText(req, res, async (body) => {
-        let text = "";
-        try { text = JSON.parse(body).text || ""; } catch {}
-        if (!text.trim()) { res.writeHead(400); res.end("{}"); return; }
-        const r = await sendPrompt(text.trim());
-        res.writeHead(r.ok ? 200 : 409, { "content-type": "application/json" });
-        res.end(JSON.stringify(r));
-      });
-      return;
-    }
-    res.writeHead(404); res.end();
-  });
+  const server = http.createServer(createRequestHandler({
+    clients,
+    sendPrompt,
+    listAssets,
+    persistAssetFromFile,
+    resolveImage: (name) => acp.resolveImage(name),
+    warnLegacyPathOnce,
+    get currentPresetId() { return currentPresetId; },
+    get sessionId() { return acp.sessionId; },
+  }));
 
   function listenWithRetry(attempt) {
     return new Promise((resolve, reject) => {
@@ -2265,13 +526,13 @@ export function startServer() {
         // 进而骗过按首行解析端口的测试编排（tests/helpers/stack.mjs）。
         const actualPort = server.address()?.port ?? port;
         console.log(`[acp] http://localhost:${actualPort}  (game root: ${GAME_ROOT})`);
-        resolve({ port: actualPort, server, proc });
+        resolve({ port: actualPort, server, proc: acp.proc });
       });
     });
   }
 
   instance = listenWithRetry(0).then(async (handle) => {
-    try { await boot(); } catch (e) { console.error("[acp] boot failed:", e.message); }
+    try { await acp.boot(); } catch (e) { console.error("[acp] boot failed:", e.message); }
     return handle;
   });
 
@@ -2284,8 +545,8 @@ export function startServer() {
     for (const res of clients) res.destroy(); // SSE 长连接会拖住 server.close 回调
     clients.clear();
     if (handle) await new Promise((resolve) => handle.server.close(() => resolve()));
-    try { proc.kill(); } catch {}
-    setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 1500).unref(); // SIGTERM 不退则强杀
+    try { acp.proc.kill(); } catch {}
+    setTimeout(() => { try { acp.proc.kill("SIGKILL"); } catch {} }, 1500).unref(); // SIGTERM 不退则强杀
   };
 
   const signalExit = (sig) => {

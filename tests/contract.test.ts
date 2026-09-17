@@ -32,6 +32,13 @@ function read(rel: string): string {
   return readFileSync(path.join(ROOT, rel), "utf8");
 }
 
+/** server/ 全目录源码（v1.7 拆模块后防「第二真源」的断言必须扫全目录，不能只盯入口） */
+function serverSources(): { rel: string; src: string }[] {
+  return readdirSync(path.join(ROOT, "server"))
+    .filter((f) => f.endsWith(".mjs"))
+    .map((f) => ({ rel: `server/${f}`, src: read(`server/${f}`) }));
+}
+
 /** `文件:行`：失败信息里能直接指到出处（比「某个文件里找不到」有用得多） */
 function at(rel: string, text: string, index: number): string {
   return `${rel}:${text.slice(0, Math.max(0, index)).split("\n").length}`;
@@ -454,12 +461,15 @@ describe("⑤ 设置键与音频扩展名：settings.ts / shared 真源 / 文档
     const fileRe = /const AUDIO_FILE_RE = new RegExp\(`[^`]*`\)/.exec(shared)?.[0] ?? "";
     expect(fileRe, `${rel} 的 AUDIO_FILE_RE 不再由 AUDIO_KINDS 构造：现在是「${fileRe}」`).toContain('${AUDIO_KINDS.join("|")}');
     expect(fileRe, `${rel} 的 AUDIO_FILE_RE 不再由 AUDIO_EXTS 构造：现在是「${fileRe}」`).toContain('${AUDIO_EXTS.join("|")}');
-    // server 消费真源（import 自 shared），不得再自持第二份扩展名/MIME 声明
+    // server 消费真源（import 自 shared），不得再自持第二份扩展名/MIME 声明——
+    // v1.7 拆模块后 server/ 有 10 个文件，防第二真源的扫描必须覆盖全目录而不只入口
     const serverRel = "server/acp-server.mjs";
     const serverSrc = read(serverRel);
     expect(serverSrc, `${serverRel} 应从 shared/protocol.mjs import 音频常量（真源在那）：找不到对应的 import 语句`).toContain('from "../shared/protocol.mjs"');
-    expect(serverSrc, `${serverRel} 里出现了第二份 AUDIO_EXTS 声明：真源已在 ${rel}`).not.toMatch(/const AUDIO_EXTS = \[/);
-    expect(serverSrc, `${serverRel} 里出现了第二份 AUDIO_MIME 声明：真源已在 ${rel}`).not.toMatch(/const AUDIO_MIME = \{/);
+    for (const file of serverSources()) {
+      expect(file.src, `${file.rel} 里出现了第二份 AUDIO_EXTS 声明：真源已在 ${rel}`).not.toMatch(/const AUDIO_EXTS = \[/);
+      expect(file.src, `${file.rel} 里出现了第二份 AUDIO_MIME 声明：真源已在 ${rel}`).not.toMatch(/const AUDIO_MIME = \{/);
+    }
     // 文档：每份文档都要有一行把同一集合逐字写全（README/ARCHITECTURE 各有一处）
     const want = [...EXTS].sort().join("/");
     for (const doc of ["docs/ARCHITECTURE.md", "README.md"]) {
@@ -526,11 +536,13 @@ describe("⑥ 指令前缀与主题白名单：shared 真源 ↔ server 消费�
       `${serverRel} 的 isMainTurn 函数体没有引用 DIRECTIVE_PREFIX_RE：正戏回合判定脱离了真源（现在函数体是「${mainBody.trim().split("\n").join(" ")}」）`,
     ).toContain("DIRECTIVE_PREFIX_RE");
     const literal = "规划：|美术：";
-    const copies = serverSrc.split(literal).length - 1;
-    expect(
-      copies,
-      `${serverRel} 里前缀字面「${literal}」出现 ${copies} 次（应为 0 次）：第二份手写正则回来了，pickEffort 与 isMainTurn 两处分叉就说不清哪个才对`,
-    ).toBe(0);
+    for (const file of serverSources()) {
+      const copies = file.src.split(literal).length - 1;
+      expect(
+        copies,
+        `${file.rel} 里前缀字面「${literal}」出现 ${copies} 次（应为 0 次）：第二份手写正则回来了，pickEffort 与 isMainTurn 两处分叉就说不清哪个才对`,
+      ).toBe(0);
+    }
   });
 
   it("主题白名单：server 与 theme.ts 的 font/dialog 白名单同集，两份兜底主题逐键一致", () => {
@@ -551,6 +563,14 @@ describe("⑥ 指令前缀与主题白名单：shared 真源 ↔ server 消费�
         [...serverList].sort(),
         `${name} 白名单不一致：${serverRel} 是 [${serverList.join(", ")}]、${themeRel} 是 [${clientList.join(", ")}]（谁和谁不一致：server normalizeTheme ↔ 客户端 getTheme/dialogClass 的兜底集合）`,
       ).toEqual([...clientList].sort());
+      // 防第二份：server/ 全目录（v1.7 拆模块后 10 个文件）里白名单字面量只许入口那一份
+      for (const file of serverSources()) {
+        const copies = file.src.split(`const ${name}`).length - 1;
+        expect(
+          copies,
+          `${file.rel} 里出现了第二份 ${name} 声明（${copies} 处）：白名单真源钉在 ${serverRel}，别处在声明就是漂移`,
+        ).toBe(file.rel === serverRel ? 1 : 0);
+      }
     }
     // 兜底主题：server DEFAULT_THEME（normalizeTheme 逐键兜底，/api/presets 出口填的就是它）
     // ↔ theme.ts FALLBACK_THEME（客户端更严一层校验的回退值）逐键一致——分叉时同一个非法 theme 会渲染成两种颜色
