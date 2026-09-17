@@ -1,4 +1,5 @@
-// 协议行常量与解析（v1.7 拆模块）：注入 agent 的 RULES 原文 + 引擎输出流里的五种协议行 parse*。
+// 协议行常量与解析（v1.7 拆模块）：注入 agent 的 RULES 原文 + 引擎输出流里的五种协议行 parse*
+// + 质量守卫的内部追问指令 SUPPLEMENT_PROMPT（server → 引擎方向，不进 shared/protocol.mjs）。
 // 零依赖纯函数——只有完整行传入才可能命中（行完整性由上游 flushArtLines 的换行累积保证）。
 // 入口 server/acp-server.mjs 逐名 re-export 这些符号（tests/server.test.ts 与契约 lint 都从入口 import）。
 
@@ -18,6 +19,12 @@ export const RULES_SENTENCES = [
 
 /** 注入 agent 的 rules 原文（6 句拼接成一条：`_meta.rules`） */
 export const RULES = RULES_SENTENCES.join("");
+
+// 质量守卫的追问指令（v1.7）：server → 引擎的**内部**指令——sendPrompt 在正戏回合缺 `**行动**`
+// 选项段时自动补发一次（每回合至多一次），只出现在 session/prompt 的请求方向。
+// 刻意不进 shared/protocol.mjs：它不是客户端协议——客户端从不构造也从不解析它，
+// DIRECTIVE_PREFIX_RE（分档/正戏判定）与 PROTOCOL_HEADS（协议行过滤）都与它无关，真源只需要 server 一侧。
+export const SUPPLEMENT_PROMPT = "补充：上一回合缺少 **行动** 选项段。请只补发完整的每轮协议回合尾（含 **行动** 与选项行），不要重述正文。";
 
 // 【图】(立绘|背景|封面)|<名>|<路径>[|重绘]：资产标记（封面即剧本标题，重绘要求覆盖同名文件）
 /** @param {string} line 协议行原文 @returns {{type: string, name: string, srcRel: string, regen: boolean}|null} */

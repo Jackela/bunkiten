@@ -25,3 +25,6 @@ export const AUDIO_MIME: Readonly<Record<string, string>>;
 
 /** 客户端指令前缀（pickEffort 推理分档与 isMainTurn 正戏回合判定共用；「待命：」后缀判定不在此） */
 export const DIRECTIVE_PREFIX_RE: RegExp;
+
+/** 终章回合章标记行（【章】第 N 章 完，多行锚定）：parseChapterMark 取捕获组，server 质量守卫据此豁免章末回合 */
+export const CHAPTER_MARK_RE: RegExp;

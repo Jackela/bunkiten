@@ -41,3 +41,13 @@ export const AUDIO_MIME = { mp3: "audio/mpeg", ogg: "audio/ogg", m4a: "audio/mp4
  * 开局/续玩本身是正戏回合（无待命后缀时要推进剧情与快照），收进来会改变档位与快照语义。
  */
 export const DIRECTIVE_PREFIX_RE = /^(规划：|美术：|剧情：|装配。|创作模式：)/;
+
+/**
+ * 终章回合的章标记行（**单一真源**，v1.7 收编）：`【章】第 N 章 完`（整行，允许行尾空白，`m` 多行锚定）。
+ * 此前这份正则只活在 src/lib/parser.ts 的 `parseChapterMark`（取捕获组给章号）；
+ * server 质量守卫 `supplementMissingOptions` 豁免章末回合也用它（`test` 整段回合文本）。
+ * 章末回合是每轮协议「以选项结束」的唯一合法例外——SKILL.md「章节与剧情树」与 RULES 第 3 句
+ * （协议行枚举句里的「终章回合输出【章】第 N 章 完」）双处声明，缺 `**行动**` 不是引擎忘写。
+ * 刻意不带 `g` 标记：`.test()` 无 lastIndex 隐态，双侧（parser 的 match / server 的 test）消费都安全。
+ */
+export const CHAPTER_MARK_RE = /^【章】第 (\d+) 章 完\s*$/m;
