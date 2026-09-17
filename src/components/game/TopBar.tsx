@@ -35,6 +35,7 @@ export default function TopBar() {
   const rerollTurn = useGameStore((s) => s.rerollTurn);
   const retryResync = useGameStore((s) => s.retryResync);
   const toggleDrawer = useGameStore((s) => s.toggleDrawer);
+  const toggleCharacters = useGameStore((s) => s.toggleCharacters);
   const openAssets = useGameStore((s) => s.openAssets);
   const openTree = useGameStore((s) => s.openTree);
   const openSettings = useGameStore((s) => s.openSettings);
@@ -81,6 +82,7 @@ export default function TopBar() {
       <nav className="fixed top-1/2 right-2.5 z-30 flex -translate-y-1/2 flex-col gap-0.5 rounded-lg border border-white/[.08] bg-[rgba(10,12,18,.5)] p-1 backdrop-blur-md">
         <RailButton label="设置" onClick={openSettings} />
         <RailButton label="历史" onClick={toggleDrawer} />
+        <RailButton label="角色" aria="角色面板" testId="characters" onClick={toggleCharacters} />
         <RailButton label="素材" onClick={openAssets} />
         <RailButton label="剧情图" onClick={openTree} />
         {canReroll && <RailButton label="重掷" aria="重掷本回合" testId="reroll" onClick={() => void rerollTurn()} />}

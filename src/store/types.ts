@@ -1,7 +1,7 @@
 // store 的类型层（v1.6 slice 拆分抽出）：只放类型，不带运行时值——
 // 这样 slices/* 与 context.ts 都能 `import type` 取用，不会与 game.ts 形成运行时循环依赖。
 // 对外 API 不变：game.ts 原样 `export type {...} from "./types"`，组件与测试的 import 路径不动。
-import type { AssetEntry, Preset, WorldEntry, WorldPostResult, AcpEvent } from "../lib/acp";
+import type { AssetEntry, Preset, StateView, WorldEntry, WorldPostResult, AcpEvent } from "../lib/acp";
 import type { ArtKind, GameOption } from "../lib/parser";
 import type { GameSettings } from "../lib/settings";
 
@@ -133,6 +133,12 @@ export interface GameStore {
 
   history: HistoryItem[];
   drawerOpen: boolean;
+
+  // —— v1.7 角色面板（游戏屏侧栏抽屉）——
+  /** 角色面板抽屉开合（TopBar「角色」轨按钮 / Esc 链；开时拉一次 /api/state） */
+  charactersOpen: boolean;
+  /** 最近一次拉到的 state.md 解析视图；null = 还没拉到（404 或失败）——面板显示空态文案 */
+  stateView: StateView | null;
 
   // —— 创作模式（creation 屏）——
   creationMessages: CreationMessage[];
@@ -312,6 +318,16 @@ export interface GameStore {
   cancelAutoAdvance(): void;
   /** 切到刚分叉出的世界线继续（引擎忙时拒绝） */
   switchToFork(): void;
+  /**
+   * 开/关角色面板抽屉（v1.7）：打开时顺手 `refreshCharacters` 拉一次；
+   * turn_end 后面板开着由 gameplay 自动重拉（好感度/导演手记随回合变）。
+   */
+  toggleCharacters(): void;
+  /**
+   * 重拉当前世界的 `/api/state` 视图落 {@link stateView}。没有世界（worldId 为空）直接返回；
+   * 404（还没写过 state.md）或请求失败保持原值（空态文案由面板渲染）；await 期间换世界则不回填。
+   */
+  refreshCharacters(): void;
   toggleCardAnswer(shortName: string, option: string, multi: boolean): void;
   startGame(quick: boolean, preload: boolean): void;
   send(text: string): void;

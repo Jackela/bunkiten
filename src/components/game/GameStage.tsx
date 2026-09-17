@@ -1,4 +1,5 @@
 import { ScreenShell } from "../ScreenShell";
+import CharactersDrawer from "./CharactersDrawer";
 import DialogueBox from "./DialogueBox";
 import FreeInput from "./FreeInput";
 import HistoryDrawer from "./HistoryDrawer";
@@ -18,6 +19,7 @@ export default function GameStage() {
         <FreeInput />
       </div>
       <HistoryDrawer />
+      <CharactersDrawer />
     </ScreenShell>
   );
 }

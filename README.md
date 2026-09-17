@@ -17,7 +17,7 @@
 声音：引擎每轮可发【曲】/【环境】/【音效】三行——BGM 与环境音各一条通道交叉淡入、音效一次性；文件由作者放在 presets/<id>/audio/，没放就静默
 动效：跟随系统「减少动态效果」（prefers-reduced-motion，不新增设置开关——OS 级偏好是用户已做的选择）——位移类动效瞬时化、脉冲光标静止、打字机直接整段显示（淡入淡出保留，属无障碍推荐替代）
 章间：本章收束 → 自动进下一章制作（大纲 → 本章全部分支美术）→ 开演，直至终局
-画面：封面卡带 + 背景层 + 角色立绘（差分两级回退）+ 对话框 + 主题化配色/氛围层；顶栏左上角是 状态点/状态文字/章号/世界名，右侧竖排按钮轨从上到下 历史/素材（画廊）/剧情图/重掷（有上一轮输入时）/重开/前情/换剧本/设置（齿轮：主音量与静音/BGM·环境·音效/文本速度/自动前进）/帮助
+画面：封面卡带 + 背景层 + 角色立绘（差分两级回退）+ 对话框 + 主题化配色/氛围层；顶栏左上角是 状态点/状态文字/章号/世界名，右侧竖排按钮轨从上到下 历史/角色（面板：好感度/表情/秘密（默认折叠防剧透）/导演手记，回合后自动刷新）/素材（画廊）/剧情图/重掷（有上一轮输入时）/重开/前情/换剧本/设置（齿轮：主音量与静音/BGM·环境·音效/文本速度/自动前进）/帮助
 剧情图：节点带快照标注（#seq · 第 N 轮），可「回退到此节点」（覆盖该世界线三文件并让引擎重新读档续演）；本章节点 > 40 默认降级为列表（可切回图形）；图形模式滚轮缩放 · 拖拽平移 · 双击复位
 画廊：进「选择模式」勾选多张 → 批量重绘（顺序队列）/ 批量删除（两段确认）；封面不参与删除
 ```
@@ -54,12 +54,12 @@ bunkiten/
 │  │  ├─ types.ts           # GameStore 类型契约（各切片共同依赖）
 │  │  ├─ context.ts         # 模块级单例：set/get 与定时器（看门狗 / 自动前进）及清理
 │  │  ├─ portrait.ts        # 立绘差分解析（两级回退）
-│  │  └─ slices/            # nav / world / crafting / gameplay / tree / assets / creation 七个动作切片
+│  │  └─ slices/            # nav / world / crafting / gameplay / tree / assets / creation / characters 八个动作切片
 │  ├─ lib/parser.ts         # 文本协议纯函数（契约字符串与协议头唯一真源，含【曲】【环境】【音效】）
 │  ├─ lib/treeLayout.ts     # 剧情树分层布局纯函数（最长路径分层/抗环/贝塞尔边 + 缩放平移视口，零依赖）
 │  ├─ lib/audio.ts          # 音频管理器单例：BGM/环境音双通道交叉淡入、音效一次性、缺文件静默
 │  ├─ lib/settings.ts       # 玩家设置纯逻辑（音量/静音/文本速度/自动前进）+ localStorage 逐键校验
-│  ├─ lib/acp.ts            # HTTP/SSE 客户端 + 世界线/剧情树/快照/音频接口
+│  ├─ lib/acp.ts            # HTTP/SSE 客户端 + 世界线/剧情树/快照/音频/角色面板（state.md 视图）接口
 │  ├─ theme.ts              # 剧本主题（accent/accent2/motif）解析与 CSS 变量注入
 │  └─ components/           # boot/title/worlds/protagonist/crafting/game 各屏 + assets 画廊 / creation 创作 / story-tree 剧情图 / settings 设置四个 overlay 屏、motifs/ 氛围层与 HUD
 │     ├─ WorldsScreen.tsx   # 世界线屏：继续 / 新世界线 / 行内重命名与备注 / 导出导入 .world.json / 两段确认删除
@@ -79,10 +79,10 @@ bunkiten/
 │  ├─ setup-react-act.mjs   # vitest 环境：React act() 兼容补丁
 │  ├─ parser.test.ts        # 文本协议契约快照单测（65 例）
 │  ├─ crafting.test.ts      # 章节制作与创作/画廊编排单测（52 例）
-│  ├─ server.test.ts        # server 协议行与世界线/快照/音频接口单测（79 例）
+│  ├─ server.test.ts        # server 协议行与世界线/快照/音频/角色面板接口单测（89 例）
 │  ├─ treeLayout.test.ts    # 剧情树分层布局与缩放视口纯函数单测（7 例）
-│  ├─ ui.test.tsx           # 组件测试（TopBar/世界线/剧情图/设置/Creation/Assets/主题/重掷，94 例）
-│  ├─ contract.test.ts      # 契约 lint（防漂移门禁：协议头唯一真源/RULES 逐字副本/指令字符串/用例数/设置键与音频扩展名；自身不计入 316 口径）
+│  ├─ ui.test.tsx           # 组件测试（TopBar/世界线/剧情图/设置/Creation/Assets/主题/重掷/角色面板，98 例）
+│  ├─ contract.test.ts      # 契约 lint（防漂移门禁：协议头唯一真源/RULES 逐字副本/指令字符串/用例数/设置键与音频扩展名；自身不计入 330 口径）
 │  ├─ integration/          # 假引擎集成层（假 ACP 引擎 + 真 acp-server 子进程，19 例、秒级）
 │  │  ├─ harness.mjs        # 起全栈：临时 game root/HOME/PORT + path 垫片，收 SSE 事件与断言辅助
 │  │  ├─ fake-engine.mjs    # 最小 ACP 假引擎（按脚本队列回 session/update，可制造段切换）
@@ -125,7 +125,7 @@ bunkiten/
 | `npm run dev` | 仅 vite 前端（浏览器调试，需另起 acp-server） |
 | `npm run dev:electron` | vite + Electron 并行开发 |
 | `npm run build` | `tsc -b && vite build`（类型检查 + 前端构建） |
-| `npm test` | 单测 + 集成全量 316 例：parser 65 + server 79 + crafting 52 + treeLayout 7 + ui 94 + integration 19（含假引擎集成层，整体秒级；改协议字符串必须同步快照）；另跑契约 lint `tests/contract.test.ts`（防漂移门禁，**不计入这 316**） |
+| `npm test` | 单测 + 集成全量 330 例：parser 65 + server 89 + crafting 52 + treeLayout 7 + ui 98 + integration 19（含假引擎集成层，整体秒级；改协议字符串必须同步快照）；另跑契约 lint `tests/contract.test.ts`（防漂移门禁，**不计入这 330**） |
 | `npm run test:e2e` | 真引擎 E2E 冒烟（约 6 分钟，2 回合） |
 | `npm run dist:win` | build 后打 Windows x64 包（nsis + portable，不签名） |
 | `npm run dist:mac` | build 后打 macOS 包（dmg + zip，arm64 + x64，不签名） |

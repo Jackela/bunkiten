@@ -12,6 +12,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import React from "react";
 import TopBar from "../src/components/game/TopBar";
+import CharactersDrawer from "../src/components/game/CharactersDrawer";
 import DialogueBox from "../src/components/game/DialogueBox";
 import HistoryDrawer from "../src/components/game/HistoryDrawer";
 import OptionList from "../src/components/game/OptionList";
@@ -26,7 +27,7 @@ import { FADE_MS, MAX_SFX, SFX_TIMEOUT_MS, audioManager } from "../src/lib/audio
 import { DEFAULT_SETTINGS, SETTINGS_STORAGE_KEY, loadSettings } from "../src/lib/settings";
 import { TREE_ZOOM_MAX, clampZoom, fitView, panView, viewBoxOf, zoomViewAt } from "../src/lib/treeLayout";
 import { FONT_STACKS, dialogClass, getTheme, themeVars } from "../src/theme";
-import type { AssetEntry, AudioItem, Preset, WorldEntry, WorldSnapshotMeta } from "../src/lib/acp";
+import type { AssetEntry, AudioItem, Preset, StateView, WorldEntry, WorldSnapshotMeta } from "../src/lib/acp";
 
 /** ui 测试用的最小剧本 fixture（与世界线屏/顶栏的展示字段对齐） */
 const PRESET: Preset = {
@@ -2717,5 +2718,150 @@ describe("theme：字体族与对话框质感（v1.7）", () => {
     expect(root.className).not.toContain("font-serif"); // 字体唯一真源是 --font-preset
     expect(root.style.fontFamily).toBe("var(--font-preset)");
     expect(root.style.getPropertyValue("--font-preset")).toBe(FONT_STACKS.hei);
+  });
+});
+
+// ————————————————————— 角色面板（CharactersDrawer，v1.7） —————————————————————
+
+describe("角色面板：渲染 / 秘密折叠 / turn_end 重拉 / 空态（v1.7）", () => {
+  /** GET /api/state 的返回（用例内可切换为 404 空态） */
+  let stateResp: { ok: boolean; body: StateView | null };
+  /** GET /api/state?worldId= 收到的 worldId 序列（重拉时机断言用） */
+  let stateQueries: string[];
+
+  const VIEW: StateView = {
+    worldId: "campus-summer-1",
+    status: { preset: "campus-summer", playthrough: 2, time: "第三夜 · 雨停后", scene: "灰雀镇廉价旅店 202 房" },
+    protagonist: { 姓名: "顾迟", 身份: "自由调查员" },
+    director: { 张力: "7", 下一节拍: "旅店停电" },
+    characters: [
+      {
+        name: "薇拉",
+        role: "沉默的书记官",
+        traits: "克制 · 观察型",
+        catchphrase: "「……先记账。」",
+        favor: 62,
+        artFile: "presets/campus-summer/assets/立绘-薇拉.jpg",
+        expression: "微笑",
+        secret: "缺页是她自己撕的",
+        recentInteraction: "把账册推过来半寸",
+      },
+      { name: "沈屿", role: "谜之少年", traits: "", catchphrase: "", favor: null, artFile: "", expression: "", secret: "无", recentInteraction: "" },
+    ],
+    flags: [{ name: "已读旧信", value: "true" }],
+    foreshadowing: [
+      { text: "教堂地窖的旧信", turn: 3 },
+      { text: "码头工人提到的白船", turn: null },
+    ],
+  };
+
+  beforeEach(() => {
+    stateResp = { ok: true, body: VIEW };
+    stateQueries = [];
+    useGameStore.setState({
+      worldId: "campus-summer-1",
+      worldLabel: "campus-summer-1",
+      screen: "game",
+      charactersOpen: false,
+      stateView: null,
+      engineBusy: false,
+      segs: { 0: "" },
+      curSeg: 0,
+      turnNo: 0,
+      history: [],
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/prompt") return jsonResponse({ ok: true });
+        if (url.pathname === "/api/state") {
+          stateQueries.push(url.searchParams.get("worldId") || "");
+          return stateResp.ok && stateResp.body
+            ? jsonResponse(stateResp.body)
+            : jsonResponse({ error: "状态文件不存在" }, 404);
+        }
+        return jsonResponse({}, 404);
+      }),
+    );
+  });
+
+  it("打开面板：拉一次 /api/state 并分块渲染（状态/主角/角色卡/导演手记/Flags·伏笔）", async () => {
+    render(<CharactersDrawer />);
+    expect(screen.queryByTestId("characters-panel")).toBeNull(); // 关着不渲染
+
+    await act(async () => {
+      useGameStore.getState().toggleCharacters();
+    });
+    expect(stateQueries).toEqual(["campus-summer-1"]); // 开面板拉一次
+    await waitFor(() => expect(useGameStore.getState().stateView).toEqual(VIEW));
+
+    expect(screen.getByTestId("characters-panel")).toBeTruthy();
+    expect(screen.getByTestId("characters-status").textContent).toContain("第三夜 · 雨停后");
+    expect(screen.getByTestId("characters-status").textContent).toContain("灰雀镇廉价旅店 202 房");
+    expect(screen.getByTestId("characters-protagonist").textContent).toContain("顾迟");
+    const card = within(screen.getByTestId("character-card-薇拉"));
+    expect(card.getByText("薇拉")).toBeTruthy();
+    expect(card.getByText("62")).toBeTruthy(); // 好感度数字
+    expect(card.getByTestId("character-expression-薇拉").textContent).toBe("微笑");
+    expect(screen.getByTestId("characters-director").textContent).toContain("旅店停电");
+    expect(screen.getByTestId("characters-notes").textContent).toContain("已读旧信");
+    expect(screen.getByTestId("characters-notes").textContent).toContain("码头工人提到的白船");
+  });
+
+  it("秘密折叠：默认收起（aria-expanded=false），点击展开可见原文；「无」与空串不留折叠位", async () => {
+    render(<CharactersDrawer />);
+    await act(async () => {
+      useGameStore.getState().toggleCharacters();
+    });
+    await waitFor(() => expect(useGameStore.getState().stateView).toEqual(VIEW));
+
+    const toggleBtn = screen.getByTestId("character-secret-薇拉");
+    expect(toggleBtn.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByTestId("character-secret-text-薇拉")).toBeNull(); // 剧透默认不可见
+    fireEvent.click(toggleBtn);
+    expect(toggleBtn.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByTestId("character-secret-text-薇拉").textContent).toBe("缺页是她自己撕的");
+    // 沈屿的秘密是模板占位「无」：不渲染折叠入口
+    expect(screen.queryByTestId("character-secret-沈屿")).toBeNull();
+  });
+
+  it("刷新时机：turn_end 后面板开着自动重拉、关着不拉；世界切换清空", async () => {
+    await act(async () => {
+      useGameStore.getState().toggleCharacters();
+    });
+    await waitFor(() => expect(stateQueries).toHaveLength(1));
+
+    act(() => {
+      useGameStore.getState().handleEvent({ type: "turn_end" });
+    });
+    expect(stateQueries).toHaveLength(2); // 面板开着：回合收尾重拉
+
+    act(() => {
+      useGameStore.getState().toggleCharacters(); // 关掉
+      useGameStore.getState().handleEvent({ type: "turn_end" });
+    });
+    expect(stateQueries).toHaveLength(2); // 关着不拉
+
+    // 世界切换（resetRunState 路径）：面板收起、视图清空
+    act(() => {
+      useGameStore.getState().selectPreset(PRESET);
+    });
+    const s = useGameStore.getState();
+    expect(s.charactersOpen).toBe(false);
+    expect(s.stateView).toBeNull();
+  });
+
+  it("空态：还没有 state.md（404）时显示占位说明，不渲染任何分块", async () => {
+    stateResp = { ok: false, body: null };
+    render(<CharactersDrawer />);
+    await act(async () => {
+      useGameStore.getState().toggleCharacters();
+    });
+    await waitFor(() => expect(stateQueries).toHaveLength(1));
+    await act(async () => {}); // 404 的 rejection 落定
+    expect(useGameStore.getState().stateView).toBeNull();
+    expect(screen.getByTestId("characters-empty").textContent).toContain("还没有可展示的角色状态");
+    expect(screen.queryByTestId("characters-list")).toBeNull();
   });
 });

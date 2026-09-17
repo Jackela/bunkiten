@@ -27,6 +27,7 @@ import {
   parseAudioLine,
   parseExpressionLine,
   parsePresetAddedLine,
+  parseStateFile,
   parseTreePointer,
   parseTreeLine,
   parseWorldRef,
@@ -40,6 +41,7 @@ import {
   resolvePersistPreset,
   restoreWorld,
   scanPresetAudio,
+  stateViewFor,
   scanPresets,
   selectSnapshotForNode,
   updateWorld,
@@ -1005,5 +1007,222 @@ describe("server normalizeTheme：theme 新键 font/dialog（v1.7）", () => {
     const r = scanPresets(root) as { presets: Array<{ theme: Record<string, string> }>; errors: unknown[] };
     expect(r.errors).toEqual([]);
     expect(r.presets[0].theme).toMatchObject({ font: "hei", dialog: "silk", motif: "aurora" });
+  });
+});
+
+// ————————————————————— 角色面板：state.md 容错解析与 /api/state 路由（v1.7） —————————————————————
+
+describe("server parseStateFile：state.md 容错解析（v1.7 角色面板）", () => {
+  /** SKILL「状态文件格式」的完整样例（引擎模板的典型产出） */
+  const fullStateMd = [
+    "# 剧情状态",
+    "- preset: rift-mark",
+    "- 周目: 2",
+    "- 时间: 第三夜 · 雨停后",
+    "- 场景: 灰雀镇廉价旅店 202 房",
+    "",
+    "# 主角",
+    "- 姓名: 顾迟",
+    "- 性别: 男",
+    "- 身份: 自由调查员",
+    "",
+    "# 导演手记",
+    "- 张力: 7",
+    "- 本场景目标: 让薇拉交出账册缺页",
+    "- 下一节拍: 旅店停电",
+    "",
+    "# 角色卡",
+    "## 薇拉",
+    "- 身份: 沉默的书记官",
+    "- 性格关键词: 克制 · 观察型",
+    "- 口癖: 「……先记账。」",
+    "- 好感度: 62",
+    "- art_prompt: silver hair, gray eyes",
+    "- art_file: presets/rift-mark/assets/立绘-薇拉.jpg",
+    "- 表情: 微笑",
+    "- 秘密: 缺页是她自己撕的",
+    "- 最近互动: 把账册推过来半寸",
+    "",
+    "## 沈屿",
+    "- 身份: 谜之少年",
+    "- 好感度: 很高",
+    "- 秘密: 无",
+    "",
+    "# 场景美术",
+    "- 灰雀镇廉价旅店: presets/rift-mark/assets/背景-灰雀镇廉价旅店.jpg",
+    "",
+    "# Flags",
+    "- 已读旧信: true",
+    "- 停电: false",
+    "",
+    "# 未回收伏笔",
+    "- 教堂地窖的旧信还没打开（埋于第 3 轮）",
+    "- 码头工人提到的白船",
+  ].join("\n");
+
+  it("完整样例：固定键各归各位，角色卡逐字段、伏笔拆轮次、Flags 收键值", () => {
+    const v = parseStateFile(fullStateMd);
+    expect(v.status).toEqual({ preset: "rift-mark", playthrough: 2, time: "第三夜 · 雨停后", scene: "灰雀镇廉价旅店 202 房" });
+    expect(v.protagonist).toEqual({ 姓名: "顾迟", 性别: "男", 身份: "自由调查员" });
+    expect(v.director).toEqual({ 张力: "7", 本场景目标: "让薇拉交出账册缺页", 下一节拍: "旅店停电" });
+    expect(v.characters).toHaveLength(2);
+    expect(v.characters[0]).toEqual({
+      name: "薇拉",
+      role: "沉默的书记官",
+      traits: "克制 · 观察型",
+      catchphrase: "「……先记账。」",
+      favor: 62,
+      artFile: "presets/rift-mark/assets/立绘-薇拉.jpg",
+      expression: "微笑",
+      secret: "缺页是她自己撕的",
+      recentInteraction: "把账册推过来半寸",
+    });
+    // 缺的字段静默缺省：空串 / favor null；「无」原样保留（是否折叠由客户端判断）
+    expect(v.characters[1]).toEqual({
+      name: "沈屿",
+      role: "谜之少年",
+      traits: "",
+      catchphrase: "",
+      favor: null,
+      artFile: "",
+      expression: "",
+      secret: "无",
+      recentInteraction: "",
+    });
+    expect(v.flags).toEqual([
+      { name: "已读旧信", value: "true" },
+      { name: "停电", value: "false" },
+    ]);
+    expect(v.foreshadowing).toEqual([
+      { text: "教堂地窖的旧信还没打开", turn: 3 },
+      { text: "码头工人提到的白船", turn: null },
+    ]);
+    // 面板用不到的小节与角色卡键（场景美术 / art_prompt）不进响应
+    const json = JSON.stringify(v);
+    expect(json).not.toContain("art_prompt");
+    expect(json).not.toContain("背景-");
+  });
+
+  it("缺小节：只有角色卡也能解析，其余小节保持缺省（status 全 null、Record 空）", () => {
+    const v = parseStateFile("# 角色卡\n## 薇拉\n- 好感度: 40\n- 身份: 书记官\n");
+    expect(v.status).toEqual({ preset: null, playthrough: null, time: null, scene: null });
+    expect(v.protagonist).toEqual({});
+    expect(v.director).toEqual({});
+    expect(v.flags).toEqual([]);
+    expect(v.foreshadowing).toEqual([]);
+    expect(v.characters).toEqual([
+      {
+        name: "薇拉",
+        role: "书记官",
+        traits: "",
+        catchphrase: "",
+        favor: 40,
+        artFile: "",
+        expression: "",
+        secret: "",
+        recentInteraction: "",
+      },
+    ]);
+  });
+
+  it("小节乱序：Flags/伏笔/角色卡在剧情状态之前照样各归各位", () => {
+    const v = parseStateFile(
+      [
+        "# Flags",
+        "- 信任神父: true",
+        "",
+        "# 未回收伏笔",
+        "- 白船（埋于第 1 轮）",
+        "",
+        "# 角色卡",
+        "## 薇拉",
+        "- 好感度: 55",
+        "",
+        "# 剧情状态",
+        "- preset: rift-mark",
+        "- 周目: 1",
+        "- 时间: 第一夜",
+        "- 场景: 教堂",
+      ].join("\n"),
+    );
+    expect(v.status.preset).toBe("rift-mark");
+    expect(v.status.scene).toBe("教堂");
+    expect(v.characters[0]).toMatchObject({ name: "薇拉", favor: 55 });
+    expect(v.flags).toEqual([{ name: "信任神父", value: "true" }]);
+    expect(v.foreshadowing).toEqual([{ text: "白船", turn: 1 }]);
+  });
+
+  it("越界好感度：整数夹进 [0,100]，非整数（「很高」）为 null", () => {
+    const v = parseStateFile(
+      ["# 角色卡", "## 甲", "- 好感度: 150", "## 乙", "- 好感度: -20", "## 丙", "- 好感度: 很高", "## 丁", "- 好感度: 约 80"].join("\n"),
+    );
+    expect(v.characters.map((c) => c.favor)).toEqual([100, 0, null, 80]);
+  });
+
+  it("空文本 / 纯标题：不抛错，返回全缺省形状", () => {
+    const empty = parseStateFile("");
+    expect(empty).toEqual({
+      status: { preset: null, playthrough: null, time: null, scene: null },
+      protagonist: {},
+      director: {},
+      characters: [],
+      flags: [],
+      foreshadowing: [],
+    });
+    expect(parseStateFile(null)).toEqual(empty);
+    expect(parseStateFile("# 剧情状态\n（还没写）\n")).toEqual(empty);
+  });
+
+  it("未知小节与未知键忽略；全角冒号与半角冒号都认", () => {
+    const v = parseStateFile(
+      ["# 随手记", "- 杂项: 不进面板", "", "# 主角", "- 姓名：全角冒号"].join("\n"),
+    );
+    expect(v.protagonist).toEqual({ 姓名: "全角冒号" });
+    expect(JSON.stringify(v)).not.toContain("随手记");
+    expect(JSON.stringify(v)).not.toContain("杂项");
+  });
+
+  it("标题带行尾括注（拷贝模板的漂移）不丢小节：# 角色卡（每个角色一节）照常开卡", () => {
+    const v = parseStateFile("# 角色卡（每个角色一节）\n## 薇拉\n- 好感度: 62\n- 秘密: 知道太多\n");
+    expect(v.characters).toHaveLength(1);
+    expect(v.characters[0]).toMatchObject({ name: "薇拉", favor: 62, secret: "知道太多" });
+  });
+
+  it("同名角色卡 last-wins 去重：引擎整文件重写新旧卡并存时只留最后一张", () => {
+    const v = parseStateFile(
+      ["# 角色卡", "## 薇拉", "- 好感度: 12", "## 沈屿", "- 好感度: 50", "## 薇拉", "- 好感度: 62"].join("\n"),
+    );
+    expect(v.characters.map((c) => c.name)).toEqual(["沈屿", "薇拉"]);
+    expect(v.characters.find((c) => c.name === "薇拉")?.favor).toBe(62);
+  });
+});
+
+describe("server stateViewFor：GET /api/state 路由判定（v1.7，临时 root）", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), "state-view-"));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("worldId 缺失或非法 → 400；合法且世界存在 → 200 + 解析视图（带 worldId 回显）", () => {
+    expect(stateViewFor("")).toMatchObject({ code: 400 });
+    expect(stateViewFor("../etc")).toMatchObject({ code: 400 });
+    expect(stateViewFor("a/b")).toMatchObject({ code: 400 });
+    mkdirSync(path.join(root, "w1"), { recursive: true });
+    writeFileSync(path.join(root, "w1", "state.md"), "# 剧情状态\n- preset: demo\n");
+    const ok = stateViewFor("w1", root) as { code: number; body: Record<string, unknown> };
+    expect(ok.code).toBe(200);
+    expect(ok.body.worldId).toBe("w1");
+    expect((ok.body.status as Record<string, unknown>).preset).toBe("demo");
+  });
+
+  it("世界没有 state.md → 404（还没写过状态文件的世界）", () => {
+    mkdirSync(path.join(root, "w2"), { recursive: true }); // 目录在、state.md 不在
+    expect(stateViewFor("w2", root)).toMatchObject({ code: 404 });
+    expect(stateViewFor("nope-1", root)).toMatchObject({ code: 404 }); // 目录都不在
   });
 });
