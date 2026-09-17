@@ -442,6 +442,10 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
       turnStartAt: null,
       treeAsk: false,
       pendingTreeMessage: null,
+      // 重同步是会话内状态：换世界/换本时旧世界的「待重同步」徽章没有意义，一并清掉
+      pendingResync: null,
+      resyncFailed: false,
+      resyncing: false,
       // 自动前进不跨玩法：换本/开新局时把倒计时清掉
       autoAdvanceDeadline: null,
       autoAdvanceMuted: false,

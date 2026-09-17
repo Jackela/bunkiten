@@ -7,6 +7,7 @@
 import { audioManager } from "../../lib/audio";
 import { fetchPresets, postPrompt } from "../../lib/acp";
 import {
+  buildResumeCommand,
   cleanForHistory,
   finalMarkers,
   isProtocolLine,
@@ -24,10 +25,26 @@ export function createGameplaySlice(
 ): Pick<GameStore, "send" | "toggleDrawer" | "setTypingDone" | "armAutoAdvance" | "cancelAutoAdvance" | "handleEvent"> {
   const { set, get } = ctx;
 
+  /**
+   * 重同步指令没发出去（409/网络异常）或重同步回合在引擎侧失败（SSE error 事件）：保留徽章、亮「再同步」入口。
+   * 仅当本轮发送的正是重同步指令（resyncing）才把失败记到重同步头上——玩家自己指令的失败走
+   * send / onEngineError 的普通出错文案（status「出错：…」），不冒充「重同步失败」；两条收尾路径都复位 resyncing。
+   */
+  const markResyncFailed = (message: string) => {
+    if (!get().resyncing) return;
+    set({ resyncFailed: true, resyncing: false, treeNotice: `重同步失败：${message}；点「再同步」重试` });
+  };
+
   return {
     send(text) {
       const t = text.trim();
       if (!t) return;
+      // 回退后的重同步还挂着（补发投递失败过、徽章在），玩家却发了普通指令：静默放弃重同步——
+      // 玩家选择继续走，不假称「完成重同步」（引擎并没有重读档），徽章与失败入口一并撤下
+      const pending = get().pendingResync;
+      if (pending && t !== buildResumeCommand(pending.worldId)) {
+        set({ pendingResync: null, resyncFailed: false });
+      }
       // 手选/自由输入即接管：倒计时作废（否则刚发出去的回合结束前倒计时会再补一条 409）
       ctx.clearAutoAdvanceTimer();
       set({
@@ -44,11 +61,13 @@ export function createGameplaySlice(
             set({ status: `出错：${r.error}`, engineBusy: false, turnStartAt: null });
             // 挂起中的画廊重绘没有对应回合了：记为未确认，解除挂起让按钮恢复并接队列下一条
             ctx.finishRegen(false);
+            markResyncFailed(r.error);
           }
         })
         .catch((e: unknown) => {
           set({ status: `出错：${String(e)}`, engineBusy: false, turnStartAt: null });
           ctx.finishRegen(false);
+          markResyncFailed(String(e));
         });
     },
 
@@ -138,6 +157,22 @@ export function createGameplaySlice(
             turnStartAt: null,
             history: clean ? [...s.history, { n: `第 ${s.turnNo + 1} 幕`, t: clean }] : s.history,
             turnNo: clean ? s.turnNo + 1 : s.turnNo,
+            // 回退后的第一个回合收尾 = 重同步成功：清徽章，提示条改写为「完成重同步」态。
+            // 只有本轮发送的正是重同步指令（resyncing，restoreSnapshot/retryResync 置位）才认领这次收尾——
+            // resume 投递失败后玩家自己发的普通指令成功时引擎并没有重读档，pendingResync 已在 send
+            // 入口静默清掉，这里不许假称完成；非 resyncing 的回合一律不碰 pendingResync（零行为变化）。
+            ...(s.resyncing
+              ? {
+                  resyncing: false,
+                  ...(s.pendingResync
+                    ? {
+                        pendingResync: null,
+                        resyncFailed: false,
+                        treeNotice: `已回退到快照 #${s.pendingResync.seq} 并完成重同步`,
+                      }
+                    : {}),
+                }
+              : {}),
           });
           // 批量重绘：本轮已结束、引擎空闲，派发队列里的下一条（上面若有排队指令，pump 会让它们先发）
           ctx.pumpRegenQueue();
@@ -205,6 +240,9 @@ export function createGameplaySlice(
         }
         case "error": {
           ctx.onEngineError(event.message);
+          // 重同步回合在引擎侧失败（error response → SSE error）：徽章保留、亮「再同步」入口，
+          // 提示条与 status 同说失败——不再出现「已回退成功」与「出错」互相矛盾的两张嘴
+          markResyncFailed(event.message);
           break;
         }
       }

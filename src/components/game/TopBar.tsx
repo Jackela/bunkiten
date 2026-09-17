@@ -19,12 +19,16 @@ function RailButton({ label, onClick }: { label: string; onClick: () => void }) 
 /**
  * 顶栏（已拆两半）：状态点/状态文字/章节号/当前世界线留在左上角；快捷命令改为右侧竖排文字按钮轨。
  * 长回合显示已耗时秒数（区分「在跑」与「卡死」）。/new-game、/presets 回合结束后回标题屏。
+ * 回退后的「待重同步」徽章挂在这里；重同步失败时旁边长出「再同步」按钮（retryResync 重发续玩指令）。
  */
 export default function TopBar() {
   const status = useGameStore((s) => s.status);
   const chapterNo = useGameStore((s) => s.chapterNo);
   const worldLabel = useGameStore((s) => s.worldLabel);
+  const pendingResync = useGameStore((s) => s.pendingResync);
+  const resyncFailed = useGameStore((s) => s.resyncFailed);
   const send = useGameStore((s) => s.send);
+  const retryResync = useGameStore((s) => s.retryResync);
   const toggleDrawer = useGameStore((s) => s.toggleDrawer);
   const openAssets = useGameStore((s) => s.openAssets);
   const openTree = useGameStore((s) => s.openTree);
@@ -44,6 +48,27 @@ export default function TopBar() {
           <span data-testid="world-label" className="max-w-[26ch] truncate text-ink/30">
             {worldLabel}
           </span>
+        )}
+        {/* 回退后的待重同步徽章：重同步回合成功即消失；失败时旁边长出「再同步」重试入口 */}
+        {pendingResync && (
+          <span
+            data-testid="resync-badge"
+            className={`flex-none rounded-sm border px-1.5 py-0.5 text-[10px] tracking-[.12em] ${
+              resyncFailed ? "border-red-400/40 text-red-300/90" : "border-gold/40 text-gold/90"
+            }`}
+          >
+            待重同步
+          </span>
+        )}
+        {pendingResync && resyncFailed && (
+          <button
+            type="button"
+            data-testid="resync-retry"
+            onClick={retryResync}
+            className="flex-none rounded-md border border-gold/35 bg-gold/15 px-2 py-0.5 text-[11px] tracking-[.1em] text-gold transition-colors hover:bg-gold/30"
+          >
+            再同步
+          </button>
         )}
       </div>
 

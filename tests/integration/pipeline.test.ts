@@ -1,7 +1,7 @@
 // 集成测试（CONTRACTS §7/§8）：假 ACP 引擎（PATH 垫片 bin/grok）+ 真 server/acp-server.mjs 子进程。
 // 全程离线、可重复：临时 GROK_GAME_ROOT/HOME + 随机高位端口，整文件秒级跑完。
 //
-// 覆盖 §8 的 7 条：
+// 覆盖 §8 的 8 条：
 //   ①【图】标记（images/N.jpg）→ /img?preset= 落盘进 presets/<id>/assets 并直服、内容正确、未命中 404
 //   ②/img 目录穿越（编码后的 ../）不得直服
 //   ③旧档路径 assets/<类型>-<名>.jpg 只在当前剧本目录探测（不跨剧本扫描）
@@ -9,10 +9,11 @@
 //   ⑤【树】→treeEdited（v1.6 修复点：此前漏接线，SSE 必须收到）
 //   ⑥sniffPreset：继续世界：w1。→ 后续美术落进 w1 的 preset 目录
 //   ⑦/api/presets、/api/assets?preset=（缺/非法 400）、/api/worlds CRUD 冒烟
+//   ⑧引擎回 JSON-RPC error response：POST /prompt 409 + SSE error 事件 + 不写逐轮快照
 //
 // 扩展点见 tests/integration/harness.mjs 顶部注释（wave2 加音频/快照断言时复用 stack 句柄）。
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { startStack } from "./harness.mjs";
 
@@ -30,7 +31,7 @@ async function until(pred: () => boolean, timeout = 2000) {
   return pred();
 }
 
-describe("集成：假 ACP 引擎 + 真 acp-server（CONTRACTS §8 1–5、7）", () => {
+describe("集成：假 ACP 引擎 + 真 acp-server（CONTRACTS §8 1–5、7–8）", () => {
   let stack: any;
 
   beforeAll(async () => {
@@ -41,6 +42,8 @@ describe("集成：假 ACP 引擎 + 真 acp-server（CONTRACTS §8 1–5、7）"
         { match: "开门", ops: ["薇拉站在门口，雨声很密。\n\n【图】立绘|薇拉|images/1.jpg\n"] },
         { match: "表情", ops: ["【立绘】薇拉|微笑\n【图】立绘|沈屿|images/2.jpg\n【新剧本】demo\n"] },
         { match: "改树", ops: ["已把通往教堂的岔路改成通往酒馆。\n\n【树】\n"] },
+        { match: "继续世界", ops: ["（再入场）教堂檐下。\n"] },
+        { match: "引擎坏", ops: [{ error: "引擎坏了" }] },
       ],
     });
   }, 30000);
@@ -199,6 +202,31 @@ describe("集成：假 ACP 引擎 + 真 acp-server（CONTRACTS §8 1–5、7）"
     expect(deleted.status).toBe(200);
     expect(deleted.body.ok).toBe(true);
     expect(existsSync(path.join(stack.root, "state", "worlds", created.body.worldId))).toBe(false);
+  }, 15000);
+
+  it("⑧ 引擎回 JSON-RPC error response：POST /prompt 409、SSE 广播 error、不写逐轮快照", async () => {
+    // 先把当前世界定下来（否则 sendPrompt 本就不会写快照，负向断言没有意义）
+    const fromEnter = stack.events.length;
+    const enter = await stack.prompt("继续世界：w1。");
+    expect(enter.status).toBe(200);
+    await stack.waitFor((ev: any[]) => ev.slice(fromEnter).some((e) => e.type === "turn_end"), { label: "turn_end(⑧-enter)" });
+    const histDir = path.join(stack.root, "state", "worlds", "w1", "history");
+    const countSnapshots = () => (existsSync(histDir) ? readdirSync(histDir).length : 0);
+    const before = countSnapshots();
+    expect(before).toBeGreaterThan(0); // 入场是正戏回合：已落一条快照
+
+    const from = stack.events.length;
+    const r = await stack.prompt("让引擎坏掉的一轮。");
+    // sendPrompt 必须把引擎的 error response 当失败回合：HTTP 409 + error 语义（此前被当成功 200）
+    expect(r.status).toBe(409);
+    expect(String(r.body?.error)).toContain("引擎坏了");
+    await stack.waitFor(
+      (ev: any[]) => ev.slice(from).some((e: any) => e.type === "error" && String(e.message).includes("引擎坏了")),
+      { label: "error(⑧)" },
+    );
+    const got = stack.events.slice(from);
+    expect(got.some((e: any) => e.type === "turn_end")).toBe(false); // 失败回合不许走成功收尾
+    expect(countSnapshots()).toBe(before); // 也不落快照：失败回合不产生「这一轮」的档
   }, 15000);
 });
 

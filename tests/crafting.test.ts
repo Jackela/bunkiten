@@ -1206,7 +1206,8 @@ describe("v1.6 精确回退与自动前进（store 公共 API 驱动）", () => 
     expect(promptBodies.at(-1)).toBe(JSON.stringify({ text: RESUME }));
     expect(prompts).toEqual([RESUME, RESUME]); // 恰好多出一条，且是回退世界的那条
     const s = useGameStore.getState();
-    expect(s.treeNotice).toBe("已回退到快照 #7；回退前状态已备份为快照 #12；引擎已重新读档同步（续演，不重开场）");
+    // v1.7 三态文案的第一态：回退落定、等重同步回合收尾才说「完成重同步」（见 ui.test.tsx 的三态用例）
+    expect(s.treeNotice).toBe("已回退到快照 #7；回退前状态已备份为快照 #12，正在让引擎重读档…");
     expect(s.treeStamp).toBe(stamp0 + 1);
   });
 

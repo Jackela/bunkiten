@@ -61,6 +61,8 @@ export default function WorldsScreen() {
   const toTitle = useGameStore((s) => s.toTitle);
   const beginNewWorld = useGameStore((s) => s.beginNewWorld);
   const resumeWorld = useGameStore((s) => s.resumeWorld);
+  // 回退后的会话内标记：对应世界行内亮「待重同步」（该世界档已回退、引擎等一次续玩指令重读档）
+  const pendingResync = useGameStore((s) => s.pendingResync);
 
   const presetId = selected?.id;
 
@@ -400,6 +402,14 @@ export default function WorldsScreen() {
                       {entry.forkedFrom && (
                         <span className="flex-none rounded-sm border border-white/10 bg-white/[.03] px-1.5 py-0.5 text-[10px] tracking-[.12em] text-ink/50">
                           分叉自 {entry.forkedFrom.worldId} @ {entry.forkedFrom.nodeId}
+                        </span>
+                      )}
+                      {pendingResync?.worldId === entry.worldId && (
+                        <span
+                          data-testid={`world-resync-${entry.worldId}`}
+                          className="flex-none rounded-sm border border-gold/40 px-1.5 py-0.5 text-[10px] tracking-[.12em] text-gold/90"
+                        >
+                          待重同步
                         </span>
                       )}
                     </div>
