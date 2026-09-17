@@ -2,6 +2,8 @@
 // 小树（w1，3 节点）：继续世界线 → 进剧情图，SVG 树图可见；滚轮在画布中心缩放（非 passive 监听
 // preventDefault）→ tree-zoom-level 与 viewBox 变化；按住拖拽越过死区平移 → viewBox 再变（缩放不变）。
 // 大树（w2，45 节点链）：>40 节点默认降级列表形态——tree-view-toggle 提示、tree-list 可见、SVG 画布不渲染。
+// 快照对比（w3）：seed 两条内容不同的快照（#1 挂 1-1、#2 挂 1-2）→ 节点详情「与上一快照对比」→
+// diff 面板渲染 add/remove 行（seed 的两条 files 可控，运行时回合只会追加更晚的 seq，不动基线）。
 // 树文用 parseStoryTree 的容错格式构造（`## 第 N 章：标题` / `### 节点 N-M（拍点）` / `- 字段: 值`）。
 import { expect, test, type Browser, type Page } from "@playwright/test";
 import { startFakeStack } from "../helpers/fake-stack.mjs";
@@ -58,12 +60,33 @@ let page: Page;
 test.beforeAll(async ({ browser }: { browser: Browser }) => {
   stack = await startFakeStack({
     presets: [{ id: "demo", title: "示例剧本" }],
-    worlds: [{ id: "w2" }],
-    trees: { w1: smallTree(), w2: bigTree() },
-    // 两个「继续世界」各配一条应答（match 按世界 id 区分，命中不重复消费）
+    worlds: [{ id: "w2" }, { id: "w3" }],
+    trees: { w1: smallTree(), w2: bigTree(), w3: smallTree() },
+    // 快照对比的 seed（w3）：#1 挂 1-1、#2 挂 1-2，state 各差一行好感度——节点 1-2 的
+    // 最早匹配是 #2、基线是 #1，diff 内容完全由 seed 决定（运行时回合只会追加 seq ≥ 3）
+    snapshots: {
+      w3: [
+        {
+          seq: 1,
+          kind: "turn",
+          nodeId: "1-1",
+          chapterNo: 1,
+          files: { state: "# 剧情状态\n周目: 1\n好感度: 42\n", summary: "第 1 轮：门口初遇。", tree: smallTree() },
+        },
+        {
+          seq: 2,
+          kind: "turn",
+          nodeId: "1-2",
+          chapterNo: 1,
+          files: { state: "# 剧情状态\n周目: 1\n好感度: 55\n", summary: "第 2 轮：中殿对话。", tree: smallTree() },
+        },
+      ],
+    },
+    // 三个「继续世界」各配一条应答（match 按世界 id 区分，命中不重复消费）
     turns: [
       { match: "继续世界：w1", ops: ["雨停了，教堂门口的石阶泛着冷光。\n\n**行动**\n1. 推门进去\n2. 原地等待\n"] },
       { match: "继续世界：w2", ops: ["又是清晨，长廊尽头的灯还亮着。\n\n**行动**\n1. 往前走\n2. 回房\n"] },
+      { match: "继续世界：w3", ops: ["中殿的烛火晃了一下。\n\n**行动**\n1. 追问账册\n2. 沉默\n"] },
     ],
   });
   page = await (await browser.newContext()).newPage();
@@ -137,4 +160,30 @@ test("大树（45 节点）：默认降级为列表形态，SVG 画布不渲染"
   // 列表行可点：点首行仍能打开节点详情（降级形态不丢交互）
   await page.getByTestId("tree-row-1-1").click();
   await expect(page.getByTestId("tree-detail")).toBeVisible();
+});
+
+test("快照对比：节点详情与上一快照 diff，remove/add 行可见（w3 seed 两条快照）", async () => {
+  await openWorlds(page);
+  await continueWorld(page, "w3");
+
+  await page.getByRole("button", { name: "剧情图", exact: true }).click();
+
+  // 节点 1-2 的详情快照是 seed #2（最早匹配），基线是 #1 → 对比入口出现
+  await page.getByTestId("tree-node-1-2").click();
+  await expect(page.getByTestId("tree-snapshot-1-2")).toBeVisible();
+  const open = page.getByTestId("snapshot-diff-open");
+  await expect(open).toBeVisible();
+  await expect(open).toContainText("#1 → #2");
+
+  // 打开面板：默认「剧情状态」tab，好感度一行被替换——remove（上一份独有）与 add（这一份新增）各一行
+  await open.click();
+  const panel = page.getByTestId("snapshot-diff");
+  await expect(panel).toBeVisible();
+  await expect(page.getByTestId("diff-row-remove")).toHaveCount(1);
+  await expect(page.getByTestId("diff-row-add")).toHaveCount(1);
+  await expect(panel.getByTestId("diff-row-remove")).toContainText("好感度: 42");
+  await expect(panel.getByTestId("diff-row-add")).toContainText("好感度: 55");
+  // tab 头的 +N −M 摘要（state：+1 −1；tree 两份 seed 全等 → 无变化）
+  await expect(page.getByTestId("snapshot-diff-tab-state")).toContainText("+1 −1");
+  await expect(page.getByTestId("snapshot-diff-tab-tree")).toContainText("无变化");
 });
