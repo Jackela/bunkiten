@@ -21,10 +21,10 @@ export interface Theme {
   dialog?: DialogTexture;
 }
 
-/** 兜底主题（aurora）：所有 preset 未配 theme 或字段非法时使用 */
+/** 兜底主题（aurora）：所有 preset 未配 theme 或字段非法时使用（与 server/acp-server.mjs 的 DEFAULT_THEME 逐字一致，契约 lint 钉住） */
 export const FALLBACK_THEME: Theme = {
   accent: "#c9a86a",
-  accent2: "#e7d5ae",
+  accent2: "#e8e4da",
   motif: "aurora",
   font: "serif",
   dialog: "plain",

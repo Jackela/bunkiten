@@ -3,9 +3,9 @@
 :root {
   --bg: #07080c;
   --ink: #ece7db;
-  /* 默认（aurora 兜底）主题色；App 按当前剧本 theme 注入覆盖 */
+  /* 默认（aurora 兜底）主题色；App 按当前剧本 theme 注入覆盖（与 theme.ts FALLBACK_THEME / server DEFAULT_THEME 同值） */
   --accent: #c9a86a;
-  --accent2: #e7d5ae;
+  --accent2: #e8e4da;
 }
 
 /* 暴露为 tailwind 主题色：gold 是旧类名，跟随 accent 保持全站主题化 */

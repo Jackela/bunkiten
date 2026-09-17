@@ -8,6 +8,9 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
+// 协议常量唯一真源（v1.7，docs/adr/0012）：协议头/音频白名单与直服正则/指令前缀正则都在 shared/protocol.mjs，
+// 与 src/lib/parser.ts（re-export）共用同一份值；本文件不再自持副本（契约 lint ⑤⑥组断言这一点）。
+import { AUDIO_EXTS, AUDIO_FILE_RE, AUDIO_KINDS, AUDIO_MIME, AUDIO_REL_RE, DIRECTIVE_PREFIX_RE } from "../shared/protocol.mjs";
 
 // 开发模式 = 项目根；Electron 打包后由 main 进程注入资源目录
 const GAME_ROOT = process.env.GROK_GAME_ROOT || path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -40,14 +43,9 @@ export function presetAssetsDir(presetId) {
 }
 
 // ---------- 音频素材（v1.6，CONTRACTS §1）：作者手放到 presets/<id>/audio/，server 只扫描+直服，不生成不落盘 ----------
-// AUDIO_KINDS/AUDIO_EXTS 导出给 scripts/doctor.mjs 复用（剧本体检查音频文件名用同一集合，不抄第二份）
-export const AUDIO_KINDS = ["曲", "环境", "音效"];
-export const AUDIO_EXTS = ["mp3", "ogg", "m4a", "wav", "flac"];
-// 文件名 <类型>-<名>.<ext>；类型与扩展名都过白名单（名可含中文，不含路径分隔符）
-const AUDIO_FILE_RE = new RegExp(`^(${AUDIO_KINDS.join("|")})-(.+)\\.(${AUDIO_EXTS.join("|")})$`);
-// 直服白名单（与 /img 同款思路）：相对路径形态 + 无子目录 + 扩展名合法——resolve 前缀校验是第二道闸
-const AUDIO_REL_RE = new RegExp(`^presets/[A-Za-z0-9_-]+/audio/[^/]+\\.(${AUDIO_EXTS.join("|")})$`);
-const AUDIO_MIME = { mp3: "audio/mpeg", ogg: "audio/ogg", m4a: "audio/mp4", wav: "audio/wav", flac: "audio/flac" };
+// AUDIO_KINDS/AUDIO_EXTS/AUDIO_FILE_RE/AUDIO_REL_RE/AUDIO_MIME 的真源在 shared/protocol.mjs（上方 import）；
+// 这里 re-export AUDIO_KINDS/AUDIO_EXTS 给 scripts/doctor.mjs（剧本体检查音频文件名用同一集合，不抄第二份）
+export { AUDIO_KINDS, AUDIO_EXTS };
 // 素材删除的文件名白名单（CONTRACTS §3）：单层文件名、jpe?g；cover.jpg 由路由单独排除
 const ASSET_DELETE_FILE_RE = /^[^/\\]+\.jpe?g$/;
 
@@ -186,7 +184,8 @@ export function isDirectivePrompt(text) {
 
 /**
  * 回合档位选择（纯函数）：建档/规划类回合走 planning 档，其余（正戏/自由输入）走正戏档。
- * 与 CONTRACTS §4 的正则逐字一致——「创作模式：」等前缀与 `isDirectivePrompt` 无关，只影响推理档位。
+ * 前缀集合来自 `shared/protocol.mjs` 的 `DIRECTIVE_PREFIX_RE`（v1.7 与 isMainTurn 统一成一份真源，
+ * 此前两处各持一份手写正则、仅交替顺序不同）；「创作模式：」等前缀与 `isDirectivePrompt` 无关，只影响推理档位。
  * 档位值可注入（缺省模块常量）以便单测不依赖环境变量。
  * @param {string} text 发给引擎的提示词原文
  * @param {string} [main] 正戏档位（缺省 EFFORT）
@@ -194,7 +193,7 @@ export function isDirectivePrompt(text) {
  * @returns {string} 本次回合应使用的 reasoning_effort
  */
 export function pickEffort(text, main = EFFORT, planning = EFFORT_PLANNING) {
-  return /^(规划：|美术：|装配。|剧情：|创作模式：)/.test(String(text || "")) ? planning : main;
+  return DIRECTIVE_PREFIX_RE.test(String(text || "")) ? planning : main;
 }
 
 // 导出供契约 lint（tests/contract.test.ts）逐句比对 docs/ARCHITECTURE.md 的副本。
@@ -1806,11 +1805,12 @@ export function startServer() {
     } catch { /* 引擎不支持档位：静默，不阻断回合 */ }
   }
 
-  // 正戏回合判定（纯逻辑，CONTRACTS §2）：规划/美术/剧情/装配/创作模式回合、以及带「待命：」的开局指令
-  // 都不推进剧情正文，不该产生逐轮快照。
+  // 正戏回合判定（纯逻辑，CONTRACTS §2）：规划/美术/剧情/装配/创作模式回合（前缀正则与 pickEffort 同一份
+  // 真源 shared/protocol.mjs 的 DIRECTIVE_PREFIX_RE，v1.7 统一两份手写副本）、以及带「待命：」的开局指令
+  // 都不推进剧情正文，不该产生逐轮快照（「待命：」是后缀判定，不属前缀集合，保持原地）。
   function isMainTurn(text) {
     const s = String(text || "").trim();
-    if (/^(规划：|美术：|剧情：|装配。|创作模式：)/.test(s)) return false;
+    if (DIRECTIVE_PREFIX_RE.test(s)) return false;
     if (s.includes("待命：")) return false;
     return true;
   }

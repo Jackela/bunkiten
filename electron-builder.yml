@@ -1,5 +1,5 @@
 # 布局原则：可写数据（.grok/presets/state）与打包前端必须在 asar 外（extraResources），
-# 代码（electron/server）进 asar；dist 同时保留在 asar 内只是冗余备份，运行时走 resources/app-dist。
+# 代码（electron/server/shared）进 asar；dist 同时保留在 asar 内只是冗余备份，运行时走 resources/app-dist。
 appId: com.local.bunkiten
 productName: Bunkiten # ASCII，规避 NSIS/非 UTF-8 终端对中文 productName 的兼容风险
 # github provider：latest*.yml / app-update.yml 与 electron-updater 的前提（electron/main.js 打包态会查更新）。
@@ -20,6 +20,7 @@ files:
   - dist/**
   - electron/**
   - server/**
+  - shared/** # 协议常量真源 protocol.mjs（server/acp-server.mjs 经相对路径 import，缺了打包态起不来）
   - package.json
 extraResources:
   - from: .grok

@@ -47,6 +47,9 @@ bunkiten/
 │  └─ notarize.cjs          # afterSign 公证钩子：APPLE_* 三件套不齐直接 return（本地与未配 secrets 的构建照常成功）
 ├─ server/
 │  └─ acp-server.mjs        # ACP 客户端 + HTTP/SSE + /img 图片服务 + /audio 音频直服 + 资产持久化 + 世界线/剧情树/逐轮快照接口（零依赖）
+├─ shared/
+│  ├─ protocol.mjs          # 协议常量唯一真源（v1.7）：PROTOCOL_HEADS 9 头 / AUDIO_* 音频白名单与直服正则 / DIRECTIVE_PREFIX_RE 指令前缀（pickEffort 与 isMainTurn 共用）
+│  └─ protocol.d.mts        # 手写类型声明（tsc -b 经 .mjs→.d.mts 解析；运行时直接吃 .mjs）
 ├─ scripts/
 │  └─ doctor.mjs            # 剧本体检查 CLI（npm run doctor，作者侧、不进 CI）：frontmatter/正文/封面/资产与音频命名/孤儿素材，退出码非 0 ⟺ 有 error
 ├─ src/                     # React 前端
@@ -57,7 +60,7 @@ bunkiten/
 │  │  ├─ context.ts         # 模块级单例：set/get 与定时器（看门狗 / 自动前进）及清理
 │  │  ├─ portrait.ts        # 立绘差分解析（两级回退）
 │  │  └─ slices/            # nav / world / crafting / gameplay / tree / assets / creation / characters 八个动作切片
-│  ├─ lib/parser.ts         # 文本协议纯函数（契约字符串与协议头唯一真源，含【曲】【环境】【音效】）
+│  ├─ lib/parser.ts         # 文本协议纯函数（契约字符串；协议头/音频类型 re-export 自 shared/protocol.mjs 唯一真源，含【曲】【环境】【音效】）
 │  ├─ lib/treeLayout.ts     # 剧情树分层布局纯函数（最长路径分层/抗环/贝塞尔边 + 缩放平移视口，零依赖）
 │  ├─ lib/genealogy.ts      # 世界线家谱布局纯函数（forkedFrom 森林分层/孤儿与环容错 + 键盘步进，零依赖）
 │  ├─ lib/diff.ts           # 快照对比纯函数（行级 LCS diffLines + +N −M 摘要 diffStats，零依赖）
@@ -89,7 +92,7 @@ bunkiten/
 │  ├─ diff.test.ts          # 快照对比行级 LCS 纯函数单测（8 例）
 │  ├─ doctor.test.ts        # 剧本体检查纯函数单测（tmp 根造 preset，12 例）
 │  ├─ ui.test.tsx           # 组件测试（TopBar/世界线（含家谱视图）/剧情图（含快照对比）/设置/Creation/Assets/主题/重掷/角色面板/标题屏剧本导出导入，109 例）
-│  ├─ contract.test.ts      # 契约 lint（防漂移门禁：协议头唯一真源/RULES 逐字副本/指令字符串/用例数/设置键与音频扩展名；自身不计入 381 口径）
+│  ├─ contract.test.ts      # 契约 lint（防漂移门禁：协议头/音频白名单/指令前缀真源断言（shared/protocol.mjs）/RULES 逐字副本/指令字符串/主题白名单/用例数/设置键；自身不计入 381 口径）
 │  ├─ integration/          # 假引擎集成层（假 ACP 引擎 + 真 acp-server 子进程，21 例、秒级）
 │  │  ├─ harness.mjs        # 起全栈：临时 game root/HOME/PORT + path 垫片，收 SSE 事件与断言辅助
 │  │  ├─ fake-engine.mjs    # 最小 ACP 假引擎（按脚本队列回 session/update，可制造段切换）
@@ -132,7 +135,7 @@ bunkiten/
 | `npm run dev` | 仅 vite 前端（浏览器调试，需另起 acp-server） |
 | `npm run dev:electron` | vite + Electron 并行开发 |
 | `npm run build` | `tsc -b && vite build`（类型检查 + 前端构建） |
-| `npm test` | 单测 + 集成全量 381 例：parser 65 + server 99 + crafting 52 + treeLayout 7 + genealogy 8 + diff 8 + doctor 12 + ui 109 + integration 21（含假引擎集成层，整体秒级；改协议字符串必须同步快照）；另跑契约 lint `tests/contract.test.ts`（防漂移门禁，**不计入这 381**） |
+| `npm test` | 单测 + 集成全量 381 例：parser 65 + server 99 + crafting 52 + treeLayout 7 + genealogy 8 + diff 8 + doctor 12 + ui 109 + integration 21（含假引擎集成层，整体秒级；改协议字符串必须同步快照）；另跑契约 lint `tests/contract.test.ts`（防漂移门禁：协议常量真源断言 + 双侧逐字比对，**不计入这 381**） |
 | `npm run doctor` | 剧本体检查（作者侧工具，按需跑、不进 CI）：`node scripts/doctor.mjs` 校验 `presets/` 每个剧本的结构健康度——frontmatter 必填键与 id=目录名、theme 逐键回退预警、`# 主要角色` 与角色建议字段、封面、assets/audio 文件名契约、孤儿素材；输出 `[ok]`/`[warn]`/`[error]` 明细报告，**退出码非 0 当且仅当有 error**（warning 不影响——孤儿素材这类可解释项不拦你发布） |
 | `npm run test:e2e` | 真引擎 E2E 冒烟（约 6 分钟，2 回合） |
 | `npm run dist:win` | build 后打 Windows x64 包（nsis + portable，不签名） |
