@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { motion } from "framer-motion";
 import { fetchWorlds, postWorld, worldExportUrl, type WorldEntry } from "../lib/acp";
+import { genealogyStep, layoutGenealogy, type GenealogyLayout } from "../lib/genealogy";
 import { getTheme, themeVars } from "../theme";
 import { useGameStore } from "../store/game";
 import { ScreenShell } from "./ScreenShell";
@@ -44,11 +45,163 @@ export function worldDisplayName(w: WorldEntry): string {
   return w.label?.trim() || w.note?.trim() || w.worldId;
 }
 
+/** 家谱节点绘制尺寸：须与 layoutGenealogy 的缺省几何一致（布局定坐标、SVG 画矩形） */
+const GEN_NODE_W = 210;
+const GEN_NODE_H = 64;
+
+/** 显示名超长时截断（SVG text 不会自动省略） */
+function truncateName(s: string, n: number): string {
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+}
+
+/**
+ * 家谱画布（v1.7）：把 forkedFrom 血缘的森林画成 SVG——节点 = 圆角矩形卡（显示名/章数/
+ * 分叉节点徽章），边 = 父底边中点 → 子顶边中点的圆角拐弯。整图一个可 Tab 的节点
+ * （roving tabIndex），方向键走节点（`genealogyStep` 的确定性规则）、Enter/点击选中；
+ * 家谱规模小，fit-view 全量展示，不做缩放平移。焦点环走全局 :focus-visible（同 TreeCanvas）。
+ */
+function GenealogyCanvas({
+  layout,
+  focusId,
+  onFocus,
+}: {
+  layout: GenealogyLayout;
+  focusId: string | null;
+  onFocus: (id: string) => void;
+}) {
+  const nodeRefs = useRef(new Map<string, SVGGElement>());
+  const ids = useMemo(() => layout.nodes.map((n) => n.worldId), [layout.nodes]);
+  // roving tabIndex：没选中时落在第一个节点
+  const tabbableId = focusId && ids.includes(focusId) ? focusId : ids[0];
+
+  /** 方向键步进：换选中并把 DOM 焦点一起搬过去（不是只换描边） */
+  const step = (id: string, dir: "up" | "down" | "left" | "right") => {
+    const next = genealogyStep(layout, id, dir);
+    if (!next) return;
+    onFocus(next);
+    nodeRefs.current.get(next)?.focus();
+  };
+
+  const onNodeKey = (id: string) => (e: ReactKeyboardEvent<SVGGElement>) => {
+    if (e.nativeEvent.isComposing) return; // 中文输入法组字中的按键不算导航
+    switch (e.key) {
+      case "ArrowUp":
+        e.preventDefault();
+        step(id, "up");
+        return;
+      case "ArrowDown":
+        e.preventDefault();
+        step(id, "down");
+        return;
+      case "ArrowLeft":
+        e.preventDefault();
+        step(id, "left");
+        return;
+      case "ArrowRight":
+        e.preventDefault();
+        step(id, "right");
+        return;
+      case "Enter":
+      case " ":
+        e.preventDefault();
+        onFocus(id);
+        return;
+      default:
+        return;
+    }
+  };
+
+  return (
+    <svg
+      data-testid="genealogy-canvas"
+      viewBox={`0 0 ${layout.width} ${layout.height}`}
+      preserveAspectRatio="xMidYMid meet"
+      className="w-full rounded-xl border border-white/[.06] bg-[rgba(12,14,20,.5)]"
+      style={{ height: "auto", aspectRatio: `${layout.width} / ${layout.height}` }}
+    >
+      {layout.edges.map((e, i) => (
+        <path
+          key={`${e.from}->${e.to}-${i}`}
+          className="genealogy-edge"
+          d={e.d}
+          fill="none"
+          style={{ stroke: "rgba(236,231,219,.25)" }}
+          strokeWidth={1.4}
+          strokeDasharray={e.dashed ? "4 4" : undefined}
+        />
+      ))}
+
+      {layout.nodes.map((n) => {
+        const focused = focusId === n.worldId;
+        const missing = !n.entry.exists;
+        const fork = n.entry.forkedFrom;
+        const name = worldDisplayName(n.entry);
+        return (
+          <g
+            key={n.worldId}
+            data-testid={`genealogy-node-${n.worldId}`}
+            role="button"
+            tabIndex={n.worldId === tabbableId ? 0 : -1}
+            aria-label={`世界线 ${name} · 第 ${n.entry.chapterNo} 章${fork ? ` · 分叉自 ${fork.worldId} @ ${fork.nodeId}` : ""}${
+              n.missingParent ? " · 父线已删" : ""
+            }${missing ? " · 目录缺失" : ""}`}
+            onClick={() => onFocus(n.worldId)}
+            onKeyDown={onNodeKey(n.worldId)}
+            ref={(el) => {
+              if (el) nodeRefs.current.set(n.worldId, el);
+              else nodeRefs.current.delete(n.worldId);
+            }}
+            className="cursor-pointer"
+            opacity={missing ? 0.55 : 1}
+          >
+            <rect
+              x={n.x}
+              y={n.y}
+              width={GEN_NODE_W}
+              height={GEN_NODE_H}
+              rx={10}
+              style={{
+                fill: "rgba(236,231,219,.05)",
+                stroke: focused ? "var(--accent2)" : "rgba(236,231,219,.4)",
+                ...(missing && !focused ? { strokeDasharray: "5 4" } : {}),
+              }}
+              strokeWidth={focused ? 2.6 : 1.5}
+            />
+            <text x={n.x + 12} y={n.y + 25} style={{ fill: "var(--ink)" }} fontSize={13} fontWeight={600} letterSpacing="0.06em">
+              {truncateName(name, 12)}
+            </text>
+            <text x={n.x + 12} y={n.y + 46} style={{ fill: "var(--ink)", opacity: 0.55 }} fontSize={10.5}>
+              第 {n.entry.chapterNo} 章
+            </text>
+            {/* 分叉节点徽章（nodeId 缩写）；父线已删的孤儿前面加 ⌫ */}
+            {(fork || n.missingParent) && (
+              <text
+                data-testid={n.missingParent ? `genealogy-orphan-${n.worldId}` : undefined}
+                x={n.x + GEN_NODE_W - 12}
+                y={n.y + 25}
+                textAnchor="end"
+                style={{ fill: n.missingParent ? "rgba(248,113,113,.9)" : "var(--accent)", opacity: 0.9 }}
+                fontSize={10}
+                letterSpacing="0.08em"
+              >
+                {`${n.missingParent ? "⌫ " : ""}@${fork?.nodeId ?? "?"}`}
+              </text>
+            )}
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
 /**
  * 世界线屏：选卡之后的第二环——继续某条世界线（读档续演）或开一条全新的（去捏人）。
  * 数据自己拉（fetchWorlds/preset 过滤），删除/新建/改名/导入走 POST /api/worlds；屏内不做任何推演。
  * v1.6：行内改名（label/note，空串=清除）、单条导出（浏览器下载）、打包导入（含成功/失败提示位），
  * 列表补 listbox/option 语义与 roving tabIndex，行内按钮带含世界名的 aria-label。
+ * v1.7：列表/家谱视图切换——家谱把 forkedFrom 血缘画成 SVG 森林（`lib/genealogy` 纯函数布局，
+ * 孤儿标「⌫ 父线已删」、fork 环容错），节点方向键走位 + Enter 选中，选中后的快捷条复用
+ * `continueWorld` 继续；「查看」跳回列表并聚焦对应行。
  */
 export default function WorldsScreen() {
   const selected = useGameStore((s) => s.selected);
@@ -85,6 +238,12 @@ export default function WorldsScreen() {
   const [editNote, setEditNote] = useState("");
   const [saving, setSaving] = useState(false);
   const [importing, setImporting] = useState(false);
+  /** 视图（v1.7 家谱）：平铺列表 / forkedFrom 血缘森林；屏内状态，不持久化 */
+  const [view, setView] = useState<"list" | "genealogy">("list");
+  /** 家谱里选中的世界 id（选中 = 高亮 + 下方快捷信息条；null=未选中） */
+  const [genFocus, setGenFocus] = useState<string | null>(null);
+  /** 「查看」跳回列表后要聚焦的行（世界 id；effect 里消费一次即清） */
+  const [listJumpId, setListJumpId] = useState<string | null>(null);
 
   /** 行元素引用：↑↓ 把 DOM 焦点一起搬到光标行（roving tabIndex 的完整语义，不是只换个描边） */
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
@@ -94,6 +253,20 @@ export default function WorldsScreen() {
   const labelRef = useRef<HTMLInputElement | null>(null);
 
   const list = useMemo(() => worlds ?? [], [worlds]);
+
+  // 家谱布局（纯函数）：worlds 变化（删除/导入/改名重取）时重算
+  const genealogy = useMemo(
+    // 画布常量显式传进布局（StoryTreeScreen 的惯例）：单侧改尺寸不会让 rect 与坐标静默错位
+    () => layoutGenealogy(list, { nodeW: GEN_NODE_W, nodeH: GEN_NODE_H }),
+    [list],
+  );
+
+  // 「查看」收尾：切回列表后把 DOM 焦点送到对应行（键盘用户从那里继续 ↑↓/Enter）
+  useEffect(() => {
+    if (view !== "list" || !listJumpId) return;
+    rowRefs.current.get(listJumpId)?.focus();
+    setListJumpId(null);
+  }, [view, listJumpId]);
 
   // 挂载与换卡（selected.id 变）时拉清单；删除/改名/导入后由 stamp 触发重取
   useEffect(() => {
@@ -129,10 +302,12 @@ export default function WorldsScreen() {
     if (editId) labelRef.current?.focus();
   }, [editId]);
 
-  // 键盘：↑↓ 移动高亮，Enter 继续高亮的世界线；确认态/编辑态下全部让位给按钮与输入框
+  // 键盘：↑↓ 移动高亮，Enter 继续高亮的世界线；确认态/编辑态下全部让位给按钮与输入框。
+  // 家谱视图下让位（方向键由家谱节点自己接，Enter 只选中不清档续演）
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.isComposing) return; // 中文输入法组字中的按键不算导航
+      if (view !== "list") return; // 家谱视图：节点级键盘，不做屏级列表导航
       if (confirmId || editId) return; // 确认删除/行内改名中：不拦截
       const el = e.target instanceof HTMLElement ? e.target : null;
       // 焦点在按钮/输入框上时不做屏级导航，避免 Enter 被激活两次
@@ -150,7 +325,7 @@ export default function WorldsScreen() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [confirmId, editId, engineBusy, focus, list, resumeWorld]);
+  }, [confirmId, editId, engineBusy, focus, list, resumeWorld, view]);
 
   /** 继续：目录缺失或引擎忙时不可用（resumeWorld 会立刻发续演指令） */
   const continueWorld = (entry: WorldEntry) => {
@@ -285,9 +460,34 @@ export default function WorldsScreen() {
           </button>
         </header>
 
-        {/* 工具栏：导入（收 .world.json）与主行动「新世界线」（空态下也用它） */}
+        {/* 工具栏：视图切换（列表/家谱）、导入（收 .world.json）与主行动「新世界线」（空态下也用它） */}
         <div className="mt-7 flex items-center gap-3">
           <h3 className="text-[13px] tracking-[.35em] text-gold/80">世 界 线</h3>
+          {/* 视图切换（v1.7）：平铺列表 ↔ forkedFrom 家谱森林（分段按钮） */}
+          <div role="group" aria-label="世界线视图" className="flex items-center rounded-lg border border-white/10 p-0.5">
+            <button
+              type="button"
+              data-testid="worlds-view-list"
+              aria-pressed={view === "list"}
+              onClick={() => setView("list")}
+              className={`rounded-md px-3 py-1 text-[12px] tracking-[.15em] transition-colors ${
+                view === "list" ? "bg-gold/15 text-gold" : "text-ink-hint hover:text-ink"
+              }`}
+            >
+              列表
+            </button>
+            <button
+              type="button"
+              data-testid="worlds-view-genealogy"
+              aria-pressed={view === "genealogy"}
+              onClick={() => setView("genealogy")}
+              className={`rounded-md px-3 py-1 text-[12px] tracking-[.15em] transition-colors ${
+                view === "genealogy" ? "bg-gold/15 text-gold" : "text-ink-hint hover:text-ink"
+              }`}
+            >
+              家谱
+            </button>
+          </div>
           <button
             type="button"
             data-testid="worlds-import"
@@ -366,7 +566,9 @@ export default function WorldsScreen() {
           </div>
         )}
 
-        {/* 世界列表：listbox + option，光标行独占 tabIndex 0（roving tabIndex） */}
+        {/* 世界列表（列表视图）：listbox + option，光标行独占 tabIndex 0（roving tabIndex）。
+            家谱视图下整块卸载：行的存在与否就是视图状态本身（测试与读屏都以此为准） */}
+        {view === "list" && (
         <div role="listbox" aria-label="世界线" className="mt-4 space-y-2.5">
           {list.map((entry, i) => {
             const missing = !entry.exists;
@@ -568,7 +770,80 @@ export default function WorldsScreen() {
           })}
         </div>
 
-        <p className="mt-8 text-center text-[12px] tracking-[.35em] text-ink-hint">↑ ↓ 选择 · Enter 继续</p>
+        )}
+
+        {/* 家谱视图（v1.7）：SVG 森林 + 选中节点的快捷信息条（继续复用 continueWorld，不另起一份逻辑） */}
+        {view === "genealogy" && list.length > 0 && (
+          <div className="mt-4">
+            <GenealogyCanvas layout={genealogy} focusId={genFocus} onFocus={setGenFocus} />
+            {(() => {
+              const entry = list.find((w) => w.worldId === genFocus);
+              if (!entry) return null;
+              const name = worldDisplayName(entry);
+              const missing = !entry.exists;
+              return (
+                <div
+                  data-testid="genealogy-detail"
+                  className="mt-3 rounded-xl border border-white/10 bg-[rgba(12,14,20,.72)] px-4 py-3 backdrop-blur-md"
+                >
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span className={`text-[15px] ${missing ? "text-ink-hint" : "text-ink"}`}>{name}</span>
+                    <span className="text-[11.5px] tracking-[.12em] text-ink-hint">
+                      第 {entry.chapterNo} 章 · {relativeTime(entry.lastPlayed)}
+                      {missing && <span className="ml-2 text-red-400/90">目录缺失</span>}
+                    </span>
+                    {entry.forkedFrom && !genealogy.nodes.find((n) => n.worldId === entry.worldId)?.missingParent && (
+                      <span className="rounded-sm border border-white/10 bg-white/[.03] px-1.5 py-0.5 text-[10px] tracking-[.12em] text-ink-hint">
+                        分叉自 {entry.forkedFrom.worldId} @ {entry.forkedFrom.nodeId}
+                      </span>
+                    )}
+                    {genealogy.nodes.find((n) => n.worldId === entry.worldId)?.missingParent && (
+                      <span className="rounded-sm border border-red-400/30 px-1.5 py-0.5 text-[10px] tracking-[.12em] text-red-300/90">
+                        ⌫ 父线已删
+                      </span>
+                    )}
+                    <div className="ml-auto flex items-center gap-2">
+                      <button
+                        type="button"
+                        data-testid={`genealogy-continue-${entry.worldId}`}
+                        aria-label={`继续世界线 ${name}`}
+                        disabled={missing || engineBusy}
+                        onClick={() => continueWorld(entry)}
+                        className={`rounded-lg border px-3.5 py-1.5 text-[12.5px] tracking-[.1em] transition-colors ${
+                          missing || engineBusy
+                            ? "cursor-not-allowed border-white/10 text-ink-hint"
+                            : "border-gold/35 bg-gold/15 text-gold hover:bg-gold/30"
+                        }`}
+                      >
+                        {engineBusy ? "引擎忙" : "继续"}
+                      </button>
+                      <button
+                        type="button"
+                        data-testid={`genealogy-view-${entry.worldId}`}
+                        aria-label={`在列表中查看世界线 ${name}`}
+                        onClick={() => {
+                          const idx = list.findIndex((w) => w.worldId === entry.worldId);
+                          setView("list");
+                          if (idx >= 0) {
+                            setFocus(idx);
+                            setListJumpId(entry.worldId);
+                          }
+                        }}
+                        className="rounded-lg border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
+                      >
+                        查看
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        )}
+
+        <p className="mt-8 text-center text-[12px] tracking-[.35em] text-ink-hint">
+          {view === "list" ? "↑ ↓ 选择 · Enter 继续" : "方向键走节点 · Enter 选中 · 继续读档续演"}
+        </p>
       </div>
     </ScreenShell>
   );
