@@ -81,13 +81,13 @@ bunkiten/
 │  ├─ setup-react-act.mjs   # vitest 环境：React act() 兼容补丁
 │  ├─ parser.test.ts        # 文本协议契约快照单测（65 例）
 │  ├─ crafting.test.ts      # 章节制作与创作/画廊编排单测（52 例）
-│  ├─ server.test.ts        # server 协议行与世界线/快照/音频/角色面板接口单测（89 例）
+│  ├─ server.test.ts        # server 协议行与世界线/快照/音频/剧本导出包/角色面板接口单测（97 例）
 │  ├─ treeLayout.test.ts    # 剧情树分层布局与缩放视口纯函数单测（7 例）
 │  ├─ genealogy.test.ts     # 世界线家谱布局与键盘步进纯函数单测（8 例）
 │  ├─ diff.test.ts          # 快照对比行级 LCS 纯函数单测（8 例）
-│  ├─ ui.test.tsx           # 组件测试（TopBar/世界线（含家谱视图）/剧情图（含快照对比）/设置/Creation/Assets/主题/重掷/角色面板，106 例）
-│  ├─ contract.test.ts      # 契约 lint（防漂移门禁：协议头唯一真源/RULES 逐字副本/指令字符串/用例数/设置键与音频扩展名；自身不计入 354 口径）
-│  ├─ integration/          # 假引擎集成层（假 ACP 引擎 + 真 acp-server 子进程，19 例、秒级）
+│  ├─ ui.test.tsx           # 组件测试（TopBar/世界线（含家谱视图）/剧情图（含快照对比）/设置/Creation/Assets/主题/重掷/角色面板/标题屏剧本导出导入，109 例）
+│  ├─ contract.test.ts      # 契约 lint（防漂移门禁：协议头唯一真源/RULES 逐字副本/指令字符串/用例数/设置键与音频扩展名；自身不计入 367 口径）
+│  ├─ integration/          # 假引擎集成层（假 ACP 引擎 + 真 acp-server 子进程，21 例、秒级）
 │  │  ├─ harness.mjs        # 起全栈：临时 game root/HOME/PORT + path 垫片，收 SSE 事件与断言辅助
 │  │  ├─ fake-engine.mjs    # 最小 ACP 假引擎（按脚本队列回 session/update，可制造段切换）
 │  │  └─ *.test.ts          # 图片落盘与目录穿越防护 / 音频索引与逐轮快照 / 编译-落盘-事件管线
@@ -129,7 +129,7 @@ bunkiten/
 | `npm run dev` | 仅 vite 前端（浏览器调试，需另起 acp-server） |
 | `npm run dev:electron` | vite + Electron 并行开发 |
 | `npm run build` | `tsc -b && vite build`（类型检查 + 前端构建） |
-| `npm test` | 单测 + 集成全量 354 例：parser 65 + server 89 + crafting 52 + treeLayout 7 + genealogy 8 + diff 8 + ui 106 + integration 19（含假引擎集成层，整体秒级；改协议字符串必须同步快照）；另跑契约 lint `tests/contract.test.ts`（防漂移门禁，**不计入这 354**） |
+| `npm test` | 单测 + 集成全量 367 例：parser 65 + server 97 + crafting 52 + treeLayout 7 + genealogy 8 + diff 8 + ui 109 + integration 21（含假引擎集成层，整体秒级；改协议字符串必须同步快照）；另跑契约 lint `tests/contract.test.ts`（防漂移门禁，**不计入这 367**） |
 | `npm run test:e2e` | 真引擎 E2E 冒烟（约 6 分钟，2 回合） |
 | `npm run dist:win` | build 后打 Windows x64 包（nsis + portable，不签名） |
 | `npm run dist:mac` | build 后打 macOS 包（dmg + zip，arm64 + x64，不签名） |
@@ -163,6 +163,8 @@ npm run dev:electron
 ## 写新剧本
 
 复制 `presets/` 下任意子目录改 `preset.md`，无需改代码。frontmatter 必填 `id` / `title`；`# 主要角色` 每人一节（含 `art_prompt`）；`# protagonist_card` 每行 `- 问题: 选项A / 选项B`。这个目录就是这个故事的全部：封面 `cover.jpg` 与运行时生成的立绘/背景（`assets/<类型>-<名字>.jpg`）都落在这里，拷走整个文件夹即可分享，删掉它也就删掉了这个故事的美术。想加声音就再建一个 `presets/<id>/audio/`，文件名按 `<类型>-<名>.<ext>` 放（类型是 `曲` / `环境` / `音效`，扩展名 `mp3` / `ogg` / `m4a` / `wav` / `flac`，例：`曲-雨夜.mp3`、`环境-旅店大堂.mp3`、`音效-门响.wav`）；引擎在场景切换时会发【曲】/【环境】/【音效】行点名播放，名对不上或没放文件就静默跳过——引擎绝不生成音频、也绝不在标记里写路径。也可以不改文件——标题屏右下「创作新剧本」用自然语言和引擎聊出一份新剧本（见 [QUICKSTART.md](QUICKSTART.md)）。完整字段表与消费方说明见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#修改指引)。
+
+**分享剧本（v1.7）**：不用拷文件夹也能分享——标题屏当前卡带右上角「导出」下载一个 `<剧本 id>.preset.json`（preset.md、全部立绘/背景/封面与音频都打在里面，导入单包上限 50MB）；对方在标题屏右下角「导入剧本」选这个文件即可，剧本立刻进轮播。导入遇到重名会自动落成 `<id>-2`，不会覆盖你已有的剧本；包格式与安全规则见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 的「剧本导出包」一节。
 
 ## 内容与责任
 

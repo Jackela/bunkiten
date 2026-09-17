@@ -403,6 +403,204 @@ export function scanPresets(root = GAME_ROOT) {
   return { presets, errors };
 }
 
+// ---------- 剧本导出包（v1.7，format:"bunkiten-preset"）：presets/<id>/ 全量打包与落地 ----------
+// 与世界线导出包（exportWorld/importWorld）对称：导出 JSON + attachment 下载、导入先整体校验再重名加 -2/-3。
+// 包体：preset.md 全文 + assets/*.jpe?g（含封面 cover.jpg，封面在 preset 根）+ audio/<AUDIO_EXTS>，二进制一律 base64。
+const PRESET_BUNDLE_FORMAT = "bunkiten-preset";
+const PRESET_BUNDLE_VERSION = 1;
+// 导入包的解码总量上限（50MB）：POST /api/presets 的 body 上限同源（base64 文本约为解码后的 1.37 倍）
+const PRESET_IMPORT_MAX_BYTES = 50 * 1024 * 1024;
+// 导入侧音频文件名白名单（由 AUDIO_EXTS 构造，不抄第二份）：单层文件名 + 合法扩展名
+const PRESET_AUDIO_IMPORT_RE = new RegExp(`^[^/\\\\]+\\.(${AUDIO_EXTS.join("|")})$`);
+// 封面文件名（assets 键里的 cover.jpe?g 落 preset 根，不进 assets/——`assets/封面-X.jpg` 是死路径）
+const COVER_FILE_RE = /^cover\.jpe?g$/;
+// Windows 保留设备名（大小写不敏感）：写成 `CON.jpg` 一样无法落盘/被系统吞掉，跨平台导入必须拒收
+const WIN_RESERVED_STEMS = new Set([
+  "CON", "PRN", "AUX", "NUL",
+  "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+  "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+]);
+
+/**
+ * 导入包的文件名安全判定：单层文件名（无路径分隔符、不含 `..`）且扩展名过白名单。
+ * 键名要直接拼进 `presets/<id>/{assets,audio}/` 路径，任何穿越形态一律拒绝。
+ * 另拒两类「合法字符串、非法文件名」：超长名（主流文件系统单名 255 字节上限，UTF-8 下 CJK 每字 3 字节，
+ * >200 字符必然越界，writeFileSync 会抛 ENAMETOOLONG——异常若冒出函数，Electron 主进程 import 了
+ * 本文件且无兜底，整应用闪退）；Windows 保留名（按去扩展名的 stem 判，`CON.jpg` 也是保留名）。
+ * 长度阈值只是软防线（纯 ASCII 200 字节以内仍可能带扩展越界），真正的兜底是落盘段的 try/catch。
+ * @param {string} name bundle 里的文件名键
+ * @param {RegExp} re 扩展名白名单正则（assets 用 ASSET_DELETE_FILE_RE，audio 用 PRESET_AUDIO_IMPORT_RE）
+ * @returns {boolean} 安全才允许落盘
+ */
+function safeBundleFileName(name, re) {
+  if (typeof name !== "string" || name.trim() !== name || name === "" || name.includes("..") || name.length > 200) {
+    return false;
+  }
+  const dot = name.lastIndexOf("."); // 两个白名单正则都要求有扩展名，这里只防手滑传进无扩展名形态
+  const stem = (dot > 0 ? name.slice(0, dot) : name).toUpperCase();
+  return !WIN_RESERVED_STEMS.has(stem) && re.test(name);
+}
+
+const B64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
+
+/**
+ * 严格 base64 解码（导入包用）：Node 的 `Buffer.from(str, "base64")` 会**静默丢弃**非法字符，
+ * 这里用 round-trip 比对兜住——解码不回原文（夹了私货/截断/别的编码）一律视为非法内容。
+ * @param {unknown} v bundle 里的内容字段
+ * @returns {Buffer|null} 解码结果；非字符串、非 base64、解码为空时 null
+ */
+function decodeBase64Field(v) {
+  if (typeof v !== "string" || !B64_RE.test(v)) return null;
+  const buf = Buffer.from(v, "base64");
+  if (buf.length === 0) return null;
+  return buf.toString("base64").replace(/=+$/, "") === v.replace(/=+$/, "") ? buf : null;
+}
+
+/**
+ * 打包一个剧本为可迁移 bundle（v1.7，导出纯函数，root 可注入以便单测）。
+ * 收文件：preset.md 全文；assets/ 下全部 jpe?g（跳过 cover.jpe?g——那是死路径，封面在 preset 根）；
+ * preset 根的 cover.jpe?g；audio/ 下全部 AUDIO_EXTS 文件。子目录、不认识的扩展名与 0 字节文件一律跳过
+ * （保证导出的包能原样导回）。文件名排序收集，同目录的导出结果确定。
+ * @param {string} root 游戏根目录
+ * @param {string} id 剧本 id
+ * @returns {{bundle: {format: string, version: number, id: string, title: string, exportedAt: string,
+ *   presetMd: string, assets: Record<string,string>, audio: Record<string,string>}}|{error: string}}
+ *   id 非法或 preset.md 不存在（目录缺失）时 error
+ */
+export function buildPresetBundle(root, id) {
+  const pid = String(id || "").trim();
+  if (!PRESET_ID_RE.test(pid)) return { error: "参数不合法" };
+  const dir = path.join(root, "presets", pid);
+  let presetMd;
+  try {
+    presetMd = fs.readFileSync(path.join(dir, "preset.md"), "utf8");
+  } catch {
+    return { error: "剧本不存在" };
+  }
+  const title = parseFrontmatter(presetMd)?.title || "";
+  // 以扩展名收文件：目录不存在 = 空（audio 可选、assets 目录也未必有）；withFileTypes 跳过子目录
+  const collect = (sub, re) => {
+    const out = {};
+    let entries = [];
+    try {
+      entries = fs.readdirSync(path.join(dir, sub), { withFileTypes: true });
+    } catch {
+      return out;
+    }
+    for (const ent of entries.sort((a, b) => (a.name < b.name ? -1 : 1))) {
+      if (!ent.isFile() || !re.test(ent.name)) continue;
+      try {
+        const buf = fs.readFileSync(path.join(dir, sub, ent.name));
+        if (buf.length > 0) out[ent.name] = buf.toString("base64");
+      } catch {}
+    }
+    return out;
+  };
+  const assets = { ...collect("assets", /^(?!cover\.jpe?g$)[^/\\]+\.jpe?g$/), ...collect(".", COVER_FILE_RE) };
+  return {
+    bundle: {
+      format: PRESET_BUNDLE_FORMAT,
+      version: PRESET_BUNDLE_VERSION,
+      id: pid,
+      title,
+      exportedAt: new Date().toISOString(),
+      presetMd,
+      assets,
+      audio: collect("audio", PRESET_AUDIO_IMPORT_RE),
+    },
+  };
+}
+
+/**
+ * 导入一个剧本 bundle（v1.7）：整体校验 → 重名加 -2/-3 → 落盘。
+ * 校验口径与导出对称：format/version/id（PRESET_ID_RE）、presetMd 非空字符串、
+ * 文件名单层且扩展名过白名单（assets=jpe?g、audio=AUDIO_EXTS，封面键落 preset 根）、
+ * 内容严格 base64、解码总量 ≤50MB——任何一项不合法一律拒绝，**不写半个剧本**。
+ * 占用判定以磁盘目录为准（presets 没有索引文件，scanPresets 扫的就是目录）。
+ * preset.md 原文落地；frontmatter id 与落地 id 不一致时改写 id 行（见下方内联注释）。
+ * 落盘走「临时目录写全量 → 同层 rename 进位」：任何写盘异常（磁盘满/文件名超限/rename 失败）清理
+ * 临时目录后**返回 error 而不抛出**——readBodyText 的回调没有兜底，冒泡即 uncaughtException，
+ * 而 Electron 主进程同进程 import 本文件，等于整应用闪退。
+ * @param {string} root 游戏根目录
+ * @param {object} bundle 导出体
+ * @returns {{ok: true, id: string}|{error: string}} id = 实际落地的剧本 id（可能已重名改名）
+ */
+export function importPresetBundle(root, bundle) {
+  if (!bundle || typeof bundle !== "object") return { error: "bundle 校验失败" };
+  if (bundle.format !== PRESET_BUNDLE_FORMAT || bundle.version !== PRESET_BUNDLE_VERSION) {
+    return { error: "bundle 校验失败" };
+  }
+  const id = String(bundle.id ?? "");
+  if (!PRESET_ID_RE.test(id)) return { error: "bundle 校验失败：id 非法" };
+  if (typeof bundle.presetMd !== "string" || bundle.presetMd.trim() === "") {
+    return { error: "bundle 校验失败：presetMd 必须是非空字符串" };
+  }
+  // 先校验并解码全部文件，再决定落盘目标 id：中途任何失败都不动磁盘
+  const assetsIn = bundle.assets != null && typeof bundle.assets === "object" ? bundle.assets : {};
+  const audioIn = bundle.audio != null && typeof bundle.audio === "object" ? bundle.audio : {};
+  const files = [];
+  let total = 0;
+  for (const [name, b64] of Object.entries(assetsIn)) {
+    if (!safeBundleFileName(name, ASSET_DELETE_FILE_RE)) return { error: `非法的素材文件名: ${name}` };
+    const buf = decodeBase64Field(b64);
+    if (!buf) return { error: `素材内容不是有效的 base64: ${name}` };
+    total += buf.length;
+    files.push({ sub: COVER_FILE_RE.test(name) ? "" : "assets", name, buf });
+  }
+  for (const [name, b64] of Object.entries(audioIn)) {
+    if (!safeBundleFileName(name, PRESET_AUDIO_IMPORT_RE)) return { error: `非法的音频文件名: ${name}` };
+    const buf = decodeBase64Field(b64);
+    if (!buf) return { error: `音频内容不是有效的 base64: ${name}` };
+    total += buf.length;
+    files.push({ sub: "audio", name, buf });
+  }
+  if (total > PRESET_IMPORT_MAX_BYTES) {
+    return { error: `包体解码总量超上限（${Math.round(PRESET_IMPORT_MAX_BYTES / 1024 / 1024)}MB）` };
+  }
+  // 重名后缀：-2、-3…（与 importWorld 同款循环，不覆盖既有剧本）
+  const presetsRoot = path.join(root, "presets");
+  const taken = new Set();
+  try {
+    for (const ent of fs.readdirSync(presetsRoot, { withFileTypes: true })) {
+      if (ent.isDirectory()) taken.add(ent.name);
+    }
+  } catch {}
+  let finalId = id;
+  let n = 1;
+  while (taken.has(finalId)) {
+    n += 1;
+    finalId = `${id}-${n}`;
+  }
+  // 落盘：先写临时目录（presets/.tmp-<id>-<随机>，点前缀就算极端残留也进不了轮播），全量写完再
+  // rename 进位——中途失败（磁盘满/ENAMETOOLONG/被占用）不留半个剧本。整个写盘段包 try/catch，
+  // 异常绝不冒出函数（见函数头注释：冒泡即 uncaughtException，Electron 主进程会同进程闪退）。
+  const dir = path.join(presetsRoot, finalId);
+  const tmp = path.join(presetsRoot, `.tmp-${finalId}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`);
+  try {
+    // preset.md 原文落地；仅当 frontmatter id 与落地目录 id 不一致（重名改名或手写包）时改写 id 行——
+    // scanPresets 按 frontmatter id 进轮播，不改写会出现「目录 demo-2、轮播里还叫 demo」的重复卡带，
+    // 后续美术/音频也会按轮播 id 落错目录。frontmatter 没有合法 id 行时保持原文（scanPresets 会把它报进 errors）。
+    let presetMd = bundle.presetMd;
+    const fmId = parseFrontmatter(presetMd)?.id || "";
+    if (PRESET_ID_RE.test(fmId) && fmId !== finalId) {
+      presetMd = presetMd.replace(/^id:\s*[^\r\n]*$/m, `id: ${finalId}`);
+    }
+    fs.mkdirSync(tmp, { recursive: true });
+    fs.writeFileSync(path.join(tmp, "preset.md"), presetMd);
+    for (const f of files) {
+      const targetDir = f.sub ? path.join(tmp, f.sub) : tmp;
+      fs.mkdirSync(targetDir, { recursive: true });
+      fs.writeFileSync(path.join(targetDir, f.name), f.buf);
+    }
+    fs.renameSync(tmp, dir); // 同层 rename：要么整体进位、要么目录原样不动
+  } catch (e) {
+    fs.rmSync(tmp, { recursive: true, force: true }); // 清掉写了一半的临时目录，不留残留
+    return { error: `包体写入失败：${e.message}` };
+  }
+  console.log(`[acp] preset imported: ${id} → ${finalId}`);
+  return { ok: true, id: finalId };
+}
+
 const WORLDS_ROOT = path.join(GAME_ROOT, "state", "worlds"); // 世界线：每世界一目录，另有 index.json 索引
 export const WORLD_FILES = ["state.md", "summary.md", "story-tree.md"];
 const WORLD_ID_RE = /^[A-Za-z0-9_-]+$/; // 世界 id 白名单（防路径穿越）
@@ -1150,24 +1348,26 @@ export function isCrossSiteRequest(req) {
 }
 
 /**
- * 读 POST 的 JSON body：累积上限 5MB，超限回 413 并断连；否则把原文交给 onEnd（调用方自行 JSON.parse）。
+ * 读 POST 的 JSON body：累积上限默认 5MB，超限回 413 并断连；否则把原文交给 onEnd（调用方自行 JSON.parse）。
  * 统一入口让 /prompt、/api/worlds、/api/assets 共用同一上限，避免逐路由各写一份累积逻辑。
+ * maxBytes 可选（v1.7）：只有 POST /api/presets 导入传 50MB（包里是 base64 图片/音频），其余调用点零改动。
  * @param {import("http").IncomingMessage} req
  * @param {import("http").ServerResponse} res
  * @param {(body: string) => void} onEnd
+ * @param {number} [maxBytes] 累积上限（缺省 MAX_BODY_BYTES=5MB）
  */
-export function readBodyText(req, res, onEnd) {
+export function readBodyText(req, res, onEnd, maxBytes = MAX_BODY_BYTES) {
   const chunks = [];
   let size = 0;
   let done = false;
   req.on("data", (c) => {
     if (done) return;
     size += c.length;
-    if (size > MAX_BODY_BYTES) {
+    if (size > maxBytes) {
       done = true;
       res.writeHead(413, { "content-type": "application/json; charset=utf-8" });
       // 先把 413 刷出去再销毁连接（销毁延后一拍：立即 destroy 会用 RST 把刚发出的响应从客户端接收缓冲里丢掉）
-      res.end(JSON.stringify({ error: "请求体过大（上限 5MB）" }), () => {
+      res.end(JSON.stringify({ error: `请求体过大（上限 ${Math.round(maxBytes / 1024 / 1024)}MB）` }), () => {
         const t = setTimeout(() => req.destroy(), 10);
         t.unref?.();
       });
@@ -1644,8 +1844,8 @@ export function startServer() {
       res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
       // 首页导览：把 v1.6 的新路由（音频列表/直服、历史快照、世界导出）一并列上，方便 curl 排查
       res.end(
-        "galgame acp-server running. API: /api/presets /api/auth /api/assets?preset=(GET,POST删除) /api/audio?preset= " +
-          "/api/worlds(POST: create/fork/restore/update/delete/import) /api/worlds/export?worldId= /api/history?worldId=[&seq=] " +
+        "galgame acp-server running. API: /api/presets(GET,POST:import) /api/presets/export?id= /api/auth /api/assets?preset=(GET,POST删除) " +
+          "/api/audio?preset= /api/worlds(POST: create/fork/restore/update/delete/import) /api/worlds/export?worldId= /api/history?worldId=[&seq=] " +
           "/api/tree /api/state?worldId= /events(SSE) /prompt(POST) /img?p=&t=&n=&preset= /audio?p=. 打包前端见 /app。",
       );
       return;
@@ -1654,6 +1854,48 @@ export function startServer() {
     if (req.method === "GET" && url.pathname === "/api/presets") {
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(scanPresets()));
+      return;
+    }
+
+    // 剧本导出（v1.7）：GET /api/presets/export?id=<id> → 附件下载 <id>.preset.json（base64 图片/音频在包体里）
+    if (req.method === "GET" && url.pathname === "/api/presets/export") {
+      const id = url.searchParams.get("id") || "";
+      const out = buildPresetBundle(GAME_ROOT, id); // 内部已过 PRESET_ID_RE + preset.md 存在性校验
+      if (out.error) {
+        // 目录/ preset.md 不存在与「id 非法」分开说：前者 404（真路过期的 id），后者 400（坏请求）
+        const status = out.error === "剧本不存在" ? 404 : 400;
+        res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ ok: false, error: out.error }));
+        return;
+      }
+      res.writeHead(200, {
+        "content-type": "application/json; charset=utf-8",
+        "content-disposition": `attachment; filename="${id}.preset.json"`,
+      });
+      res.end(JSON.stringify(out.bundle));
+      return;
+    }
+
+    // 剧本导入（v1.7）：POST /api/presets {action:"import", bundle}——包里是 base64 图片/音频，
+    // 5MB 不够用：本端点单独放宽到 50MB（readBodyText 其余调用点仍走 5MB 缺省）
+    if (req.method === "POST" && url.pathname === "/api/presets") {
+      readBodyText(
+        req,
+        res,
+        (body) => {
+          let payload = {};
+          try { payload = JSON.parse(body) || {}; } catch {}
+          if (String(payload.action || "") !== "import") {
+            res.writeHead(400, { "content-type": "application/json; charset=utf-8" });
+            res.end(JSON.stringify({ ok: false, error: "未知动作" }));
+            return;
+          }
+          const out = importPresetBundle(GAME_ROOT, payload.bundle);
+          res.writeHead(out.error ? 400 : 200, { "content-type": "application/json; charset=utf-8" });
+          res.end(JSON.stringify(out.error ? { ok: false, error: out.error } : { ok: true, id: out.id }));
+        },
+        PRESET_IMPORT_MAX_BYTES,
+      );
       return;
     }
 

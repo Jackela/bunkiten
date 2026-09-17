@@ -289,3 +289,74 @@ describe("集成 §8-6：sniffPreset 世界→剧本（继续世界：w1。→ �
     expect(still.bytes.equals(fakeJpeg("linxia-demo"))).toBe(true);
   }, 15000);
 });
+
+// 剧本导出包（v1.7，bunkiten-preset）：真 HTTP 一条往返——seed 剧本（带 jpg/wav）→ GET export 拿包 →
+// POST import（改 id 避免撞名）→ /api/presets 含新 id、/img 与 /audio 直服新剧本文件 200。
+const fakeWav = (tag: string) => Buffer.concat([Buffer.from([0x52, 0x49, 0x46, 0x46]), Buffer.from(`WAV-${tag}`)]);
+
+describe("集成：剧本导出包导出/导入（bunkiten-preset v1.7）", () => {
+  let stack: any;
+
+  beforeAll(async () => {
+    stack = await startStack({
+      turns: [],
+      assets: { demo: [{ name: "立绘-薇拉.jpg", bytes: fakeJpeg("preset-vera") }] },
+      audioFiles: { demo: [{ name: "曲-夜灯谣.wav", bytes: fakeWav("preset-bgm") }] },
+    });
+    // 封面在 preset 根（harness 的 assets 落 assets/ 子目录），按契约手放 presets/demo/cover.jpg
+    writeFileSync(path.join(stack.root, "presets", "demo", "cover.jpg"), fakeJpeg("preset-cover"));
+  }, 30000);
+
+  afterAll(async () => {
+    await stack?.stop();
+  });
+
+  it("⑨ GET export 给包与附件名 → POST import（改 id）→ 轮播含新 id、/img 与 /audio 直服新剧本文件", async () => {
+    const exp = await stack.getJSON("/api/presets/export?id=demo");
+    expect(exp.status).toBe(200);
+    expect(exp.headers.get("content-disposition")).toBe('attachment; filename="demo.preset.json"');
+    expect(exp.body.format).toBe("bunkiten-preset");
+    expect(exp.body.version).toBe(1);
+    expect(exp.body.id).toBe("demo");
+    expect(Object.keys(exp.body.assets).sort()).toEqual(["cover.jpg", "立绘-薇拉.jpg"].sort());
+    expect(Object.keys(exp.body.audio)).toEqual(["曲-夜灯谣.wav"]);
+
+    // 导入：改 id 避免撞名（真实分享流程：拿到别人的包原样导回，撞名才让服务端改 -2）
+    exp.body.id = "demo-copy";
+    const imp = await stack.postJSON("/api/presets", { action: "import", bundle: exp.body });
+    expect(imp.status).toBe(200);
+    expect(imp.body).toEqual({ ok: true, id: "demo-copy" });
+
+    // 轮播出现新剧本（frontmatter id 行已随落地 id 改写，否则会撞回 demo）
+    const list = await stack.getJSON("/api/presets");
+    expect(list.body.presets.find((p: any) => p.id === "demo-copy")).toMatchObject({ title: "示例剧本" });
+
+    // /img 与 /audio 直服新剧本落盘的文件，字节与种子一致（往返不损内容）
+    const img = await stack.getBytes(imgUrl({ p: "presets/demo-copy/assets/立绘-薇拉.jpg" }));
+    expect(img.status).toBe(200);
+    expect(img.bytes.equals(fakeJpeg("preset-vera"))).toBe(true);
+    const cover = await stack.getBytes(imgUrl({ p: "presets/demo-copy/cover.jpg" }));
+    expect(cover.status).toBe(200);
+    expect(cover.bytes.equals(fakeJpeg("preset-cover"))).toBe(true);
+    const au = await stack.getBytes("/audio?" + new URLSearchParams({ p: "presets/demo-copy/audio/曲-夜灯谣.wav" }));
+    expect(au.status).toBe(200);
+    expect(au.type).toContain("audio/wav");
+    expect(au.bytes.equals(fakeWav("preset-bgm"))).toBe(true);
+  }, 15000);
+
+  it("⑩ 错误路径与导览：非法 id 400、不存在 404、非法 bundle 400、未知动作 400、GET / 列出新端点", async () => {
+    expect((await stack.getJSON("/api/presets/export?id=" + encodeURIComponent("../etc"))).status).toBe(400);
+    expect((await stack.getJSON("/api/presets/export?id=nope")).status).toBe(404);
+    expect(
+      (await stack.postJSON("/api/presets", { action: "import", bundle: { format: "x", version: 1, id: "x", presetMd: "# y" } })).status,
+    ).toBe(400);
+    expect((await stack.postJSON("/api/presets", { action: "other" })).status).toBe(400);
+    // 拒绝后不落盘
+    expect(existsSync(path.join(stack.root, "presets", "x"))).toBe(false);
+
+    // 首页导览把两个新端点列上（curl 排查入口与文档同源）
+    const home = await stack.getText("/");
+    expect(home.body).toContain("/api/presets(GET,POST:import)");
+    expect(home.body).toContain("/api/presets/export?id=");
+  }, 15000);
+});

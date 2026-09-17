@@ -336,6 +336,55 @@ export async function postWorldImport(bundle: WorldBundle): Promise<WorldPostRes
 }
 
 /**
+ * 剧本导出包（v1.7，GET /api/presets/export 体；POST /api/presets import 原样回传）。
+ * preset.md 全文 + 资产（含 cover.jpg 键）与音频的 base64 内容；文件名安全与 base64 校验都在服务端。
+ */
+export interface PresetBundle {
+  format: "bunkiten-preset";
+  version: 1;
+  id: string;
+  title: string;
+  exportedAt: string;
+  presetMd: string;
+  /** 文件名 → base64（键含 cover.jpg；导入时封面落 preset 根、其余落 assets/） */
+  assets: Record<string, string>;
+  /** 文件名 → base64（扩展名白名单以 server 的 AUDIO_EXTS 为准；导入落 audio/） */
+  audio: Record<string, string>;
+}
+
+/** POST /api/presets {action:"import"} 的响应（成功回实际落地的剧本 id——可能已重名改名） */
+export interface PresetImportResult {
+  ok: boolean;
+  id?: string;
+  error?: string;
+}
+
+/**
+ * 剧本导出包下载地址（浏览器直接开或喂给 <a download>；服务端带 Content-Disposition）。
+ * @param {string} id 剧本 id
+ * @returns {string} 相对 URL（`/api/presets/export?id=…`）
+ */
+export function presetExportUrl(id: string): string {
+  return `/api/presets/export?id=${encodeURIComponent(id)}`;
+}
+
+/**
+ * 导入剧本包（服务端校验 format/version/id/presetMd 与文件名安全；重名改 <id>-2、-3…）。
+ * 注意这条端点的 body 上限是 50MB（包里是 base64 图片/音频），不是其余 POST 的 5MB。
+ * @param {PresetBundle} bundle 导出包原文（原样回传，前端不改结构）
+ * @returns {Promise<PresetImportResult>} 成功时 id = 实际落盘的（可能改名后的）剧本 id
+ */
+export async function postPresetImport(bundle: PresetBundle): Promise<PresetImportResult> {
+  const r = await fetch("/api/presets", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action: "import", bundle }),
+  });
+  const data = (await r.json().catch(() => ({}))) as PresetImportResult;
+  return { ...data, ok: r.ok && data.ok !== false };
+}
+
+/**
  * 删除一条已落盘的素材（画廊批量删除用）。
  * @param {{preset: string; file: string}} p preset 剧本 id；file 接受画廊条目的完整相对路径
  *   （`presets/<id>/assets/<名>.jpg`），内部收敛为单层文件名——服务端只受理该形态（封面不在受理范围）

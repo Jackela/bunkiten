@@ -253,34 +253,34 @@ describe("③ 指令字符串双处存在：src/lib/parser.ts 源码 ↔ SKILL.m
 
 // ——————————————————————— ④ 用例数 ———————————————————————
 
-/** 文档口径的分组（README / AGENTS / ARCHITECTURE 三处声明），合计 354 例；不含 e2e 与本文件 */
+/** 文档口径的分组（README / AGENTS / ARCHITECTURE 三处声明），合计 367 例；不含 e2e 与本文件 */
 const CASE_GROUPS = [
   { name: "parser", files: ["tests/parser.test.ts"], declared: 65 },
-  { name: "server", files: ["tests/server.test.ts"], declared: 89 },
+  { name: "server", files: ["tests/server.test.ts"], declared: 97 },
   { name: "crafting", files: ["tests/crafting.test.ts"], declared: 52 },
   { name: "treeLayout", files: ["tests/treeLayout.test.ts"], declared: 7 },
   { name: "genealogy", files: ["tests/genealogy.test.ts"], declared: 8 },
   { name: "diff", files: ["tests/diff.test.ts"], declared: 8 },
-  { name: "ui", files: ["tests/ui.test.tsx"], declared: 106 },
+  { name: "ui", files: ["tests/ui.test.tsx"], declared: 109 },
   {
     name: "integration",
     files: ["tests/integration/pipeline.test.ts", "tests/integration/audio-history.test.ts", "tests/integration/http-guard.test.ts"],
-    declared: 19,
+    declared: 21,
   },
 ];
 
 /** integration 的子分组（AGENTS / ARCHITECTURE 单独声明） */
 const CASE_SUB_GROUPS = [
-  { name: "pipeline", file: "tests/integration/pipeline.test.ts", declared: 8 },
+  { name: "pipeline", file: "tests/integration/pipeline.test.ts", declared: 10 },
   { name: "audio-history", file: "tests/integration/audio-history.test.ts", declared: 8 },
   { name: "http-guard", file: "tests/integration/http-guard.test.ts", declared: 3 },
 ];
 
-/** 契约 lint 自己（也被 npm test 收录，但按文档口径**不计入** 354） */
+/** 契约 lint 自己（也被 npm test 收录，但按文档口径**不计入** 367） */
 const CONTRACT_FILE = "tests/contract.test.ts";
 
 /** 文档声明的合计口径 */
-const CASE_TOTAL = 354;
+const CASE_TOTAL = 367;
 
 /** 三份声明口径的文档 */
 const DOCS = ["README.md", "AGENTS.md", "docs/ARCHITECTURE.md"];
@@ -308,7 +308,7 @@ const DOC_GROUP_RES: { re: RegExp; group: (m: RegExpExecArray) => string }[] = [
 
 /** 子分组声明（`pipeline 8`、`` `integration/pipeline` 8 ``） */
 const DOC_SUB_RE = /(pipeline|audio-history|http-guard)`?\s*(\d+)/g;
-/** 合计声明（README「单测 + 集成全量 310 例」、AGENTS「**共 310 例**」） */
+/** 合计声明（README「单测 + 集成全量 367 例」、AGENTS「**共 367 例**」） */
 const DOC_TOTAL_RE = /(?:共|全量)\s*(?:\*\*)?(\d+)(?:\*\*)?\s*例/g;
 
 describe("④ 用例数：文档声明的分组数字 ↔ 各文件实际用例数", () => {
@@ -332,7 +332,7 @@ describe("④ 用例数：文档声明的分组数字 ↔ 各文件实际用例�
     expect(sum, `integration 的分组口径自相矛盾：三个子文件相加 ${sum} 例，文档写 integration ${integration?.declared} 例`).toBe(integration?.declared);
   });
 
-  it("八个分组合计等于文档口径 354，且本文件不计入其中", () => {
+  it("八个分组合计等于文档口径 367，且本文件不计入其中", () => {
     const sum = CASE_GROUPS.reduce((n, g) => n + g.declared, 0);
     expect(sum, `文档的分组口径自相矛盾：八个分组相加 ${sum} 例，文档合计写的是 ${CASE_TOTAL} 例`).toBe(CASE_TOTAL);
     const self = countCases(CONTRACT_FILE);

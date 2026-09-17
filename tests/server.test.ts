@@ -3,18 +3,20 @@
 // 注意：行完整性（半行不生效）由上游 flushArtLines 的换行累积保证，不在这些函数的职责内——
 // 这里只测「给定一行」的解析契约。
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
   assetRelPath,
   assetTargetFile,
+  buildPresetBundle,
   createWorld,
   deleteWorld,
   exportWorld,
   forkNote,
   forkTreeMarkdown,
   forkWorld,
+  importPresetBundle,
   importWorld,
   isDirectivePrompt,
   isSnapshotEntry,
@@ -905,6 +907,160 @@ describe("server importWorld：bundle 校验 / 重名后缀 / 快照与文件落
     expect(out.bundle.world.snapshots).toEqual([]);
     expect(exportWorld(root, "../etc")).toMatchObject({ error: expect.any(String) });
     expect(exportWorld(root, "nope-1")).toMatchObject({ error: expect.any(String) });
+  });
+});
+
+describe("server 剧本导出包：buildPresetBundle / importPresetBundle（bunkiten-preset v1.7，临时 root）", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), "preset-bundle-"));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  // 可辨识的假字节（内容断言用）：JPEG SOI 前缀 + 标记 / 裸文本当 wav
+  const JPEG = (tag: string) => Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from(`J:${tag}`)]);
+  const WAV = (tag: string) => Buffer.from(`W:${tag}`);
+
+  /** 造一个剧本目录：preset.md + 封面 + .jpeg/.jpg 立绘背景 + 两个音频，外加干扰项（子目录/未知扩展名/0 字节/assets 死路径封面） */
+  const seedPreset = (id: string) => {
+    const dir = path.join(root, "presets", id);
+    mkdirSync(path.join(dir, "assets"), { recursive: true });
+    mkdirSync(path.join(dir, "audio"), { recursive: true });
+    writeFileSync(path.join(dir, "preset.md"), `---\nid: ${id}\ntitle: 演示剧本\n---\n\n# 主要角色\n`);
+    writeFileSync(path.join(dir, "cover.jpg"), JPEG("cover"));
+    writeFileSync(path.join(dir, "assets", "立绘-薇拉.jpeg"), JPEG("vera"));
+    writeFileSync(path.join(dir, "assets", "背景-教堂.jpg"), JPEG("church"));
+    writeFileSync(path.join(dir, "audio", "曲-夜灯谣.wav"), WAV("bgm"));
+    writeFileSync(path.join(dir, "audio", "环境-雨夜.ogg"), WAV("rain"));
+    mkdirSync(path.join(dir, "assets", "nested"));
+    writeFileSync(path.join(dir, "assets", "note.txt"), "not an image");
+    writeFileSync(path.join(dir, "assets", "empty.jpg"), "");
+    writeFileSync(path.join(dir, "assets", "cover.jpg"), JPEG("dead-path"));
+  };
+
+  it("buildPresetBundle：非法 id/目录不存在 error；包体收 preset.md/封面/jpe?g/合法音频，跳过子目录、未知扩展名、0 字节与 assets 里的死路径封面", () => {
+    seedPreset("demo");
+    const out = buildPresetBundle(root, "demo") as any;
+    expect(out.error).toBeUndefined();
+    expect(out.bundle.format).toBe("bunkiten-preset");
+    expect(out.bundle.version).toBe(1);
+    expect(out.bundle.id).toBe("demo");
+    expect(out.bundle.title).toBe("演示剧本"); // 取 frontmatter title
+    expect(out.bundle.exportedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(out.bundle.presetMd).toContain("id: demo");
+    expect(Object.keys(out.bundle.assets).sort()).toEqual(["cover.jpg", "立绘-薇拉.jpeg", "背景-教堂.jpg"].sort());
+    expect(Buffer.from(out.bundle.assets["cover.jpg"], "base64").equals(JPEG("cover"))).toBe(true); // 封面键 = preset 根的 cover.jpg
+    expect(out.bundle.assets["cover.jpg"]).not.toBe(Buffer.from(JPEG("dead-path")).toString("base64")); // assets/cover.jpg 是死路径，不进包
+    expect(Object.keys(out.bundle.audio).sort()).toEqual(["曲-夜灯谣.wav", "环境-雨夜.ogg"].sort());
+    expect(Buffer.from(out.bundle.audio["曲-夜灯谣.wav"], "base64").equals(WAV("bgm"))).toBe(true);
+    expect(buildPresetBundle(root, "../etc")).toMatchObject({ error: expect.any(String) });
+    expect(buildPresetBundle(root, "nope")).toMatchObject({ error: expect.any(String) });
+  });
+
+  it("完整往返：导出 → 导入进全新 root（id 不变）→ preset.md 原文与资产/音频字节级还原，进轮播", () => {
+    seedPreset("demo");
+    const bundle = (buildPresetBundle(root, "demo") as any).bundle;
+    const root2 = mkdtempSync(path.join(os.tmpdir(), "preset-bundle-2-"));
+    try {
+      expect(importPresetBundle(root2, bundle)).toEqual({ ok: true, id: "demo" }); // 无撞名：id 原样
+      const dir = path.join(root2, "presets", "demo");
+      expect(readFileSync(path.join(dir, "preset.md"), "utf8")).toBe(bundle.presetMd); // 原文落地（id 行无需改写）
+      expect(readFileSync(path.join(dir, "cover.jpg")).equals(JPEG("cover"))).toBe(true); // 封面键落 preset 根
+      expect(readFileSync(path.join(dir, "assets", "立绘-薇拉.jpeg")).equals(JPEG("vera"))).toBe(true);
+      expect(readFileSync(path.join(dir, "assets", "背景-教堂.jpg")).equals(JPEG("church"))).toBe(true);
+      expect(readFileSync(path.join(dir, "audio", "曲-夜灯谣.wav")).equals(WAV("bgm"))).toBe(true);
+      expect(readFileSync(path.join(dir, "audio", "环境-雨夜.ogg")).equals(WAV("rain"))).toBe(true);
+      expect(scanPresets(root2).presets.find((p: any) => p.id === "demo")).toMatchObject({ title: "演示剧本" });
+    } finally {
+      rmSync(root2, { recursive: true, force: true });
+    }
+  });
+
+  it("重名 -2/-3：目标目录被占用时后缀递增（与 importWorld 同款循环），原目录内容不动；frontmatter id 行随落地 id 改写", () => {
+    seedPreset("demo");
+    const bundle = (buildPresetBundle(root, "demo") as any).bundle; // bundle.id = demo，撞 seed 目录
+    expect(importPresetBundle(root, bundle)).toEqual({ ok: true, id: "demo-2" });
+    expect(importPresetBundle(root, bundle)).toEqual({ ok: true, id: "demo-3" });
+    // 原目录内容原样（不覆盖既有剧本）
+    expect(readFileSync(path.join(root, "presets", "demo", "cover.jpg")).equals(JPEG("cover"))).toBe(true);
+    // 轮播按 frontmatter id 认卡：不改写会出现两张「demo」卡带（美术/音频随之落错目录）
+    const md = readFileSync(path.join(root, "presets", "demo-2", "preset.md"), "utf8");
+    expect(md).toContain("id: demo-2");
+    expect(md).toContain("title: 演示剧本"); // 其余原文不动
+    expect(scanPresets(root).presets.map((p: any) => p.id).sort()).toEqual(["demo", "demo-2", "demo-3"]);
+  });
+
+  it("非法 bundle（format/version/id/presetMd 空白）一律拒绝且不落盘", () => {
+    const base = () => ({ format: "bunkiten-preset", version: 1, id: "x1", presetMd: "---\nid: x1\n---\n", assets: {}, audio: {} });
+    expect(importPresetBundle(root, null as any)).toMatchObject({ error: expect.any(String) });
+    expect(importPresetBundle(root, {} as any)).toMatchObject({ error: expect.any(String) });
+    expect(importPresetBundle(root, { ...base(), format: "x" })).toMatchObject({ error: expect.any(String) });
+    expect(importPresetBundle(root, { ...base(), version: 2 })).toMatchObject({ error: expect.any(String) });
+    expect(importPresetBundle(root, { ...base(), id: "../etc" })).toMatchObject({ error: expect.stringContaining("id") });
+    expect(importPresetBundle(root, { ...base(), presetMd: "   " })).toMatchObject({ error: expect.stringContaining("presetMd") });
+    expect(existsSync(path.join(root, "presets"))).toBe(false); // 拒绝后不写半个剧本（连 presets 根都不建）
+  });
+
+  it("危险文件名（../、子目录、反斜杠、.. 片段）→ error，不落盘", () => {
+    const bundle = () =>
+      ({ format: "bunkiten-preset", version: 1, id: "evil", presetMd: "# x\n", assets: {} as Record<string, string>, audio: {} as Record<string, string> });
+    const b64 = Buffer.from("aa").toString("base64");
+    for (const name of ["../x.jpg", "sub/x.jpg", "..\\x.jpg", "a..b.jpg", "x.jpg/"]) {
+      expect(importPresetBundle(root, { ...bundle(), assets: { [name]: b64 } })).toMatchObject({ error: expect.stringContaining("素材文件名") });
+    }
+    for (const name of ["../曲.mp3", "sub/曲.ogg", "a..b.wav"]) {
+      expect(importPresetBundle(root, { ...bundle(), audio: { [name]: b64 } })).toMatchObject({ error: expect.stringContaining("音频文件名") });
+    }
+    expect(existsSync(path.join(root, "presets", "evil"))).toBe(false);
+  });
+
+  it("非法扩展名（assets 非 jpe?g / audio 不在白名单）→ error；缺 assets/audio 键的最小包照常导入", () => {
+    const bundle = (over: Record<string, unknown> = {}) =>
+      ({ format: "bunkiten-preset", version: 1, id: "ext", presetMd: "# x\n", assets: {}, audio: {}, ...over });
+    const b64 = Buffer.from("aa").toString("base64");
+    expect(importPresetBundle(root, bundle({ assets: { "a.png": b64 } }))).toMatchObject({ error: expect.stringContaining("素材文件名") });
+    expect(importPresetBundle(root, bundle({ assets: { noext: b64 } }))).toMatchObject({ error: expect.any(String) });
+    expect(importPresetBundle(root, bundle({ audio: { "曲-x.mp4": b64 } }))).toMatchObject({ error: expect.stringContaining("音频文件名") });
+    expect(importPresetBundle(root, bundle({ audio: { "no-ext": b64 } }))).toMatchObject({ error: expect.any(String) });
+    // 手写的最小包（只有 preset.md）照常导入：assets/audio 目录按需建
+    expect(importPresetBundle(root, { format: "bunkiten-preset", version: 1, id: "bare", presetMd: "# x\n" } as any)).toEqual({
+      ok: true,
+      id: "bare",
+    });
+    expect(existsSync(path.join(root, "presets", "bare", "preset.md"))).toBe(true);
+  });
+
+  it("内容校验：非字符串 / 非 base64 / 解码为空 / 截断形态（Node 静默丢字符）→ error，不落盘", () => {
+    const bundle = (assets: Record<string, unknown>, audio: Record<string, unknown> = {}) =>
+      ({ format: "bunkiten-preset", version: 1, id: "b64", presetMd: "# x\n", assets, audio }) as any;
+    expect(importPresetBundle(root, bundle({ "a.jpg": "AA!A" }))).toMatchObject({ error: expect.stringContaining("base64") });
+    expect(importPresetBundle(root, bundle({ "a.jpg": 123 }))).toMatchObject({ error: expect.stringContaining("base64") });
+    expect(importPresetBundle(root, bundle({ "a.jpg": "" }))).toMatchObject({ error: expect.stringContaining("base64") });
+    // "AB" 是合法字母但不是完整 base64 词：Node 解码会静默丢位，round-trip 比对把它拦下
+    expect(importPresetBundle(root, bundle({ "a.jpg": "AB" }))).toMatchObject({ error: expect.stringContaining("base64") });
+    expect(importPresetBundle(root, bundle({}, { "曲-x.mp3": "??" }))).toMatchObject({ error: expect.stringContaining("base64") });
+    expect(existsSync(path.join(root, "presets", "b64"))).toBe(false);
+  });
+
+  it("超长名与 Windows 保留名拒绝，presets 下无任何残留（临时目录也不留）——写盘异常防护", () => {
+    seedPreset("demo");
+    const b64 = Buffer.from("aa").toString("base64");
+    const bundle = (assets: Record<string, string>, audio: Record<string, string> = {}) =>
+      ({ format: "bunkiten-preset", version: 1, id: "long", presetMd: "# x\n", assets, audio }) as any;
+    // 超长名在写盘前就该被拒（文件系统单名 255 字节上限，writeFileSync 抛 ENAMETOOLONG 的异常若
+    // 冒出函数，Electron 主进程同进程 import server = 整应用闪退；端点侧该 error 映射 400）
+    expect(importPresetBundle(root, bundle({ ["A".repeat(300) + ".jpg"]: b64 }))).toMatchObject({
+      error: expect.stringContaining("素材文件名"),
+    });
+    // Windows 保留设备名：判去扩展名的 stem（大小写不敏感），`CON.jpg`/`com1.wav` 一样拒收
+    expect(importPresetBundle(root, bundle({ "CON.jpg": b64 }))).toMatchObject({ error: expect.stringContaining("素材文件名") });
+    expect(importPresetBundle(root, bundle({}, { "com1.wav": b64 }))).toMatchObject({ error: expect.stringContaining("音频文件名") });
+    // presets 下只剩 seed 的 demo：无半个剧本、无 .tmp-* 临时目录
+    expect(readdirSync(path.join(root, "presets"))).toEqual(["demo"]);
   });
 });
 

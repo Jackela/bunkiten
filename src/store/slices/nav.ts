@@ -1,14 +1,41 @@
 // nav slice（v1.6 拆分）：屏幕流与全局 overlay 的进入/返回——title 主屏、剧本选择、
 // 设置屏（settings 是无状态片，动作就近放这里）、overlay 通用返回。
-// 各动作的接口文档（含前置/后置条件）见 ../types.ts 的 GameStore；这里只留实现所需的最小注释。
+// v1.7 加剧本导出包的导入（importPresetText：TitleScreen 的「导入剧本」入口；presets 的刷新也走这里，
+// 与 setPresets 同一片——轮播数据只有这一个写入方族）。各动作的接口文档见 ../types.ts 的 GameStore。
+import { fetchPresets, postPresetImport, type PresetBundle } from "../../lib/acp";
 import { audioManager } from "../../lib/audio";
 import { saveSettings, type GameSettings } from "../../lib/settings";
 import type { StoreContext } from "../context";
 import type { GameStore } from "../types";
 
+/**
+ * 解析导入的剧本包原文（纯函数，导入动作与单测共用）。
+ * 只做「敢原样回传服务端」的最小校验：JSON 能解析、format/version 对得上、id 与 presetMd 有值；
+ * 文件名安全、base64 与重名改名一律由服务端裁决（前端不替服务端预判剧本 id 合法性）。
+ * @param {string} text 文件原文（.preset.json）
+ * @returns {PresetBundle | null} 合法包；不是 JSON / 格式不符 / version 非 1 / 缺 id 或 presetMd 时 null
+ */
+export function parsePresetBundle(text: string): PresetBundle | null {
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!data || typeof data !== "object") return null;
+  const b = data as Partial<PresetBundle>;
+  if (b.format !== "bunkiten-preset" || b.version !== 1) return null;
+  if (typeof b.id !== "string" || !b.id) return null;
+  if (typeof b.presetMd !== "string" || !b.presetMd) return null;
+  return b as PresetBundle;
+}
+
 export function createNavSlice(
   ctx: StoreContext,
-): Pick<GameStore, "toTitle" | "selectPreset" | "setPresets" | "openSettings" | "updateSettings" | "closeOverlay"> {
+): Pick<
+  GameStore,
+  "toTitle" | "selectPreset" | "setPresets" | "importPresetText" | "clearTitleNotice" | "openSettings" | "updateSettings" | "closeOverlay"
+> {
   const { set, get } = ctx;
 
   return {
@@ -30,6 +57,39 @@ export function createNavSlice(
 
     setPresets(presets) {
       set({ presets });
+    },
+
+    async importPresetText(text) {
+      // 非法原文不进服务端：本地校验先挡（服务端也会挡，但没必要拿一次 400 当校验器）
+      const bundle = parsePresetBundle(text);
+      if (!bundle) {
+        set({ titleNotice: { kind: "error", text: "导入失败：不是有效的剧本导出包" } });
+        return { ok: false, error: "不是有效的剧本导出包" };
+      }
+      try {
+        const r = await postPresetImport(bundle);
+        if (!r.ok) {
+          set({ titleNotice: { kind: "error", text: `导入失败：${r.error ?? "未知错误"}` } });
+          return r;
+        }
+        // 成功：重取轮播（新卡带立刻可见），提示带实际落地的 id（可能已被服务端重名改名）
+        try {
+          const resp = await fetchPresets();
+          set({ presets: resp.presets });
+        } catch {
+          // 刷新失败不影响导入结果：提示照给，玩家回标题屏会再拉一次
+        }
+        set({ titleNotice: { kind: "ok", text: `已导入为 ${r.id ?? bundle.id}` } });
+        return r;
+      } catch (e) {
+        const msg = String(e);
+        set({ titleNotice: { kind: "error", text: `导入失败：${msg}` } });
+        return { ok: false, error: msg };
+      }
+    },
+
+    clearTitleNotice() {
+      set({ titleNotice: null });
     },
 
     openSettings() {
