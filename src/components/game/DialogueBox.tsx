@@ -6,6 +6,30 @@ import { isTypingTarget, useGameStore } from "../../store/game";
 /** 追赶步长分母：落后文本过多时加速补齐，上限约 3 秒（预载屏转场后正文已积累的场景） */
 const CATCH_UP_DIVISOR = 125;
 
+/** 系统动效偏好查询（v1.7 动效降级）：「减少动态效果」开启时打字机整段显示 */
+const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
+
+/**
+ * 系统是否开了「减少动态效果」：matchMedia 不存在（jsdom 等无实现环境）时视为未开启——
+ * 探测绝不抛错，缺实现就走原打字机路径。
+ */
+function prefersReducedMotion(): boolean {
+  return typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia(REDUCED_MOTION_QUERY).matches;
+}
+
+/** 系统动效偏好：挂载时读一次，之后跟随系统设置变化；只影响呈现，不碰用户的文字速度档 */
+function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(prefersReducedMotion);
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const mq = window.matchMedia(REDUCED_MOTION_QUERY);
+    const onChange = () => setReduced(mq.matches);
+    mq.addEventListener?.("change", onChange);
+    return () => mq.removeEventListener?.("change", onChange);
+  }, []);
+  return reduced;
+}
+
 /** 对话框：按行保持的打字机 + 金色光标（行为对齐旧版 #text） */
 export default function DialogueBox() {
   const received = useGameStore((s) => s.received);
@@ -15,9 +39,10 @@ export default function DialogueBox() {
   const typingDone = useGameStore((s) => s.typingDone);
   const status = useGameStore((s) => s.status);
   const setTypingDone = useGameStore((s) => s.setTypingDone);
-  // v1.6 设置：打字间隔按档位（instant=0 → 直接整段显示）
+  // v1.6 设置：打字间隔按档位（instant=0 → 直接整段显示）；
+  // v1.7 动效降级：系统开了「减少动态效果」时按瞬间档**呈现**（不改用户设置——OS 级偏好不重复发明开关）
   const textSpeed = useGameStore((s) => s.settings.textSpeed);
-  const interval = TEXT_SPEED_MS[textSpeed];
+  const interval = usePrefersReducedMotion() ? 0 : TEXT_SPEED_MS[textSpeed];
 
   const target = visibleTarget(received, finalText);
   const [shown, setShown] = useState("");

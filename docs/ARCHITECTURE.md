@@ -96,7 +96,7 @@ SSE 事件全集（`/events`）：`turn_start` / `seg{seg,label}` / `chunk{seg,t
 
 ## 文本协议契约（最重要）
 
-引擎输出的是纯文本，客户端靠字符串约定驱动 UI。**以下每一条字符串都是跨进程契约，改动必须五处同步**（`SKILL.md` / `parser.ts` / `acp-server.mjs` / `store` / `tests` 快照，见「修改指引」）；v1.6 起再加一道机器门禁——**契约 lint**（`tests/contract.test.ts`）断言五件事：`RULES` 逐字副本（server 常量 ↔ 本节代码块）、`PROTOCOL_HEADS` 集合（真源 ↔ server/parser 解析出口 ↔ SKILL 备忘 ↔ 本文档）、指令字符串双处存在（`parser.ts` ↔ `SKILL.md`）、用例数与本文档/`README.md`/`AGENTS.md` 声明的分组数字一致、设置键与音频扩展名三处一致。改了契约字符串，这几处断言必须同批改（只改一处会被 lint 挡在测试里）。**该 lint 自身不计入文档里的 294 例口径**。
+引擎输出的是纯文本，客户端靠字符串约定驱动 UI。**以下每一条字符串都是跨进程契约，改动必须五处同步**（`SKILL.md` / `parser.ts` / `acp-server.mjs` / `store` / `tests` 快照，见「修改指引」）；v1.6 起再加一道机器门禁——**契约 lint**（`tests/contract.test.ts`）断言五件事：`RULES` 逐字副本（server 常量 ↔ 本节代码块）、`PROTOCOL_HEADS` 集合（真源 ↔ server/parser 解析出口 ↔ SKILL 备忘 ↔ 本文档）、指令字符串双处存在（`parser.ts` ↔ `SKILL.md`）、用例数与本文档/`README.md`/`AGENTS.md` 声明的分组数字一致、设置键与音频扩展名三处一致。改了契约字符串，这几处断言必须同批改（只改一处会被 lint 挡在测试里）。**该 lint 自身不计入文档里的 302 例口径**。
 
 **协议头集合（唯一真源）**：`src/lib/parser.ts` 的 `PROTOCOL_HEADS = ["图", "清单", "章", "立绘", "新剧本", "树", "曲", "环境", "音效"]`（v1.6 起 9 项，按其构造 `isProtocolLine` 的正则）。这 9 个头与 server 侧各 `parse*`、SKILL.md 备忘、本文档表格四处必须一致——契约 lint 会断言。
 
@@ -352,6 +352,16 @@ state/worlds/<worldId>/history/0001.json     # 4 位递增、append-only
 - **图屏呈现**：快照索引（`GET /api/history`）驱动节点上的「快照 #seq · 第 N 轮」标注与「回退到此节点」按钮；有快照的节点「在此分叉」自动携带该 seq。`snapshotTurnNo` 数「seq ≤ 目标的 turn 快照条数」（backup 不算新的一轮）。
 - **history 性能取舍**：列表请求只回元信息（不回 `files`）；`GET /api/history?worldId=&seq=<n>` 只读目标文件、只回那一条（预览/重建很热，不为附 `files` 全量 parse 整个目录）。
 
+### 回退后的客户端语义（v1.7）
+
+回退只覆盖磁盘三文件，客户端侧的两件事由 store 补齐，玩家的历史与档不再各说各话：
+
+- **history 非破坏式分割线**：`restoreSnapshot` 成功时往 `history` 追加一条 `{kind:"rollback", seq, at}`（`types.ts` 的 `HistoryRollbackMark`，与正文幕 `{n,t}` 组成 `HistoryItem` union），**不删除任何旧幕**。`HistoryDrawer` 把分割线之前的幕降不透明度（`opacity-50`）、分割线本身渲染成居中细线「—— 已回退到快照 #N ——」；回退后的新回合正文照常叠在分割线之后。
+- **待重同步（`pendingResync`）**：restore 成功、补发 `继续世界：<worldId>。` 的同时置 `pendingResync: {worldId, seq}`。该回合 `turn_end` 成功 → 清除；失败（POST `/prompt` 409/网络异常，或引擎回 error → SSE `error` 事件）→ 保留并置 `resyncFailed`。UI 三处可见：TopBar「待重同步」徽章（失败时旁边长出「再同步」按钮，点击重发 `buildResumeCommand` 走正常 send 流程）、`WorldsScreen` 对应世界行内小标、图屏提示条 `treeNotice` 三态文案（「正在让引擎重读档…」→「已回退并完成重同步」→「重同步失败，可点再同步重试」）。
+- **不持久化的理由**：`pendingResync` 是会话内内存态。App 重启后玩家走「继续世界线」本来就会重发续玩指令重读档，语义自洽；换世界/换本时由 `resetRunState` 一并清掉。
+
+**引擎 error response 的传播**：`session/prompt` 若按 JSON-RPC 回 `error`（而非断流/超时），`sendPrompt` 显式抛错落进既有 catch——SSE 广播 `error` 事件、`busy` 复位、**不写快照**、`POST /prompt` 回 409。此前该形态被当成功回合处理（照写快照、广播 `turn_end`、HTTP 200）。
+
 ### 世界线导出包（World Bundle）
 
 `GET /api/worlds/export?worldId=<id>` 回 `Content-Disposition: attachment; filename="<worldId>.world.json"`，体：
@@ -538,7 +548,7 @@ presets/<剧本 id>/audio/音效-门响.wav       # 一次性音效
 | `lib/acp.ts` | HTTP/SSE 客户端与 `AcpEvent`/`Preset`/`AssetEntry`/`WorldEntry` 类型；`fetchAssets(preset)`/`assetUrl(kind,name,preset)` 支撑制作中屏与画廊清点（v1.5.1：`preset` 由 `presetQuery` 拼成 `&preset=`，空则不拼、服务端回退 `currentPresetId`），`assetFileUrl`/`coverUrl` 走 `/img` 白名单直服（差分、封面、画廊破缓存）；`fetchWorlds`/`postWorld`/`fetchTree` 供世界线屏与剧情图屏。v1.6 增补：`fetchAudio`/`audioFileUrl`（音频索引与 `/audio?p=` 直服 URL）、`fetchHistory`/`fetchSnapshot`（快照索引 / 单条，配 `WorldSnapshotMeta`/`WorldSnapshot`/`SnapshotFiles` 类型）、`worldExportUrl`/`postWorldUpdate`/`postWorldRestore`/`postWorldImport`（世界线改名、原地回退、导出/导入）、`postAssetDelete`（素材批量删除） |
 | `lib/treeLayout.ts` | 剧情图纯函数布局：最长路径分层 + 抗环 + 确定性坐标（`layoutTree`/`LayoutNode`/`LayoutEdge`/`LayoutOptions`），StoryTreeScreen 的 SVG 数据源，可被 node 单测直引 |
 | `theme.ts` | 剧本主题：`getTheme` 逐键校验兜底（默认 aurora）、`themeVars` 注入 `--accent`/`--accent2` |
-| `components/` | 各屏与游戏 HUD：TitleScreen 封面卡带轮播与插卡动画（`CardCover` 404 回退渐变+motif）、CraftingScreen 制作中屏（planning「章节大纲」槽 → 清单美术网格两段进度，planning/queue 均可跳过；差分槽位显示「薇拉 · 微笑」）、AssetsScreen 画廊（按当前剧本取数 `GET /api/assets?preset=`，立绘按角色分组、背景/封面分组，inUse 角标、大图预览与单项重绘；v1.6 增选择模式：勾选后批量重绘（顺序队列，进度「重绘中 i/N」）与批量删除（两段确认，逐条 `POST /api/assets`）——封面不在删除候选里，引擎忙一律禁用）、CreationScreen 创作模式（打磨对话流 → 装配清单逐项点亮 → 新剧本成功态/重试）、Atmosphere 全局胶片颗粒/暗角、TopBar（左上状态点/状态文字/章号/世界名 chip；右侧竖排轨按钮 设置/历史/素材/剧情图/重开/前情/换剧本/帮助）、DialogueBox（打字机，间隔按设置里的文字速度档 `TEXT_SPEED_MS`，点击对话框立即补全全文）、OptionList（选项上屏即起自动前进倒计时并显示「自动前进 · Ns」；1-9 与 Numpad 数字键选选项）/FreeInput 等 |
+| `components/` | 各屏与游戏 HUD：TitleScreen 封面卡带轮播与插卡动画（`CardCover` 404 回退渐变+motif）、CraftingScreen 制作中屏（planning「章节大纲」槽 → 清单美术网格两段进度，planning/queue 均可跳过；差分槽位显示「薇拉 · 微笑」）、AssetsScreen 画廊（按当前剧本取数 `GET /api/assets?preset=`，立绘按角色分组、背景/封面分组，inUse 角标、大图预览与单项重绘；v1.6 增选择模式：勾选后批量重绘（顺序队列，进度「重绘中 i/N」）与批量删除（两段确认，逐条 `POST /api/assets`）——封面不在删除候选里，引擎忙一律禁用）、CreationScreen 创作模式（打磨对话流 → 装配清单逐项点亮 → 新剧本成功态/重试）、Atmosphere 全局胶片颗粒/暗角、TopBar（左上状态点/状态文字/章号/世界名 chip；右侧竖排轨按钮 设置/历史/素材/剧情图/重开/前情/换剧本/帮助）、DialogueBox（打字机，间隔按设置里的文字速度档 `TEXT_SPEED_MS`，点击对话框立即补全全文；系统开了「减少动态效果」时整段显示，见「动效降级」）、OptionList（选项上屏即起自动前进倒计时并显示「自动前进 · Ns」；1-9 与 Numpad 数字键选选项）/FreeInput 等 |
 | `components/WorldsScreen.tsx` | 世界线屏：`GET /api/worlds?preset=` 列表（继续 / 新世界线 / 两段确认删除 / 键盘导航）；`继续` 走 `resumeWorld`，`新世界线` 走 `POST /api/worlds {action:"create"}`，删除走 `{action:"delete"}`。v1.6：行内改名编辑器（`{action:"update"}` 写 `label`/`note`，留空=清除，Enter 保存 / Esc 取消；显示名按 `worldDisplayName` = `label → note → worldId` 回退）、单条导出（`worldExportUrl` 交给浏览器下载）、打包导入（file input 读 `.world.json` 原文 → store `importWorldText` 校验后 POST）；导入/改名的成功与失败落在屏内提示位（`worldNotice`），列表补 listbox/option 与 roving tabIndex 语义 |
 | `components/StoryTreeScreen.tsx` | 剧情图 overlay：`GET /api/tree` 取树原文 → `parseStoryTree` → `layoutTree` 出 SVG 节点图；节点详情、`剧情：` 自然语言编辑（`buildTreeEditCommand`，编辑回合不进历史）、「在此分叉」（`POST /api/worlds {action:"fork"}`）；`treeEdited` 事件、回退完成与手动刷新都让 `treeStamp` 自增触发重取。v1.6：并取快照索引（`GET /api/history`）在节点上标「快照 #seq · 第 N 轮」（`snapshotTurnNo` 只数 `kind:"turn"`）、详情侧栏给「回退到此节点（原地）」（两段确认 → `restoreSnapshot`），**有快照的节点「在此分叉」自动带该 seq**，无快照的旧世界不渲染这些控件（按现状降级）；图形模式支持缩放（指针锚点）/平移/适应与节点 roving tabIndex + 方向键，当前章节点 > 40 默认降为列表模式（可切回图形） |
 | `components/game/PortraitLayer.tsx` | 立绘层：右下竖排名牌；`expression` 事件换差分只做交叉淡入（0.4s），差分图 404 两级回退（差分 → 基础 → 名牌），不重放浮入动画 |
@@ -562,6 +572,16 @@ theme:
 - **注入与消费**：`App` 根容器按当前剧本注入变量；`global.css` 的 `@theme inline` 把 tailwind 的 `gold`/`accent`/`accent2` 色类映射到变量，全站元素（选项 ◇ 子弹与悬停描边、打字机光标、卡面渐变、插卡泛光）随之主题化；标题屏每张卡带按各自 theme 在子树覆盖变量。
 - **motif 氛围层**：`components/motifs/` 的四款图案（summer/rune/imperial/aurora）是低透明度纯 CSS/transform/opacity 动画，不干扰阅读；常驻 App 背景与标题屏卡面（`dense` 提高密度）。
 - **全局美术**（`components/Atmosphere.tsx`，与主题正交）：胶片颗粒（内联 SVG feTurbulence 噪点 + transform 抖动）与暗角 radial-gradient，常驻 App 顶层、pointer-events-none。
+
+## 动效降级（prefers-reduced-motion，v1.7）
+
+客户端动效分三类，各走各的降级路径；全部**跟随系统「减少动态效果」偏好**，不新增游戏内开关——OS 级偏好是用户已经做出的选择，设置屏不重复发明一个（理由同 Web 惯例：一次设置处处生效，也不会出现「游戏开关与系统开关打架」的中间态）。
+
+- **framer-motion**（屏转场 `ScreenShell`、各屏入场/浮入、motif 氛围层四款、Atmosphere 颗粒跳位）：`App.tsx` 根节点包一层 `<MotionConfig reducedMotion="user">`，一处全局生效——transform/opacity 动画降为瞬时完成（元素照常挂载与切换，不是删动画元素），布局切换、`AnimatePresence mode="wait"` 的卸载序、标题屏卡带轮播的拖拽手势都不受影响（`reducedMotion` 只停自动动画，不停交互）。
+- **CSS keyframes**（`animate-pulse`：打字光标、TopBar 忙点与各屏加载点；`animate-spin`：画廊加载圈）：`global.css` 末尾的 `@media (prefers-reduced-motion: reduce)` 把这两个类 `animation: none`——元素静止但仍渲染（光标停在原地，可见性不丢）。`.grain` 噪点是静态纹理、本来就不动，无需处理。
+- **打字机**（`DialogueBox` 的 setTimeout 逐字链，不走 framer 也不走 CSS）：组件内 `usePrefersReducedMotion()` 用 `window.matchMedia("(prefers-reduced-motion: reduce)")` 检测（挂载读一次 + 跟随 change 事件；jsdom 等无 matchMedia 实现的环境防御性视为未开启，探测绝不抛错）。开启时打字间隔按 0 处理——复用「瞬间」档的呈现路径（`interval <= 0` 直接整段），**但不改用户的文字速度设置档位**；`typingDone` 随之即刻为真，「空格补全」提示与光标自然不出现。
+
+测试：`tests/ui.test.tsx` 给 jsdom 手工挂/删 `window.matchMedia` 垫片，覆盖「reduce 时整段显示且设置档位不动」与「matchMedia 缺失不降级」两条；`tests/e2e-ui/reduced-motion.spec.ts` 用 Playwright 的 `browser.newContext({ reducedMotion: "reduce" })` 走开局回合，断言长正文整段立现（无逐字过程）且动效降级不破坏 crafting→game 的屏切换。
 
 ## 打包布局（electron-builder.yml）
 
@@ -640,8 +660,8 @@ theme:
 | `src/lib/parser.ts` | 客户端解析/构造：开局指令与分项美术/重绘/章节规划/创作模式指令模板（逐字，含待命/跳过后缀、`美术：` 指令、`开演。`、`规划：第 N 章。`、`ENTER_CREATION`/`BUILD_ASSEMBLE`）、`**行动**` 正则与 `stripOptionsBlock`、标记/清单/章标记正则与差分名拆分、**协议头集合 `PROTOCOL_HEADS`**（`isProtocolLine` 的正则由它构造，9 项含【曲】【环境】【音效】）；v1.5 世界段（`build*Opening` worldId）/续玩 `buildResumeCommand`/剧情编辑 `buildTreeEditCommand`/`parseStoryTree`/`assetNameMatches`；v1.6 音频（`AUDIO_KINDS` 类型） |
 | `src/store/game.ts` + `src/store/slices/*` | 事件编排（v1.6 按 slice 分文件，入口仍是 `store/game.ts`；跨片共享闭包与定时器单例在 `store/context.ts`）：段过滤重置逻辑、标记→画面应用、`expression` 表情切换与 `presetAdded` 刷新、章节制作流水线推进（规划→清单→队列→开演→【章】切章）、画廊单项/批量重绘与批量删除、创作装配状态机、`awaitCommand` 切屏；世界线（`beginNewWorld`/`resumeWorld`/`updateWorld`/`importWorldText`）与剧情图 overlay（`openTree`/`forkAt`/`treeEdited`/`restoreSnapshot`、编辑回合不进历史）；v1.6 设置（`updateSettings`）与自动前进（`armAutoAdvance`） |
 | `server/acp-server.mjs` | `RULES` 原文（注入 agent 的客户端补丁，含「世界纪律」与「音频纪律」句）、协议行解析导出（`parseArtLine`/`parseExpressionLine`/`parsePresetAddedLine`/`parseTreeLine`/`parseAudioLine`）与 `handleArtLine` 分流（分支顺序 art → expression → tree → presetAdded → audio）、`listAssets(presetId)` 资产形状（每条回填 `preset`；`inUse` 只扫该剧本的世界）、资产落盘纪律（`resolvePersistPreset` 是唯一「落哪个剧本」判定；`assetRelPath`/`assetTargetFile` 是唯一路径构造；封面走 `presets/<id>/cover.jpg`）；世界线（`readWorldsIndex`/`listWorlds`/`createWorld`/`forkWorld`/`deleteWorld`/`updateWorld`/`migrateLegacyState` 与 `/api/worlds`、`/api/tree` 端点）；v1.6 快照（`writeSnapshot`/`readSnapshot`/`readSnapshots`/`normalizeSnapshot`/`selectSnapshotForNode`/`restoreWorld`/`exportWorld`/`importWorld` + `/api/history`、`/api/worlds/export`）、音频（`scanPresetAudio`/`AUDIO_FILE_RE`/`AUDIO_REL_RE`/`AUDIO_MIME` + `/api/audio`、`/audio`）、本地端点两道闸（`isCrossSiteRequest`/`readBodyText` + `MAX_BODY_BYTES`）、素材删除（`POST /api/assets`） |
-| `tests/parser.test.ts`、`tests/crafting.test.ts`、`tests/server.test.ts`、`tests/treeLayout.test.ts`、`tests/ui.test.tsx`、`tests/integration/*` | 契约字符串快照与单测：开局指令四变体（含世界段）/续玩/剧情编辑、分项美术/重绘/章节规划/创作模式指令、`开演。`、清单（含差分项）/章标记与选项解析期望值（parser 65 例）、章节制作流水线指令序列（crafting 52 例，stub fetch）、世界线/资产落盘判定/协议解析/快照与导出导入（server 76 例）、布局纯函数（treeLayout 7 例）、组件含设置屏与自动前进（ui 76 例）；另有真 server 子进程的集成测试 18 例（`integration/pipeline` 7、`integration/audio-history` 8、`integration/http-guard` 3——音频事件、快照落盘与精确回退、导出/导入往返、来源校验 403 与 body 上限 413） |
-| `tests/contract.test.ts` | v1.6 契约 lint（防漂移门禁，读源码与文档、不起子进程）：`PROTOCOL_HEADS` 唯一真源 ↔ server/parser 解析出口 ↔ `SKILL.md`「标记格式备忘」/本文档、`RULES` 逐字副本（server 常量 ↔ 本节代码块）、指令字符串双处存在（`parser.ts` ↔ `SKILL.md`）、各测试文件的 `it(`/`test(` 用例数与上面那行声明的分组数字逐一比对、设置键 `bunkiten.settings.v1` 与音频扩展名三处一致。**它自己的用例不计入上面那 294 例**（`tests/e2e/**` 同样不在口径内） |
+| `tests/parser.test.ts`、`tests/crafting.test.ts`、`tests/server.test.ts`、`tests/treeLayout.test.ts`、`tests/ui.test.tsx`、`tests/integration/*` | 契约字符串快照与单测：开局指令四变体（含世界段）/续玩/剧情编辑、分项美术/重绘/章节规划/创作模式指令、`开演。`、清单（含差分项）/章标记与选项解析期望值（parser 65 例）、章节制作流水线指令序列（crafting 52 例，stub fetch）、世界线/资产落盘判定/协议解析/快照与导出导入（server 76 例）、布局纯函数（treeLayout 7 例）、组件含设置屏、自动前进与回退后分割线/待重同步、动效降级打字机（ui 83 例）；另有真 server 子进程的集成测试 19 例（`integration/pipeline` 8、`integration/audio-history` 8、`integration/http-guard` 3——音频事件、快照落盘与精确回退、导出/导入往返、来源校验 403 与 body 上限 413、引擎 error response 的 409 传播） |
+| `tests/contract.test.ts` | v1.6 契约 lint（防漂移门禁，读源码与文档、不起子进程）：`PROTOCOL_HEADS` 唯一真源 ↔ server/parser 解析出口 ↔ `SKILL.md`「标记格式备忘」/本文档、`RULES` 逐字副本（server 常量 ↔ 本节代码块）、指令字符串双处存在（`parser.ts` ↔ `SKILL.md`）、各测试文件的 `it(`/`test(` 用例数与上面那行声明的分组数字逐一比对、设置键 `bunkiten.settings.v1` 与音频扩展名三处一致。**它自己的用例不计入上面那 302 例**（`tests/e2e/**` 同样不在口径内） |
 
 v1.3 三组新契约的同步点速查（同一改动五处联动的具体落点）：
 

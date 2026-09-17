@@ -27,3 +27,14 @@ body {
 .grain {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
 }
+
+/* 动效降级（v1.7）：系统开了「减少动态效果」（prefers-reduced-motion: reduce）时关停装饰性动画。
+   framer-motion 侧由 App 根的 <MotionConfig reducedMotion="user"> 全局接管（transform/opacity 动画降为瞬时）；
+   这里只管 Tailwind 的 keyframes 类（光标/忙点/加载点的 pulse、加载圈 spin）——静止但仍渲染，
+   可见性不丢；.grain 是静态噪点纹理，本来就不动，无需处理。打字机的整段化在 DialogueBox 里按同一媒体查询检测。 */
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse,
+  .animate-spin {
+    animation: none;
+  }
+}
