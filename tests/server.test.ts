@@ -23,6 +23,7 @@ import {
   legacyAssetCandidates,
   listWorlds,
   migrateLegacyState,
+  moveToTrash,
   normalizeSnapshot,
   normalizeTheme,
   parseArtLine,
@@ -49,6 +50,7 @@ import {
   updateWorld,
   worldChapterNo,
   writeSnapshot,
+  WORLD_FILES,
 } from "../server/acp-server.mjs";
 
 describe("server parseArtLine：【图】三段 + 可选第四段「重绘」", () => {
@@ -165,14 +167,19 @@ describe("server 世界线纯函数：章号与分叉回退", () => {
 });
 
 describe("server 世界线索引与建 / 分叉 / 删（临时目录）", () => {
+  let tmp: string;
   let root: string;
 
   beforeEach(() => {
-    root = mkdtempSync(path.join(os.tmpdir(), "worlds-"));
+    // 嵌套 <tmp>/state/worlds 布局：deleteWorld 从 worlds 根推导游戏根（<gameRoot>/state/worlds），
+    // 回收站落在 <tmp>/state/trash（与生产一致），整个临时目录由 afterEach 收掉
+    tmp = mkdtempSync(path.join(os.tmpdir(), "worlds-"));
+    root = path.join(tmp, "state", "worlds");
+    mkdirSync(root, { recursive: true });
   });
 
   afterEach(() => {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true });
   });
 
   it("createWorld：分配 <preset>-N 递增 id、建目录、写索引", () => {
@@ -246,10 +253,17 @@ describe("server 世界线索引与建 / 分叉 / 删（临时目录）", () => 
     expect(only.map((e) => e.worldId)).toEqual([b.worldId]);
   });
 
-  it("deleteWorld：删目录并同步索引；未知世界返回 error", () => {
+  it("deleteWorld：目录整体移入回收站并同步索引；未知世界返回 error", () => {
     const a = createWorld(root, "campus-summer", "盛夏偏差值");
-    expect(deleteWorld(root, a.worldId)).toEqual({ ok: true });
-    expect(existsSync(path.join(root, a.worldId))).toBe(false);
+    // createWorld 只建空目录（三文件由引擎写）：先手写三文件，删完才能在回收站里点验
+    for (const f of WORLD_FILES) writeFileSync(path.join(root, a.worldId, f), "# x\n");
+    expect(deleteWorld(root, a.worldId)).toEqual({ ok: true, trashed: true });
+    expect(existsSync(path.join(root, a.worldId))).toBe(false); // 原位消失
+    // 回收站：state/trash/ 下出现 <ts>-<rand4>-<worldId>/ 且三文件都在（断言用 match：RegExp 的 test 方法名会被契约 lint 的用例计数误数）
+    const trash = path.join(tmp, "state", "trash");
+    const items = readdirSync(trash).filter((f) => f.endsWith(`-${a.worldId}`) && f.match(/^\d+-[0-9a-z]{4}-/));
+    expect(items.length).toBe(1);
+    for (const f of WORLD_FILES) expect(existsSync(path.join(trash, items[0], f))).toBe(true);
     expect(readWorldsIndex(root)).toEqual([]);
     expect(deleteWorld(root, a.worldId)).toEqual({ error: "世界不存在" });
   });
@@ -284,6 +298,42 @@ describe("server 世界线索引与建 / 分叉 / 删（临时目录）", () => 
     writeFileSync(path.join(stateDir, "README.md"), "# state/\n");
     expect(migrateLegacyState(stateDir, worldsRoot)).toBe(false);
     expect(existsSync(path.join(worldsRoot, "index.json"))).toBe(false);
+  });
+});
+
+describe("server 回收站 moveToTrash（v1.7：删除不直删，ADR-0014）", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), "trash-"));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("文件挪进 state/trash/<ts>-<rand4>[-<label>]-<原名>；源不存在时不谎报", () => {
+    mkdirSync(path.join(root, "presets", "demo", "assets"), { recursive: true });
+    writeFileSync(path.join(root, "presets", "demo", "assets", "立绘-薇拉.jpg"), "x");
+    const r = moveToTrash(root, ["presets", "demo", "assets", "立绘-薇拉.jpg"], "demo");
+    expect(r).toEqual({ trashed: true });
+    expect(existsSync(path.join(root, "presets", "demo", "assets", "立绘-薇拉.jpg"))).toBe(false);
+    const items = readdirSync(path.join(root, "state", "trash")).filter((f) => f.endsWith("-立绘-薇拉.jpg"));
+    expect(items.length).toBe(1);
+    expect(items[0].match(/^\d+-[0-9a-z]{4}-demo-/)).toBeTruthy(); // <ts>-<rand4>-<label(presetId)>- 前缀：跨剧本同名文件靠它区分归属
+
+    // 源本来就不在：trashed:false 且不占位、不谎报 fallback
+    expect(moveToTrash(root, ["presets", "demo", "assets", "不存在.jpg"])).toEqual({ trashed: false });
+  });
+
+  it("trash 建不出来（如路径被文件占住）→ 回退直删并标 fallback:\"purged\"", () => {
+    mkdirSync(path.join(root, "state"), { recursive: true });
+    writeFileSync(path.join(root, "state", "trash"), "占住回收站路径的普通文件"); // mkdirSync 会失败
+    mkdirSync(path.join(root, "state", "worlds", "w-1"), { recursive: true });
+    writeFileSync(path.join(root, "state", "worlds", "w-1", "state.md"), "# 剧情状态\n");
+    const r = moveToTrash(root, ["state", "worlds", "w-1"]);
+    expect(r).toEqual({ trashed: false, fallback: "purged" }); // 删除不能因 trash 失败而失败
+    expect(existsSync(path.join(root, "state", "worlds", "w-1"))).toBe(false); // 直删兜底生效
   });
 });
 

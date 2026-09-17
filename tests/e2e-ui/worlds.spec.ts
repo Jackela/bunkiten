@@ -1,7 +1,7 @@
 // 假引擎确定性 UI e2e ⑥：世界线屏管理动作——行内改名（label）、导出 .world.json（浏览器下载）、
 // 导入同一文件（server 重名加 -2 后缀）、两段确认删除副本；v1.7 家谱视图（forkedFrom 森林）。
 // 导出内容断言 format:"bunkiten-world" / worldId / title / label；导入文件落在 test-results-ui/ 下。
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Browser, type Page } from "@playwright/test";
@@ -82,6 +82,10 @@ test("世界线管理：行内改名→导出→导入出重名副本 w2-2→两
   await expect(page.getByTestId("world-row-w2-2")).toHaveCount(0);
   await expect(page.getByTestId("world-row-w2")).toBeVisible();
   await expect(page.getByTestId("world-row-w1")).toBeVisible();
+
+  // v1.7 回收站：删除的世界整体进了 state/trash/<ts>-<rand4>-w2-2/（node 侧点验临时 game root）
+  const trashDir = path.join(stack.stack.root, "state", "trash");
+  expect(readdirSync(trashDir).filter((f) => f.endsWith("-w2-2")).length).toBe(1);
 });
 
 test("家谱视图：forkedFrom 链画成森林，点节点出快捷条，孤儿标 ⌫", async () => {

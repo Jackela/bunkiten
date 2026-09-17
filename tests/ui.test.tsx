@@ -196,6 +196,8 @@ describe("WorldsScreen：世界线列表与动作（v1.5）", () => {
 
     fireEvent.click(screen.getByTestId("world-confirm-campus-summer-2"));
     await waitFor(() => expect(worldPosts).toEqual([{ action: "delete", worldId: "campus-summer-2" }]));
+    // v1.7：删除成功提示去向（回收站可手工找回）
+    await waitFor(() => expect(screen.getByText("已移入回收站（state/trash/ 可手工找回）")).toBeTruthy());
   });
 
   it("空态：没有世界线时提示并可开新线", async () => {
