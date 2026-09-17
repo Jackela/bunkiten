@@ -69,6 +69,8 @@ export interface HistoryRollbackMark {
   seq: number;
   /** 落标记的时刻（ms） */
   at: number;
+  /** 分割线来历：缺省/restore=剧情图原地回退（「已回退到快照 #N」）；reroll=重掷本回合（文案随 reason 切换） */
+  reason?: "restore" | "reroll";
 }
 
 /** 历史条目：正文幕（HistoryEntry）或回退分割线（HistoryRollbackMark），按 kind 判别 */
@@ -217,6 +219,17 @@ export interface GameStore {
    *  （重同步失败 vs 普通出错）；成功/失败收尾都复位，普通回合恒为 false。 */
   resyncing: boolean;
 
+  // —— 重掷本回合（reroll，会话内内存态，不持久化）——
+  /** 上一个成功玩家回合的输入（两个玩家入口记录、turn_end 定格）：重掷「重发同一输入」的数据源。
+   *  指令类发送（美术/规划/剧情/续档…）不走玩家入口，天然不更新它；resetRunState 清空。 */
+  lastTurnPrompt: string | null;
+  /** 本回合在途的玩家叙事输入（OptionList/FreeInput/自动前进在 send 前记录）：turn_end 成功定格进
+   *  lastTurnPrompt 后清空；投递失败或引擎出错即作废——没跑完的回合不许冒充「上一回合」。 */
+  pendingTurnPrompt: string | null;
+  /** 重掷的排队跟进：重同步回合成功收尾（pendingResync 清除）后要补发的玩家输入。重同步失败时保留，
+   *  玩家点「再同步」成功后照常跟进；玩家改发普通指令时随 pendingResync 一起静默作废（见 send 入口）。 */
+  pendingRerollPrompt: string | null;
+
   // —— v1.6 设置（settings overlay）——
   /** 玩家设置（初始值读自 localStorage；updateSettings 是唯一写入方） */
   settings: GameSettings;
@@ -280,6 +293,14 @@ export interface GameStore {
    */
   retryResync(): void;
   /**
+   * 重掷本回合（TopBar「重掷」按钮）：撤销刚结束的正戏回合并重发同一玩家输入。
+   * 时序：取快照索引里 kind:"turn" 的**次新**条目（= 上一回合结束态）→ 复用 restore 端点覆盖三文件
+   * （server 先写 backup）→ history 追加 reason:"reroll" 的分割线、置待重同步并发续档指令 →
+   * 重同步回合成功收尾后由 gameplay 的排队跟进自动重发 {@link lastTurnPrompt}（走玩家回合路径，可连掷）。
+   * turn 快照不足两条（本世界第一回合）或引擎忙时中止，经 status 反馈。
+   */
+  rerollTurn(): Promise<void>;
+  /**
    * 启动自动前进倒计时（选项上屏时由 OptionList 调；重复调用幂等）。
    * 拒绝启动：设置关闭（autoAdvance=0）、本回合已被交互取消、非游戏屏、引擎忙、
    * 创作/图屏有排队指令、打字未完成、无选项。
@@ -294,6 +315,12 @@ export interface GameStore {
   toggleCardAnswer(shortName: string, option: string, multi: boolean): void;
   startGame(quick: boolean, preload: boolean): void;
   send(text: string): void;
+  /**
+   * 玩家叙事输入的发送入口（OptionList 选项 / FreeInput 自由输入 / 自动前进代点）：
+   * 先把文本记进 {@link pendingTurnPrompt} 再走 send——turn_end 成功时定格为 {@link lastTurnPrompt}
+   * （重掷「重发同一玩家输入」的数据源）。指令类发送不走这里，天然不记录。
+   */
+  sendPlayerTurn(text: string): void;
   skipPreload(): void;
   toggleDrawer(): void;
   setTypingDone(done: boolean): void;

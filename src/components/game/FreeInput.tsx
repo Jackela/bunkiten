@@ -25,7 +25,8 @@ function getSpeechRecognition(): SpeechRecognitionCtor | undefined {
 
 /** 自由输入：文本框 + 语音（Chrome，zh-CN，说完自动发送，行为对齐旧版 #inputrow） */
 export default function FreeInput() {
-  const send = useGameStore((s) => s.send);
+  // 玩家叙事入口：走 sendPlayerTurn 记录在途输入（重掷「重发同一输入」的数据源），不裸调 send
+  const sendPlayerTurn = useGameStore((s) => s.sendPlayerTurn);
   const status = useGameStore((s) => s.status);
   const [value, setValue] = useState("");
   const [listening, setListening] = useState(false);
@@ -46,7 +47,7 @@ export default function FreeInput() {
     const v = value.trim();
     if (!v) return;
     setValue("");
-    send(v);
+    sendPlayerTurn(v);
   };
 
   const toggleMic = () => {
@@ -71,7 +72,7 @@ export default function FreeInput() {
       transcriptRef.current = "";
       if (t.trim()) {
         setValue("");
-        send(t);
+        sendPlayerTurn(t);
       }
     };
     rec.onerror = () => {

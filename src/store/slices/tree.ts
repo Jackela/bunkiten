@@ -1,9 +1,10 @@
 // tree slice（v1.6 拆分）：剧情图 overlay（剧情：编辑）——取树/编辑指令（含排队）、快照回退、分叉与切换世界线。
+// v1.7 起「重掷本回合」（rerollTurn）也住这里：与剧情图原地回退共享同一套「restore + 分割线 + 重同步」时序。
 // 分叉与回退都是 server 侧文件操作，不占引擎回合；只有编辑指令与回退后的续档指令走 prompt 通路。
-import { postWorld, postWorldRestore, type WorldAction } from "../../lib/acp";
+import { fetchHistory, postWorld, postWorldRestore, type WorldAction, type WorldPostResult, type WorldSnapshotMeta } from "../../lib/acp";
 import { buildResumeCommand, buildTreeEditCommand } from "../../lib/parser";
 import type { StoreContext } from "../context";
-import type { GameStore } from "../types";
+import type { GameStore, HistoryRollbackMark } from "../types";
 
 export function createTreeSlice(
   ctx: StoreContext,
@@ -16,10 +17,77 @@ export function createTreeSlice(
   | "sendTreeEdit"
   | "forkAt"
   | "restoreSnapshot"
+  | "rerollTurn"
   | "retryResync"
   | "switchToFork"
 > {
   const { set, get } = ctx;
+
+  /**
+   * 「restore + 分割线 + 重同步」的共用内核（restoreSnapshot 图屏回退与 rerollTurn 重掷同一时序，不复制粘贴）：
+   * POST restore（server 先写 kind:"backup" 快照再覆盖三文件）→ history 追加非破坏式分割线（reason 区分文案）
+   * → 置 pendingResync/resyncing → 补发续档指令让引擎重读档。提示文案由调用方经 notify 落到各自的
+   * 提示位（图屏回退写 treeNotice，重掷写 status）。
+   * @param {number} seq 目标快照序号
+   * @param {{reason: "restore" | "reroll", rerollPrompt?: string, busyError: string, startText: string,
+   *   failPrefix: string, notify: (text: string) => void}} opts 重掷多带 rerollPrompt（重同步成功后排队补发）
+   * @returns {Promise<WorldPostResult>} 失败在 error 里返回，不抛错
+   */
+  const restoreAndResync = async (
+    seq: number,
+    opts: {
+      reason: "restore" | "reroll";
+      rerollPrompt?: string;
+      busyError: string;
+      startText: string;
+      failPrefix: string;
+      notify: (text: string) => void;
+    },
+  ): Promise<WorldPostResult> => {
+    const s = get();
+    if (!s.worldId) return { ok: false, error: "没有世界线" };
+    if (s.engineBusy || s.pendingTreeMessage) {
+      // 回退覆盖的正是引擎此刻可能正在写的三份文件：忙就等这一轮
+      opts.notify(opts.busyError);
+      return { ok: false, error: opts.busyError };
+    }
+    opts.notify(opts.startText);
+    try {
+      const r = await postWorldRestore({ worldId: s.worldId, seq });
+      if (!r.ok) {
+        opts.notify(`${opts.failPrefix}：${r.error ?? "未知错误"}`);
+        return r;
+      }
+      const backup = r.backupSeq === undefined ? "" : `；回退前状态已备份为快照 #${r.backupSeq}`;
+      const mark: HistoryRollbackMark =
+        opts.reason === "reroll" ? { kind: "rollback", seq, at: Date.now(), reason: "reroll" } : { kind: "rollback", seq, at: Date.now() };
+      // treeStamp 自增 = 图屏重取树与快照索引（回退后节点状态与「最早快照」映射都会变；重掷同理会变）
+      set({
+        // 三态之一「重同步中」：成功/失败的后两态由 gameplay slice 在 turn_end / error 里改写
+        treeNotice: `已回退到快照 #${seq}${backup}，正在让引擎重读档…`,
+        treeStamp: get().treeStamp + 1,
+        // 非破坏式分割线：旧幕一条不删，渲染层把标记之前的幕置灰——玩家侧历史与档不再各说各话
+        history: [...get().history, mark],
+        // 会话内内存态（不持久化，理由见 types.ts）：该回合 turn_end 成功即清除，失败则亮「再同步」；
+        // resyncing 认领「本轮发送的正是重同步指令」——只有它收尾的 turn_end 才算完成重同步（见 gameplay send）
+        pendingResync: { worldId: s.worldId, seq },
+        resyncFailed: false,
+        resyncing: true,
+        // 重掷专用：重同步回合成功收尾后由 gameplay 的排队跟进补发（resync 失败则保留到再同步成功）
+        ...(opts.rerollPrompt !== undefined ? { pendingRerollPrompt: opts.rerollPrompt } : {}),
+      });
+      // 磁盘上的三份文件只是「档」，引擎会话里还留着回退点之后的「未来」记忆：
+      // 三文件覆盖完必须让它按续档语义重新读 state/summary 并恢复画面（会重发【图】标记），
+      // 否则下一回合仍按旧记忆往下演，回退等于白做。走与 sendTreeEdit 同一条 prompt 通路，
+      // 不另开网络旁路；发送失败（含抢占窗口的 409）由 send 的既有错误路径置 resyncFailed。
+      get().send(buildResumeCommand(s.worldId));
+      return r;
+    } catch (e) {
+      const error = String(e);
+      opts.notify(`${opts.failPrefix}：${error}`);
+      return { ok: false, error };
+    }
+  };
 
   return {
     openTree() {
@@ -77,46 +145,56 @@ export function createTreeSlice(
     },
 
     async restoreSnapshot(seq) {
+      // 图屏原地回退：提示走 treeNotice（三态文案见 gameplay turn_end / error）
+      return restoreAndResync(seq, {
+        reason: "restore",
+        busyError: "引擎忙，等这一轮回完再回退",
+        startText: `正在回退到快照 #${seq}…`,
+        failPrefix: "回退失败",
+        notify: (t) => set({ treeNotice: t }),
+      });
+    },
+
+    async rerollTurn() {
       const s = get();
-      if (!s.worldId) return { ok: false, error: "没有世界线" };
+      if (!s.worldId || !s.lastTurnPrompt) return;
+      // 重掷要先退档：作废自动前进倒计时（fetch + restore 的毫秒窗内它不该替玩家再掷一骰抢发）
+      get().cancelAutoAdvance();
+      const worldId = s.worldId; // 记住入口时的世界：await 期间重开/换世界，旧账本不许退到新世界
+      const notify = (t: string) => set({ status: t });
       if (s.engineBusy || s.pendingTreeMessage) {
-        // 回退覆盖的正是引擎此刻可能正在写的三份文件：忙就等这一轮
-        const error = "引擎忙，等这一轮回完再回退";
-        set({ treeNotice: error });
-        return { ok: false, error };
+        // 与回退同一纪律：重掷要覆盖的正是引擎此刻可能正在写的三份文件
+        notify("引擎忙，等这一轮回完再重掷");
+        return;
       }
-      set({ treeNotice: `正在回退到快照 #${seq}…` });
+      notify("正在重掷本回合…");
+      let turns: WorldSnapshotMeta[];
       try {
-        const r = await postWorldRestore({ worldId: s.worldId, seq });
-        if (!r.ok) {
-          set({ treeNotice: `回退失败：${r.error ?? "未知错误"}` });
-          return r;
-        }
-        const backup = r.backupSeq === undefined ? "" : `；回退前状态已备份为快照 #${r.backupSeq}`;
-        // treeStamp 自增 = 图屏重取树与快照索引（回退后节点状态与「最早快照」映射都会变）
-        set({
-          // 三态之一「重同步中」：成功/失败的后两态由 gameplay slice 在 turn_end / error 里改写
-          treeNotice: `已回退到快照 #${seq}${backup}，正在让引擎重读档…`,
-          treeStamp: get().treeStamp + 1,
-          // 非破坏式分割线：旧幕一条不删，渲染层把标记之前的幕置灰——玩家侧历史与档不再各说各话
-          history: [...s.history, { kind: "rollback", seq, at: Date.now() }],
-          // 会话内内存态（不持久化，理由见 types.ts）：该回合 turn_end 成功即清除，失败则亮「再同步」；
-          // resyncing 认领「本轮发送的正是重同步指令」——只有它收尾的 turn_end 才算完成重同步（见 gameplay send）
-          pendingResync: { worldId: s.worldId, seq },
-          resyncFailed: false,
-          resyncing: true,
-        });
-        // 磁盘上的三份文件只是「档」，引擎会话里还留着回退点之后的「未来」记忆：
-        // 三文件覆盖完必须让它按续档语义重新读 state/summary 并恢复画面（会重发【图】标记），
-        // 否则下一回合仍按旧记忆往下演，回退等于白做。走与 sendTreeEdit 同一条 prompt 通路，
-        // 不另开网络旁路；发送失败（含抢占窗口的 409）由 send 的既有错误路径置 resyncFailed。
-        get().send(buildResumeCommand(s.worldId));
-        return r;
+        const h = await fetchHistory(worldId);
+        turns = h.snapshots.filter((x) => x.kind === "turn");
       } catch (e) {
-        const error = String(e);
-        set({ treeNotice: `回退失败：${error}` });
-        return { ok: false, error };
+        notify(`重掷失败：${String(e)}`);
+        return;
       }
+      if (get().worldId !== worldId) return; // await 期间重开/换世界：静默中止，别动新世界的档
+      // 次新 turn 快照 = 上一回合结束态（最新那条是刚结束的本回合）；不足两条 = 本世界第一回合，无处可回
+      if (turns.length < 2) {
+        notify("无法重掷：本世界第一回合没有可回退的快照");
+        return;
+      }
+      // 引擎忙的复查在内核里（fetchHistory 期间可能起跑新回合）；重发输入重读一次 lastTurnPrompt
+      // （入口捕获到取快照之间若有回合收尾，定格值已更新）——重同步回合成功收尾后由 gameplay
+      // 排队跟进送出，这里只负责把档退回去
+      const rerollPrompt = get().lastTurnPrompt;
+      if (!rerollPrompt) return;
+      await restoreAndResync(turns[turns.length - 2].seq, {
+        reason: "reroll",
+        rerollPrompt,
+        busyError: "引擎忙，等这一轮回完再重掷",
+        startText: "正在重掷本回合…",
+        failPrefix: "重掷失败",
+        notify,
+      });
     },
 
     retryResync() {

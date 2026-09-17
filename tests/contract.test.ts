@@ -12,7 +12,7 @@
 //   ⑤ 设置键与音频扩展名：settings.ts / server 源码 / 文档三处一致
 //
 // 纯 node：只读文件 + import 已导出的模块（不 spawn、不联网、不写盘），整体 <1s。
-// 注意：本文件自身也被 `npm test` 收录，但**不计入**文档声明的 310 例口径（tests/e2e/** 同样不在口径内），见第 ④ 组。
+// 注意：本文件自身也被 `npm test` 收录，但**不计入**文档声明的 316 例口径（tests/e2e/** 同样不在口径内），见第 ④ 组。
 
 import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
@@ -253,13 +253,13 @@ describe("③ 指令字符串双处存在：src/lib/parser.ts 源码 ↔ SKILL.m
 
 // ——————————————————————— ④ 用例数 ———————————————————————
 
-/** 文档口径的分组（README / AGENTS / ARCHITECTURE 三处声明），合计 310 例；不含 e2e 与本文件 */
+/** 文档口径的分组（README / AGENTS / ARCHITECTURE 三处声明），合计 316 例；不含 e2e 与本文件 */
 const CASE_GROUPS = [
   { name: "parser", files: ["tests/parser.test.ts"], declared: 65 },
   { name: "server", files: ["tests/server.test.ts"], declared: 79 },
   { name: "crafting", files: ["tests/crafting.test.ts"], declared: 52 },
   { name: "treeLayout", files: ["tests/treeLayout.test.ts"], declared: 7 },
-  { name: "ui", files: ["tests/ui.test.tsx"], declared: 88 },
+  { name: "ui", files: ["tests/ui.test.tsx"], declared: 94 },
   {
     name: "integration",
     files: ["tests/integration/pipeline.test.ts", "tests/integration/audio-history.test.ts", "tests/integration/http-guard.test.ts"],
@@ -274,11 +274,11 @@ const CASE_SUB_GROUPS = [
   { name: "http-guard", file: "tests/integration/http-guard.test.ts", declared: 3 },
 ];
 
-/** 契约 lint 自己（也被 npm test 收录，但按文档口径**不计入** 310） */
+/** 契约 lint 自己（也被 npm test 收录，但按文档口径**不计入** 316） */
 const CONTRACT_FILE = "tests/contract.test.ts";
 
 /** 文档声明的合计口径 */
-const CASE_TOTAL = 310;
+const CASE_TOTAL = 316;
 
 /** 三份声明口径的文档 */
 const DOCS = ["README.md", "AGENTS.md", "docs/ARCHITECTURE.md"];
@@ -330,7 +330,7 @@ describe("④ 用例数：文档声明的分组数字 ↔ 各文件实际用例�
     expect(sum, `integration 的分组口径自相矛盾：三个子文件相加 ${sum} 例，文档写 integration ${integration?.declared} 例`).toBe(integration?.declared);
   });
 
-  it("六个分组合计等于文档口径 310，且本文件不计入其中", () => {
+  it("六个分组合计等于文档口径 316，且本文件不计入其中", () => {
     const sum = CASE_GROUPS.reduce((n, g) => n + g.declared, 0);
     expect(sum, `文档的分组口径自相矛盾：六个分组相加 ${sum} 例，文档合计写的是 ${CASE_TOTAL} 例`).toBe(CASE_TOTAL);
     const self = countCases(CONTRACT_FILE);
@@ -370,7 +370,7 @@ describe("④ 用例数：文档声明的分组数字 ↔ 各文件实际用例�
     }
   });
 
-  it("文档里的子分组数字与合计（「共/全量 N 例」）都等于 310 口径", () => {
+  it("文档里的子分组数字与合计（「共/全量 N 例」）都等于 316 口径", () => {
     let totals = 0;
     for (const doc of DOCS) {
       const text = read(doc);

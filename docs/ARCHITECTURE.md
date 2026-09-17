@@ -96,7 +96,7 @@ SSE 事件全集（`/events`）：`turn_start` / `seg{seg,label}` / `chunk{seg,t
 
 ## 文本协议契约（最重要）
 
-引擎输出的是纯文本，客户端靠字符串约定驱动 UI。**以下每一条字符串都是跨进程契约，改动必须五处同步**（`SKILL.md` / `parser.ts` / `acp-server.mjs` / `store` / `tests` 快照，见「修改指引」）；v1.6 起再加一道机器门禁——**契约 lint**（`tests/contract.test.ts`）断言五件事：`RULES` 逐字副本（server 常量 ↔ 本节代码块）、`PROTOCOL_HEADS` 集合（真源 ↔ server/parser 解析出口 ↔ SKILL 备忘 ↔ 本文档）、指令字符串双处存在（`parser.ts` ↔ `SKILL.md`）、用例数与本文档/`README.md`/`AGENTS.md` 声明的分组数字一致、设置键与音频扩展名三处一致。改了契约字符串，这几处断言必须同批改（只改一处会被 lint 挡在测试里）。**该 lint 自身不计入文档里的 310 例口径**。
+引擎输出的是纯文本，客户端靠字符串约定驱动 UI。**以下每一条字符串都是跨进程契约，改动必须五处同步**（`SKILL.md` / `parser.ts` / `acp-server.mjs` / `store` / `tests` 快照，见「修改指引」）；v1.6 起再加一道机器门禁——**契约 lint**（`tests/contract.test.ts`）断言五件事：`RULES` 逐字副本（server 常量 ↔ 本节代码块）、`PROTOCOL_HEADS` 集合（真源 ↔ server/parser 解析出口 ↔ SKILL 备忘 ↔ 本文档）、指令字符串双处存在（`parser.ts` ↔ `SKILL.md`）、用例数与本文档/`README.md`/`AGENTS.md` 声明的分组数字一致、设置键与音频扩展名三处一致。改了契约字符串，这几处断言必须同批改（只改一处会被 lint 挡在测试里）。**该 lint 自身不计入文档里的 316 例口径**。
 
 **协议头集合（唯一真源）**：`src/lib/parser.ts` 的 `PROTOCOL_HEADS = ["图", "清单", "章", "立绘", "新剧本", "树", "曲", "环境", "音效"]`（v1.6 起 9 项，按其构造 `isProtocolLine` 的正则）。这 9 个头与 server 侧各 `parse*`、SKILL.md 备忘、本文档表格四处必须一致——契约 lint 会断言。
 
@@ -361,6 +361,18 @@ state/worlds/<worldId>/history/0001.json     # 4 位递增、append-only
 - **不持久化的理由**：`pendingResync` 是会话内内存态。App 重启后玩家走「继续世界线」本来就会重发续玩指令重读档，语义自洽；换世界/换本时由 `resetRunState` 一并清掉。
 
 **引擎 error response 的传播**：`session/prompt` 若按 JSON-RPC 回 `error`（而非断流/超时），`sendPrompt` 显式抛错落进既有 catch——SSE 广播 `error` 事件、`busy` 复位、**不写快照**、`POST /prompt` 回 409。此前该形态被当成功回合处理（照写快照、广播 `turn_end`、HTTP 200）。
+
+### 重掷本回合（reroll，v1.7）
+
+「重掷」= 撤销刚结束的正戏回合并重发同一玩家输入（TopBar 右侧「重掷」按钮，`rerollTurn` 在 tree slice 里与 `restoreSnapshot` 共用「restore + 分割线 + 重同步」内核，同一套时序不复制）。完整五步：
+
+1. **取目标**：`GET /api/history` 取 `kind:"turn"` 的快照，**次新**的那条 = 上一回合结束态（最新那条是刚结束的本回合；`backup` 不参与计数）。不足两条（本世界第一回合）→ status 反馈「无法重掷」并中止，不打扰服务端。
+2. **回退**：`POST /api/worlds {action:"restore", worldId, seq: <次新>}`——与剧情图回退同一端点，server 先写 `backup` 快照再覆盖三文件（server 侧零改动）。
+3. **重同步**：history 追加带 `reason:"reroll"` 的分割线（`HistoryRollbackMark.reason`；渲染为「—— 重掷本回合（回到快照 #N）——」，`restore`/缺省保持「已回退到快照 #N」）、置 `pendingResync`/`resyncing`、发 `继续世界：<worldId>。`——**不能只重发 prompt**：引擎会话记忆仍带着上一掷的叙事，必须让它重读档。
+4. **排队跟进**：重掷时把玩家输入存进 `pendingRerollPrompt`；重同步回合 `turn_end` 成功、清完 `pendingResync` 之后立即经 `sendPlayerTurn` 重发并清空（走正常玩家回合路径）。防重入：先清后发，且只有 `resyncing` 收尾的回合认领。重同步失败 → `pendingRerollPrompt` 保留，玩家点「再同步」成功后照常跟进；玩家改发普通指令 → 随 `pendingResync` 在 send 入口一并静默作废。
+5. **输入记账**：`lastTurnPrompt`（上一成功玩家回合的输入）由玩家叙事输入的两个入口（OptionList 选项、FreeInput 自由输入；自动前进代点同路径）在 send 前记进在途的 `pendingTurnPrompt`，`turn_end` 成功时定格；指令类发送（美术/规划/剧情/续档…）不经玩家入口，天然不记录。投递失败或引擎出错即在途作废。`resetRunState` 清空全部三个字段。
+
+**连掷**：重掷出的新回合照常走玩家路径（`pendingTurnPrompt` 重新记录、`turn_end` 重新定格），回合结束即恢复重掷入口——再点一次就按**此刻**快照账本的次新 turn 快照重新走一遍五步。三个记账字段都是会话内内存态，理由同 `pendingResync`。
 
 ### 世界线导出包（World Bundle）
 
@@ -679,8 +691,8 @@ theme:
 | `src/lib/parser.ts` | 客户端解析/构造：开局指令与分项美术/重绘/章节规划/创作模式指令模板（逐字，含待命/跳过后缀、`美术：` 指令、`开演。`、`规划：第 N 章。`、`ENTER_CREATION`/`BUILD_ASSEMBLE`）、`**行动**` 正则与 `stripOptionsBlock`、标记/清单/章标记正则与差分名拆分、**协议头集合 `PROTOCOL_HEADS`**（`isProtocolLine` 的正则由它构造，9 项含【曲】【环境】【音效】）；v1.5 世界段（`build*Opening` worldId）/续玩 `buildResumeCommand`/剧情编辑 `buildTreeEditCommand`/`parseStoryTree`/`assetNameMatches`；v1.6 音频（`AUDIO_KINDS` 类型） |
 | `src/store/game.ts` + `src/store/slices/*` | 事件编排（v1.6 按 slice 分文件，入口仍是 `store/game.ts`；跨片共享闭包与定时器单例在 `store/context.ts`）：段过滤重置逻辑、标记→画面应用、`expression` 表情切换与 `presetAdded` 刷新、章节制作流水线推进（规划→清单→队列→开演→【章】切章）、画廊单项/批量重绘与批量删除、创作装配状态机、`awaitCommand` 切屏；世界线（`beginNewWorld`/`resumeWorld`/`updateWorld`/`importWorldText`）与剧情图 overlay（`openTree`/`forkAt`/`treeEdited`/`restoreSnapshot`、编辑回合不进历史）；v1.6 设置（`updateSettings`）与自动前进（`armAutoAdvance`） |
 | `server/acp-server.mjs` | `RULES` 原文（注入 agent 的客户端补丁，含「世界纪律」与「音频纪律」句）、协议行解析导出（`parseArtLine`/`parseExpressionLine`/`parsePresetAddedLine`/`parseTreeLine`/`parseAudioLine`）与 `handleArtLine` 分流（分支顺序 art → expression → tree → presetAdded → audio）、`listAssets(presetId)` 资产形状（每条回填 `preset`；`inUse` 只扫该剧本的世界）、资产落盘纪律（`resolvePersistPreset` 是唯一「落哪个剧本」判定；`assetRelPath`/`assetTargetFile` 是唯一路径构造；封面走 `presets/<id>/cover.jpg`）；世界线（`readWorldsIndex`/`listWorlds`/`createWorld`/`forkWorld`/`deleteWorld`/`updateWorld`/`migrateLegacyState` 与 `/api/worlds`、`/api/tree` 端点）；v1.6 快照（`writeSnapshot`/`readSnapshot`/`readSnapshots`/`normalizeSnapshot`/`selectSnapshotForNode`/`restoreWorld`/`exportWorld`/`importWorld` + `/api/history`、`/api/worlds/export`）、音频（`scanPresetAudio`/`AUDIO_FILE_RE`/`AUDIO_REL_RE`/`AUDIO_MIME` + `/api/audio`、`/audio`）、本地端点两道闸（`isCrossSiteRequest`/`readBodyText` + `MAX_BODY_BYTES`）、素材删除（`POST /api/assets`） |
-| `tests/parser.test.ts`、`tests/crafting.test.ts`、`tests/server.test.ts`、`tests/treeLayout.test.ts`、`tests/ui.test.tsx`、`tests/integration/*` | 契约字符串快照与单测：开局指令四变体（含世界段）/续玩/剧情编辑、分项美术/重绘/章节规划/创作模式指令、`开演。`、清单（含差分项）/章标记与选项解析期望值（parser 65 例）、章节制作流水线指令序列（crafting 52 例，stub fetch）、世界线/资产落盘判定/协议解析/快照与导出导入（server 79 例）、布局纯函数（treeLayout 7 例）、组件含设置屏、自动前进与回退后分割线/待重同步、动效降级打字机、主题字体族与对话框质感（ui 88 例）；另有真 server 子进程的集成测试 19 例（`integration/pipeline` 8、`integration/audio-history` 8、`integration/http-guard` 3——音频事件、快照落盘与精确回退、导出/导入往返、来源校验 403 与 body 上限 413、引擎 error response 的 409 传播） |
-| `tests/contract.test.ts` | v1.6 契约 lint（防漂移门禁，读源码与文档、不起子进程）：`PROTOCOL_HEADS` 唯一真源 ↔ server/parser 解析出口 ↔ `SKILL.md`「标记格式备忘」/本文档、`RULES` 逐字副本（server 常量 ↔ 本节代码块）、指令字符串双处存在（`parser.ts` ↔ `SKILL.md`）、各测试文件的 `it(`/`test(` 用例数与上面那行声明的分组数字逐一比对、设置键 `bunkiten.settings.v1` 与音频扩展名三处一致。**它自己的用例不计入上面那 310 例**（`tests/e2e/**` 同样不在口径内） |
+| `tests/parser.test.ts`、`tests/crafting.test.ts`、`tests/server.test.ts`、`tests/treeLayout.test.ts`、`tests/ui.test.tsx`、`tests/integration/*` | 契约字符串快照与单测：开局指令四变体（含世界段）/续玩/剧情编辑、分项美术/重绘/章节规划/创作模式指令、`开演。`、清单（含差分项）/章标记与选项解析期望值（parser 65 例）、章节制作流水线指令序列（crafting 52 例，stub fetch）、世界线/资产落盘判定/协议解析/快照与导出导入（server 79 例）、布局纯函数（treeLayout 7 例）、组件含设置屏、自动前进与回退后分割线/待重同步、动效降级打字机、主题字体族与对话框质感、重掷本回合全链（ui 94 例）；另有真 server 子进程的集成测试 19 例（`integration/pipeline` 8、`integration/audio-history` 8、`integration/http-guard` 3——音频事件、快照落盘与精确回退、导出/导入往返、来源校验 403 与 body 上限 413、引擎 error response 的 409 传播） |
+| `tests/contract.test.ts` | v1.6 契约 lint（防漂移门禁，读源码与文档、不起子进程）：`PROTOCOL_HEADS` 唯一真源 ↔ server/parser 解析出口 ↔ `SKILL.md`「标记格式备忘」/本文档、`RULES` 逐字副本（server 常量 ↔ 本节代码块）、指令字符串双处存在（`parser.ts` ↔ `SKILL.md`）、各测试文件的 `it(`/`test(` 用例数与上面那行声明的分组数字逐一比对、设置键 `bunkiten.settings.v1` 与音频扩展名三处一致。**它自己的用例不计入上面那 316 例**（`tests/e2e/**` 同样不在口径内） |
 
 v1.3 三组新契约的同步点速查（同一改动五处联动的具体落点）：
 

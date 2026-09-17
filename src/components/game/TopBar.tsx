@@ -1,14 +1,15 @@
 import { useGameStore } from "../../store/game";
 import { useTurnElapsed } from "../useTurnElapsed";
 
-/** 快捷命令按钮：竖排文字，贴右侧边缘（galgame 规范的操作轨） */
-function RailButton({ label, onClick }: { label: string; onClick: () => void }) {
+/** 快捷命令按钮：竖排文字，贴右侧边缘（galgame 规范的操作轨）；testId/aria 供 e2e 与无障碍名分离于短标签 */
+function RailButton({ label, onClick, testId, aria }: { label: string; onClick: () => void; testId?: string; aria?: string }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      title={label}
-      aria-label={label}
+      title={aria ?? label}
+      aria-label={aria ?? label}
+      data-testid={testId}
       className="rounded-md px-1.5 py-2.5 text-[11.5px] tracking-[.25em] text-ink/60 transition-colors duration-200 hover:bg-white/[.06] hover:text-[color:var(--accent)] [writing-mode:vertical-rl]"
     >
       {label}
@@ -20,6 +21,8 @@ function RailButton({ label, onClick }: { label: string; onClick: () => void }) 
  * 顶栏（已拆两半）：状态点/状态文字/章节号/当前世界线留在左上角；快捷命令改为右侧竖排文字按钮轨。
  * 长回合显示已耗时秒数（区分「在跑」与「卡死」）。/new-game、/presets 回合结束后回标题屏。
  * 回退后的「待重同步」徽章挂在这里；重同步失败时旁边长出「再同步」按钮（retryResync 重发续玩指令）。
+ * 「重掷本回合」（rerollTurn：退回上一回合结束态并重发同一玩家输入）只在就绪、有上一回合输入、
+ * 且不处于待重同步时出现——重同步进行中不重掷（要覆盖的正是那几份正在变的文件）。
  */
 export default function TopBar() {
   const status = useGameStore((s) => s.status);
@@ -27,7 +30,9 @@ export default function TopBar() {
   const worldLabel = useGameStore((s) => s.worldLabel);
   const pendingResync = useGameStore((s) => s.pendingResync);
   const resyncFailed = useGameStore((s) => s.resyncFailed);
+  const lastTurnPrompt = useGameStore((s) => s.lastTurnPrompt);
   const send = useGameStore((s) => s.send);
+  const rerollTurn = useGameStore((s) => s.rerollTurn);
   const retryResync = useGameStore((s) => s.retryResync);
   const toggleDrawer = useGameStore((s) => s.toggleDrawer);
   const openAssets = useGameStore((s) => s.openAssets);
@@ -35,6 +40,7 @@ export default function TopBar() {
   const openSettings = useGameStore((s) => s.openSettings);
   const busy = status.includes("…");
   const elapsed = useTurnElapsed();
+  const canReroll = status === "就绪" && !!lastTurnPrompt && !pendingResync;
 
   return (
     <>
@@ -77,6 +83,7 @@ export default function TopBar() {
         <RailButton label="历史" onClick={toggleDrawer} />
         <RailButton label="素材" onClick={openAssets} />
         <RailButton label="剧情图" onClick={openTree} />
+        {canReroll && <RailButton label="重掷" aria="重掷本回合" testId="reroll" onClick={() => void rerollTurn()} />}
         <RailButton label="重开" onClick={() => send("/new-game")} />
         <RailButton label="前情" onClick={() => send("/recap")} />
         <RailButton label="换剧本" onClick={() => send("/presets")} />

@@ -262,7 +262,8 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
       return;
     }
     set({ autoAdvanceDeadline: null });
-    get().send(first.t);
+    // 走玩家入口（同手点选项）：自动选中的这回合同样是「玩家叙事输入」，要进 lastTurnPrompt 的账
+    get().sendPlayerTurn(first.t);
   }
 
   function armWatchdog() {
@@ -390,7 +391,8 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
 
   /** 引擎报错/超时：制作中屏按阶段降级，不阻塞整体 */
   function onEngineError(message: string) {
-    set({ status: `出错：${message}`, engineBusy: false, turnStartAt: null });
+    // 回合没跑完：在途的玩家输入作废（没成功的回合不许在之后的收尾里定格成「上一回合」）
+    set({ status: `出错：${message}`, engineBusy: false, turnStartAt: null, pendingTurnPrompt: null });
     clearWatchdog();
     finishRegen(false); // 挂起中的重绘回合没了：未确认记账，解除挂起让按钮恢复并接队列下一条
     if (get().screen === "creation" && get().assembling) {
@@ -446,6 +448,10 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
       pendingResync: null,
       resyncFailed: false,
       resyncing: false,
+      // 重掷的三个记账同理会话内不跨玩法：换世界后「上一回合输入」与排队重发都属于旧世界
+      lastTurnPrompt: null,
+      pendingTurnPrompt: null,
+      pendingRerollPrompt: null,
       // 自动前进不跨玩法：换本/开新局时把倒计时清掉
       autoAdvanceDeadline: null,
       autoAdvanceMuted: false,
