@@ -47,6 +47,7 @@ export type {
 } from "./types";
 export { fallbackPortraitUrl, nextPortraitOnExpression } from "./portrait";
 export { parseWorldBundle } from "./slices/world";
+export { parsePresetBundle } from "./slices/nav";
 
 /**
  * 键盘快捷键的准入条件之一：事件目标是否落在「正在打字」的输入控件里（数字键选选项 / 空格补全用）。
@@ -74,6 +75,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
     screenReturn: null,
     selected: null,
     presets: [],
+    titleNotice: null,
     cardAnswers: {},
     status: "连接引擎…",
     turnKey: 0,

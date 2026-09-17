@@ -16,6 +16,7 @@ import CharactersDrawer from "../src/components/game/CharactersDrawer";
 import DialogueBox from "../src/components/game/DialogueBox";
 import HistoryDrawer from "../src/components/game/HistoryDrawer";
 import OptionList from "../src/components/game/OptionList";
+import TitleScreen from "../src/components/TitleScreen";
 import CreationScreen from "../src/components/CreationScreen";
 import AssetsScreen from "../src/components/AssetsScreen";
 import WorldsScreen, { relativeTime, worldDisplayName } from "../src/components/WorldsScreen";
@@ -3149,5 +3150,104 @@ describe("角色面板：渲染 / 秘密折叠 / turn_end 重拉 / 空态（v1.7
     expect(useGameStore.getState().stateView).toBeNull();
     expect(screen.getByTestId("characters-empty").textContent).toContain("还没有可展示的角色状态");
     expect(screen.queryByTestId("characters-list")).toBeNull();
+  });
+});
+
+describe("TitleScreen：剧本导出/导入（v1.7）", () => {
+  const RIFT: Preset = { ...PRESET, id: "rift-mark", title: "裂痕纹章" };
+  let presetsResp: Preset[];
+  let importResp: { ok: boolean; id?: string; error?: string };
+  let presetPosts: { action: string; bundle: unknown }[];
+  let presetGets: number;
+
+  beforeEach(() => {
+    presetsResp = [PRESET, RIFT];
+    importResp = { ok: true, id: "campus-summer-9" };
+    presetPosts = [];
+    presetGets = 0;
+    useGameStore.setState({ presets: [], titleNotice: null });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/api/presets" && init?.method === "POST") {
+          presetPosts.push(JSON.parse(String(init.body)));
+          return jsonResponse(importResp);
+        }
+        if (url.pathname === "/api/presets") {
+          presetGets += 1;
+          return jsonResponse({ presets: presetsResp, errors: [] });
+        }
+        return jsonResponse({}, 404);
+      }),
+    );
+  });
+
+  it("导出：当前卡带「导出」小按钮指向 /api/presets/export?id= 并带 <id>.preset.json 下载名", async () => {
+    render(<TitleScreen />);
+    await waitFor(() => expect(screen.getByTestId("title-card-center")).toBeTruthy());
+
+    const link = screen.getByTestId("preset-export-campus-summer") as HTMLAnchorElement;
+    expect(link.getAttribute("href")).toBe("/api/presets/export?id=campus-summer");
+    expect(link.getAttribute("download")).toBe("campus-summer.preset.json");
+    expect(link.getAttribute("aria-label")).toBe("导出剧本 盛夏偏差值");
+    // 只有当前卡带导出按钮（← → 切卡后目标跟着换）
+    expect(screen.queryByTestId("preset-export-rift-mark")).toBeNull();
+  });
+
+  it("导入：选中文件 → POST import → 重取轮播出新卡并提示「已导入为 <id>」", async () => {
+    render(<TitleScreen />);
+    await waitFor(() => expect(screen.getByTestId("preset-import-input")).toBeTruthy());
+    expect(presetGets).toBe(1); // 挂载拉过一次
+
+    // 导入成功后服务端的轮播会多出新卡：第二次 GET 返回带新卡的列表
+    const IMPORTED: Preset = { ...PRESET, id: "campus-summer-9", title: "导入的副本" };
+    presetsResp = [...presetsResp, IMPORTED];
+    const bundle = {
+      format: "bunkiten-preset",
+      version: 1,
+      id: "campus-summer-9",
+      title: "导入的副本",
+      exportedAt: "2026-09-17T00:00:00.000Z",
+      presetMd: "---\nid: campus-summer-9\ntitle: 导入的副本\n---\n",
+      assets: { "cover.jpg": "/9j/" },
+      audio: {},
+    };
+    const file = new File([JSON.stringify(bundle)], "campus-summer-9.preset.json", { type: "application/json" });
+    fireEvent.change(screen.getByTestId("preset-import-input"), { target: { files: [file] } });
+
+    await waitFor(() => expect(presetPosts).toEqual([{ action: "import", bundle }]));
+    await waitFor(() => expect(screen.getByTestId("title-notice").textContent).toContain("已导入为 campus-summer-9"));
+    expect(screen.getByTestId("title-notice").getAttribute("data-kind")).toBe("ok");
+    await waitFor(() => expect(presetGets).toBe(2)); // 成功后重取轮播
+
+    // 轮播真的刷新了：新卡排在末尾，切到它（→ →）后导出按钮换成新 id
+    await act(async () => {});
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    await waitFor(() => expect(screen.getByTestId("preset-export-campus-summer-9")).toBeTruthy());
+  });
+
+  it("导入失败：不是导出包本地挡下（不打服务端）；服务端拒绝走错误提示位", async () => {
+    render(<TitleScreen />);
+    await waitFor(() => expect(screen.getByTestId("preset-import-input")).toBeTruthy());
+
+    // 本地校验：普通 JSON 不是导出包 → 不 POST
+    const junk = new File(["这只是一段普通文本"], "note.json", { type: "application/json" });
+    fireEvent.change(screen.getByTestId("preset-import-input"), { target: { files: [junk] } });
+    await waitFor(() => expect(screen.getByTestId("title-notice").textContent).toContain("不是有效的剧本导出包"));
+    expect(screen.getByTestId("title-notice").getAttribute("data-kind")).toBe("error");
+    expect(presetPosts).toEqual([]);
+
+    // 服务端拒绝（文件名安全等裁决在 server）：错误信息透传到提示位
+    importResp = { ok: false, error: "非法的素材文件名: ../x.jpg" };
+    const file = new File(
+      [JSON.stringify({ format: "bunkiten-preset", version: 1, id: "x", presetMd: "# y\n", assets: {}, audio: {} })],
+      "x.preset.json",
+    );
+    fireEvent.change(screen.getByTestId("preset-import-input"), { target: { files: [file] } });
+    await waitFor(() => expect(screen.getByTestId("title-notice").textContent).toContain("导入失败：非法的素材文件名: ../x.jpg"));
+    expect(screen.getByTestId("title-notice").getAttribute("data-kind")).toBe("error");
+    expect(presetGets).toBe(1); // 失败不重取轮播
   });
 });

@@ -103,8 +103,10 @@ export interface GameStore {
   /** overlay 屏（assets/creation）的返回目标 */
   screenReturn: Screen | null;
   selected: Preset | null;
-  /** /api/presets 的轮播数据（TitleScreen 挂载与 presetAdded 时刷新） */
+  /** /api/presets 的轮播数据（TitleScreen 挂载、presetAdded 与剧本导入成功时刷新） */
   presets: Preset[];
+  /** 标题屏提示位：剧本导入的成功/失败（v1.7；失败 kind=error） */
+  titleNotice: Notice | null;
   /** shortName -> 已选选项（多选按选择顺序） */
   cardAnswers: Record<string, string[]>;
   status: string;
@@ -257,6 +259,15 @@ export interface GameStore {
   toTitle(): void;
   selectPreset(preset: Preset): void;
   setPresets(presets: Preset[]): void;
+  /**
+   * 导入剧本导出包（v1.7，TitleScreen「导入剧本」入口）：本地最小校验 → POST /api/presets import →
+   * 成功重取 /api/presets 刷新轮播（新卡带立刻可见）并提示「已导入为 <id>」（服务端重名会改 -2/-3）。
+   * @param {string} text 文件原文（.preset.json）
+   * @returns {Promise<{ok: boolean; id?: string; error?: string}>} 失败在 error 里返回，不抛错；结果落 titleNotice
+   */
+  importPresetText(text: string): Promise<{ ok: boolean; id?: string; error?: string }>;
+  /** 清标题屏提示位（新导入开始时） */
+  clearTitleNotice(): void;
   /** 世界线屏：开始一条全新世界线（id 已由 POST /api/worlds 分配） */
   beginNewWorld(worldId: string): void;
   /** 世界线屏：继续某个已有世界（读档续演，跳过初始化与开场卡） */

@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { Fragment, useEffect, useRef, useState, type ChangeEvent, type CSSProperties } from "react";
 import { AnimatePresence, motion, type PanInfo } from "framer-motion";
-import { coverUrl, fetchPresets } from "../lib/acp";
+import { coverUrl, fetchPresets, presetExportUrl } from "../lib/acp";
 import { getTheme, themeVars } from "../theme";
 import { useGameStore } from "../store/game";
 import { ScreenShell } from "./ScreenShell";
@@ -36,10 +36,14 @@ function ringOffset(i: number, current: number, n: number): number {
   return off;
 }
 
-/** 标题屏：老游戏机式的卡带轮播。← → 切卡，Enter/点中央卡「插卡」进入捏人。 */
+/** 标题屏：老游戏机式的卡带轮播。← → 切卡，Enter/点中央卡「插卡」进入捏人。
+ *  v1.7 加剧本分享：当前卡带「导出」小按钮（.preset.json 附件下载）与角落「导入剧本」入口。 */
 export default function TitleScreen() {
   const selectPreset = useGameStore((s) => s.selectPreset);
   const setPresets = useGameStore((s) => s.setPresets);
+  const importPresetText = useGameStore((s) => s.importPresetText);
+  const clearTitleNotice = useGameStore((s) => s.clearTitleNotice);
+  const titleNotice = useGameStore((s) => s.titleNotice);
   const openAssets = useGameStore((s) => s.openAssets);
   const openCreation = useGameStore((s) => s.openCreation);
   // 轮播数据读 store：挂载拉取写入，presetAdded（新剧本装配完成）也会刷新——新卡带封面即时出现
@@ -49,6 +53,10 @@ export default function TitleScreen() {
   const [skipCount, setSkipCount] = useState(0);
   const [index, setIndex] = useState(0);
   const [inserting, setInserting] = useState(false);
+  // 导入剧本（v1.7）：在途标志（按钮禁用）与文件读取失败的就近提示（POST 结果走 store 的 titleNotice）
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState("");
+  const importRef = useRef<HTMLInputElement>(null);
   // 拖拽位移记录：tap 判定用（拖动超过阈值后的 tap 不算点击）
   const dragged = useRef(0);
 
@@ -65,6 +73,11 @@ export default function TitleScreen() {
       });
     return () => abort.abort();
   }, [setPresets]);
+
+  // 进屏清掉上一轮的提示条（导入结果属于上一次会话，不该复读）
+  useEffect(() => {
+    clearTitleNotice();
+  }, [clearTitleNotice]);
 
   const n = presets.length;
   const current = presets[index] ?? null;
@@ -95,6 +108,23 @@ export default function TitleScreen() {
     else if (info.offset.x > DRAG_THRESHOLD) step(-1);
   };
 
+  /** 导入剧本：读文件原文 → store 校验+POST+刷新轮播（提示落 titleNotice）；读文件失败就地提示 */
+  const onImportPick = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // 允许连续导入同一个文件（不清值浏览器不会再触发 change）
+    if (!file || importing) return;
+    setImportError("");
+    clearTitleNotice();
+    setImporting(true);
+    try {
+      await importPresetText(await file.text());
+    } catch (err) {
+      setImportError(`导入失败：${String(err)}`);
+    } finally {
+      setImporting(false);
+    }
+  };
+
   return (
     <ScreenShell
       className="overflow-hidden bg-[radial-gradient(120%_90%_at_50%_0%,#131627_0%,#07080c_60%)]"
@@ -113,10 +143,39 @@ export default function TitleScreen() {
         {loaded && skipCount > 0 && (
           <p className="mt-2 text-xs text-ink-hint">跳过 {skipCount} 个无法解析的剧本</p>
         )}
+        {titleNotice && (
+          <p
+            data-testid="title-notice"
+            data-kind={titleNotice.kind}
+            className={`mt-2 text-sm ${titleNotice.kind === "error" ? "text-red-400" : "text-emerald-300"}`}
+          >
+            {titleNotice.text}
+          </p>
+        )}
+        {importError && <p className="mt-2 text-sm text-red-400">{importError}</p>}
       </header>
 
-      {/* 角落入口：画廊与创作模式（stopPropagation 防止 Enter 同时触发插卡） */}
+      {/* 角落入口：导入剧本/画廊/创作模式（stopPropagation 防止 Enter 同时触发插卡） */}
       <div className="absolute bottom-[4vh] right-6 z-20 flex items-center gap-5 text-[12px] tracking-[.3em] text-ink-hint">
+        <button
+          type="button"
+          data-testid="preset-import"
+          disabled={importing}
+          onClick={() => importRef.current?.click()}
+          onKeyDown={(e) => e.stopPropagation()}
+          className="transition-colors hover:text-[color:var(--accent)] disabled:cursor-not-allowed disabled:text-ink-faint"
+        >
+          {importing ? "导入中…" : "导入剧本"}
+        </button>
+        {/* 导入收 .preset.json（.json 已覆盖它，双写只是让选择器对话框里更醒目） */}
+        <input
+          ref={importRef}
+          type="file"
+          accept=".json,.preset.json"
+          data-testid="preset-import-input"
+          className="hidden"
+          onChange={onImportPick}
+        />
         <button
           type="button"
           onClick={openAssets}
@@ -155,84 +214,104 @@ export default function TitleScreen() {
             const show = visible && !hiddenMirror;
             const t = getTheme(p);
             return (
-              <motion.button
-                key={p.id}
-                type="button"
-                onClick={() => {
-                  if (Math.abs(dragged.current) > 12) return; // 拖拽后的 tap 不触发
-                  if (inserting) return;
-                  if (isCenter) insert();
-                  else step(off > 0 ? 1 : -1);
-                }}
-                drag="x"
-                dragListener={isCenter}
-                dragConstraints={{ left: 0, right: 0 }}
-                dragElastic={0.16}
-                onDragStart={() => (dragged.current = 0)}
-                onDrag={(_e: unknown, info: PanInfo) => (dragged.current = info.offset.x)}
-                onDragEnd={onDragEnd}
-                initial={false}
-                animate={
-                  inserting && isCenter
-                    ? { x: 0, y: "34vh", scale: 0.16, rotateY: 0, opacity: 0.85, zIndex: 40 }
-                    : {
-                        x: show ? `${off * 64}%` : `${Math.sign(off || 1) * 130}%`,
-                        y: 0,
-                        scale: isCenter ? 1 : 0.6,
-                        rotateY: show ? off * -25 : 0,
-                        opacity: isCenter ? 1 : show ? 0.4 : 0,
-                        zIndex: isCenter ? 20 : 10,
-                      }
-                }
-                transition={inserting && isCenter ? { duration: 0.55, ease: [0.55, 0, 0.9, 0.4] } : SHIFT}
-                style={{ ...cardVars(t), transformOrigin: "50% 40%" }}
-                className={`absolute inset-0 h-full w-full rounded-2xl border text-left ${
-                  isCenter ? "cursor-pointer" : "pointer-events-none"
-                } ${show ? "" : "pointer-events-none"}`}
-                aria-label={`${p.title} ${p.genre}`}
-                data-testid={isCenter ? "title-card-center" : undefined}
-              >
-                {/* 卡面：封面图铺满卡底，主题色渐变与文字叠在图上保证可读性；无封面回退渐变+motif */}
-                <span
-                  className="absolute inset-0 overflow-hidden rounded-2xl"
-                  style={{
-                    background: `linear-gradient(168deg, ${t.accent2}2e 0%, ${t.accent}24 34%, #0a0c12 76%), #0a0c12`,
+              <Fragment key={p.id}>
+                <motion.button
+                  type="button"
+                  onClick={() => {
+                    if (Math.abs(dragged.current) > 12) return; // 拖拽后的 tap 不触发
+                    if (inserting) return;
+                    if (isCenter) insert();
+                    else step(off > 0 ? 1 : -1);
                   }}
+                  drag="x"
+                  dragListener={isCenter}
+                  dragConstraints={{ left: 0, right: 0 }}
+                  dragElastic={0.16}
+                  onDragStart={() => (dragged.current = 0)}
+                  onDrag={(_e: unknown, info: PanInfo) => (dragged.current = info.offset.x)}
+                  onDragEnd={onDragEnd}
+                  initial={false}
+                  animate={
+                    inserting && isCenter
+                      ? { x: 0, y: "34vh", scale: 0.16, rotateY: 0, opacity: 0.85, zIndex: 40 }
+                      : {
+                          x: show ? `${off * 64}%` : `${Math.sign(off || 1) * 130}%`,
+                          y: 0,
+                          scale: isCenter ? 1 : 0.6,
+                          rotateY: show ? off * -25 : 0,
+                          opacity: isCenter ? 1 : show ? 0.4 : 0,
+                          zIndex: isCenter ? 20 : 10,
+                        }
+                  }
+                  transition={inserting && isCenter ? { duration: 0.55, ease: [0.55, 0, 0.9, 0.4] } : SHIFT}
+                  style={{ ...cardVars(t), transformOrigin: "50% 40%" }}
+                  className={`absolute inset-0 h-full w-full rounded-2xl border text-left ${
+                    isCenter ? "cursor-pointer" : "pointer-events-none"
+                  } ${show ? "" : "pointer-events-none"}`}
+                  aria-label={`${p.title} ${p.genre}`}
+                  data-testid={isCenter ? "title-card-center" : undefined}
                 >
-                  <CardCover id={p.id} />
-                  {/* 封面可读性渐变（无封面时对底渐变无害） */}
+                  {/* 卡面：封面图铺满卡底，主题色渐变与文字叠在图上保证可读性；无封面回退渐变+motif */}
                   <span
-                    className="absolute inset-0 block"
+                    className="absolute inset-0 overflow-hidden rounded-2xl"
                     style={{
-                      background: "linear-gradient(180deg, rgba(10,12,18,.12) 0%, rgba(10,12,18,0) 38%, rgba(10,12,18,.88) 100%)",
+                      background: `linear-gradient(168deg, ${t.accent2}2e 0%, ${t.accent}24 34%, #0a0c12 76%), #0a0c12`,
                     }}
-                  />
-                  <span className="absolute inset-0 block">
-                    <MotifLayer motif={t.motif} dense />
-                  </span>
-                  {/* 卡带顶部缺口与侧槽：致敬实体卡带 */}
-                  <span
-                    className="absolute left-1/2 top-3 h-1.5 w-16 -translate-x-1/2 rounded-full"
-                    style={{ background: `linear-gradient(90deg, transparent, ${t.accent}80, transparent)` }}
-                  />
-                  <span className="absolute inset-x-6 bottom-24 top-14 rounded-lg border border-white/[.07] bg-black/25 backdrop-blur-[2px]">
-                    <span className="absolute inset-x-0 top-0 flex justify-center gap-2 pt-3">
-                      {[0, 1, 2, 3, 4].map((k) => (
-                        <span key={k} className="h-1 w-6 rounded-sm bg-white/10" />
-                      ))}
+                  >
+                    <CardCover id={p.id} />
+                    {/* 封面可读性渐变（无封面时对底渐变无害） */}
+                    <span
+                      className="absolute inset-0 block"
+                      style={{
+                        background: "linear-gradient(180deg, rgba(10,12,18,.12) 0%, rgba(10,12,18,0) 38%, rgba(10,12,18,.88) 100%)",
+                      }}
+                    />
+                    <span className="absolute inset-0 block">
+                      <MotifLayer motif={t.motif} dense />
+                    </span>
+                    {/* 卡带顶部缺口与侧槽：致敬实体卡带 */}
+                    <span
+                      className="absolute left-1/2 top-3 h-1.5 w-16 -translate-x-1/2 rounded-full"
+                      style={{ background: `linear-gradient(90deg, transparent, ${t.accent}80, transparent)` }}
+                    />
+                    <span className="absolute inset-x-6 bottom-24 top-14 rounded-lg border border-white/[.07] bg-black/25 backdrop-blur-[2px]">
+                      <span className="absolute inset-x-0 top-0 flex justify-center gap-2 pt-3">
+                        {[0, 1, 2, 3, 4].map((k) => (
+                          <span key={k} className="h-1 w-6 rounded-sm bg-white/10" />
+                        ))}
+                      </span>
                     </span>
                   </span>
-                </span>
 
-                {/* 文案区 */}
-                <span className="absolute inset-x-0 bottom-0 block p-6 pt-14">
-                  <span className="block text-[11px] tracking-[.28em]" style={{ color: t.accent }}>
-                    {p.genre}
+                  {/* 文案区 */}
+                  <span className="absolute inset-x-0 bottom-0 block p-6 pt-14">
+                    <span className="block text-[11px] tracking-[.28em]" style={{ color: t.accent }}>
+                      {p.genre}
+                    </span>
+                    <span className="mt-2 block text-[22px] leading-snug tracking-[.12em] text-ink">{p.title}</span>
+                    <span className="mt-2 block text-[12.5px] leading-relaxed text-ink-body">{p.tagline}</span>
                   </span>
-                  <span className="mt-2 block text-[22px] leading-snug tracking-[.12em] text-ink">{p.title}</span>
-                  <span className="mt-2 block text-[12.5px] leading-relaxed text-ink-body">{p.tagline}</span>
-                </span>
-              </motion.button>
+                </motion.button>
+                {/* 导出小按钮（v1.7）：只挂当前卡，浮在卡右上角——不嵌进 motion.button（嵌套交互元素非法）；
+                    stopPropagation 防 Enter 同时触发插卡 */}
+                {isCenter && !inserting && (
+                  <a
+                    href={presetExportUrl(p.id)}
+                    download={`${p.id}.preset.json`}
+                    data-testid={`preset-export-${p.id}`}
+                    aria-label={`导出剧本 ${p.title}`}
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => {
+                      // 只拦 Enter（防止同时触发插卡）；方向键放行——点击导出后焦点留在链接上，
+                      // 全拦会把 ← → 切卡也吞掉，直到玩家点别处才恢复
+                      if (e.key === "Enter") e.stopPropagation();
+                    }}
+                    className="absolute right-3 top-3 z-30 rounded-md border border-white/15 bg-black/45 px-2 py-1 text-[11px] tracking-[.2em] text-ink/70 backdrop-blur-sm transition-colors hover:border-gold/50 hover:text-ink"
+                  >
+                    导出
+                  </a>
+                )}
+              </Fragment>
             );
           })}
         </div>
