@@ -4,21 +4,21 @@
 
 <p align="center"><a href="https://github.com/Jackela/bunkiten/actions/workflows/ci.yml"><img src="https://github.com/Jackela/bunkiten/actions/workflows/ci.yml/badge.svg" alt="CI 状态"></a> <a href="https://github.com/Jackela/bunkiten/releases"><img src="https://img.shields.io/github/v/release/Jackela/bunkiten?label=release" alt="最新 release"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a> <img src="https://img.shields.io/badge/node-24-brightgreen.svg" alt="Node 24"></p>
 
-> v1.6.0 —— 给单人定制的 LLM 互动 AVG（文字冒险 / 视觉小说）完整产品：Electron 桌面壳 + React 前端 + grok CLI（ACP）叙事引擎；本版补上**音频层**（【曲】/【环境】/【音效】三类协议行 + `presets/<id>/audio/`）、**逐轮快照与精确回退**（回到任意一轮或节点，分叉/回退/导出导入世界线），并把发布工程化（**打 tag 即发版**、条件化签名与公证、electron-updater）；另有体验补课：设置屏（音量/静音/文本速度/自动前进）、世界线重命名与导出导入、画廊批量重绘与删除、剧情图大图降级与缩放平移、键盘 1-9 选择与空格补全。
+> v1.7.0 —— 给单人定制的 LLM 互动 AVG（文字冒险 / 视觉小说）完整产品：Electron 桌面壳 + React 前端 + grok CLI（ACP）叙事引擎；本版把「后悔药」补全（**重掷本回合**、回退后的历史分割线与待重同步），新添三个观察面（世界线**家谱**、快照**对比**、**角色面板**），剧本可以**导出包分享/导入**、作者有 `npm run doctor` 体检；无障碍补上基线（跟随系统「减少动态效果」、全局焦点环、对比度三档 token），引擎侧更可靠（回合原文日志、缺选项段自动追问、读路径索引化）；工程上协议常量收进 `shared/protocol.mjs` 单一真源、server 拆成入口 + 10 模块、删除进回收站，并铺了假引擎 UI e2e + 覆盖率阈值 + server typecheck 的测试安全网。
 
 一个自包含的游戏：**引擎是 skill**（`.grok/skills/bunkiten/SKILL.md`），**剧本是数据**（`presets/`），**进度是文件**（`state/`），**美术按需生成**（image_gen，按「类型+名字」持久化到当前剧本的 `presets/<id>/assets/`）。AI 实时演绎剧情、画立绘背景，你做选择。每个剧本自带一套主题——配色与氛围图案从标题屏卡带一路贯穿到对话框。
 
 ## 一屏看懂
 
 ```
-启动 → 检查 grok 登录 → 标题屏卡带轮播（← → 切换 · Enter 装载；右下角 素材画廊 / 创作新剧本）
+启动 → 检查 grok 登录 → 标题屏卡带轮播（← → 切换 · Enter 装载；当前卡带右上「导出」可把剧本打包分享，右下角 素材画廊 / 导入剧本 / 创作新剧本）
      → 世界线屏（继续一条世界线读档续演 / 新世界线 / 行内重命名与备注 / 导出导入 .world.json / 两段确认删除；「家谱」视图把分叉血缘画成森林——谁从哪条线哪个节点分出来一目了然，⌫ = 父线已删）→ 新世界线才去捏主角（或快速开局）→ [制作中：第 1 章大纲 → 按清单逐张生成本章美术（含表情差分，可跳过） | 跳过直接开演] → 开演
 每轮：正文（打字机，点对话框或按空格立即显示全文；角色立绘随情绪切换差分）→ 【行动】选项按钮（点按钮或按 1-9）/ 自由输入（含输入选项编号）→ 下一轮；不满意这一掷？右侧「重掷」撤销刚走完的这一轮并自动重发同一句输入重新演绎（本世界第一轮除外，可连掷；历史里只留一条分割线，旧幕不删）
 声音：引擎每轮可发【曲】/【环境】/【音效】三行——BGM 与环境音各一条通道交叉淡入、音效一次性；文件由作者放在 presets/<id>/audio/，没放就静默
 动效：跟随系统「减少动态效果」（prefers-reduced-motion，不新增设置开关——OS 级偏好是用户已做的选择）——位移类动效瞬时化、脉冲光标静止、打字机直接整段显示（淡入淡出保留，属无障碍推荐替代）
 章间：本章收束 → 自动进下一章制作（大纲 → 本章全部分支美术）→ 开演，直至终局
 画面：封面卡带 + 背景层 + 角色立绘（差分两级回退）+ 对话框 + 主题化配色/氛围层；顶栏左上角是 状态点/状态文字/章号/世界名，右侧竖排按钮轨从上到下 历史/角色（面板：好感度/表情/秘密（默认折叠防剧透）/导演手记，回合后自动刷新）/素材（画廊）/剧情图/重掷（有上一轮输入时）/重开/前情/换剧本/设置（齿轮：主音量与静音/BGM·环境·音效/文本速度/自动前进）/帮助
-剧情图：节点带快照标注（#seq · 第 N 轮），可「回退到此节点」（覆盖该世界线三文件并让引擎重新读档续演）；本章节点 > 40 默认降级为列表（可切回图形）；图形模式滚轮缩放 · 拖拽平移 · 双击复位
+剧情图：节点带快照标注（#seq · 第 N 轮），可「回退到此节点」（覆盖该世界线三文件并让引擎重新读档续演），详情里还能「与上一快照对比」（剧情状态/前情摘要/剧情树三个 tab 逐行 diff）；本章节点 > 40 默认降级为列表（可切回图形）；图形模式滚轮缩放 · 拖拽平移 · 双击复位
 画廊：进「选择模式」勾选多张 → 批量重绘（顺序队列）/ 批量删除（两段确认）；封面不参与删除
 ```
 
@@ -45,8 +45,8 @@ bunkiten/
 ├─ electron/
 │  ├─ main.js               # Electron 主进程：GAME_ROOT、PATH 补齐、启动 acp-server、开窗口、打包态查更新（electron-updater）
 │  └─ notarize.cjs          # afterSign 公证钩子：APPLE_* 三件套不齐直接 return（本地与未配 secrets 的构建照常成功）
-├─ server/
-│  └─ acp-server.mjs        # ACP 客户端 + HTTP/SSE + /img 图片服务 + /audio 音频直服 + 资产持久化 + 世界线/剧情树/逐轮快照接口（零依赖）
+├─ server/                  # 本地 Node 服务（零依赖；v1.7 拆成入口 + 10 模块，模块地图见入口文件头注释）
+│  └─ acp-server.mjs        # 入口与装配：ACP 客户端 + HTTP/SSE 路由 + /img /audio 直服 + 资产落盘 + 世界线/快照/剧本导出包接口
 ├─ shared/
 │  ├─ protocol.mjs          # 协议常量唯一真源（v1.7）：PROTOCOL_HEADS 9 头 / AUDIO_* 音频白名单与直服正则 / DIRECTIVE_PREFIX_RE 指令前缀（pickEffort 与 isMainTurn 共用）
 │  └─ protocol.d.mts        # 手写类型声明（tsc -b 经 .mjs→.d.mts 解析；运行时直接吃 .mjs）
@@ -79,9 +79,10 @@ bunkiten/
 │  └─ <presetId>/
 │     ├─ assets/            # 该剧本的立绘/背景：<类型>-<名字>.jpg（封面同级 cover.jpg；资产随故事走）
 │     └─ audio/             # 可选：<类型>-<名>.<ext>（曲/环境/音效 × mp3/ogg/m4a/wav/flac），没有就静默
-├─ state/                   # 运行时进度：state/worlds/<worldId>/{state,summary,story-tree}.md + index.json 索引（旧扁平布局首启由 server 迁入 main；删除即重置）
+├─ state/                   # 运行时进度：state/worlds/<worldId>/{state,summary,story-tree}.md + index.json 索引（旧扁平布局首启由 server 迁入 main）
 │  ├─ worlds/<id>/history/  # 逐轮快照 NNNN.json（append-only，回退与精确分叉的数据源；运行时生成，不入库）
 │  ├─ worlds/<id>/logs/     # 回合原文日志 NNNN.json（v1.7，{seq,at,prompt,text}，append-only 排障面；不进世界线导出包）
+│  ├─ trash/                # 回收站（v1.7）：删除的世界线/素材先整体挪进来，不自动清理、手工可找回（见 state/README.md）
 │  └─ README.md             # 进度目录说明（唯一随包分发的文件，进度本身绝不打包）
 ├─ tests/
 │  ├─ setup-react-act.mjs   # vitest 环境：React act() 兼容补丁
@@ -102,10 +103,10 @@ bunkiten/
 │  └─ e2e/smoke.spec.ts     # 真引擎 E2E 冒烟（helpers/stack.mjs 起全栈）
 ├─ docs/
 │  ├─ ARCHITECTURE.md       # 架构：ACP 契约、文本协议契约、资产与音频管线、打包与发布布局
-│  ├─ adr/                  # 裁决记录：0001-0008（kebab-case 编号递增）
+│  ├─ adr/                  # 裁决记录：0001-0017（kebab-case 编号递增）
 │  └─ releases/             # 发布说明：<tag>.md（release.yml 直接当作 GitHub Release notes）
 ├─ .github/workflows/
-│  ├─ ci.yml                # CI：npm ci + npm test + npm run build
+│  ├─ ci.yml                # CI：npm ci + build + typecheck:server + test:coverage（单测/集成/契约 lint + 覆盖率阈值，替代 npm test 步骤）+ 假引擎 UI e2e
 │  └─ release.yml           # push v* tag：guard 校验 tag=v<package.json version> 并跑测试 → 双平台打包 → 建 Release
 ├─ build/
 │  ├─ icon.png              # 应用图标（electron-builder 派生 .icns/.ico）
@@ -136,10 +137,12 @@ bunkiten/
 | `npm run dev` | 仅 vite 前端（浏览器调试，需另起 acp-server） |
 | `npm run dev:electron` | vite + Electron 并行开发 |
 | `npm run build` | `tsc -b && vite build`（类型检查 + 前端构建） |
+| `npm run typecheck:server` | server/shared/scripts 的 checkJs 门禁（`tsconfig.server.json` 对 `server/**/*.mjs` + `shared/protocol.mjs` + `scripts/doctor.mjs` 开 strict 检查，类型全靠 JSDoc；CI 也会跑） |
 | `npm test` | 单测 + 集成全量 395 例：parser 65 + server 106 + crafting 52 + treeLayout 7 + genealogy 8 + diff 8 + doctor 12 + ui 110 + integration 27（含假引擎集成层，整体秒级；改协议字符串必须同步快照）；另跑契约 lint `tests/contract.test.ts`（防漂移门禁：协议常量真源断言 + 双侧逐字比对，**不计入这 395**） |
 | `npm run test:coverage` | 同一批测试 + 覆盖率仪表（`@vitest/coverage-v8`，量 `src`/`server`/`shared`/`scripts` 四棵树，配置在 `vitest.config.ts`）：thresholds 是**防下滑线**（2026-09 基线 - 2pp：lines 74 / branches 64 / functions 77 / statements 72）——实际余量 1.56-1.87pp（基线未取整），不是硬指标；CI 用它替代 `npm test` 步骤（同一套测试避免双跑）并上传 HTML 报告 artifact |
 | `npm run doctor` | 剧本体检查（作者侧工具，按需跑、不进 CI）：`node scripts/doctor.mjs` 校验 `presets/` 每个剧本的结构健康度——frontmatter 必填键与 id=目录名、theme 逐键回退预警、`# 主要角色` 与角色建议字段、封面、assets/audio 文件名契约、孤儿素材；输出 `[ok]`/`[warn]`/`[error]` 明细报告，**退出码非 0 当且仅当有 error**（warning 不影响——孤儿素材这类可解释项不拦你发布） |
 | `npm run test:e2e` | 真引擎 E2E 冒烟（约 6 分钟，2 回合） |
+| `npm run test:e2e:ui` | 假引擎确定性 UI e2e（`tests/e2e-ui/`，默认 chromium、秒级）：12 个 spec 覆盖开局/设置/键盘/画廊/剧情图/世界线/回退/重掷/动效降级/焦点/角色面板/剧本导入导出，进程由 `helpers/fake-stack.mjs` 编排（假引擎 + 真 acp-server + vite dev）；CI 也会跑（真引擎 e2e 仍只在本机） |
 | `npm run dist:win` | build 后打 Windows x64 包（nsis + portable，不签名） |
 | `npm run dist:mac` | build 后打 macOS 包（dmg + zip，arm64 + x64，不签名） |
 | `npm run dist:mac:dir` | build 后只出 mac `.app` 目录（arm64，不签名、不压缩）：改打包配置时的快速预检，产物里没有 `app-update.yml` |
@@ -165,7 +168,7 @@ npm run dev:electron
 
 - 想玩 / 装给朋友：[QUICKSTART.md](QUICKSTART.md)
 - 想改代码 / 写剧本 / 接手维护：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)（文本协议契约一节必读）
-- 想知道某个设计为什么这么做：[docs/adr/](docs/adr/)（0001–0008：剧情树骨架、全分支预生成、差分分层、表情由引擎驱动、缓存权威、世界线与分叉、剧情图、资产随故事走）
+- 想知道某个设计为什么这么做：[docs/adr/](docs/adr/)（0001–0017：剧情树骨架、全分支预生成、差分分层、表情由引擎驱动、缓存权威、世界线与分叉、剧情图、资产随故事走、逐轮快照与精确分叉、音频协议、打 tag 即发版、协议单一真源、server 模块化、删除进回收站、回合日志与质量守卫、剧本导出包、a11y 基线）
 - 词表（章节/节点/世界线/分叉/差分…）：[CONTEXT.md](CONTEXT.md)
 - AI 协作者从 [AGENTS.md](AGENTS.md) 进来
 
@@ -193,3 +196,4 @@ npm run dev:electron
 - **v1.5** —— 世界线与剧情图：进度从扁平 `state/*.md` 迁到 `state/worlds/<worldId>/{state,summary,story-tree}.md`（旧布局首启由 server 一次性迁入 `main`，另有 `index.json` 索引）；屏幕流变为 title → worlds → protagonist/crafting → game；会话契约新增开局 `世界：<worldId>。` 段与续演 `继续世界：<worldId>。`；世界线 API（`/api/worlds`、`/api/tree`）；分叉=只复制三文件并回退进度指针、**不推演**，切换世界线时引擎按 `fork.md` 静默回退 state/summary 再删除；剧情图屏（容错解析 SVG 节点图 + 归档药丸链 + 节点详情 + 在此分叉 + 一句话 `剧情：` 改树，`【树】` 协议行静默刷新）；缓存权威化（规划前读 `assets/` 只列新增，客户端归一化过滤且**变体必须一致**，修复基础立绘吞掉差分项的 bug）；MVP 期 TUI 遗留（`play.bat` / `install.ps1` / `START-HERE.txt`）已删除——本项目只有 Electron 桌面形态。测试 85 → 139 例。
 - **v1.5.1** —— 资产随故事走，并更名 **bunkiten（分岐点）**：立绘/背景从全局 `assets/` 池改为按剧本归档 `presets/<剧本 id>/assets/<类型>-<名字>.jpg`（封面仍是同级 `presets/<id>/cover.jpg`），顶层 `assets/` 目录删除——每个 preset 自带 `art_style`，美术属于某个故事，故事 = 一个可分享/可删除的自包含文件夹；本次迁移按证据把 50 张存量素材归位（campus-summer 9 / rain-rejection 2 / rift-mark 33 / twilight-throne 6）。契约变化：`GET /api/assets` 需 `?preset=<id>`（缺失或非法 400，不再有全局池）、`/img` 白名单改为 `presets/<id>/assets/*.jpg` 与 `presets/<id>/cover.jpg`、画廊按当前剧本取数（`inUse` 只扫该剧本的世界）不再串味；服务端按提示词里的世界段嗅探出当前剧本 id 决定落盘目录，引擎侧新增「资产目录纪律」硬规则（素材一律写进当前剧本目录，绝不使用或新建全局 `assets/` 池）。**旧档兼容**（只读）：老 state/标记里的 `assets/<类型>-<名>.jpg` 只在当前剧本目录内探测一次——命中直服、未命中 404，不跨剧本扫描也不迁落（不把别的故事的同名素材显示进本故事）；落盘纪律：拿不到当前剧本 id 就不落盘，等【新剧本】或带 `&preset=` 的请求补落。命名同步：产品名 `Galgame` → `Bunkiten`，引擎 skill 目录 `.grok/skills/galgame/` → `.grok/skills/bunkiten/`。测试 139 → 171 例。
 - **v1.6.0** —— 音频层、逐轮快照精确回退，以及发布工程化与一轮体验补课。**音频**：协议头从 6 项扩到 9 项（`PROTOCOL_HEADS` 新增【曲】【环境】【音效】），三行均为演出指令、不进正文——【曲】/【环境】切换 BGM 与环境音（客户端双通道交叉淡入、重复点同一首不重启），【音效】一次性（并发上限 4、带兜底超时释放槽位）；文件由作者放在 `presets/<剧本 id>/audio/`，命名 `<类型>-<名>.<ext>`（`mp3/ogg/m4a/wav/flac`），服务端新增 `GET /api/audio?preset=`（索引）与 `GET /audio?p=`（白名单 + 前缀校验直服，带长缓存）；文件缺失或剧本没有 `audio/` 目录一律**静默 no-op**，引擎侧新增第 6 句规则（音频纪律：绝不生成音频、绝不在标记里写路径）。**逐轮快照与精确回退**：正戏回合结束后把当前世界三文件全文存一份 `state/worlds/<worldId>/history/NNNN.json`（append-only、内容全等则跳过，含 `nodeId`/`chapterNo` 元信息），新增 `GET /api/history`（可选 `&seq=` 附带全文）、`POST /api/worlds {restore}`（先自动备份当前状态再覆盖目标快照，随后由客户端补发续档指令让引擎重新读档同步，**不是**重开场）、`{fork}` 带 seq 时改为**精确**分叉（以快照三文件建新世界，仍写 `fork.md` 让引擎只校准树；无快照才是旧的兼容路径）。**世界线管理**：`{update}` 支持显示名 `label`（≤60）与备注 `note`（≤200）、`GET /api/worlds/export` 导出单个世界线为 `<worldId>.world.json`（含三文件与全部快照）、`{import}` 导入（校验 `format`/`version`/id 合法性，重名自动落到 `<id>-2`、`-3`…）。**体验补课**：设置屏（顶栏齿轮：主音量/静音/BGM/环境/音效 + 文本速度四档 + 自动前进 0/3s/5s，存 `localStorage` 的 `bunkiten.settings.v1`，逐键校验兜底默认值）、键盘操作（1-9 与 Numpad 选选项、空格补全打字机）、世界线行内重命名与导出导入、画廊「选择模式」批量重绘（顺序队列）与批量删除（两段确认，封面不受理）、剧情图本章节点 > 40 默认降级为列表（可切回图形）且图形模式支持滚轮缩放/拖拽平移/双击复位。**工程与发布**：`.github/workflows/release.yml` 打 tag 即发版（guard 先校验 tag 等于 `v<package.json version>` 再跑 `npm test`，通过才双平台打包，最后合并 `SHA256SUMS.txt` 并建/更新 Release，`docs/releases/<tag>.md` 当发布说明）；签名与公证条件化（有 `CSC_LINK`/`APPLE_*` secrets 才签名 + 公证，否则未签名——未签名 mac 包不能自动更新）；打包态接入 electron-updater（开发态与 `--dir` 预检产物静默跳过）；新增 `dist:mac:dir` 快速预检。**测试**：新增假引擎集成层 `tests/integration/**`（假 ACP 引擎 + 真 acp-server 子进程，秒级覆盖图片管线、目录穿越防护、音频索引与逐轮快照），并把契约自检补进既有套件（协议头 9 项唯一真源 + 与 SKILL 一字不差的字符串快照）；前端 store 按动作拆成 `src/store/slices/*` 切片 + 模块级单例上下文，行为不变。测试 171 → 294 例。
+- **v1.7.0** —— 后悔药补全、三个观察面、分享与作者工具、a11y 基线，以及一轮工程加固。**回退与重掷**：TopBar「重掷」撤销刚走完的一轮并自动重发同一句输入重新演绎（可连掷，本世界第一轮除外）；回退后历史只插一条分割线（旧幕不删），引擎重读档期间有「待重同步」徽章、失败可一键再同步。**新视图**：世界线屏「家谱」把 forkedFrom 血缘画成 SVG 森林（父线已删的孤儿带徽章、方向键走位）；剧情图节点详情「与上一快照对比」（剧情状态/前情摘要/剧情树三 tab 行级 diff，未变行折叠）；游戏屏「角色面板」抽屉实时读 state.md（好感度/表情徽章/秘密折叠/导演手记/Flags/伏笔，回合后自动刷新）。**分享与作者工具**：剧本导出包 `<id>.preset.json`（preset.md + 全部图 + 音频，二进制 base64；导入重名自动 `-2`、单包上限 50MB、文件名与内容全量校验）；`npm run doctor` 剧本体体检（七组检查，退出码非 0 当且仅当有 error）。**引擎侧可靠性**：回合原文日志 `logs/NNNN.json`（append-only、只写不读、不进导出包）；引擎漏写 `**行动**` 选项段时同一回合内自动追问一次补全（章末回合豁免）；引擎回 JSON-RPC error 时按失败回合传播（error 事件 + 409 + 不写快照）；快照列表与会话图读路径索引化。**无障碍基线**：跟随系统「减少动态效果」（位移瞬时化、交叉淡入保留、打字机整段显示，不加游戏内开关）、全局 `:focus-visible` 焦点环（键盘可见、鼠标不闪）、文字对比度三档 token（ink-body/ink-hint/ink-faint）。**工程**：协议常量收进 `shared/protocol.mjs` 唯一真源（ADR-0012）、server 拆成入口 + 10 模块（ADR-0013，外部 import 面不变）、删除一律进 `state/trash/` 回收站（ADR-0014，手工可找回、不自动清理）；测试安全网：假引擎确定性 UI e2e（12 个 spec，进 CI）、覆盖率阈值（`npm run test:coverage`）、server typecheck（`npm run typecheck:server`），契约 lint 升级为真源断言。测试 294 → 395 例。
