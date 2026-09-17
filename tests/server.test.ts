@@ -50,6 +50,8 @@ import {
   updateWorld,
   worldChapterNo,
   writeSnapshot,
+  writeTurnLog,
+  SUPPLEMENT_PROMPT,
   __snapshotCacheStats,
   WORLD_FILES,
 } from "../server/acp-server.mjs";
@@ -782,6 +784,56 @@ describe("server 快照子系统纯函数（CONTRACTS §2）", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("writeTurnLog（v1.7）：seq 与快照对齐、追不上 logs 进度时独立递增（append-only 不覆盖）、溢出截断", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "tlog-"));
+    try {
+      // 非法世界 id 直接拒（与 writeSnapshot 同款第一道闸）
+      expect((writeTurnLog(root, "../etc", { seq: 1, prompt: "p", text: "t" }) as any).skipped).toBe(true);
+
+      // 空目录：对齐值 3 落 0003（restore 的 backup 只进 history，快照 seq 可能领先——对齐优先，允许空号）
+      const a = writeTurnLog(root, "w1", { seq: 3, at: "2026-01-01T00:00:00.000Z", prompt: "推门。", text: "正文\n**行动**\n1. 进去\n" }) as any;
+      expect(a).toMatchObject({ ok: true, seq: 3 });
+      expect(JSON.parse(readFileSync(path.join(root, "w1", "logs", "0003.json"), "utf8"))).toEqual({
+        seq: 3, at: "2026-01-01T00:00:00.000Z", prompt: "推门。", text: "正文\n**行动**\n1. 进去\n",
+      });
+
+      // 对齐值追不上 logs 进度（快照去重的回合：res.seq 落后）→ 独立递增到 4，绝不覆盖 0003、不回填空号
+      const b = writeTurnLog(root, "w1", { seq: 3, prompt: "p2", text: "t2" }) as any;
+      expect(b).toMatchObject({ ok: true, seq: 4 });
+      expect(existsSync(path.join(root, "w1", "logs", "0004.json"))).toBe(true);
+      expect(existsSync(path.join(root, "w1", "logs", "0002.json"))).toBe(false);
+
+      // 不给 seq 也独立递增；at/prompt 缺省有兜底（text 同理）
+      const c = writeTurnLog(root, "w1", { text: "t3" }) as any;
+      expect(c).toMatchObject({ ok: true, seq: 5 });
+      const entry = JSON.parse(readFileSync(path.join(root, "w1", "logs", "0005.json"), "utf8"));
+      expect(entry.prompt).toBe("");
+      expect(typeof entry.at).toBe("string");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+
+    // 溢出：seq > 9999 不再写（与 writeSnapshot 的 SNAPSHOT_SEQ_MAX 同款截断）
+    const root2 = mkdtempSync(path.join(os.tmpdir(), "tlog-of-"));
+    try {
+      const dir = path.join(root2, "w1", "logs");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(path.join(dir, "9999.json"), JSON.stringify({ seq: 9999, at: "x", prompt: "", text: "" }));
+      // 对齐值直接越界，或独立递增到 10000，都不写
+      expect((writeTurnLog(root2, "w1", { seq: 12000, prompt: "p", text: "t" }) as any)).toMatchObject({ skipped: true, reason: "overflow" });
+      expect((writeTurnLog(root2, "w1", { seq: 9999, prompt: "p", text: "t" }) as any)).toMatchObject({ skipped: true, reason: "overflow" });
+      expect(readdirSync(dir)).toEqual(["9999.json"]);
+    } finally {
+      rmSync(root2, { recursive: true, force: true });
+    }
+  });
+
+  it("SUPPLEMENT_PROMPT 常量（v1.7）：以「补充：」开头、含 **行动** 字面（质量守卫的追问指令，防手滑改坏）", () => {
+    expect(SUPPLEMENT_PROMPT.startsWith("补充：")).toBe(true);
+    expect(SUPPLEMENT_PROMPT).toContain("**行动**");
+    expect(SUPPLEMENT_PROMPT).toContain("不要重述正文");
   });
 
   it("writeWorldFiles（经 restore）：快照里为 null 的文件回退后必须被删除（不留「未来」内容）", () => {

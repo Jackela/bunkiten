@@ -43,6 +43,9 @@ describe("集成：假 ACP 引擎 + 真 acp-server（CONTRACTS §8 1–5、7–8
         { match: "表情", ops: ["【立绘】薇拉|微笑\n【图】立绘|沈屿|images/2.jpg\n【新剧本】demo\n"] },
         { match: "改树", ops: ["已把通往教堂的岔路改成通往酒馆。\n\n【树】\n"] },
         { match: "继续世界", ops: ["（再入场）教堂檐下。\n"] },
+        // ⑧ 的进场回合（继续世界）正文缺 **行动** → 质量守卫会自动追问一次；不给这条应答的话，
+        // 追问会按顺次消费把「引擎坏」条目吃掉，⑧ 的 error 传播用例就测不到了
+        { match: "补充：", ops: ["**行动**\n1. 跟上\n"] },
         { match: "引擎坏", ops: [{ error: "引擎坏了" }] },
       ],
     });
@@ -310,6 +313,125 @@ describe("集成 §8-6：sniffPreset 世界→剧本（继续世界：w1。→ �
     const still = await stack.getBytes(imgUrl({ p: "assets/立绘-林夏.jpg" }));
     expect(still.status).toBe(200);
     expect(still.bytes.equals(fakeJpeg("linxia-demo"))).toBe(true);
+  }, 15000);
+});
+
+// 回合原文日志 + 质量守卫（v1.7）：正戏回合把 {seq,at,prompt,text} 落进 state/worlds/<w>/logs/NNNN.json
+//（与 history/ 平级、append-only、不进导出包）；正戏回合缺 **行动** 选项段时 server 在同一 busy 窗口内
+// 自动补发一次「补充：」追问（只补回合尾、追问属于同一回合不另立条目）。
+describe("集成：回合原文日志 + 质量守卫（v1.7）", () => {
+  let stack: any;
+
+  beforeAll(async () => {
+    stack = await startStack({
+      turns: [
+        // 进场：带 **行动** 的正戏回合（守卫不触发）
+        { match: "继续世界：w1", ops: ["雨停了，石阶泛着冷光。\n\n**行动**\n1. 推门进去\n2. 原地等待\n"] },
+        // 自由输入回合：正文故意缺 **行动** → 触发守卫
+        { match: "自由回合", ops: ["你走近她两步，雨声忽然大了。\n"] },
+        // 守卫追问（SUPPLEMENT_PROMPT 以「补充：」开头）的应答：只补回合尾
+        { match: "补充：", ops: ["**行动**\n1. 递伞\n2. 开口\n"] },
+        // 指令回合（美术：…）的应答
+        { match: "美术：", ops: ["（立绘已就绪）\n"] },
+        // 章末回合的应答：只有章标记 + 正文，无 **行动**（每轮协议唯一合法例外 → 守卫必须豁免）
+        { match: "终章", ops: ["【章】第 1 章 完\n（终章正文）\n"] },
+      ],
+    });
+  }, 30000);
+
+  afterAll(async () => {
+    await stack?.stop();
+  });
+
+  it("⑪ 正戏回合落 logs/0001.json：prompt/text 原文可回溯、seq 与同回合快照对齐；不触发追问", async () => {
+    const from = stack.events.length;
+    const r = await stack.prompt("继续世界：w1。");
+    expect(r.status).toBe(200);
+    await stack.waitFor((ev: any[]) => ev.slice(from).some((e: any) => e.type === "turn_end"), { label: "turn_end(logs-⑪)" });
+
+    const logsDir = path.join(stack.root, "state", "worlds", "w1", "logs");
+    expect(readdirSync(logsDir)).toEqual(["0001.json"]);
+    const entry = JSON.parse(readFileSync(path.join(logsDir, "0001.json"), "utf8"));
+    expect(entry.seq).toBe(1);
+    expect(entry.prompt).toBe("继续世界：w1。");
+    expect(entry.text).toContain("雨停了，石阶泛着冷光。");
+    expect(entry.text).toContain("**行动**");
+    expect(typeof entry.at).toBe("string");
+
+    // seq 与同回合快照对齐：history/0001.json 就是这一轮的三文件档
+    const snap = JSON.parse(readFileSync(path.join(stack.root, "state", "worlds", "w1", "history", "0001.json"), "utf8"));
+    expect(snap.seq).toBe(entry.seq);
+
+    // 回合自带 **行动** → 守卫不触发：先等日志行刷出（它写在守卫点之后、stdout 有序），
+    // 此时仍未出现追问日志，才能证明这一轮没有补发
+    expect(await until(() => stack.stdout().includes("turn log written: w1/logs/0001.json"))).toBe(true);
+    expect(stack.stdout().includes("自动追问一次")).toBe(false);
+  }, 15000);
+
+  it("⑫ 缺 **行动** 的正戏回合：同一 busy 窗口内自动追问一次补齐回合尾，log 记补全后全文；快照去重时 log 照写", async () => {
+    const from = stack.events.length;
+    const r = await stack.prompt("自由回合：凑近看她。");
+    expect(r.status).toBe(200);
+    await stack.waitFor((ev: any[]) => ev.slice(from).some((e: any) => e.type === "turn_end"), { label: "turn_end(logs-⑫)" });
+    const got = stack.events.slice(from);
+
+    // 追问属于同一回合：追问补的选项段以 chunk 流进同一回合，且整个窗口只有一次 turn_end
+    expect(got.some((e: any) => e.type === "chunk" && String(e.text).includes("雨声忽然大了"))).toBe(true);
+    expect(got.some((e: any) => e.type === "chunk" && String(e.text).includes("递伞"))).toBe(true);
+    expect(got.filter((e: any) => e.type === "turn_end")).toHaveLength(1);
+
+    // 只追问了一次（若实现成了循环，第二次追问会把「美术：」条目按顺次消费掉，且追问日志会打两遍）
+    expect(await until(() => stack.stdout().split("自动追问一次").length - 1 === 1)).toBe(true);
+
+    // log 条目：prompt 是玩家输入、text 是补全后的全文（正文 + 追问补的选项段）
+    const logsDir = path.join(stack.root, "state", "worlds", "w1", "logs");
+    expect(readdirSync(logsDir)).toEqual(["0001.json", "0002.json"]);
+    const entry = JSON.parse(readFileSync(path.join(logsDir, "0002.json"), "utf8"));
+    expect(entry.prompt).toBe("自由回合：凑近看她。");
+    expect(entry.text).toContain("雨声忽然大了");
+    expect(entry.text).toContain("**行动**");
+    expect(entry.text).toContain("递伞");
+
+    // 快照侧：三文件没变 → 去重跳过（history 仍只有 0001），log 照写（seq 独立递增到 2）
+    const histDir = path.join(stack.root, "state", "worlds", "w1", "history");
+    expect(readdirSync(histDir)).toEqual(["0001.json"]);
+  }, 15000);
+
+  it("⑬ 指令回合（美术：…待命）不写 log；追问守卫也不触发", async () => {
+    const logsDir = path.join(stack.root, "state", "worlds", "w1", "logs");
+    const histDir = path.join(stack.root, "state", "worlds", "w1", "history");
+    const logsBefore = readdirSync(logsDir).length;
+    const histBefore = readdirSync(histDir).length;
+
+    const from = stack.events.length;
+    const r = await stack.prompt("美术：立绘 新角色。待命：");
+    expect(r.status).toBe(200);
+    await stack.waitFor((ev: any[]) => ev.slice(from).some((e) => e.type === "turn_end"), { label: "turn_end(logs-⑬)" });
+
+    expect(readdirSync(logsDir).length).toBe(logsBefore); // 非正戏回合不产生日志条目
+    expect(readdirSync(histDir).length).toBe(histBefore);
+    // 仍是 ⑫ 那一次追问，没有新增（轮询等 ⑫ 的日志行落定后再读，避免 pipe 时序抖动）
+    expect(await until(() => stack.stdout().split("自动追问一次").length - 1 === 1)).toBe(true);
+  }, 15000);
+
+  it("⑭ 章末回合（【章】第 1 章 完，每轮协议「以选项结束」的唯一合法例外）不触发追问：log 照写含章标记全文、HTTP 200", async () => {
+    const from = stack.events.length;
+    const r = await stack.prompt("终章：走进最后一扇门。");
+    expect(r.status).toBe(200); // 守卫豁免不产生任何失败路径
+    await stack.waitFor((ev: any[]) => ev.slice(from).some((e) => e.type === "turn_end"), { label: "turn_end(logs-⑭)" });
+
+    // 回合缺 **行动** 但带章标记 → 守卫不追问：先等本回合日志行刷出（它在守卫点之后落定），
+    // 追问计数仍是 ⑫ 那一次；若误追问，fake 引擎会按顺次消费吃掉后续条目并把「自动追问一次」打成第二遍
+    expect(await until(() => stack.stdout().includes("turn log written: w1/logs/0003.json"))).toBe(true);
+    expect(stack.stdout().split("自动追问一次").length - 1).toBe(1);
+
+    // log 条目照写（豁免只免追问，不免留痕）：text 是章标记全文的原文回溯
+    const logsDir = path.join(stack.root, "state", "worlds", "w1", "logs");
+    expect(readdirSync(logsDir)).toEqual(["0001.json", "0002.json", "0003.json"]);
+    const entry = JSON.parse(readFileSync(path.join(logsDir, "0003.json"), "utf8"));
+    expect(entry.prompt).toBe("终章：走进最后一扇门。");
+    expect(entry.text).toContain("【章】第 1 章 完");
+    expect(entry.text).toContain("（终章正文）");
   }, 15000);
 });
 

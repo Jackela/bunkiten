@@ -83,7 +83,7 @@ export function finalMarkers(text: string): Marker[] {
 //（server 也 import 同一份）。这里 re-export 维持公共 API 逐字不变——store 与测试仍从 src/lib/parser import。
 // 顺序即契约声明顺序（CONTRACTS §6）；改真源前先同步 SKILL.md / ARCHITECTURE.md 的备忘与表格，
 // 以及 server 侧对应的各 parse*（协议是四处一致的字符串契约，不是各自实现的巧合）。
-import { AUDIO_KINDS, PROTOCOL_HEADS } from "../../shared/protocol.mjs";
+import { AUDIO_KINDS, CHAPTER_MARK_RE, PROTOCOL_HEADS } from "../../shared/protocol.mjs";
 
 export { AUDIO_KINDS, PROTOCOL_HEADS };
 
@@ -127,7 +127,7 @@ export function parseManifest(text: string): ManifestEntry[] {
  * @returns {number | null} 命中的章号 N；没有章标记返回 null
  */
 export function parseChapterMark(text: string): number | null {
-  const m = text.match(/^【章】第 (\d+) 章 完\s*$/m);
+  const m = text.match(CHAPTER_MARK_RE);
   return m ? Number(m[1]) : null;
 }
 

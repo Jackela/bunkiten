@@ -11,7 +11,8 @@
 //   ③ 指令字符串双处存在：src/lib/parser.ts 源码 ↔ SKILL.md
 //   ④ 用例数：README/AGENTS/ARCHITECTURE 声明的分组数字 ↔ 各测试文件实际用例数
 //   ⑤ 设置键与音频扩展名：settings.ts / shared 真源 / 文档三处一致
-//   ⑥ 指令前缀与主题白名单（v1.7）：DIRECTIVE_PREFIX_RE 单一真源（pickEffort/isMainTurn 都消费）；server 与 theme.ts 的字体/对话框白名单与兜底主题同集
+//   ⑥ 指令前缀、章标记与主题白名单（v1.7）：DIRECTIVE_PREFIX_RE / CHAPTER_MARK_RE 单一真源（pickEffort/isMainTurn、
+//     parseChapterMark/质量守卫豁免都消费）；server 与 theme.ts 的字体/对话框白名单与兜底主题同集
 //
 // 纯 node：只读文件 + import 已导出的模块（不 spawn、不联网、不写盘），整体 <1s。
 // 注意：本文件自身也被 `npm test` 收录，但**不计入**文档声明的合计口径（数字以 CASE_TOTAL 为准；tests/e2e/** 同样不在口径内），见第 ④ 组。
@@ -21,7 +22,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AUDIO_KINDS, PROTOCOL_HEADS, isProtocolLine, parseChapterMark, parseManifest } from "../src/lib/parser";
-import { DIRECTIVE_PREFIX_RE as SHARED_DIRECTIVE_RE, PROTOCOL_HEADS as SHARED_HEADS } from "../shared/protocol.mjs";
+import { DIRECTIVE_PREFIX_RE as SHARED_DIRECTIVE_RE, PROTOCOL_HEADS as SHARED_HEADS, CHAPTER_MARK_RE as SHARED_CHAPTER_RE } from "../shared/protocol.mjs";
 import { SETTINGS_STORAGE_KEY } from "../src/lib/settings";
 
 /** 仓库根（本文件在 tests/ 下） */
@@ -283,10 +284,10 @@ describe("③ 指令字符串双处存在：src/lib/parser.ts 源码 ↔ SKILL.m
 
 // ——————————————————————— ④ 用例数 ———————————————————————
 
-/** 文档口径的分组（README / AGENTS / ARCHITECTURE 三处声明），合计 388 例；不含 e2e 与本文件 */
+/** 文档口径的分组（README / AGENTS / ARCHITECTURE 三处声明），合计 394 例；不含 e2e 与本文件 */
 const CASE_GROUPS = [
   { name: "parser", files: ["tests/parser.test.ts"], declared: 65 },
-  { name: "server", files: ["tests/server.test.ts"], declared: 104 },
+  { name: "server", files: ["tests/server.test.ts"], declared: 106 },
   { name: "crafting", files: ["tests/crafting.test.ts"], declared: 52 },
   { name: "treeLayout", files: ["tests/treeLayout.test.ts"], declared: 7 },
   { name: "genealogy", files: ["tests/genealogy.test.ts"], declared: 8 },
@@ -296,22 +297,22 @@ const CASE_GROUPS = [
   {
     name: "integration",
     files: ["tests/integration/pipeline.test.ts", "tests/integration/audio-history.test.ts", "tests/integration/http-guard.test.ts"],
-    declared: 23,
+    declared: 27,
   },
 ];
 
 /** integration 的子分组（AGENTS / ARCHITECTURE 单独声明） */
 const CASE_SUB_GROUPS = [
-  { name: "pipeline", file: "tests/integration/pipeline.test.ts", declared: 11 },
+  { name: "pipeline", file: "tests/integration/pipeline.test.ts", declared: 15 },
   { name: "audio-history", file: "tests/integration/audio-history.test.ts", declared: 9 },
   { name: "http-guard", file: "tests/integration/http-guard.test.ts", declared: 3 },
 ];
 
-/** 契约 lint 自己（也被 npm test 收录，但按文档口径**不计入** 369） */
+/** 契约 lint 自己（也被 npm test 收录，但按文档口径**不计入** 394） */
 const CONTRACT_FILE = "tests/contract.test.ts";
 
 /** 文档声明的合计口径 */
-const CASE_TOTAL = 388;
+const CASE_TOTAL = 394;
 
 /** 三份声明口径的文档 */
 const DOCS = ["README.md", "AGENTS.md", "docs/ARCHITECTURE.md"];
@@ -363,7 +364,7 @@ describe("④ 用例数：文档声明的分组数字 ↔ 各文件实际用例�
     expect(sum, `integration 的分组口径自相矛盾：三个子文件相加 ${sum} 例，文档写 integration ${integration?.declared} 例`).toBe(integration?.declared);
   });
 
-  it("九个分组合计等于文档口径 388，且本文件不计入其中", () => {
+  it("九个分组合计等于文档口径 394，且本文件不计入其中", () => {
     const sum = CASE_GROUPS.reduce((n, g) => n + g.declared, 0);
     expect(sum, `文档的分组口径自相矛盾：九个分组相加 ${sum} 例，文档合计写的是 ${CASE_TOTAL} 例`).toBe(CASE_TOTAL);
     const self = countCases(CONTRACT_FILE);
@@ -507,7 +508,7 @@ describe("⑤ 设置键与音频扩展名：settings.ts / shared 真源 / 文档
 
 // ——————————————————————— ⑥ 指令前缀与主题白名单（v1.7） ———————————————————————
 
-describe("⑥ 指令前缀与主题白名单：shared 真源 ↔ server 消费点；server ↔ theme.ts 同集", () => {
+describe("⑥ 指令前缀、章标记与主题白名单：shared 真源 ↔ server 消费点；server ↔ theme.ts 同集", () => {
   it("DIRECTIVE_PREFIX_RE 单一真源：pickEffort 与 isMainTurn 都消费它，server 源码无第二份前缀字面", () => {
     const sharedRel = "shared/protocol.mjs";
     const sharedSrc = read(sharedRel);
@@ -543,6 +544,45 @@ describe("⑥ 指令前缀与主题白名单：shared 真源 ↔ server 消费�
         `${file.rel} 里前缀字面「${literal}」出现 ${copies} 次（应为 0 次）：第二份手写正则回来了，pickEffort 与 isMainTurn 两处分叉就说不清哪个才对`,
       ).toBe(0);
     }
+  });
+
+  it("CHAPTER_MARK_RE 单一真源：parseChapterMark 消费它，server 质量守卫豁免也消费它，且无第二份章标记正则字面", () => {
+    const sharedRel = "shared/protocol.mjs";
+    const sharedSrc = read(sharedRel);
+    expect(
+      sharedSrc,
+      `${sharedRel} 里找不到 CHAPTER_MARK_RE 的正则字面：章标记行（【章】第 N 章 完）没有真源，parseChapterMark 与质量守卫豁免就管不住同一行`,
+    ).toContain("export const CHAPTER_MARK_RE = /^【章】第 (\\d+) 章 完\\s*$/m");
+    // 行为层：照 parser 现有语义——「【章】第 3 章 完」命中（含混在多行回合文本中的形态）、「【章】」单独不命中
+    expect(SHARED_CHAPTER_RE.test("【章】第 3 章 完"), `CHAPTER_MARK_RE 应命中「【章】第 3 章 完」：章末回合豁免漏了正常形态就会误追问`).toBe(true);
+    expect(SHARED_CHAPTER_RE.test("（终章正文）\n\n【章】第 3 章 完\n"), "CHAPTER_MARK_RE 应命中回合文本中间的章标记行（m 多行锚定）").toBe(true);
+    expect(SHARED_CHAPTER_RE.test("【章】"), "CHAPTER_MARK_RE 不该命中单独的「【章】」：残缺行不是章末回合，失之过宽会把豁免当挡箭牌").toBe(false);
+    expect(parseChapterMark("【章】第 3 章 完"), "parseChapterMark 对样例章标记应给章号 3（消费真源后公共 API 语义不变）").toBe(3);
+    // parser：函数体引用真源（match 消费），import 语句存在；源码不再有第二份章标记正则字面
+    const parserRel = "src/lib/parser.ts";
+    const parserSrc = read(parserRel);
+    const chapterBody = /export function parseChapterMark\([\s\S]*?\n\}/.exec(parserSrc)?.[0] ?? "";
+    expect(
+      chapterBody,
+      `${parserRel} 的 parseChapterMark 函数体没有引用 CHAPTER_MARK_RE：章号解析脱离了真源（现在函数体是「${chapterBody.trim().split("\n").join(" ")}」）`,
+    ).toContain("CHAPTER_MARK_RE");
+    expect(parserSrc, `${parserRel} 应从 shared/protocol.mjs import CHAPTER_MARK_RE（v1.7 起真源在那）：找不到对应的 import 语句`).toMatch(/import \{[^}]*CHAPTER_MARK_RE[^}]*\} from "\.\.\/\.\.\/shared\/protocol\.mjs"/);
+    const chapterLiteral = "【章】第 (\\d+)";
+    for (const file of [{ rel: parserRel, src: parserSrc }, ...serverSources()]) {
+      const copies = file.src.split(chapterLiteral).length - 1;
+      expect(
+        copies,
+        `${file.rel} 里章标记正则字面「${chapterLiteral}」出现 ${copies} 次（应为 0 次）：真源已在 ${sharedRel}，第二份手写正则与 parseChapterMark/守卫豁免分叉就说不清哪个才对`,
+      ).toBe(0);
+    }
+    // server：质量守卫（supplementMissingOptions）的豁免判定引用真源
+    const serverRel = "server/acp-server.mjs";
+    const serverSrc = read(serverRel);
+    const guardBody = /async function supplementMissingOptions\([\s\S]*?\n {2}\}/.exec(serverSrc)?.[0] ?? "";
+    expect(
+      guardBody,
+      `${serverRel} 的 supplementMissingOptions 函数体没有引用 CHAPTER_MARK_RE：章末回合豁免脱离了真源（现在函数体是「${guardBody.trim().split("\n").join(" ")}」）`,
+    ).toContain("CHAPTER_MARK_RE");
   });
 
   it("主题白名单：server 与 theme.ts 的 font/dialog 白名单同集，两份兜底主题逐键一致", () => {

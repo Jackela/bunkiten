@@ -404,6 +404,8 @@ export function updateWorld(root, worldId, patch = {}) {
 
 /**
  * 打包一个世界（含全部快照）为可迁移 bundle（CONTRACTS §2）。
+ * 刻意**不含 logs/**（v1.7 回合原文日志）：那是本机的排障面（引擎到底说了什么），不是可迁移的档——
+ * 导入侧的引擎没有这段历史，带着它只会让新世界的时间线自相矛盾。
  * @param {string} root 世界根目录
  * @param {string} worldId 世界 id
  * @returns {{bundle?: object, error?: string}} 成功时 bundle、失败时 error（HTTP 层按字段有无分流）

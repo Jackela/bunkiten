@@ -4,7 +4,7 @@
 //
 // 模块地图（同目录 server/）：
 //   config.mjs 路径/端口（GAME_ROOT/SESSION_FILE/WORLDS_ROOT 等公共依赖，零依赖叶子）
-//   protocol-lines.mjs 注入 agent 的 RULES 原文 + 五种协议行 parse*
+//   protocol-lines.mjs 注入 agent 的 RULES 原文 + 五种协议行 parse* + 质量守卫追问指令 SUPPLEMENT_PROMPT
 //   assets.mjs 美术资产路径契约纯函数（sanitize/白名单/落盘判定/差分拆分）
 //   presets.mjs preset.md 解析 + assetTargetFile + 剧本导出包（buildPresetBundle/importPresetBundle）
 //   snapshots.mjs 世界三文件与逐轮快照的地基（WORLD_FILES/WORLD_ID_RE/读写/选择/fork 纯函数）
@@ -21,9 +21,10 @@ import http from "http";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-// 协议常量唯一真源（v1.7，docs/adr/0012）：指令前缀正则在 shared/protocol.mjs，
-// pickEffort 与 isMainTurn 共用同一份值；本文件不再自持副本（契约 lint ⑤⑥组断言这一点）。
-import { DIRECTIVE_PREFIX_RE } from "../shared/protocol.mjs";
+// 协议常量唯一真源（v1.7，docs/adr/0012）：指令前缀正则与章标记正则在 shared/protocol.mjs，
+// 前者 pickEffort 与 isMainTurn 共用同一份值、后者 parseChapterMark（客户端）与质量守卫豁免（本文件）
+// 共用同一份值；本文件不再自持副本（契约 lint ⑤⑥组断言这一点）。
+import { CHAPTER_MARK_RE, DIRECTIVE_PREFIX_RE } from "../shared/protocol.mjs";
 import { GAME_ROOT, BASE_PORT, PORT_MAX_RETRY, SESSION_FILE, WORLDS_ROOT } from "./config.mjs";
 import {
   PRESET_ID_RE,
@@ -35,8 +36,8 @@ import {
   resolvePersistPreset,
 } from "./assets.mjs";
 import { scanPresets, assetTargetFile } from "./presets.mjs";
-import { RULES, parseArtLine, parseExpressionLine, parsePresetAddedLine, parseTreeLine, parseAudioLine } from "./protocol-lines.mjs";
-import { WORLD_ID_RE, parseTreePointer, readWorldFiles, writeSnapshot } from "./snapshots.mjs";
+import { RULES, SUPPLEMENT_PROMPT, parseArtLine, parseExpressionLine, parsePresetAddedLine, parseTreeLine, parseAudioLine } from "./protocol-lines.mjs";
+import { WORLD_ID_RE, parseTreePointer, readWorldFiles, writeSnapshot, writeTurnLog } from "./snapshots.mjs";
 import { readWorldsIndex, presetFromStateFile, worldChapterNo, migrateLegacyState } from "./worlds.mjs";
 import { createAcpSession } from "./acp.mjs";
 import { createRequestHandler } from "./routes.mjs";
@@ -57,7 +58,7 @@ export {
   buildPresetBundle,
   importPresetBundle,
 } from "./presets.mjs";
-export { RULES_SENTENCES, RULES, parseArtLine, parseExpressionLine, parsePresetAddedLine, parseTreeLine, parseAudioLine } from "./protocol-lines.mjs";
+export { RULES_SENTENCES, RULES, SUPPLEMENT_PROMPT, parseArtLine, parseExpressionLine, parsePresetAddedLine, parseTreeLine, parseAudioLine } from "./protocol-lines.mjs";
 export {
   WORLD_FILES,
   parseTreePointer,
@@ -68,6 +69,8 @@ export {
   readSnapshots,
   readSnapshot,
   writeSnapshot,
+  writeTurnLog,
+  LOGS_DIRNAME,
   selectSnapshotForNode,
   forkTreeMarkdown,
   forkNote,
@@ -451,9 +454,8 @@ export function startServer() {
 
   // 档位分档（CONTRACTS §4）：正戏/自由输入走 EFFORT，规划/建档类走 EFFORT_PLANNING；
   // 与上次已生效的档位不同才发 set_config_option，失败静默（不支持就保持现状，下次变化再试）。
-  /** @param {string} text 发给引擎的提示词原文 */
-  async function applyEffort(text) {
-    const effort = pickEffort(text);
+  /** @param {string} effort 要生效的推理档位（显式值——质量守卫的追问直接给低档，不走 pickEffort） */
+  async function applyEffortValue(effort) {
     if (effort === lastEffort) return;
     try {
       await acp.request("session/set_config_option", {
@@ -462,6 +464,10 @@ export function startServer() {
       lastEffort = effort;
       console.log(`[acp] reasoning_effort -> ${effort}`);
     } catch { /* 引擎不支持档位：静默，不阻断回合 */ }
+  }
+  /** @param {string} text 发给引擎的提示词原文 */
+  function applyEffort(text) {
+    return applyEffortValue(pickEffort(text));
   }
 
   // 正戏回合判定（纯逻辑，CONTRACTS §2）：规划/美术/剧情/装配/创作模式回合（前缀正则与 pickEffort 同一份
@@ -490,6 +496,41 @@ export function startServer() {
       files,
     });
     if (res.ok) console.log(`[acp] snapshot written: ${worldId}/history/${String(res.seq).padStart(4, "0")}.json`);
+    // 回合原文日志（v1.7）：与快照同一判定、同一时机，但是独立的 logs/NNNN.json 条目。
+    // 快照去重（duplicate）时日志照写——日志记的是叙事原文，与三文件去重是两回事；seq 对齐取舍见 writeTurnLog。
+    // text 用 turnText 全文：若本回合触发过质量守卫追问，追问补发的回合尾已在其中（追问不另立条目）。
+    const log = writeTurnLog(WORLDS_ROOT, worldId, { seq: res.seq, prompt: text, text: turnText });
+    if (log.ok) console.log(`[acp] turn log written: ${worldId}/logs/${String(log.seq).padStart(4, "0")}.json`);
+  }
+
+  // 质量守卫（v1.7，每轮协议要求每回合带 **行动** 选项段）：正戏回合缺 `**行动**` 时，在同一 busy
+  // 窗口内自动补发一次内部追问（SUPPLEMENT_PROMPT，只要求补发回合尾）。追问属于同一回合：
+  // chunks 流进同一 turnText（客户端看到的是同一回合的补全，省一次 turn_end）、不另写快照与
+  // log 条目（log 的 text 自然含补全后的全文）。只此一次——这里是单次 if、无重试循环，
+  // 追问失败（引擎 error/超时）或补全后仍缺 `**行动**` 都放弃：log 里留痕，玩家仍可自由输入。
+  // 客户端语义不变：SSE chunk 照常流，无需任何 client 改动。
+  /** @param {string} text 发给引擎的提示词原文 */
+  async function supplementMissingOptions(text) {
+    if (!isMainTurn(text) || !currentWorldId) return;
+    if (turnText.includes("**行动**")) return;
+    // 章末回合豁免：输出【章】第 N 章 完 的回合是每轮协议「以选项结束」的唯一合法例外
+    //（SKILL「章节与剧情树」明文该轮不再出选项；RULES 第 3 句的协议行枚举也声明了这条章标记），
+    // 缺 **行动** 不是引擎忘写——正则真源 CHAPTER_MARK_RE（shared/protocol.mjs），不追问。
+    if (CHAPTER_MARK_RE.test(turnText)) return;
+    console.log("[acp] 回合缺 **行动** 选项段，自动追问一次");
+    try {
+      // 追问只要回合尾，走低档（SUPPLEMENT_PROMPT 不在 DIRECTIVE_PREFIX_RE 前缀集，pickEffort 会给正戏档，
+      // 所以直接指定）；档位已由 lastEffort 记账，下个正戏回合的 applyEffort 会自动拉回。
+      await applyEffortValue(EFFORT_PLANNING);
+      // 追问只要回合尾，120s 足够（主回合 600s 是整轮叙事+美术的预算，追问不该占满）；
+      // 超时与引擎 error 同路：catch 里 warn 后放弃，不转 409、不影响回合成功收尾
+      const s = await acp.request("session/prompt", {
+        sessionId: acp.sessionId, prompt: [{ type: "text", text: SUPPLEMENT_PROMPT }],
+      }, 120_000);
+      if (s && s.error) throw new Error(`引擎补充回合失败：${s.error.message ?? JSON.stringify(s.error)}`);
+    } catch (e) {
+      console.warn(`[acp] 追问失败，放弃（回合日志里留痕）: ${e.message}`);
+    }
   }
 
   /**
@@ -517,7 +558,10 @@ export function startServer() {
         throw new Error(`引擎回合失败：${r.error.message ?? JSON.stringify(r.error)}`);
       }
       flushArtLines();
-      writeTurnSnapshot(text); // 逐轮快照：flushArtLines 之后、busy=false 之前
+      // 质量守卫：flushArtLines 之后、writeTurnSnapshot 之前——追问补的回合尾也要进本轮快照与日志的定稿
+      await supplementMissingOptions(text);
+      flushArtLines(); // 追问回合的输出里可能还有协议行（【立绘】/音频三行），补扫一次
+      writeTurnSnapshot(text); // 逐轮快照 + 回合日志：flushArtLines 之后、busy=false 之前
       // 先复位再广播：客户端收到 turn_end 会立即发下一条（制作流水线自动推进），
       // 若广播后才复位会撞 409 窗口（v1.4 实测抓到的竞态）
       busy = false;

@@ -1,5 +1,6 @@
 // 世界三文件与逐轮快照的地基（v1.7 拆模块）：state/worlds/<worldId>/ 的三文件清单、
-// 世界 id 白名单（WORLD_ID_RE）、三文件读写、history/NNNN.json 快照的读写与选择、分叉回退的纯函数。
+// 世界 id 白名单（WORLD_ID_RE）、三文件读写、history/NNNN.json 快照的读写与选择、分叉回退的纯函数，
+// 以及 logs/NNNN.json 回合原文日志（writeTurnLog，v1.7）。
 // 世界线 CRUD（索引/导入导出/迁移）在上层 server/worlds.mjs——它 import 本模块，本模块不反向依赖。
 // 入口 server/acp-server.mjs 逐名 re-export 这些符号（tests/server.test.ts 从入口 import）。
 import fs from "fs";
@@ -347,4 +348,68 @@ export function forkNote(originWorldId, nodeId, at = new Date()) {
     "绝不向玩家输出任何说明文字。",
     "",
   ].join("\n");
+}
+
+// ---------- 回合原文日志（v1.7）：logs/NNNN.json ----------
+// 目录 state/worlds/<worldId>/logs/NNNN.json（与 history/ 平级、4 位递增、append-only、不清理）。
+// 存 {seq, at, prompt, text}——正戏回合「发了什么 + 引擎回了什么」的原文：turnText 只在内存累积、
+// 回合结束随下次 sendPrompt 清空，出问题（引擎胡言乱语、缺选项段）无法回溯，这份日志就是回溯面。
+// 与快照是两回事：快照存三文件全文（回退用），日志存叙事原文（排查用）——快照去重（duplicate）的
+// 回合日志照写；也**不进世界线导出包**（exportWorld 只读三文件与 history/，见 worlds.mjs 的注释）。
+export const LOGS_DIRNAME = "logs";
+let warnedLogOverflow = false; // 溢出告警只打一次（与 warnedSnapshotOverflow 同款理由）
+
+// logs 目录里 seq 最大的一条（只看文件名，O(目录项数)；与 latestSnapshot 同款，只是不需要返回文件名）
+/** @param {string} dir logs 目录绝对路径 @returns {number} 最大 seq；目录不存在/无合法文件时 0 */
+function latestLogSeq(dir) {
+  let names = [];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return 0;
+  }
+  let seq = 0;
+  for (const name of names) {
+    if (!/^\d{1,4}\.json$/.test(name)) continue;
+    const n = Number(name.slice(0, -5));
+    if (n > seq) seq = n;
+  }
+  return seq;
+}
+
+/**
+ * 追加一条回合原文日志（v1.7，与 writeTurnSnapshot 同判定、同时机调用）。
+ * seq 取向：优先与同回合快照对齐（entry.seq 用 writeSnapshot 的返回——ok 与 duplicate 两个分支都带 seq，
+ * history 与 logs 起步前都为空、每回合同增，正常路径天然 1:1 对齐）；对齐值追不上 logs 自己的进度时
+ * （快照去重的回合日志照写、restore 的 backup 只进 history，两边步进会错位）退回 logs 的 max+1——
+ * append-only 永不让步：任何路径都不覆盖既有文件。溢出（>9999）与 writeSnapshot 同款截断（warn once、不再写）。
+ * @param {string} root 世界根目录
+ * @param {string} worldId 世界 id
+ * @param {{seq?: number|null, at?: string, prompt?: string, text?: string}} entry seq 为快照对齐提示（见上）；at 缺省当前时间；prompt/text 缺省空串
+ * @returns {{ok: true, seq: number}|{ok?: false, skipped: true, reason: "bad-world-id"|"overflow"}}
+ *   失败分支的 ok 缺省（与 writeSnapshot 同款真值判定口径）
+ */
+export function writeTurnLog(root, worldId, entry = {}) {
+  if (!WORLD_ID_RE.test(String(worldId || ""))) return { skipped: true, reason: "bad-world-id" };
+  const dir = path.join(root, worldId, LOGS_DIRNAME);
+  const last = latestLogSeq(dir);
+  // 对齐值合法且领先 logs 进度才用（Math.max 语义）；追不上就自己递增——绝不写已存在的序号
+  const want = Number(entry.seq);
+  const seq = Number.isInteger(want) && want > last ? want : last + 1;
+  if (seq > SNAPSHOT_SEQ_MAX) {
+    if (!warnedLogOverflow) {
+      warnedLogOverflow = true;
+      console.warn(`[acp] 世界 ${worldId} 的回合日志已达上限 ${SNAPSHOT_SEQ_MAX}，此后的回合日志不再写入`);
+    }
+    return { skipped: true, reason: "overflow" };
+  }
+  const final = {
+    seq,
+    at: typeof entry.at === "string" && entry.at ? entry.at : new Date().toISOString(),
+    prompt: typeof entry.prompt === "string" ? entry.prompt : "",
+    text: typeof entry.text === "string" ? entry.text : "",
+  };
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, `${String(seq).padStart(4, "0")}.json`), JSON.stringify(final, null, 2) + "\n");
+  return { ok: true, seq };
 }
