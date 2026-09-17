@@ -19,20 +19,26 @@ import {
 } from "./worlds.mjs";
 
 /**
- * @param {object} ctx 入口闭包注入
- * @param {Set} ctx.clients SSE 客户端集合（/events 注册、stopServer 清空）
- * @param {(text: string) => Promise<{ok: boolean, error?: string}>} ctx.sendPrompt
- * @param {(presetId: string) => Array<object>} ctx.listAssets 画廊数据（registry + 磁盘扫描）
- * @param {(type: string, rawName: string, src: string, presetId?: string, srcRel?: string) => boolean} ctx.persistAssetFromFile
- * @param {(name: string) => string|null} ctx.resolveImage 会话图片定位（ACP 会话闭包）
- * @param {(rel: string) => void} ctx.warnLegacyPathOnce 旧档路径告警（去重）
- * @param {string} ctx.currentPresetId getter：嗅探出的当前剧本 id
- * @param {string|null} ctx.sessionId getter：当前 ACP 会话 id
+ * 入口闭包注入的能力集（startServer → 路由链；currentPresetId/sessionId 是 getter，每次读最新值）。
+ * @typedef {Object} HandlerContext
+ * @property {Set<import("http").ServerResponse>} clients SSE 客户端集合（/events 注册、stopServer 清空）
+ * @property {(text: string) => Promise<{ok: boolean, error?: string}>} sendPrompt
+ * @property {(presetId: string) => Array<object>} listAssets 画廊数据（registry + 磁盘扫描）
+ * @property {(type: string, rawName: string, src: string, presetId?: string, srcRel?: string) => boolean} persistAssetFromFile
+ * @property {(name: string) => string|null} resolveImage 会话图片定位（ACP 会话闭包）
+ * @property {(rel: string) => void} warnLegacyPathOnce 旧档路径告警（去重）
+ * @property {string} currentPresetId 嗅探出的当前剧本 id
+ * @property {string|null} sessionId 当前 ACP 会话 id
+ */
+
+/**
+ * @param {HandlerContext} ctx 入口闭包注入
  * @returns {(req: import("http").IncomingMessage, res: import("http").ServerResponse) => void}
  */
 export function createRequestHandler(ctx) {
   return (req, res) => {
-    const url = new URL(req.url, `http://localhost:${BASE_PORT}`);
+    // http.Server 的请求必有 url（Node 只在极特殊的内部场景才缺席）——cast 表达这个平台不变式
+    const url = new URL(/** @type {string} */ (req.url), `http://localhost:${BASE_PORT}`);
 
     // 来源校验（统一入口，先于所有路由）：跨站请求一律 403（无 Origin 的 curl/测试/Electron 同源请求放行）
     if (isCrossSiteRequest(req)) {
@@ -84,7 +90,8 @@ export function createRequestHandler(ctx) {
         req,
         res,
         (body) => {
-          let payload = {};
+          // JSON.parse 边界：请求体形状未知，各 action 分支自行取字段并校验
+          let payload = /** @type {any} */ ({});
           try { payload = JSON.parse(body) || {}; } catch {}
           if (String(payload.action || "") !== "import") {
             res.writeHead(400, { "content-type": "application/json; charset=utf-8" });
@@ -116,9 +123,10 @@ export function createRequestHandler(ctx) {
     // 素材批量删除（CONTRACTS §3）：只删 presets/<id>/assets/ 下的单层 jpe?g，封面（cover.jpg）不可删
     if (req.method === "POST" && url.pathname === "/api/assets") {
       readBodyText(req, res, (body) => {
-        let payload = {};
+        // JSON.parse 边界：同 /api/presets，字段在下方逐个校验
+        let payload = /** @type {any} */ ({});
         try { payload = JSON.parse(body) || {}; } catch {}
-        const json = (code, obj) => { res.writeHead(code, { "content-type": "application/json; charset=utf-8" }); res.end(JSON.stringify(obj)); };
+        const json = /** @param {number} code @param {object} obj */ (code, obj) => { res.writeHead(code, { "content-type": "application/json; charset=utf-8" }); res.end(JSON.stringify(obj)); };
         if (String(payload.action || "") !== "delete") return json(400, { error: "未知动作" });
         const presetId = String(payload.preset || "");
         const file = String(payload.file || "");
@@ -206,9 +214,13 @@ export function createRequestHandler(ctx) {
     // 世界线管理：create=建新世界（分配 id、写索引）；fork=在指定节点手动分叉（不推演）；delete=删除
     if (req.method === "POST" && url.pathname === "/api/worlds") {
       readBodyText(req, res, (body) => {
-        let payload = {};
+        // JSON.parse 边界：同 /api/presets，字段在下方逐个校验
+        let payload = /** @type {any} */ ({});
         try { payload = JSON.parse(body) || {}; } catch {}
         const action = String(payload.action || "");
+        // 各 action 的返回形状互不相同（createWorld 返回条目、restore 返回 backupSeq、delete 返回 trashed…），
+        // 路由只做 `out.error` 分流与 JSON 透传——按 any 收口，形状由各函数自己的 JSDoc 保证
+        /** @type {any} */
         let out;
         if (action === "create") {
           const id = String(payload.preset || "");
@@ -341,7 +353,7 @@ export function createRequestHandler(ctx) {
       const qPreset = PRESET_ID_RE.test(qRaw) ? qRaw : "";
       if (qRaw && !qPreset) console.warn(`[acp] /img 的 &preset= 非法，已忽略: ${qRaw}`);
       const { presetId: targetPid } = resolvePersistPreset({ queryPreset: qPreset, srcRel: p });
-      const serve = (file) => fs.readFile(file, (err, data) => {
+      const serve = /** @param {string} file */ (file) => fs.readFile(file, (err, data) => {
         if (err) { res.writeHead(404); res.end(); return; }
         res.writeHead(200, { "content-type": "image/jpeg", "cache-control": "public, max-age=86400" });
         res.end(data);

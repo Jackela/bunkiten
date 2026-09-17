@@ -21,6 +21,7 @@
     "dev": "vite",
     "dev:electron": "concurrently -k -n vite,electron \"vite\" \"electron .\"",
     "build": "tsc -b && vite build",
+    "typecheck:server": "tsc -p tsconfig.server.json --noEmit",
     "test": "vitest run --exclude \"tests/e2e/**\" --exclude \"tests/e2e-ui/**\"",
     "doctor": "node scripts/doctor.mjs",
     "test:e2e": "playwright test",

@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "types": ["node"],
+    "allowJs": true,
+    "checkJs": true,
+    "allowImportingTsExtensions": true,
+    "strict": true,
+    "useUnknownInCatchVariables": false,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["server/**/*.mjs", "shared/protocol.mjs", "scripts/doctor.mjs"]
+}

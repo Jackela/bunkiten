@@ -6,6 +6,7 @@ import fs from "fs";
 import path from "path";
 import { WORLDS_ROOT } from "./config.mjs";
 
+/** @type {readonly ["state.md", "summary.md", "story-tree.md"]} */
 export const WORLD_FILES = ["state.md", "summary.md", "story-tree.md"];
 // 世界 id 白名单（防路径穿越）：世界线所有读写的第一道闸（快照与 CRUD 共用，所以钉在这层地基里）
 export const WORLD_ID_RE = /^[A-Za-z0-9_-]+$/;
@@ -15,13 +16,33 @@ export const WORLD_ID_RE = /^[A-Za-z0-9_-]+$/;
 // worlds.mjs 的 importWorld 落快照文件用同一目录名（不抄第二份字面量）
 export const HISTORY_DIRNAME = "history";
 const SNAPSHOT_SEQ_MAX = 9999; // 4 位上限：seq > 9999 不再写（warn once），避免文件名溢出 5 位
+/** @type {Record<"state.md"|"summary.md"|"story-tree.md", "state"|"summary"|"tree">} */
 const WORLD_FILE_KEY = { "state.md": "state", "summary.md": "summary", "story-tree.md": "tree" };
+
+/**
+ * 世界三文件全文（快照条目、导出 bundle 与各处读写的公共形状）：null = 该文件当时不存在。
+ * @typedef {Object} SnapshotFiles
+ * @property {string|null} state state.md 全文
+ * @property {string|null} summary summary.md 全文
+ * @property {string|null} tree story-tree.md 全文
+ */
+
+/**
+ * 规范化后的快照条目（normalizeSnapshot 的产物 = 磁盘上唯一的条目形状）。
+ * @typedef {Object} SnapshotEntry
+ * @property {number} seq
+ * @property {string} at
+ * @property {"turn"|"backup"} kind
+ * @property {string|null} nodeId
+ * @property {number|null} chapterNo
+ * @property {SnapshotFiles} files
+ */
 let warnedSnapshotOverflow = false; // 溢出告警只打一次（每回合都会触发判断，不去重会刷屏）
 
 /**
  * 从 story-tree.md 解析当前进度指针（纯函数）：`- 当前进度: 节点 <id>（已走 X 轮）` → `<id>`。
  * 节点 id 到全角括号或空白为止（与 forkTreeMarkdown 写出的格式互为逆运算）。
- * @param {string} md 剧情树原文
+ * @param {string|null} md 剧情树原文（null/undefined 视同空文本——调用方的三文件本来就允许缺失）
  * @returns {string|null} 节点 id；无该行时 null
  */
 export function parseTreePointer(md) {
@@ -32,9 +53,10 @@ export function parseTreePointer(md) {
 /**
  * 读世界三文件全文（缺失 = null）。快照条目与导出 bundle 的 files 都用这个形状。
  * @param {string} dir 世界目录绝对路径
- * @returns {{state: string|null, summary: string|null, tree: string|null}}
+ * @returns {SnapshotFiles}
  */
 export function readWorldFiles(dir) {
+  /** @type {SnapshotFiles} */
   const out = { state: null, summary: null, tree: null };
   for (const f of WORLD_FILES) {
     try {
@@ -53,7 +75,7 @@ export function readWorldFiles(dir) {
  * summary.md（「未来」内容），世界自相矛盾。所有调用方传的值都来自 normalizeSnapshot 或同形状对象，
  * 三键一律按「有则写、无则删」处理。
  * @param {string} dir 世界目录绝对路径
- * @param {{state?: string|null, summary?: string|null, tree?: string|null}} files 三文件全文
+ * @param {{state?: unknown, summary?: unknown, tree?: unknown}} files 三文件全文（逐键 typeof 校验后才写盘，导入的 JSON 也走这里）
  */
 export function writeWorldFiles(dir, files) {
   fs.mkdirSync(dir, { recursive: true });
@@ -67,11 +89,13 @@ export function writeWorldFiles(dir, files) {
 /**
  * 快照条目字段规范化（导出纯函数）：统一 seq 类型、at 默认当前时间、kind 归一、files 三键缺省 null。
  * 写盘与读取都走它，保证磁盘上的条目形状只有一个（导入校验也复用同一形状）。
- * @param {object} [entry] 原始条目
- * @returns {{seq: number, at: string, kind: "turn"|"backup", nodeId: string|null, chapterNo: number|null, files: {state: string|null, summary: string|null, tree: string|null}}}
+ * @param {Partial<SnapshotEntry>} [entry] 原始条目（可能是刚 JSON.parse 出来的任意形状）
+ * @returns {SnapshotEntry}
  */
 export function normalizeSnapshot(entry = {}) {
+  /** @type {Partial<SnapshotFiles>} */
   const files = entry.files && typeof entry.files === "object" ? entry.files : {};
+  /** @param {unknown} v */
   const str = (v) => (typeof v === "string" ? v : null);
   const num = Number(entry.seq);
   return {
@@ -86,8 +110,8 @@ export function normalizeSnapshot(entry = {}) {
 
 /**
  * 快照条目结构校验（导出纯函数，导入 bundle 用）：字段类型与取值域都必须合法。
- * @param {unknown} obj 待校验对象
- * @returns {boolean} 是否是合法的快照条目
+ * @param {any} obj 待校验对象（JSON 直入，字段类型未知——函数体内逐字段 typeof/取值域检查，故入参按 any 收口）
+ * @returns {obj is SnapshotEntry} 是否是合法的快照条目（filter 里当类型守卫用）
  */
 export function isSnapshotEntry(obj) {
   if (!obj || typeof obj !== "object") return false;
@@ -105,7 +129,7 @@ export function isSnapshotEntry(obj) {
  * 读某世界全部快照（升序）。文件名即 seq 来源；坏 JSON / 越界文件名一律跳过（不让单条坏档拖垮回退界面）。
  * @param {string} worldId 世界 id（调用方先用 WORLD_ID_RE 校验）
  * @param {string} [root] 世界根目录（缺省 WORLDS_ROOT）
- * @returns {Array<object>} 规范化后的快照条目（含 files），按 seq 升序
+ * @returns {SnapshotEntry[]} 规范化后的快照条目（含 files），按 seq 升序
  */
 export function readSnapshots(worldId, root = WORLDS_ROOT) {
   if (!WORLD_ID_RE.test(String(worldId || ""))) return [];
@@ -127,6 +151,7 @@ export function readSnapshots(worldId, root = WORLDS_ROOT) {
 }
 
 // 历史目录里 seq 最大的一条（只看文件名 O(目录项数)，不读文件内容）。没有合法文件时 {seq:0, file:null}。
+/** @param {string} dir 历史目录绝对路径 @returns {{seq: number, file: string|null}} */
 function latestSnapshot(dir) {
   let names = [];
   try {
@@ -148,6 +173,7 @@ function latestSnapshot(dir) {
 }
 
 // 读单条快照文件（name 为历史目录下的文件名）；坏档/越界返回 null。
+/** @param {string} dir 历史目录绝对路径 @param {string} name 文件名 @returns {SnapshotEntry|null} */
 function readSnapshotFile(dir, name) {
   try {
     const entry = normalizeSnapshot(JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")));
@@ -162,7 +188,7 @@ function readSnapshotFile(dir, name) {
  * @param {string} worldId 世界 id（调用方先用 WORLD_ID_RE 校验）
  * @param {number|string} seq 目标 seq
  * @param {string} [root] 世界根目录（缺省 WORLDS_ROOT）
- * @returns {object|null} 规范化后的快照条目；不存在/坏档时 null
+ * @returns {SnapshotEntry|null} 规范化后的快照条目；不存在/坏档时 null
  */
 export function readSnapshot(worldId, seq, root = WORLDS_ROOT) {
   if (!WORLD_ID_RE.test(String(worldId || ""))) return null;
@@ -185,9 +211,10 @@ export function readSnapshot(worldId, seq, root = WORLDS_ROOT) {
  * 溢出：seq 将 > 9999 时不再写并 warn once。
  * @param {string} root 世界根目录
  * @param {string} worldId 世界 id
- * @param {object} entry 条目（seq 由本函数分配，忽略传入值）
+ * @param {{kind?: "turn"|"backup", nodeId?: string|null, chapterNo?: number|null, files?: SnapshotFiles, at?: string, seq?: number}} entry 条目（seq 由本函数分配，忽略传入值）
  * @param {{dedupe?: boolean}} [opts]
- * @returns {{ok: true, seq: number, entry: object}|{skipped: true, reason: string, seq: number|null}}
+ * @returns {{ok: true, seq: number, entry: SnapshotEntry}|{ok?: false, skipped: true, reason: string, seq: number|null}}
+ *   失败分支的 ok 缺省（不是 false）：调用方一律按 `if (res.ok)` / `if (!res.ok)` 真值判定
  */
 export function writeSnapshot(root, worldId, entry, { dedupe = true } = {}) {
   if (!WORLD_ID_RE.test(String(worldId || ""))) return { skipped: true, reason: "bad-world-id", seq: null };
@@ -217,15 +244,16 @@ export function writeSnapshot(root, worldId, entry, { dedupe = true } = {}) {
 }
 
 // 三文件全文是否逐字相同（去重判定用；只看内容，不看 at/kind）
+/** @param {SnapshotFiles} a @param {SnapshotFiles} b @returns {boolean} */
 function sameFiles(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
 /**
  * 从快照列表里按节点挑「最早匹配」的一条（纯函数，CONTRACTS §2 的精确回退源）。
- * @param {Array<object>} snapshots 快照列表（顺序无所谓，内部按 seq 排序）
+ * @param {SnapshotEntry[]} snapshots 快照列表（顺序无所谓，内部按 seq 排序）
  * @param {string} nodeId 目标节点 id
- * @returns {object|null} 最早（seq 最小）的那个匹配快照；无匹配时 null
+ * @returns {SnapshotEntry|null} 最早（seq 最小）的那个匹配快照；无匹配时 null
  */
 export function selectSnapshotForNode(snapshots, nodeId) {
   const list = Array.isArray(snapshots) ? snapshots.filter((s) => s && typeof s === "object") : [];
@@ -234,13 +262,15 @@ export function selectSnapshotForNode(snapshots, nodeId) {
 
 // 分叉回退（纯函数）：当前进度指针 → 目标节点、轮次清零、已剪枝恢复可达；
 // 分叉点之后的情节视为尚未发生——由引擎按 fork.md 静默校准 state/summary（见 SKILL【世界线】）
+/** @param {string} md 剧情树原文 @param {string} nodeId 目标节点 id @returns {string} 回退后的树原文 */
 export function forkTreeMarkdown(md, nodeId) {
   return String(md || "")
     .replace(/^-\s*当前进度\s*[:：].*$/m, `- 当前进度: 节点 ${nodeId}（已走 0 轮）`)
     .replace(/^(\s*-\s*状态\s*[:：]\s*)已剪枝\s*$/gm, "$1可达");
 }
 
-/** 分叉说明文件：给引擎的一次性回退指令（处理完引擎自行删除） */
+/** 分叉说明文件：给引擎的一次性回退指令（处理完引擎自行删除）
+ *  @param {string} originWorldId 来源世界 id @param {string} nodeId 分叉节点 id @param {Date} [at] 分叉时间 @returns {string} fork.md 全文 */
 export function forkNote(originWorldId, nodeId, at = new Date()) {
   return [
     "# 分叉说明",

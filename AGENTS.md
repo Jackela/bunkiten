@@ -72,6 +72,7 @@ LLM 互动 AVG（文字冒险 / 视觉小说）：Electron 壳 + React 前端 + 
 ## 门禁
 
 - 交付前跑 `npm run build`（`tsc -b && vite build`）。
+- 交付前跑 `npm run typecheck:server`（server/shared/scripts 的 checkJs 门禁：`tsconfig.server.json` 对 `server/**/*.mjs` + `shared/protocol.mjs` + `scripts/doctor.mjs` 开 strict 检查，类型全靠 JSDoc；CI 也会跑）。
 - `npm test`（`vitest run --exclude "tests/e2e/**" --exclude "tests/e2e-ui/**"`）：parser 65 + server 99 + crafting 52 + treeLayout 7 + genealogy 8 + diff 8 + doctor 12 + ui 109 + integration 21（pipeline 10 + audio-history 8 + http-guard 3），**共 381 例**，秒级——默认含集成层，改契约字符串必须同步改快照；另跑契约 lint `tests/contract.test.ts`（v1.6 防漂移门禁，**不计入这 381**——它断言的就是上面这些数字与协议真源）。
 - `npm run doctor`：剧本体检查（`scripts/doctor.mjs`，作者侧工具）——改 preset 结构/新增剧本后跑；退出码非 0 当且仅当有 error（warning 不影响）。**刻意不进 CI**：报告面向作者按需看，且「仓库此刻的 preset 健康度」随游玩数据（state/worlds、素材增删）漂移，门禁化会误伤；doctor 的纯函数判定已由 doctor 12 例守在 `npm test` 里。
 - `npm run test:e2e`：真引擎冒烟（约 6 分钟，2 个回合），改前端流程/协议后跑。

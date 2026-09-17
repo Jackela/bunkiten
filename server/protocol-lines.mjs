@@ -20,24 +20,28 @@ export const RULES_SENTENCES = [
 export const RULES = RULES_SENTENCES.join("");
 
 // 【图】(立绘|背景|封面)|<名>|<路径>[|重绘]：资产标记（封面即剧本标题，重绘要求覆盖同名文件）
+/** @param {string} line 协议行原文 @returns {{type: string, name: string, srcRel: string, regen: boolean}|null} */
 export function parseArtLine(line) {
   const m = /^\s*【图】(立绘|背景|封面)\|([^|]+)\|([^|]+?)(?:\|(重绘))?\s*$/.exec(line);
   return m ? { type: m[1], name: m[2], srcRel: m[3], regen: m[4] === "重绘" } : null;
 }
 
 // 【立绘】<角色>|<变体>：表情切换指令，不是资产（server 不持久化，只转发事件）
+/** @param {string} line 协议行原文 @returns {{character: string, variant: string}|null} */
 export function parseExpressionLine(line) {
   const m = /^\s*【立绘】([^|]+?)\|([^|]*)\s*$/.exec(line);
   return m ? { character: m[1].trim(), variant: m[2].trim() } : null;
 }
 
 // 【新剧本】<id>：新剧本入轮播通知
+/** @param {string} line 协议行原文 @returns {{id: string}|null} */
 export function parsePresetAddedLine(line) {
   const m = /^\s*【新剧本】(.+?)\s*$/.exec(line);
   return m ? { id: m[1] } : null;
 }
 
 // 【树】：剧情图编辑完成通知（引擎已静默写回 story-tree.md）；行尾可带的摘要按 note 透传
+/** @param {string} line 协议行原文 @returns {{note: string}|null} */
 export function parseTreeLine(line) {
   const m = /^\s*【树】(.*?)\s*$/.exec(line);
   return m ? { note: m[1].trim() } : null;
@@ -45,7 +49,9 @@ export function parseTreeLine(line) {
 
 // 【曲】/<名>、【环境】/<名>、【音效】/<名>：音频切换指令（演出指令，与【立绘】同级；server 不落盘，只广播）
 // 行首 trim 后匹配（CONTRACTS §1）：名里不再夹带路径，`停` 也是普通名字（客户端自行处理淡出）
+/** @param {string} line 协议行原文 @returns {{kind: "曲"|"环境"|"音效", name: string}|null} */
 export function parseAudioLine(line) {
   const m = /^【(曲|环境|音效)】([^\n]*)$/.exec(String(line ?? "").trim());
-  return m ? { kind: m[1], name: m[2] } : null;
+  // 正则的交替组保证 m[1] 只能是这三个字面之一——cast 只是把这个不变式写进类型
+  return m ? { kind: /** @type {"曲"|"环境"|"音效"} */ (m[1]), name: m[2] } : null;
 }
