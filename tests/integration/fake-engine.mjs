@@ -6,6 +6,9 @@
 //   ["正文第一段\n\n【图】立绘|薇拉|images/1.jpg\n"]                 // 纯字符串 = agent_message_chunk 文本
 //   { match:"改树", ops:["已改好。\n", { tool:"写剧情树" }, "【树】\n"] } // 对象：按 match 子串选中；ops 里
 //                                                                     // {tool} 视作 tool_call（制造 seg 切换）
+// ops 元素三种：string = chunk 文本；{tool:"名"} = tool_call 通知（制造 seg 切换）；
+//   {error:"消息"} = 中止回放，直接回 JSON-RPC error（code -32603，message 用给定文本）——
+//   供「引擎回合失败 / 再同步失败」类用例制造 server 侧 error 事件。
 // 选中规则：优先「含 match 子串且尚未用过」的条目；否则按声明顺序顺次消费（队列语义）。
 // session/prompt 先逐条发通知、再回 {result:{}}（与真引擎「边流式边结束」一致）。
 import readline from "node:readline";
@@ -45,15 +48,20 @@ function pickOps(promptText) {
   return entry ? (Array.isArray(entry) ? entry : Array.isArray(entry.ops) ? entry.ops : []) : [];
 }
 
-// 回放一个回合：string → chunk 通知；{tool} → tool_call 通知（server 据此 seg+1）
-function playTurn(ops) {
+// 回放一个回合：string → chunk 通知；{tool} → tool_call 通知（server 据此 seg+1）；
+// {error} → 回 JSON-RPC error 并中止（返回 false，调用方不再回 result）
+function playTurn(ops, id) {
   for (const op of ops) {
     if (typeof op === "string") {
       notify({ sessionUpdate: "agent_message_chunk", content: { text: op } });
+    } else if (op && typeof op.error === "string") {
+      fail(id, -32603, op.error);
+      return false;
     } else if (op && typeof op.tool === "string") {
       notify({ sessionUpdate: "tool_call", title: op.tool, toolCall: { title: op.tool } });
     }
   }
+  return true;
 }
 
 function handle(msg) {
@@ -69,8 +77,8 @@ function handle(msg) {
       return reply(msg.id, {});
     case "session/prompt": {
       const text = msg.params?.prompt?.[0]?.text ?? "";
-      playTurn(pickOps(text));
-      return reply(msg.id, {});
+      if (playTurn(pickOps(text), msg.id)) return reply(msg.id, {});
+      return; // {error} op 已回过 JSON-RPC error，不再回 result
     }
     default:
       return reply(msg.id, {}); // 宽容：未知带 id 请求一律回空结果
