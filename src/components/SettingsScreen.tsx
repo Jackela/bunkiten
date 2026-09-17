@@ -41,7 +41,7 @@ function VolumeRow({
       />
       <span
         data-testid={`${testId}-value`}
-        className="w-9 flex-none text-right text-[12px] tabular-nums text-ink/45"
+        className="w-9 flex-none text-right text-[12px] tabular-nums text-ink-hint"
       >
         {Math.round(value * 100)}
       </span>
@@ -116,7 +116,7 @@ export default function SettingsScreen() {
             返回
           </button>
         </header>
-        <p className="mt-2 text-[11px] tracking-[.2em] text-ink/40">改动即时生效并保存在本机</p>
+        <p className="mt-2 text-[11px] tracking-[.2em] text-ink-hint">改动即时生效并保存在本机</p>
 
         {/* 音频 */}
         <section className="mt-8 rounded-xl border border-white/10 bg-[rgba(10,12,18,.5)] p-5 backdrop-blur-md">
@@ -155,7 +155,7 @@ export default function SettingsScreen() {
             />
             <VolumeRow label="音效" value={settings.sfx} testId="settings-sfx" onChange={(v) => updateSettings({ sfx: v })} />
           </div>
-          <p className="mt-3 text-[11px] leading-relaxed tracking-[.05em] text-ink/35">
+          <p className="mt-3 text-[11px] leading-relaxed tracking-[.05em] text-ink-hint">
             音频文件由作者放在 presets/&lt;剧本 id&gt;/audio/ 下（命名 曲-名.mp3 / 环境-名.mp3 / 音效-名.wav）；
             剧本没放文件时静默不播，不影响剧情。
           </p>
@@ -166,14 +166,14 @@ export default function SettingsScreen() {
           <SectionTitle>文 本</SectionTitle>
 
           <div className="mt-3">
-            <p className="mb-2 text-[12px] tracking-[.2em] text-ink/55">文字速度</p>
+            <p className="mb-2 text-[12px] tracking-[.2em] text-ink-hint">文字速度</p>
             <Segmented
               options={TEXT_SPEED_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
               value={settings.textSpeed}
               prefix="settings-textspeed"
               onSelect={(v) => updateSettings({ textSpeed: v as TextSpeed })}
             />
-            <p className="mt-2 text-[11px] tracking-[.05em] text-ink/35">
+            <p className="mt-2 text-[11px] tracking-[.05em] text-ink-hint">
               {settings.textSpeed === "instant"
                 ? "瞬间：正文直接整段显示（点击对话框补全文的行为保留）"
                 : `每字 ${TEXT_SPEED_MS[settings.textSpeed]}ms；点击对话框可立即补完全文`}
@@ -181,14 +181,14 @@ export default function SettingsScreen() {
           </div>
 
           <div className="mt-5">
-            <p className="mb-2 text-[12px] tracking-[.2em] text-ink/55">自动前进</p>
+            <p className="mb-2 text-[12px] tracking-[.2em] text-ink-hint">自动前进</p>
             <Segmented
               options={AUTO_ADVANCE_OPTIONS.map((v) => ({ value: String(v), label: AUTO_ADVANCE_LABELS[v] }))}
               value={String(settings.autoAdvance)}
               prefix="settings-auto"
               onSelect={(v) => updateSettings({ autoAdvance: Number(v) as AutoAdvance })}
             />
-            <p className="mt-2 text-[11px] tracking-[.05em] text-ink/35">
+            <p className="mt-2 text-[11px] tracking-[.05em] text-ink-hint">
               正文打完、选项出现前的停顿时长（v1.6 先记录偏好，触发由后续版本接入）
             </p>
           </div>

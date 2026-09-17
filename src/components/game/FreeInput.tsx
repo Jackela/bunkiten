@@ -95,7 +95,7 @@ export default function FreeInput() {
         }}
         placeholder={listening ? "聆听中…说完自动发送" : "想说什么就写在这里（也可输入数字）"}
         autoComplete="off"
-        className="flex-1 rounded-lg border border-white/10 bg-[rgba(12,14,20,.8)] px-3.5 py-2.5 text-[15px] tracking-[.02em] outline-none transition-colors focus:border-gold/35"
+        className="flex-1 rounded-lg border border-white/10 bg-[rgba(12,14,20,.8)] px-3.5 py-2.5 text-[15px] tracking-[.02em] transition-colors focus:border-gold/35"
       />
       {srAvailable && (
         <button

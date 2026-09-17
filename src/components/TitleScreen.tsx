@@ -107,16 +107,16 @@ export default function TitleScreen() {
 
       <header className="absolute inset-x-0 top-0 z-20 pt-10 text-center">
         <h1 className="text-3xl font-normal tracking-[.55em] [text-indent:.55em]">剧 本</h1>
-        <p className="mt-2.5 text-[13px] tracking-[.3em] text-ink/45">选一张卡带，今晚住进去</p>
+        <p className="mt-2.5 text-[13px] tracking-[.3em] text-ink-hint">选一张卡带，今晚住进去</p>
         {error && <p className="mt-2 text-sm text-red-400">剧本加载失败：{error}</p>}
-        {!loaded && !error && <p className="mt-2 animate-pulse text-sm text-ink/50">加载中…</p>}
+        {!loaded && !error && <p className="mt-2 animate-pulse text-sm text-ink-hint">加载中…</p>}
         {loaded && skipCount > 0 && (
-          <p className="mt-2 text-xs text-ink/35">跳过 {skipCount} 个无法解析的剧本</p>
+          <p className="mt-2 text-xs text-ink-hint">跳过 {skipCount} 个无法解析的剧本</p>
         )}
       </header>
 
       {/* 角落入口：画廊与创作模式（stopPropagation 防止 Enter 同时触发插卡） */}
-      <div className="absolute bottom-[4vh] right-6 z-20 flex items-center gap-5 text-[12px] tracking-[.3em] text-ink/45">
+      <div className="absolute bottom-[4vh] right-6 z-20 flex items-center gap-5 text-[12px] tracking-[.3em] text-ink-hint">
         <button
           type="button"
           onClick={openAssets}
@@ -186,7 +186,7 @@ export default function TitleScreen() {
                 }
                 transition={inserting && isCenter ? { duration: 0.55, ease: [0.55, 0, 0.9, 0.4] } : SHIFT}
                 style={{ ...cardVars(t), transformOrigin: "50% 40%" }}
-                className={`absolute inset-0 h-full w-full rounded-2xl border text-left outline-none ${
+                className={`absolute inset-0 h-full w-full rounded-2xl border text-left ${
                   isCenter ? "cursor-pointer" : "pointer-events-none"
                 } ${show ? "" : "pointer-events-none"}`}
                 aria-label={`${p.title} ${p.genre}`}
@@ -230,7 +230,7 @@ export default function TitleScreen() {
                     {p.genre}
                   </span>
                   <span className="mt-2 block text-[22px] leading-snug tracking-[.12em] text-ink">{p.title}</span>
-                  <span className="mt-2 block text-[12.5px] leading-relaxed text-ink/55">{p.tagline}</span>
+                  <span className="mt-2 block text-[12.5px] leading-relaxed text-ink-body">{p.tagline}</span>
                 </span>
               </motion.button>
             );
@@ -271,7 +271,7 @@ export default function TitleScreen() {
         )}
       </AnimatePresence>
 
-      <p className="pointer-events-none absolute inset-x-0 bottom-[4vh] z-20 text-center text-[12px] tracking-[.35em] text-ink/40">
+      <p className="pointer-events-none absolute inset-x-0 bottom-[4vh] z-20 text-center text-[12px] tracking-[.35em] text-ink-hint">
         ← → 切换 · Enter 装载
       </p>
     </ScreenShell>

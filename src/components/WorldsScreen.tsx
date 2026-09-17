@@ -268,11 +268,11 @@ export default function WorldsScreen() {
                   <span className="rounded-full border border-gold/30 bg-gold/10 px-2.5 py-0.5 text-[11px] tracking-[.2em] text-gold">
                     {selected.genre}
                   </span>
-                  <span className="rounded-full border border-white/10 bg-white/[.03] px-2.5 py-0.5 text-[11px] tracking-[.2em] text-ink/45">
+                  <span className="rounded-full border border-white/10 bg-white/[.03] px-2.5 py-0.5 text-[11px] tracking-[.2em] text-ink-hint">
                     {selected.rating}
                   </span>
                 </div>
-                <p className="mt-2 text-[12.5px] leading-relaxed text-ink/55">{selected.tagline}</p>
+                <p className="mt-2 text-[12.5px] leading-relaxed text-ink-body">{selected.tagline}</p>
               </>
             )}
           </div>
@@ -293,7 +293,7 @@ export default function WorldsScreen() {
             data-testid="worlds-import"
             disabled={importing || worldBusy}
             onClick={() => fileRef.current?.click()}
-            className="ml-auto rounded-lg border border-white/10 px-4 py-2 text-[13px] tracking-[.1em] text-ink/60 transition-colors hover:border-gold/40 hover:text-ink disabled:cursor-not-allowed disabled:text-ink/30"
+            className="ml-auto rounded-lg border border-white/10 px-4 py-2 text-[13px] tracking-[.1em] text-ink/60 transition-colors hover:border-gold/40 hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint"
           >
             {importing ? "导入中…" : "导入"}
           </button>
@@ -310,7 +310,7 @@ export default function WorldsScreen() {
             data-testid="worlds-new"
             disabled={!presetId || creating}
             onClick={createWorld}
-            className="rounded-lg border border-gold/35 bg-gold/15 px-5 py-2 text-[13.5px] tracking-[.1em] text-gold transition-colors hover:bg-gold/30 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink/35"
+            className="rounded-lg border border-gold/35 bg-gold/15 px-5 py-2 text-[13.5px] tracking-[.1em] text-gold transition-colors hover:bg-gold/30 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink-faint"
           >
             {creating ? "创建中…" : "新世界线"}
           </button>
@@ -336,7 +336,7 @@ export default function WorldsScreen() {
 
         {/* 加载 / 失败态 */}
         {loading && worlds === null && !error && (
-          <p className="mt-6 animate-pulse text-sm text-ink/50">清点世界线…</p>
+          <p className="mt-6 animate-pulse text-sm text-ink-hint">清点世界线…</p>
         )}
         {error && (
           <div
@@ -362,7 +362,7 @@ export default function WorldsScreen() {
             className="mt-6 flex flex-col items-center gap-3 rounded-2xl border border-dashed border-white/15 bg-[rgba(10,12,18,.5)] px-6 py-10 backdrop-blur-md"
           >
             <p className="text-[14px] tracking-[.12em] text-ink/60">还没有世界线——开始新的吧</p>
-            <p className="text-[11.5px] tracking-[.2em] text-ink/35">新世界线从捏人开始</p>
+            <p className="text-[11.5px] tracking-[.2em] text-ink-hint">新世界线从捏人开始</p>
           </div>
         )}
 
@@ -391,16 +391,16 @@ export default function WorldsScreen() {
                 onMouseEnter={() => setFocus(i)}
                 onFocus={() => setFocus(i)}
                 onClick={() => setFocus(i)}
-                className={`rounded-xl border bg-[rgba(10,12,18,.5)] px-4 py-3 backdrop-blur-md transition-colors outline-none ${
+                className={`rounded-xl border bg-[rgba(10,12,18,.5)] px-4 py-3 backdrop-blur-md transition-colors ${
                   i === focus ? "border-gold/40" : "border-white/10 hover:border-gold/25"
                 }`}
               >
                 <div className="flex items-center gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
-                      <span className={`truncate text-[15px] ${missing ? "text-ink/40" : "text-ink"}`}>{name}</span>
+                      <span className={`truncate text-[15px] ${missing ? "text-ink-hint" : "text-ink"}`}>{name}</span>
                       {entry.forkedFrom && (
-                        <span className="flex-none rounded-sm border border-white/10 bg-white/[.03] px-1.5 py-0.5 text-[10px] tracking-[.12em] text-ink/50">
+                        <span className="flex-none rounded-sm border border-white/10 bg-white/[.03] px-1.5 py-0.5 text-[10px] tracking-[.12em] text-ink-hint">
                           分叉自 {entry.forkedFrom.worldId} @ {entry.forkedFrom.nodeId}
                         </span>
                       )}
@@ -413,13 +413,13 @@ export default function WorldsScreen() {
                         </span>
                       )}
                     </div>
-                    <p className="mt-1 text-[11.5px] tracking-[.12em] text-ink/40">
+                    <p className="mt-1 text-[11.5px] tracking-[.12em] text-ink-hint">
                       第 {entry.chapterNo} 章 · {relativeTime(entry.lastPlayed)}
                       {missing && <span className="ml-2 text-red-400/90">目录缺失</span>}
                     </p>
                     {/* 显示名与备注都有时，备注降为次行（分叉说明这类信息不该被显示名吃掉） */}
                     {entry.label?.trim() && entry.note?.trim() && (
-                      <p data-testid={`world-note-${entry.worldId}`} className="mt-1 truncate text-[11.5px] text-ink/35">
+                      <p data-testid={`world-note-${entry.worldId}`} className="mt-1 truncate text-[11.5px] text-ink-hint">
                         {entry.note}
                       </p>
                     )}
@@ -435,7 +435,7 @@ export default function WorldsScreen() {
                       onClick={() => continueWorld(entry)}
                       className={`rounded-lg border px-3.5 py-1.5 text-[12.5px] tracking-[.1em] transition-colors ${
                         missing || engineBusy
-                          ? "cursor-not-allowed border-white/10 text-ink/35"
+                          ? "cursor-not-allowed border-white/10 text-ink-hint"
                           : "border-gold/35 bg-gold/15 text-gold hover:bg-gold/30"
                       }`}
                     >
@@ -448,7 +448,7 @@ export default function WorldsScreen() {
                       aria-label={`编辑世界线 ${name}`}
                       aria-expanded={editing}
                       onClick={() => (editing ? setEditId(null) : openEdit(entry))}
-                      className="rounded-lg border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink/55 transition-colors hover:border-gold/40 hover:text-ink"
+                      className="rounded-lg border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
                     >
                       {editing ? "收起" : "编辑"}
                     </button>
@@ -460,7 +460,7 @@ export default function WorldsScreen() {
                       download={`${entry.worldId}.world.json`}
                       data-testid={`world-export-${entry.worldId}`}
                       aria-label={`导出世界线 ${name}`}
-                      className="rounded-lg border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink/55 transition-colors hover:border-gold/40 hover:text-ink"
+                      className="rounded-lg border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
                     >
                       导出
                     </a>
@@ -474,7 +474,7 @@ export default function WorldsScreen() {
                           aria-label={`确认删除世界线 ${name}`}
                           disabled={busy}
                           onClick={() => removeWorld(entry)}
-                          className="rounded-lg border border-red-400/40 bg-red-500/15 px-3.5 py-1.5 text-[12.5px] tracking-[.1em] text-red-300 transition-colors hover:bg-red-500/25 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink/35"
+                          className="rounded-lg border border-red-400/40 bg-red-500/15 px-3.5 py-1.5 text-[12.5px] tracking-[.1em] text-red-300 transition-colors hover:bg-red-500/25 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink-faint"
                         >
                           {busy ? "删除中…" : "确认删除"}
                         </button>
@@ -483,7 +483,7 @@ export default function WorldsScreen() {
                           aria-label={`取消删除世界线 ${name}`}
                           disabled={busy}
                           onClick={() => setConfirmId(null)}
-                          className="rounded-lg border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink/55 transition-colors hover:text-ink disabled:cursor-not-allowed disabled:text-ink/30"
+                          className="rounded-lg border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink-hint transition-colors hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint"
                         >
                           取消
                         </button>
@@ -497,7 +497,7 @@ export default function WorldsScreen() {
                           setActionError("");
                           setConfirmId(entry.worldId);
                         }}
-                        className="rounded-lg border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink/55 transition-colors hover:border-red-400/40 hover:text-red-300"
+                        className="rounded-lg border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink-hint transition-colors hover:border-red-400/40 hover:text-red-300"
                       >
                         删除
                       </button>
@@ -512,7 +512,7 @@ export default function WorldsScreen() {
                     className="mt-3 grid gap-2 border-t border-white/[.06] pt-3"
                   >
                     <label className="flex items-center gap-2">
-                      <span className="w-14 flex-none text-[11.5px] tracking-[.2em] text-ink/45">显示名</span>
+                      <span className="w-14 flex-none text-[11.5px] tracking-[.2em] text-ink-hint">显示名</span>
                       <input
                         ref={labelRef}
                         data-testid={`world-edit-label-${entry.worldId}`}
@@ -523,11 +523,11 @@ export default function WorldsScreen() {
                         onKeyDown={(e) => onEditKey(e, entry)}
                         placeholder="留空则回退备注 / 世界 id"
                         autoComplete="off"
-                        className="min-w-0 flex-1 rounded-lg border border-white/10 bg-[rgba(12,14,20,.8)] px-3 py-1.5 text-[13.5px] outline-none transition-colors focus:border-gold/35"
+                        className="min-w-0 flex-1 rounded-lg border border-white/10 bg-[rgba(12,14,20,.8)] px-3 py-1.5 text-[13.5px] transition-colors focus:border-gold/35"
                       />
                     </label>
                     <label className="flex items-center gap-2">
-                      <span className="w-14 flex-none text-[11.5px] tracking-[.2em] text-ink/45">备注</span>
+                      <span className="w-14 flex-none text-[11.5px] tracking-[.2em] text-ink-hint">备注</span>
                       <input
                         data-testid={`world-edit-note-${entry.worldId}`}
                         aria-label={`备注（${name}）`}
@@ -537,7 +537,7 @@ export default function WorldsScreen() {
                         onKeyDown={(e) => onEditKey(e, entry)}
                         placeholder="留空则清除备注"
                         autoComplete="off"
-                        className="min-w-0 flex-1 rounded-lg border border-white/10 bg-[rgba(12,14,20,.8)] px-3 py-1.5 text-[13.5px] outline-none transition-colors focus:border-gold/35"
+                        className="min-w-0 flex-1 rounded-lg border border-white/10 bg-[rgba(12,14,20,.8)] px-3 py-1.5 text-[13.5px] transition-colors focus:border-gold/35"
                       />
                     </label>
                     <div className="flex items-center gap-3">
@@ -546,7 +546,7 @@ export default function WorldsScreen() {
                         data-testid={`world-edit-save-${entry.worldId}`}
                         disabled={saving || worldBusy}
                         onClick={() => saveEdit(entry)}
-                        className="rounded-lg border border-gold/35 bg-gold/15 px-4 py-1.5 text-[12.5px] tracking-[.1em] text-gold transition-colors hover:bg-gold/30 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink/35"
+                        className="rounded-lg border border-gold/35 bg-gold/15 px-4 py-1.5 text-[12.5px] tracking-[.1em] text-gold transition-colors hover:bg-gold/30 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink-faint"
                       >
                         {saving ? "保存中…" : "保存"}
                       </button>
@@ -555,11 +555,11 @@ export default function WorldsScreen() {
                         data-testid={`world-edit-cancel-${entry.worldId}`}
                         disabled={saving}
                         onClick={() => setEditId(null)}
-                        className="rounded-lg border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink/55 transition-colors hover:text-ink disabled:cursor-not-allowed disabled:text-ink/30"
+                        className="rounded-lg border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink-hint transition-colors hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint"
                       >
                         取消
                       </button>
-                      <span className="text-[11px] tracking-[.08em] text-ink/35">Enter 保存 · Esc 取消 · 留空即清除</span>
+                      <span className="text-[11px] tracking-[.08em] text-ink-hint">Enter 保存 · Esc 取消 · 留空即清除</span>
                     </div>
                   </div>
                 )}
@@ -568,7 +568,7 @@ export default function WorldsScreen() {
           })}
         </div>
 
-        <p className="mt-8 text-center text-[12px] tracking-[.35em] text-ink/40">↑ ↓ 选择 · Enter 继续</p>
+        <p className="mt-8 text-center text-[12px] tracking-[.35em] text-ink-hint">↑ ↓ 选择 · Enter 继续</p>
       </div>
     </ScreenShell>
   );

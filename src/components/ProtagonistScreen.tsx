@@ -77,7 +77,7 @@ export default function ProtagonistScreen() {
                 </section>
               );
             })}
-            {!allAnswered && <p className="text-xs text-ink/40">每项都选好之后才能开演。</p>}
+            {!allAnswered && <p className="text-xs text-ink-hint">每项都选好之后才能开演。</p>}
           </div>
         )}
 

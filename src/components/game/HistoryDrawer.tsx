@@ -22,7 +22,7 @@ export default function HistoryDrawer() {
             // 同一快照可能被回退多次：幕名之外再拼序号，保证 key 唯一
             key={`rollback-${h.seq}-${i}`}
             data-testid="history-rollback"
-            className="border-y border-white/[.08] py-2 text-center text-[11px] tracking-[.25em] text-ink/45"
+            className="border-y border-white/[.08] py-2 text-center text-[11px] tracking-[.25em] text-ink-hint"
           >
             —— 已回退到快照 #{h.seq} ——
           </p>
@@ -64,7 +64,7 @@ export default function HistoryDrawer() {
             </button>
           </header>
           <div className="flex-1 overflow-y-auto px-4 py-3.5">
-            {rows.length === 0 ? <p className="py-5 text-center text-[13px] text-ink/50">还没有历史</p> : rows}
+            {rows.length === 0 ? <p className="py-5 text-center text-[13px] text-ink-hint">还没有历史</p> : rows}
           </div>
         </motion.aside>
       )}

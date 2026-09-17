@@ -72,7 +72,7 @@ export default function OptionList() {
   return (
     <div data-testid="options" className="mb-3 mx-auto flex w-fit max-w-full flex-col items-center gap-1">
       {autoAdvanceDeadline !== null && autoAdvance > 0 && (
-        <p data-testid="auto-advance" className="text-[11px] tracking-[.15em] text-ink/40">
+        <p data-testid="auto-advance" className="text-[11px] tracking-[.15em] text-ink-hint">
           自动前进 · {left}s
         </p>
       )}
@@ -94,7 +94,7 @@ export default function OptionList() {
         </motion.button>
       ))}
       {/* 快捷键提示：低调到不妨碍阅读，但键盘玩家一眼能找到 */}
-      <p data-testid="option-hints" className="mt-0.5 text-[11px] tracking-[.15em] text-ink/30">
+      <p data-testid="option-hints" className="mt-0.5 text-[11px] tracking-[.15em] text-ink-hint">
         1-9 选择 · 空格补全
       </p>
     </div>

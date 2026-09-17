@@ -68,7 +68,7 @@ export default function CreationScreen() {
             返回
           </button>
         </header>
-        <p className="mt-2 px-6 text-[11px] tracking-[.2em] text-ink/40">
+        <p className="mt-2 px-6 text-[11px] tracking-[.2em] text-ink-hint">
           用几句话聊聊你想要的故事，聊到满意就装配成新剧本
         </p>
 
@@ -110,7 +110,7 @@ export default function CreationScreen() {
 
           {/* 引擎忙时排队的消息：回合结束自动补发 */}
           {pendingMessage && (
-            <p className="mb-3 text-right text-[11.5px] tracking-[.15em] text-ink/40">
+            <p className="mb-3 text-right text-[11.5px] tracking-[.15em] text-ink-hint">
               引擎就绪后自动发送
             </p>
           )}
@@ -137,13 +137,13 @@ export default function CreationScreen() {
 
           {/* 装配回合结束但没有【新剧本】：可重试 */}
           {stalled && !result && (
-            <motion.p {...BUBBLE} transition={{ duration: 0.35 }} className="mb-3 text-[13px] text-ink/50">
+            <motion.p {...BUBBLE} transition={{ duration: 0.35 }} className="mb-3 text-[13px] text-ink-body">
               这一轮装配没有完成，可能是引擎超时了。
               <button
                 type="button"
                 disabled={engineBusy}
                 onClick={() => sendCreation(BUILD_ASSEMBLE)}
-                className="ml-2 rounded-md border border-gold/35 px-2.5 py-1 text-[12px] text-gold transition-colors hover:bg-gold/20 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink/35"
+                className="ml-2 rounded-md border border-gold/35 px-2.5 py-1 text-[12px] text-gold transition-colors hover:bg-gold/20 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink-faint"
               >
                 重试装配
               </button>
@@ -181,7 +181,7 @@ export default function CreationScreen() {
               onKeyDown={onKeyDown}
               placeholder="描述你想要的故事（题材、角色、基调…）"
               autoComplete="off"
-              className="flex-1 rounded-lg border border-white/10 bg-[rgba(12,14,20,.8)] px-3.5 py-2.5 text-[15px] tracking-[.02em] outline-none transition-colors focus:border-gold/35"
+              className="flex-1 rounded-lg border border-white/10 bg-[rgba(12,14,20,.8)] px-3.5 py-2.5 text-[15px] tracking-[.02em] transition-colors focus:border-gold/35"
             />
             <button
               type="button"
@@ -195,7 +195,7 @@ export default function CreationScreen() {
             type="button"
             disabled={engineBusy || !!result}
             onClick={() => sendCreation(BUILD_ASSEMBLE)}
-            className="mt-2.5 w-full rounded-lg border border-dashed border-white/20 px-5 py-2.5 text-sm tracking-[.1em] text-ink/70 transition-colors hover:border-gold/40 hover:text-ink disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink/30"
+            className="mt-2.5 w-full rounded-lg border border-dashed border-white/20 px-5 py-2.5 text-sm tracking-[.1em] text-ink/70 transition-colors hover:border-gold/40 hover:text-ink disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink-faint"
           >
             {result ? "装配已完成" : assembling ? "装配中…" : "开始装配"}
           </button>
