@@ -509,6 +509,7 @@ export default function AssetsScreen() {
                 </div>
                 <button
                   type="button"
+                  data-testid="assets-preview-regen"
                   disabled={!selectedTarget || selectedBusy}
                   onClick={() => selectedTarget && startRegen(selectedTarget.type, selectedTarget.key, selectedTarget.matchName)}
                   className={`ml-auto flex items-center gap-1.5 rounded-lg border px-4 py-2 text-[13px] tracking-[.1em] transition-colors ${

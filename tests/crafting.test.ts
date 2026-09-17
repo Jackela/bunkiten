@@ -1055,8 +1055,9 @@ describe("v1.6 批量重绘 / 素材删除 / 世界线管理（store 公共 API 
     await useGameStore.getState().deleteAssets(files);
 
     expect(assetPosts).toEqual([
-      { action: "delete", preset: "campus-summer", file: files[0] },
-      { action: "delete", preset: "campus-summer", file: files[1] },
+      // postAssetDelete 在 HTTP 边界把完整相对路径收敛为单层文件名（服务端 ASSET_DELETE_FILE_RE 契约）
+      { action: "delete", preset: "campus-summer", file: "立绘-薇拉.jpg" },
+      { action: "delete", preset: "campus-summer", file: "背景-灰雀镇.jpg" },
     ]);
     const s = useGameStore.getState();
     expect(s.assetsBusy).toBe(false);
@@ -1067,10 +1068,10 @@ describe("v1.6 批量重绘 / 素材删除 / 世界线管理（store 公共 API 
   it("批量删除：部分失败逐条记账（成功项照删），提示点名失败文件并标 error", async () => {
     const stamp0 = useGameStore.getState().assetsStamp;
     const bad = "presets/campus-summer/assets/立绘-薇拉.jpg";
-    deleteFails = { [bad]: "文件不存在" };
+    deleteFails = { "立绘-薇拉.jpg": "文件不存在" }; // mock 按收敛后的请求体（basename）命中
     await useGameStore.getState().deleteAssets([bad, "presets/campus-summer/assets/背景-灰雀镇.jpg"]);
 
-    expect(assetPosts.map((p) => p.file)).toEqual([bad, "presets/campus-summer/assets/背景-灰雀镇.jpg"]);
+    expect(assetPosts.map((p) => p.file)).toEqual(["立绘-薇拉.jpg", "背景-灰雀镇.jpg"]);
     const s = useGameStore.getState();
     expect(s.assetsNotice?.kind).toBe("error");
     expect(s.assetsNotice?.text).toContain("已删除 1/2 项");

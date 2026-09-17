@@ -1231,7 +1231,8 @@ describe("AssetsScreen：选择模式、批量重绘与批量删除（v1.6）", 
       if (url.pathname === "/api/assets" && init?.method === "POST") {
         const body = JSON.parse(String(init.body)) as { file: string };
         assetPosts.push(body);
-        assetsResp = assetsResp.filter((a) => a.file !== body.file); // 删除后清单确实少一条
+        // 请求体已收敛为单层文件名（postAssetDelete），清单条目是完整相对路径：按 basename 命中移除
+        assetsResp = assetsResp.filter((a) => a.file !== body.file && !a.file.endsWith("/" + body.file));
         return jsonResponse({ ok: true });
       }
       if (url.pathname === "/api/assets") {
@@ -1302,7 +1303,8 @@ describe("AssetsScreen：选择模式、批量重绘与批量删除（v1.6）", 
 
     fireEvent.click(screen.getByTestId("assets-delete-confirm"));
     await waitFor(() => expect(assetPosts).toHaveLength(2));
-    expect(assetPosts.map((p) => p.file)).toEqual([FILE_BG, FILE_PORTRAIT]); // 顺序=勾选顺序
+    // 顺序=勾选顺序；file 是 postAssetDelete 收敛后的单层文件名（服务端 ASSET_DELETE_FILE_RE 契约）
+    expect(assetPosts.map((p) => p.file)).toEqual(["背景-灰雀镇廉价旅店.jpg", "立绘-薇拉.jpg"]);
     expect(assetPosts.every((p) => p.action === "delete" && p.preset === "campus-summer")).toBe(true);
 
     await waitFor(() => expect(screen.getByTestId("assets-notice").textContent).toContain("已删除 2 项素材"));
