@@ -95,7 +95,7 @@ function ArtSlot({ item, url }: { item: PreloadItem; url: string | null }) {
             <motion.div key="placeholder" exit={{ opacity: 0 }} transition={{ duration: 1.2, ease: "easeInOut" }} className="absolute inset-0">
               <Silhouette scene={scene} dim={item.state !== "running"} />
               {item.state === "failed" && (
-                <span className="absolute inset-0 flex items-center justify-center text-2xl text-ink/30">
+                <span className="absolute inset-0 flex items-center justify-center text-2xl text-ink-faint">
                   <span className="absolute h-[2px] w-[130%] -rotate-45 bg-ink/25" />
                 </span>
               )}
@@ -108,9 +108,9 @@ function ArtSlot({ item, url }: { item: PreloadItem; url: string | null }) {
           </span>
         )}
       </div>
-      <div className={`text-[13px] ${item.state === "failed" ? "text-ink/35" : url ? "text-gold" : "text-ink/60"}`}>
+      <div className={`text-[13px] ${item.state === "failed" ? "text-ink-hint" : url ? "text-gold" : "text-ink/60"}`}>
         {item.label}
-        <span className="ml-1.5 text-[10px] tracking-[.1em] text-ink/35">{STATE_LABEL[item.state]}</span>
+        <span className="ml-1.5 text-[10px] tracking-[.1em] text-ink-hint">{STATE_LABEL[item.state]}</span>
       </div>
     </div>
   );
@@ -125,7 +125,7 @@ function OutlineSlot({ active }: { active: boolean }) {
       </div>
       <div className="text-[13px] text-ink/60">
         章节大纲
-        <span data-testid="crafting-plan-slot" className="ml-1.5 text-[10px] tracking-[.1em] text-ink/35">{active ? "撰写大纲与剧情树…" : "排队中"}</span>
+        <span data-testid="crafting-plan-slot" className="ml-1.5 text-[10px] tracking-[.1em] text-ink-hint">{active ? "撰写大纲与剧情树…" : "排队中"}</span>
       </div>
     </div>
   );
@@ -161,11 +161,11 @@ export default function CraftingScreen() {
           {status}
           {busy && elapsed !== null && <span className="tabular-nums">{elapsed}s</span>}
         </p>
-        <p className="mt-1.5 text-[11px] tracking-[.2em] text-ink/40">
+        <p className="mt-1.5 text-[11px] tracking-[.2em] text-ink-hint">
           {planning
             ? `为《${selected.title}》撰写第 ${chapterNo} 章大纲与剧情树`
             : `${doneCount} / ${preload.length} 就绪 · 为《${selected.title}》赶制美术`}
-          {worldLabel && <span className="ml-2 text-ink/30">· {worldLabel}</span>}
+          {worldLabel && <span className="ml-2 text-ink-hint">· {worldLabel}</span>}
         </p>
         {planning ? (
           <div className="mt-8">
@@ -192,7 +192,7 @@ export default function CraftingScreen() {
           type="button"
           onClick={openTree}
           data-testid="crafting-tree-link"
-          className="mt-4 text-[11.5px] tracking-[.2em] text-ink/45 underline-offset-4 transition-colors hover:text-[color:var(--accent)] hover:underline"
+          className="mt-4 text-[11.5px] tracking-[.2em] text-ink-hint underline-offset-4 transition-colors hover:text-[color:var(--accent)] hover:underline"
         >
           查看剧情图
         </button>

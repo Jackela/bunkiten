@@ -30,7 +30,7 @@ export default function BootScreen() {
     <ScreenShell className="flex flex-col items-center justify-center gap-5 bg-[radial-gradient(120%_90%_at_50%_0%,#131627_0%,#07080c_60%)] p-6">
       <h1 className="text-3xl font-normal tracking-[.55em] [text-indent:.55em]">剧 本</h1>
 
-      {state === "checking" && <p className="animate-pulse text-[13px] tracking-[.3em] text-ink/50">正在确认引擎登录状态…</p>}
+      {state === "checking" && <p className="animate-pulse text-[13px] tracking-[.3em] text-ink-hint">正在确认引擎登录状态…</p>}
 
       {state === "login" && (
         <div className="max-w-md rounded-xl border border-white/10 bg-white/5 p-6 text-center">

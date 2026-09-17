@@ -577,11 +577,26 @@ theme:
 
 客户端动效分三类，各走各的降级路径；全部**跟随系统「减少动态效果」偏好**，不新增游戏内开关——OS 级偏好是用户已经做出的选择，设置屏不重复发明一个（理由同 Web 惯例：一次设置处处生效，也不会出现「游戏开关与系统开关打架」的中间态）。
 
-- **framer-motion**（屏转场 `ScreenShell`、各屏入场/浮入、motif 氛围层四款、Atmosphere 颗粒跳位）：`App.tsx` 根节点包一层 `<MotionConfig reducedMotion="user">`，一处全局生效——transform/opacity 动画降为瞬时完成（元素照常挂载与切换，不是删动画元素），布局切换、`AnimatePresence mode="wait"` 的卸载序、标题屏卡带轮播的拖拽手势都不受影响（`reducedMotion` 只停自动动画，不停交互）。
+- **framer-motion**（屏转场 `ScreenShell`、各屏入场/浮入、motif 氛围层四款、Atmosphere 颗粒跳位）：`App.tsx` 根节点包一层 `<MotionConfig reducedMotion="user">`，一处全局生效——**位移/布局动画（transform、layout）降为瞬时**（元素照常挂载与切换，不是删动画元素），标题屏卡带轮播的拖拽手势不受影响（`reducedMotion` 只停自动动画，不停交互）。注意 framer-motion 13 的 `reducedMotion` 不覆盖 opacity：屏转场与差分切换的**交叉淡入照常播放**（0.45s/0.9s），motif 的 opacity 呼吸同理——淡入是 WCAG 推荐的降级替代，要消除的是位移感而非一切变化。
 - **CSS keyframes**（`animate-pulse`：打字光标、TopBar 忙点与各屏加载点；`animate-spin`：画廊加载圈）：`global.css` 末尾的 `@media (prefers-reduced-motion: reduce)` 把这两个类 `animation: none`——元素静止但仍渲染（光标停在原地，可见性不丢）。`.grain` 噪点是静态纹理、本来就不动，无需处理。
 - **打字机**（`DialogueBox` 的 setTimeout 逐字链，不走 framer 也不走 CSS）：组件内 `usePrefersReducedMotion()` 用 `window.matchMedia("(prefers-reduced-motion: reduce)")` 检测（挂载读一次 + 跟随 change 事件；jsdom 等无 matchMedia 实现的环境防御性视为未开启，探测绝不抛错）。开启时打字间隔按 0 处理——复用「瞬间」档的呈现路径（`interval <= 0` 直接整段），**但不改用户的文字速度设置档位**；`typingDone` 随之即刻为真，「空格补全」提示与光标自然不出现。
 
 测试：`tests/ui.test.tsx` 给 jsdom 手工挂/删 `window.matchMedia` 垫片，覆盖「reduce 时整段显示且设置档位不动」与「matchMedia 缺失不降级」两条；`tests/e2e-ui/reduced-motion.spec.ts` 用 Playwright 的 `browser.newContext({ reducedMotion: "reduce" })` 走开局回合，断言长正文整段立现（无逐字过程）且动效降级不破坏 crafting→game 的屏切换。
+
+## 焦点可见性与文字对比度阶梯（v1.7）
+
+两项无障碍底座，都收在 `src/styles/global.css`：
+
+- **统一焦点环**：`:where(button, a, input, select, textarea, [tabindex]):focus-visible` 画 `outline: 2px solid var(--accent2)` + 2px 偏移。只响应键盘焦点（`:focus-visible`），鼠标点击不闪环——文本输入框例外：浏览器对文字输入控件的启发式判定是**任何聚焦方式都命中** `:focus-visible`，输入中带环是 UA 有意为之的可访问性行为，不做压制。规则写在 unlayered 区（不进 `@layer`）：级联层外的规则优先于 Tailwind v4 的 utilities 层，`:where()` 零特异性兜底，任何工具类都盖不住这圈环——因此组件里不再需要（也不允许）`outline-none`。选中态是另一层语义，与焦点环并存：WorldsScreen 光标行的 `border-gold/40`、剧情图节点的 `--accent2` 描边都原样保留。SVG 节点（`<g tabindex>`）的 outline 由 Chromium 直接支持，无需 `:focus-visible rect` 描边备选。
+- **文字对比度阶梯**：`@theme inline` 暴露三档语义色（`--ink` 直混透明度，叠最深面板底 `rgba(12,14,20,.8)×#07080c≈#0b0d12` 上的 WCAG 实测对比度）：
+  - `text-ink-body`（ink 80%，≈10.2:1）：次级正文/长说明；
+  - `text-ink-hint`（ink 60%，≈6.1:1）：**提示文字下限**——快捷键提示、元信息、状态辅助行、字段标签、图例、加载/空态文案；
+  - `text-ink-faint`（ink 45%，≈3.9:1，不达 4.5:1）：**仅限**禁用态（WCAG 对 disabled 控件豁免）、纯装饰符号（如出边列表的 `→`）、≥18px bold 或 ≥24px 的大字——禁止用于正文与常规小字。
+  正文主文字继续用 `text-ink`（strong，≈15.8:1）；`text-ink/60` 及以上既有档位未迁移、与新 token 并存（60% 与 hint 同值）。新增文字请按语义取 token，不要再手写 `text-ink/<透明度>` 低档位。
+
+排版收尾：`DialogueBox` 等待玩家输入的继续指示（`◈ 输入数字或直接写下你想做的事`）在就绪且无选项时以主题色轻微脉冲（`animate-pulse text-gold/90`）——reduced-motion 下由上文媒体规则自动停。
+
+测试：`tests/e2e-ui/focus.spec.ts` 在真浏览器断言三处键盘焦点的 computed outline（宽 >0 且 style 非 none）：game 屏 Tab 到命令轨「设置」、世界线屏 ↑↓ roving 到行、剧情图方向键到 SVG 节点 `<g>`（jsdom 不算 computed outline，只能在 e2e 做）。
 
 ## 打包布局（electron-builder.yml）
 

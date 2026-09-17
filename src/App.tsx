@@ -103,9 +103,10 @@ export default function App() {
   }, []);
 
   return (
-    // reducedMotion="user"：系统开了「减少动态效果」时，全树 framer-motion 的 transform/opacity
-    // 动画降为瞬时（屏转场/motif 氛围/浮入），布局切换与拖拽手势不受影响——CSS keyframes 与打字机
-    // 的降级分别在 global.css 与 DialogueBox（见 docs/ARCHITECTURE.md「动效降级」）。
+    // reducedMotion="user"：系统开了「减少动态效果」时，全树 framer-motion 的位移/布局动画
+    // （transform 与 layout）降为瞬时；交叉淡入（opacity，如屏转场与差分切换）按 framer-motion
+    // 13 的语义保留——淡入本身是 WCAG 推荐的降级替代。CSS keyframes 与打字机的降级分别在
+    // global.css 与 DialogueBox（见 docs/ARCHITECTURE.md「动效降级」）。
     <MotionConfig reducedMotion="user">
       <div className="fixed inset-0 overflow-hidden bg-bg font-serif text-ink" style={themeVars(theme)}>
         <StatusAnnouncer />

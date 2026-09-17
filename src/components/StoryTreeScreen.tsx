@@ -241,7 +241,7 @@ function TreeCanvas({
   return (
     <div ref={wrapRef} data-testid="tree-canvas-wrap" onKeyDown={onCanvasKeyDown} className="mt-3">
       {/* 工具条：图例 + 缩放 */}
-      <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] tracking-[.1em] text-ink/45">
+      <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] tracking-[.1em] text-ink-hint">
         {STATUS_ORDER.map((st) => {
           const paint = nodePaint(st);
           return (
@@ -286,13 +286,13 @@ function TreeCanvas({
           >
             <Maximize2 size={12} /> 适应
           </button>
-          <span data-testid="tree-zoom-level" className="ml-1 w-10 text-right text-ink/40">
+          <span data-testid="tree-zoom-level" className="ml-1 w-10 text-right text-ink-hint">
             {Math.round(view.zoom * 100)}%
           </span>
         </span>
       </div>
 
-      <p className="mb-1.5 text-[11px] tracking-[.05em] text-ink/30">滚轮缩放 · 拖拽平移 · 双击复位 · 方向键走节点</p>
+      <p className="mb-1.5 text-[11px] tracking-[.05em] text-ink-hint">滚轮缩放 · 拖拽平移 · 双击复位 · 方向键走节点</p>
 
       <svg
         ref={svgRef}
@@ -355,7 +355,7 @@ function TreeCanvas({
                 onFocus(ln.id);
               }}
               onKeyDown={activate(ln.id)}
-              className="cursor-pointer outline-none"
+              className="cursor-pointer"
               opacity={paint.dim ? 0.55 : 1}
             >
               {/* 当前进度节点：外圈亮环（accent2） */}
@@ -426,7 +426,7 @@ function TreeList({
     <div data-testid="tree-list" className="mt-3 space-y-3">
       {groups.map((g) => (
         <div key={g.status} data-testid={`tree-list-group-${g.status}`}>
-          <p className="text-[11px] tracking-[.2em] text-ink/45">
+          <p className="text-[11px] tracking-[.2em] text-ink-hint">
             {g.status} · {g.nodes.length}
           </p>
           <div className="mt-1.5 space-y-1">
@@ -446,11 +446,11 @@ function TreeList({
                   }`}
                 >
                   <span className="w-12 flex-none tracking-wide text-gold">{ln.id}</span>
-                  <span className="w-28 flex-none truncate text-ink/55">{ln.node.location || "（无地点）"}</span>
+                  <span className="w-28 flex-none truncate text-ink-hint">{ln.node.location || "（无地点）"}</span>
                   <span className="min-w-0 flex-1 truncate text-ink/80">
                     {truncate(ln.node.synopsis || ln.node.beat || "（无梗概）", 44)}
                   </span>
-                  {snap && <span className="flex-none text-[11px] text-ink/40">快照 #{snap.seq}</span>}
+                  {snap && <span className="flex-none text-[11px] text-ink-hint">快照 #{snap.seq}</span>}
                 </button>
               );
             })}
@@ -465,7 +465,7 @@ function TreeList({
 function DetailRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex gap-2">
-      <dt className="flex-none text-[11px] tracking-[.2em] text-ink/45">{label}</dt>
+      <dt className="flex-none text-[11px] tracking-[.2em] text-ink-hint">{label}</dt>
       <dd className="min-w-0 flex-1 text-[13.5px] text-ink/85">{value || "（暂无）"}</dd>
     </div>
   );
@@ -524,20 +524,20 @@ function TreeDetail({
       </dl>
 
       <div className="mt-3">
-        <p className="text-[11px] tracking-[.2em] text-ink/45">梗概</p>
+        <p className="text-[11px] tracking-[.2em] text-ink-hint">梗概</p>
         <p className="mt-1 whitespace-pre-wrap text-[13.5px] leading-relaxed text-ink/85">{node.synopsis || "（暂无）"}</p>
       </div>
 
       <div className="mt-3">
-        <p className="text-[11px] tracking-[.2em] text-ink/45">出边</p>
+        <p className="text-[11px] tracking-[.2em] text-ink-hint">出边</p>
         {node.edges.length === 0 ? (
-          <p className="mt-1 text-[13px] text-ink/50">（无出边，本章末端）</p>
+          <p className="mt-1 text-[13px] text-ink-hint">（无出边，本章末端）</p>
         ) : (
           <ul className="mt-1 space-y-1">
             {node.edges.map((e, i) => (
               <li key={i} className="text-[13px] text-ink/75">
-                <span className="text-ink/50">{e.label || "（未命名）"}</span>
-                <span className="mx-1.5 text-ink/30">→</span>
+                <span className="text-ink-hint">{e.label || "（未命名）"}</span>
+                <span className="mx-1.5 text-ink-faint">→</span>
                 <span className="text-gold">{e.target}</span>
               </li>
             ))}
@@ -555,7 +555,7 @@ function TreeDetail({
             onClick={() => onFork(node.id, snapshot?.seq)}
             className={`rounded-lg border px-4 py-2 text-[13px] tracking-[.1em] transition-colors ${
               engineBusy
-                ? "cursor-not-allowed border-white/10 text-ink/35"
+                ? "cursor-not-allowed border-white/10 text-ink-hint"
                 : "border-gold/35 bg-gold/15 text-gold hover:bg-gold/30"
             }`}
           >
@@ -577,7 +577,7 @@ function TreeDetail({
                 }}
                 className={`rounded-lg border px-4 py-2 text-[13px] tracking-[.1em] transition-colors ${
                   engineBusy
-                    ? "cursor-not-allowed border-white/10 text-ink/35"
+                    ? "cursor-not-allowed border-white/10 text-ink-hint"
                     : "border-red-400/50 bg-red-400/15 text-red-300 hover:bg-red-400/25"
                 }`}
               >
@@ -600,7 +600,7 @@ function TreeDetail({
               onClick={() => setConfirming(true)}
               className={`rounded-lg border px-4 py-2 text-[13px] tracking-[.1em] transition-colors ${
                 engineBusy
-                  ? "cursor-not-allowed border-white/10 text-ink/35"
+                  ? "cursor-not-allowed border-white/10 text-ink-hint"
                   : "border-white/15 text-ink/70 hover:border-gold/40 hover:text-ink"
               }`}
             >
@@ -608,7 +608,7 @@ function TreeDetail({
             </button>
           ))}
 
-        <span className="text-[11px] tracking-[.05em] text-ink/40">
+        <span className="text-[11px] tracking-[.05em] text-ink-hint">
           {snapshot ? "回退会覆盖世界线三份文件（先自动备份当前），并让引擎重新读档续演" : "分叉不推演，切换后从该节点续演"}
         </span>
       </div>
@@ -735,7 +735,7 @@ export default function StoryTreeScreen() {
     return (
       <ScreenShell className="bg-bg/70">
         <div className="absolute inset-0 flex items-center justify-center px-6 text-center">
-          <p className="text-sm tracking-[.1em] text-ink/50">先开始或继续一条世界线，再来看剧情图</p>
+          <p className="text-sm tracking-[.1em] text-ink-hint">先开始或继续一条世界线，再来看剧情图</p>
         </div>
       </ScreenShell>
     );
@@ -811,13 +811,13 @@ export default function StoryTreeScreen() {
             >
               切到此世界线
             </button>
-            <span className="text-[11px] tracking-[.08em] text-ink/45">分叉不推演，切换后从该节点续演</span>
+            <span className="text-[11px] tracking-[.08em] text-ink-hint">分叉不推演，切换后从该节点续演</span>
           </div>
         )}
 
         {/* 主体：模式切换 → 画布/列表 → 详情 */}
         <div className="mt-4 min-h-0 flex-1 overflow-y-auto px-6 pb-4">
-          {loading && <p className="mt-6 animate-pulse text-sm text-ink/50">载入剧情树…</p>}
+          {loading && <p className="mt-6 animate-pulse text-sm text-ink-hint">载入剧情树…</p>}
 
           {!loading && error && (
             <p data-testid="tree-error" className="mt-6 text-sm text-red-400">
@@ -836,12 +836,12 @@ export default function StoryTreeScreen() {
           )}
 
           {!loading && !error && tree && tree.chapters.length === 0 && (
-            <p className="mt-6 text-sm text-ink/50">当前世界还没有可绘制的章节节点</p>
+            <p className="mt-6 text-sm text-ink-hint">当前世界还没有可绘制的章节节点</p>
           )}
 
           {/* 大图（> 40 节点）：默认列表，并给出显式切换 */}
           {!loading && !error && tree && chapter && bigGraph && (
-            <div data-testid="tree-view-toggle" className="mt-3 flex flex-wrap items-center gap-2 text-[12px] text-ink/50">
+            <div data-testid="tree-view-toggle" className="mt-3 flex flex-wrap items-center gap-2 text-[12px] text-ink-hint">
               <span>本章 {layout.nodes.length} 个节点，已切到列表模式</span>
               <button
                 type="button"
@@ -849,7 +849,7 @@ export default function StoryTreeScreen() {
                 aria-pressed={mode === "list"}
                 onClick={() => setModePref("list")}
                 className={`rounded-md border px-3 py-1 tracking-[.15em] transition-colors ${
-                  mode === "list" ? "border-gold/45 bg-gold/15 text-gold" : "border-white/10 text-ink/55 hover:border-gold/40"
+                  mode === "list" ? "border-gold/45 bg-gold/15 text-gold" : "border-white/10 text-ink-hint hover:border-gold/40"
                 }`}
               >
                 列表
@@ -860,7 +860,7 @@ export default function StoryTreeScreen() {
                 aria-pressed={mode === "graph"}
                 onClick={() => setModePref("graph")}
                 className={`rounded-md border px-3 py-1 tracking-[.15em] transition-colors ${
-                  mode === "graph" ? "border-gold/45 bg-gold/15 text-gold" : "border-white/10 text-ink/55 hover:border-gold/40"
+                  mode === "graph" ? "border-gold/45 bg-gold/15 text-gold" : "border-white/10 text-ink-hint hover:border-gold/40"
                 }`}
               >
                 图形
@@ -902,7 +902,7 @@ export default function StoryTreeScreen() {
         {/* 底部输入行：一句话改树（引擎忙时排队） */}
         <div data-testid="tree-input" className="border-t border-white/[.06] px-6 py-4">
           {inputBlocked && (
-            <p className="mb-2 text-right text-[11.5px] tracking-[.15em] text-ink/40">引擎忙，已排队，就绪后自动发送</p>
+            <p className="mb-2 text-right text-[11.5px] tracking-[.15em] text-ink-hint">引擎忙，已排队，就绪后自动发送</p>
           )}
           <div className="flex gap-2">
             <input
@@ -911,14 +911,14 @@ export default function StoryTreeScreen() {
               onKeyDown={onKeyDown}
               placeholder="用一句话改这棵树…（例：在节点 3-1 后加一个雨夜遇袭的节点）"
               autoComplete="off"
-              className="flex-1 rounded-lg border border-white/10 bg-[rgba(12,14,20,.8)] px-3.5 py-2.5 text-[15px] tracking-[.02em] outline-none transition-colors focus:border-gold/35"
+              className="flex-1 rounded-lg border border-white/10 bg-[rgba(12,14,20,.8)] px-3.5 py-2.5 text-[15px] tracking-[.02em] transition-colors focus:border-gold/35"
             />
             <button
               type="button"
               data-testid="tree-send"
               disabled={inputBlocked}
               onClick={submit}
-              className="rounded-lg border border-gold/35 bg-gold/15 px-5 text-[14px] tracking-[.1em] text-gold transition-colors hover:bg-gold/30 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink/30"
+              className="rounded-lg border border-gold/35 bg-gold/15 px-5 text-[14px] tracking-[.1em] text-gold transition-colors hover:bg-gold/30 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink-faint"
             >
               发送
             </button>

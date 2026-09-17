@@ -282,7 +282,7 @@ export default function AssetsScreen() {
             返回
           </button>
         </header>
-        <p className="mt-2 text-[11px] tracking-[.2em] text-ink/40">
+        <p className="mt-2 text-[11px] tracking-[.2em] text-ink-hint">
           点击素材可预览大图并重新生成；选择模式下可批量重绘与删除
         </p>
 
@@ -292,13 +292,13 @@ export default function AssetsScreen() {
             data-testid="assets-toolbar"
             className="mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-white/10 bg-[rgba(10,12,18,.5)] px-3 py-2 backdrop-blur-md"
           >
-            <span className="text-[12px] tracking-[.12em] text-ink/45">已选 {picked.length}</span>
+            <span className="text-[12px] tracking-[.12em] text-ink-hint">已选 {picked.length}</span>
             <button
               type="button"
               data-testid="assets-select-all"
               disabled={(assets ?? []).length === 0}
               onClick={() => setPicked((assets ?? []).map((a) => a.file))}
-              className="rounded-md border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink/60 transition-colors hover:border-gold/40 hover:text-ink disabled:cursor-not-allowed disabled:text-ink/30"
+              className="rounded-md border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink/60 transition-colors hover:border-gold/40 hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint"
             >
               全选
             </button>
@@ -307,7 +307,7 @@ export default function AssetsScreen() {
               data-testid="assets-select-none"
               disabled={picked.length === 0}
               onClick={() => setPicked([])}
-              className="rounded-md border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink/60 transition-colors hover:border-gold/40 hover:text-ink disabled:cursor-not-allowed disabled:text-ink/30"
+              className="rounded-md border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink/60 transition-colors hover:border-gold/40 hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint"
             >
               清空
             </button>
@@ -316,7 +316,7 @@ export default function AssetsScreen() {
               data-testid="assets-regen-selected"
               disabled={regenJobs.length === 0 || selectedBusy}
               onClick={regenPicked}
-              className="flex items-center gap-1.5 rounded-md border border-gold/35 bg-gold/15 px-3.5 py-1.5 text-[12.5px] tracking-[.1em] text-gold transition-colors hover:bg-gold/30 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink/30"
+              className="flex items-center gap-1.5 rounded-md border border-gold/35 bg-gold/15 px-3.5 py-1.5 text-[12.5px] tracking-[.1em] text-gold transition-colors hover:bg-gold/30 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink-faint"
             >
               <RefreshCw size={12} /> 重绘选中({regenJobs.length})
             </button>
@@ -328,7 +328,7 @@ export default function AssetsScreen() {
                   data-testid="assets-delete-confirm"
                   disabled={assetsBusy || deletable.length === 0}
                   onClick={removePicked}
-                  className="rounded-md border border-red-400/40 bg-red-500/15 px-3.5 py-1.5 text-[12.5px] tracking-[.1em] text-red-300 transition-colors hover:bg-red-500/25 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink/35"
+                  className="rounded-md border border-red-400/40 bg-red-500/15 px-3.5 py-1.5 text-[12.5px] tracking-[.1em] text-red-300 transition-colors hover:bg-red-500/25 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink-faint"
                 >
                   确认删除({deletable.length})
                 </button>
@@ -337,7 +337,7 @@ export default function AssetsScreen() {
                   data-testid="assets-delete-cancel"
                   disabled={assetsBusy}
                   onClick={() => setConfirmDelete(false)}
-                  className="rounded-md border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink/55 transition-colors hover:text-ink"
+                  className="rounded-md border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink-hint transition-colors hover:text-ink"
                 >
                   取消
                 </button>
@@ -348,13 +348,13 @@ export default function AssetsScreen() {
                 data-testid="assets-delete-selected"
                 disabled={deletable.length === 0 || assetsBusy}
                 onClick={() => setConfirmDelete(true)}
-                className="rounded-md border border-white/10 px-3.5 py-1.5 text-[12.5px] tracking-[.1em] text-ink/60 transition-colors hover:border-red-400/40 hover:text-red-300 disabled:cursor-not-allowed disabled:text-ink/30"
+                className="rounded-md border border-white/10 px-3.5 py-1.5 text-[12.5px] tracking-[.1em] text-ink/60 transition-colors hover:border-red-400/40 hover:text-red-300 disabled:cursor-not-allowed disabled:text-ink-faint"
               >
                 删除选中({deletable.length})
               </button>
             )}
 
-            {coverPicked > 0 && <span className="text-[11px] text-ink/35">封面不参与删除（服务端只受理 assets 目录下的图）</span>}
+            {coverPicked > 0 && <span className="text-[11px] text-ink-hint">封面不参与删除（服务端只受理 assets 目录下的图）</span>}
 
             <button
               type="button"
@@ -391,7 +391,7 @@ export default function AssetsScreen() {
           </p>
         )}
         {assetsBusy && (
-          <p data-testid="assets-busy" className="mt-3 animate-pulse text-[12.5px] tracking-[.1em] text-ink/50">
+          <p data-testid="assets-busy" className="mt-3 animate-pulse text-[12.5px] tracking-[.1em] text-ink-hint">
             删除中…
           </p>
         )}
@@ -415,20 +415,20 @@ export default function AssetsScreen() {
           </p>
         )}
         {!preset && (
-          <p data-testid="assets-nopreset" className="mt-6 text-sm text-ink/50">
+          <p data-testid="assets-nopreset" className="mt-6 text-sm text-ink-hint">
             先在剧本库选一个剧本，再看它的素材
           </p>
         )}
-        {preset && !assets && !error && <p className="mt-6 animate-pulse text-sm text-ink/50">清点素材…</p>}
+        {preset && !assets && !error && <p className="mt-6 animate-pulse text-sm text-ink-hint">清点素材…</p>}
 
-        {assets && assets.length === 0 && <p className="mt-6 text-sm text-ink/50">这个剧本还没有已生成的素材</p>}
+        {assets && assets.length === 0 && <p className="mt-6 text-sm text-ink-hint">这个剧本还没有已生成的素材</p>}
 
         {portraitGroups.length > 0 && (
           <section className="mt-8">
             <h3 className="text-[13px] tracking-[.35em] text-gold/80">立 绘</h3>
             {portraitGroups.map(([who, list]) => (
               <div key={who} className="mt-4">
-                <p className="mb-2 text-[12px] tracking-[.2em] text-ink/45">{who}</p>
+                <p className="mb-2 text-[12px] tracking-[.2em] text-ink-hint">{who}</p>
                 <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 md:grid-cols-5">
                   {list.map((a) => (
                     <AssetCard key={a.file} {...cardProps(a)} />
@@ -505,7 +505,7 @@ export default function AssetsScreen() {
               <div className="flex items-end gap-3 px-1">
                 <div className="min-w-0">
                   <p className="text-[15px] text-ink">{assetLabel(selected)}</p>
-                  <p className="mt-0.5 truncate text-[11px] text-ink/40">{selected.file}</p>
+                  <p className="mt-0.5 truncate text-[11px] text-ink-hint">{selected.file}</p>
                 </div>
                 <button
                   type="button"
@@ -514,7 +514,7 @@ export default function AssetsScreen() {
                   onClick={() => selectedTarget && startRegen(selectedTarget.type, selectedTarget.key, selectedTarget.matchName)}
                   className={`ml-auto flex items-center gap-1.5 rounded-lg border px-4 py-2 text-[13px] tracking-[.1em] transition-colors ${
                     !selectedTarget || selectedBusy
-                      ? "cursor-not-allowed border-white/10 text-ink/35"
+                      ? "cursor-not-allowed border-white/10 text-ink-hint"
                       : "border-gold/35 bg-gold/15 text-gold hover:bg-gold/30"
                   }`}
                 >

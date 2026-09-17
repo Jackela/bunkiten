@@ -43,9 +43,9 @@ export default function TopBar() {
           className={`h-[7px] w-[7px] flex-none rounded-full ${busy ? "animate-pulse bg-gold" : "bg-[#3d4254]"}`}
         />
         <span data-testid="status">{status}{busy && elapsed !== null ? ` ${elapsed}s` : ""}</span>
-        <span className="text-ink/35">第 {chapterNo} 章</span>
+        <span className="text-ink-hint">第 {chapterNo} 章</span>
         {worldLabel && (
-          <span data-testid="world-label" className="max-w-[26ch] truncate text-ink/30">
+          <span data-testid="world-label" className="max-w-[26ch] truncate text-ink-hint">
             {worldLabel}
           </span>
         )}

@@ -125,11 +125,12 @@ export default function DialogueBox() {
         {!typingDone && <span className="ml-0.5 animate-pulse text-gold">▌</span>}
       </div>
       {(!typingDone || showReadyHint) && (
-        <div className="mt-2 flex items-center gap-3 text-xs tracking-[.1em] text-ink/50">
-          {showReadyHint && <span>◈ 输入数字或直接写下你想做的事</span>}
+        <div className="mt-2 flex items-center gap-3 text-xs tracking-[.1em] text-ink-hint">
+          {/* 等玩家输入的继续指示：主题色轻微脉冲更醒目；reduced-motion 时 global.css 的媒体规则自动停 */}
+          {showReadyHint && <span className="animate-pulse text-gold/90">◈ 输入数字或直接写下你想做的事</span>}
           {/* 打字中才提示补全：打完就没有「补全」可做了 */}
           {!typingDone && (
-            <span data-testid="dialogue-hint" className="ml-auto text-[11px] tracking-[.15em] text-ink/35">
+            <span data-testid="dialogue-hint" className="ml-auto text-[11px] tracking-[.15em] text-ink-hint">
               空格补全
             </span>
           )}

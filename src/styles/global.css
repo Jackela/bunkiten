@@ -17,10 +17,38 @@
   --color-accent2: var(--accent2);
 }
 
+/* 文字对比度阶梯（v1.7）：正文主文字继续用 text-ink，其余按语义取这三档，不再手写 text-ink/<透明度>。
+   对比度按 WCAG 相对亮度公式实算：文字色 = ink 混透明度后叠在最深面板底
+   rgba(12,14,20,.8) × #07080c ≈ #0b0d12（L≈0.0040）上——
+   - ink-body  80% ≈ 10.2:1：次级正文/长说明，远超 AA 正文线 4.5:1；
+   - ink-hint  60% ≈  6.1:1：提示文字下限：快捷键提示、元信息、状态辅助行（AA 正文线达标）；
+   - ink-faint 45% ≈  3.9:1：**仅限**禁用态（WCAG 豁免）、纯装饰符号、≥18px bold/≥24px 大字；
+     不达 4.5:1，禁止用于正文与常规小字。 */
+@theme inline {
+  --color-ink-body: color-mix(in oklab, var(--ink) 80%, transparent);
+  --color-ink-hint: color-mix(in oklab, var(--ink) 60%, transparent);
+  --color-ink-faint: color-mix(in oklab, var(--ink) 45%, transparent);
+}
+
 html,
 body {
   background: var(--bg);
   color: var(--ink);
+}
+
+/* 统一焦点环（v1.7）：键盘导航（:focus-visible）全站一圈 accent2 描边，鼠标点击不触发。
+   刻意写在 unlayered 区（不进 @layer）：级联层外的规则优先于 Tailwind 的 utilities 层，
+   加上 :where() 零特异性兜底——任何工具类（包括未来想再加的 focus:outline-none）都盖不住这圈环。
+   选中态（WorldsScreen 光标行 border-gold/40、树图节点 stroke）是另一层语义，与本环并存。 */
+:where(button, a, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent2);
+  outline-offset: 2px;
+}
+
+/* SVG 焦点元素（剧情图节点 <g tabindex>）鼠标点击聚焦时不画环：Chromium 对聚焦 SVG 有
+   UA 级 outline:auto，键盘环交给上面 :focus-visible，两者互斥不冲突。 */
+:where(svg [tabindex]):focus:not(:focus-visible) {
+  outline: none;
 }
 
 /* 胶片颗粒（Atmosphere）：CSS 生成的 feTurbulence 噪点，不引外部图片 */
