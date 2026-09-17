@@ -1172,6 +1172,140 @@ describe("WorldsScreen：改名 / 导出 / 导入（v1.6）", () => {
   });
 });
 
+describe("WorldsScreen：家谱视图（v1.7）", () => {
+  const NOW = Date.now();
+  /** 世界线条目构造器（只写用例关心的字段） */
+  function world(over: Partial<WorldEntry> & { worldId: string }): WorldEntry {
+    return {
+      preset: "campus-summer",
+      title: "盛夏偏差值",
+      chapterNo: 1,
+      lastPlayed: NOW - 60_000,
+      note: "",
+      forkedFrom: null,
+      exists: true,
+      ...over,
+    };
+  }
+  /** GET /api/worlds 的清单（可被单个用例覆盖） */
+  let worldsResp: WorldEntry[];
+
+  beforeEach(() => {
+    worldsResp = [
+      world({ worldId: "w3", label: "三周目", forkedFrom: { worldId: "w2", nodeId: "3-1" }, lastPlayed: NOW - 60_000 }),
+      world({ worldId: "w2", label: "二周目", forkedFrom: { worldId: "w1", nodeId: "2-2" }, lastPlayed: NOW - 3_600_000 }),
+      world({ worldId: "w1", label: "一周目", lastPlayed: NOW - 2 * 86_400_000 }),
+    ];
+    useGameStore.setState({
+      selected: PRESET,
+      screen: "worlds",
+      screenReturn: null,
+      engineBusy: false,
+      worldId: null,
+      worldBusy: false,
+      worldNotice: null,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/api/worlds") return jsonResponse({ worlds: worldsResp });
+        return jsonResponse({}, 404);
+      }),
+    );
+  });
+
+  it("视图切换：家谱渲染 SVG 森林（节点+父子连线）并卸载列表行，切回列表恢复", async () => {
+    render(<WorldsScreen />);
+    await waitFor(() => expect(screen.getByTestId("world-row-w1")).toBeTruthy());
+    expect(screen.getByTestId("worlds-view-list").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("worlds-view-genealogy").getAttribute("aria-pressed")).toBe("false");
+
+    fireEvent.click(screen.getByTestId("worlds-view-genealogy"));
+    expect(screen.getByTestId("worlds-view-genealogy").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("worlds-view-list").getAttribute("aria-pressed")).toBe("false");
+    const canvas = screen.getByTestId("genealogy-canvas");
+    expect(canvas.tagName.toLowerCase()).toBe("svg");
+    expect(screen.getByTestId("genealogy-node-w1")).toBeTruthy();
+    expect(screen.getByTestId("genealogy-node-w2")).toBeTruthy();
+    expect(screen.getByTestId("genealogy-node-w3")).toBeTruthy();
+    expect(canvas.querySelectorAll(".genealogy-edge")).toHaveLength(2); // w1→w2、w2→w3
+    // 列表行整块卸载：视图状态以行的存在与否为准
+    expect(screen.queryByTestId("world-row-w1")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("worlds-view-list"));
+    await waitFor(() => expect(screen.getByTestId("world-row-w1")).toBeTruthy());
+    expect(screen.queryByTestId("genealogy-canvas")).toBeNull();
+  });
+
+  it("点节点出快捷条：方向键沿血缘走位（↑到父），「继续」复用 resumeWorld 发续档指令", async () => {
+    const prompts: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/prompt") {
+          prompts.push(JSON.parse(String(init?.body)).text);
+          return jsonResponse({ ok: true });
+        }
+        if (url.pathname === "/api/worlds") return jsonResponse({ worlds: worldsResp });
+        return jsonResponse({}, 404);
+      }),
+    );
+    render(<WorldsScreen />);
+    await waitFor(() => expect(screen.getByTestId("worlds-view-genealogy")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("worlds-view-genealogy"));
+    expect(screen.queryByTestId("genealogy-detail")).toBeNull(); // 未选中不出快捷条
+
+    fireEvent.click(screen.getByTestId("genealogy-node-w3"));
+    const detail = screen.getByTestId("genealogy-detail");
+    expect(within(detail).getByText("三周目")).toBeTruthy();
+    expect(within(detail).getByText(/第 1 章/)).toBeTruthy();
+
+    // ↑ 沿 forkedFrom 走到父线：选中与 DOM 焦点都搬到 w2（roving tabIndex 不是只换描边）
+    fireEvent.keyDown(screen.getByTestId("genealogy-node-w3"), { key: "ArrowUp" });
+    await waitFor(() => expect(within(screen.getByTestId("genealogy-detail")).getByText("二周目")).toBeTruthy());
+    expect(document.activeElement).toBe(screen.getByTestId("genealogy-node-w2"));
+
+    // 「继续」走的是列表行同一条路（resumeWorld → 继续世界：<id>。）
+    fireEvent.click(screen.getByTestId("genealogy-continue-w2"));
+    const s = useGameStore.getState();
+    expect(s.screen).toBe("game");
+    expect(s.worldId).toBe("w2");
+    expect(prompts.at(-1)).toBe("继续世界：w2。");
+  });
+
+  it("孤儿：forkedFrom 指向已删父线 → 节点标 ⌫ 徽章、按根落位、不画边；详情说明父线已删", async () => {
+    worldsResp = [world({ worldId: "w1" }), world({ worldId: "w9", forkedFrom: { worldId: "ghost", nodeId: "9-9" } })];
+    render(<WorldsScreen />);
+    await waitFor(() => expect(screen.getByTestId("worlds-view-genealogy")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("worlds-view-genealogy"));
+
+    const badge = screen.getByTestId("genealogy-orphan-w9");
+    expect(badge.textContent).toContain("⌫");
+    expect(badge.textContent).toContain("9-9");
+    expect(screen.getByTestId("genealogy-canvas").querySelectorAll(".genealogy-edge")).toHaveLength(0);
+
+    fireEvent.click(screen.getByTestId("genealogy-node-w9"));
+    expect(within(screen.getByTestId("genealogy-detail")).getByText("⌫ 父线已删")).toBeTruthy();
+    // 「查看」跳回列表视图并聚焦对应行
+    fireEvent.click(screen.getByTestId("genealogy-view-w9"));
+    await waitFor(() => expect(screen.getByTestId("world-row-w9")).toBeTruthy());
+    expect(screen.queryByTestId("genealogy-canvas")).toBeNull();
+    expect(document.activeElement).toBe(screen.getByTestId("world-row-w9"));
+  });
+
+  it("空世界：家谱视图下同样显示空态文案，不出画布", async () => {
+    worldsResp = [];
+    render(<WorldsScreen />);
+    await waitFor(() => expect(screen.getByTestId("worlds-empty")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("worlds-view-genealogy"));
+    expect(screen.getByTestId("worlds-empty")).toBeTruthy();
+    expect(screen.getByText(/还没有世界线/)).toBeTruthy();
+    expect(screen.queryByTestId("genealogy-canvas")).toBeNull();
+  });
+});
+
 describe("AssetsScreen：选择模式、批量重绘与批量删除（v1.6）", () => {
   // v1.5.1 资产随剧本走（presets/<preset>/assets/，封面是 presets/<preset>/cover.jpg）
   const asset = (over: Partial<AssetEntry> & Pick<AssetEntry, "type" | "name" | "file">): AssetEntry => ({
