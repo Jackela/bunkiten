@@ -2,8 +2,8 @@
 // harness 的 stateFiles 给 w1 预置一份带完整角色卡的 state.md → 继续世界线进 game →
 // 命令轨「角色」开面板 → 断言：面板可见、角色名/好感度数字/表情徽章/导演手记渲染、
 // 秘密默认折叠（aria-expanded=false 且正文不可见）→ 点击展开可见原文。
-import { expect, test, type Browser, type Page } from "@playwright/test";
-import { startFakeStack } from "../helpers/fake-stack.mjs";
+import { expect, test, type Page } from "@playwright/test";
+import { startUiStack, stopUiStack, type StartedStack } from "./stack";
 
 /** w1 的完整 state.md（SKILL「状态文件格式」样例形态；角色面板 /api/state 的数据源） */
 function fullStateMd(): string {
@@ -44,21 +44,19 @@ function fullStateMd(): string {
   ].join("\n");
 }
 
-let stack: Awaited<ReturnType<typeof startFakeStack>>;
+let stack: StartedStack;
 let page: Page;
 
-test.beforeAll(async ({ browser }: { browser: Browser }) => {
-  stack = await startFakeStack({
+test.beforeAll(async ({ browser }) => {
+  ({ stack, page } = await startUiStack(browser, {
     presets: [{ id: "demo", title: "示例剧本" }],
     stateFiles: { w1: fullStateMd() },
     turns: [{ match: "继续世界：w1", ops: ["雨停了，教堂门口的石阶泛着冷光。\n\n**行动**\n1. 推门进去\n2. 原地等待\n"] }],
-  });
-  page = await (await browser.newContext()).newPage();
+  }));
 });
 
 test.afterAll(async () => {
-  if (page) await page.close().catch(() => {});
-  await stack?.stop();
+  await stopUiStack(page, stack);
 });
 
 test("角色面板：开抽屉渲染角色卡与好感度，秘密默认折叠、点击展开", async () => {

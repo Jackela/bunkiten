@@ -407,7 +407,7 @@ export default function AssetsScreen() {
             data-kind={regenNotice.kind}
             className={`mt-3 rounded-xl border px-4 py-2 text-ui leading-relaxed ${
               regenNotice.kind === "error"
-                ? "border-red-400/25 bg-[rgba(10,12,18,.5)] text-red-400"
+                ? "border-red-400/25 bg-panel-soft text-red-400"
                 : "border-gold/25 bg-gold/10 text-gold/90"
             }`}
           >
@@ -428,7 +428,7 @@ export default function AssetsScreen() {
             data-kind={assetsNotice.kind}
             className={`mt-3 rounded-xl border px-4 py-2 text-ui leading-relaxed ${
               assetsNotice.kind === "error"
-                ? "border-red-400/25 bg-[rgba(10,12,18,.5)] text-red-400"
+                ? "border-red-400/25 bg-panel-soft text-red-400"
                 : "border-gold/25 bg-gold/10 text-gold/90"
             }`}
           >

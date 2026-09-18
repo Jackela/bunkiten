@@ -4,32 +4,30 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, test, type Browser, type Page } from "@playwright/test";
-import { startFakeStack } from "../helpers/fake-stack.mjs";
+import { expect, test, type Page } from "@playwright/test";
+import { startUiStack, stopUiStack, type StartedStack } from "./stack";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
-let stack: Awaited<ReturnType<typeof startFakeStack>>;
+let stack: StartedStack;
 let page: Page;
 
-test.beforeAll(async ({ browser }: { browser: Browser }) => {
-  stack = await startFakeStack({
+test.beforeAll(async ({ browser }) => {
+  ({ stack, page } = await startUiStack(browser, {
     presets: [{ id: "demo", title: "示例剧本" }],
     assets: { demo: [{ name: "立绘-薇拉.jpg", bytes: Buffer.concat([Buffer.from([0xff, 0xd8]), Buffer.from("E2E-VERA")]) }] },
     audioFiles: { demo: [{ name: "曲-夜灯谣.wav", bytes: Buffer.from("E2E-WAV") }] },
     turns: [], // 导出/导入不推演，无需回合脚本
-  });
+  }));
   // 封面按契约在 preset 根（harness 的 assets 落 assets/ 子目录），单独手放
   writeFileSync(
     path.join(stack.stack.root, "presets", "demo", "cover.jpg"),
     Buffer.concat([Buffer.from([0xff, 0xd8]), Buffer.from("E2E-COVER")]),
   );
-  page = await (await browser.newContext()).newPage();
 });
 
 test.afterAll(async () => {
-  if (page) await page.close().catch(() => {});
-  await stack?.stop();
+  await stopUiStack(page, stack);
 });
 
 test("剧本分享：导出下载 .preset.json → 导入成新卡带（demo-copy）→ 新卡可再导出", async () => {

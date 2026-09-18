@@ -4,16 +4,16 @@
 import { mkdirSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, test, type Browser, type Page } from "@playwright/test";
-import { startFakeStack } from "../helpers/fake-stack.mjs";
+import { expect, test, type Page } from "@playwright/test";
+import { startUiStack, stopUiStack, type StartedStack } from "./stack";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
-let stack: Awaited<ReturnType<typeof startFakeStack>>;
+let stack: StartedStack;
 let page: Page;
 
-test.beforeAll(async ({ browser }: { browser: Browser }) => {
-  stack = await startFakeStack({
+test.beforeAll(async ({ browser }) => {
+  ({ stack, page } = await startUiStack(browser, {
     presets: [{ id: "demo", title: "示例剧本" }],
     // w1 默认存在；w3 分叉自 w2（父子连线），w4 指向不存在的 ghost（孤儿 ⌫）；管理动作不推演，无需 turns
     worlds: [
@@ -21,13 +21,11 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
       { id: "w3", forkedFrom: { worldId: "w2", nodeId: "1-1" } },
       { id: "w4", forkedFrom: { worldId: "ghost", nodeId: "9-9" } },
     ],
-  });
-  page = await (await browser.newContext()).newPage();
+  }));
 });
 
 test.afterAll(async () => {
-  if (page) await page.close().catch(() => {});
-  await stack?.stop();
+  await stopUiStack(page, stack);
 });
 
 test("世界线管理：行内改名→导出→导入出重名副本 w2-2→两段确认删除副本", async () => {

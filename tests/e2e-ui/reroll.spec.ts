@@ -5,14 +5,14 @@
 // 同 match 应答回短正文）→ 重同步回合收尾后自动重发「推门进去」（第二条同 match 应笔回合乙，
 // match 条目按序不重复消费）。断言：分割线文案是「—— 第 2 幕已重演 ——」、正文区出现回合乙、
 // 抽屉里回合甲在分割线之前已置灰（回合乙正常）。
-import { expect, test, type Browser, type Page } from "@playwright/test";
-import { startFakeStack } from "../helpers/fake-stack.mjs";
+import { expect, test, type Page } from "@playwright/test";
+import { startUiStack, stopUiStack, type StartedStack } from "./stack";
 
-let stack: Awaited<ReturnType<typeof startFakeStack>>;
+let stack: StartedStack;
 let page: Page;
 
-test.beforeAll(async ({ browser }: { browser: Browser }) => {
-  stack = await startFakeStack({
+test.beforeAll(async ({ browser }) => {
+  ({ stack, page } = await startUiStack(browser, {
     presets: [{ id: "demo", title: "示例剧本" }],
     snapshots: {
       w1: [
@@ -52,13 +52,11 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
       // 重同步收尾后自动重发的「推门进去」（第二次，内容与上一掷不同）
       { match: "推门进去", ops: ["回合乙：这次门后传来脚步声，烛火没有晃。\n\n**行动**\n1. 停步\n"] },
     ],
-  });
-  page = await (await browser.newContext()).newPage();
+  }));
 });
 
 test.afterAll(async () => {
-  if (page) await page.close().catch(() => {});
-  await stack?.stop();
+  await stopUiStack(page, stack);
 });
 
 test("重掷本回合：退回次新快照 → 重同步 → 自动重发同一输入；分割线与置灰可见", async () => {

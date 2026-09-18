@@ -3,30 +3,28 @@
 // 改主音量滑杆（受控 input：原生 value setter + dispatch input 事件，React onChange 才会吃到）
 // 与文本速度档位按钮 → 断言 localStorage `bunkiten.settings.v1` 即时落盘 → reload 后再进设置屏，
 // 断言改动被 loadSettings 读回并渲染（设置是本机偏好，不进世界线，生命周期就是 localStorage）。
-import { expect, test, type Browser, type Page } from "@playwright/test";
-import { startFakeStack } from "../helpers/fake-stack.mjs";
+import { expect, test, type Page } from "@playwright/test";
+import { startUiStack, stopUiStack, type StartedStack } from "./stack";
 import { enterProtagonist, quickStartToGame } from "./flow";
 
 const SETTINGS_KEY = "bunkiten.settings.v1";
 
-let stack: Awaited<ReturnType<typeof startFakeStack>>;
+let stack: StartedStack;
 let page: Page;
 
-test.beforeAll(async ({ browser }: { browser: Browser }) => {
-  stack = await startFakeStack({
+test.beforeAll(async ({ browser }) => {
+  ({ stack, page } = await startUiStack(browser, {
     presets: [{ id: "demo", title: "示例剧本" }],
     // 两条开局回合：首局与 reload 后的第二局各消费一条（fake-engine 的 match 命中不重复用）
     turns: [
       { match: "开局：", ops: ["夜色落定，走廊尽头的灯还亮着。\n\n**行动**\n1. 走过去\n2. 先回房\n"] },
       { match: "开局：", ops: ["灯灭了。\n\n**行动**\n1. 摸黑前进\n2. 点亮手机\n"] },
     ],
-  });
-  page = await (await browser.newContext()).newPage();
+  }));
 });
 
 test.afterAll(async () => {
-  if (page) await page.close().catch(() => {});
-  await stack?.stop();
+  await stopUiStack(page, stack);
 });
 
 /** 读页面 localStorage 里的设置并 parse（无存档时给 null，便于断言区分） */

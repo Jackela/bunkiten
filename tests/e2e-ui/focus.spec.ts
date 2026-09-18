@@ -5,8 +5,8 @@
 //   2. 世界线屏 ↑↓ roving：焦点跟到第二行，行（[tabindex]）同样出环——选中态 border 是另一层，两环并存；
 //   3. 剧情图 SVG 节点（<g tabindex>）方向键聚焦：outline 直接画在 <g> 上（Chromium 支持 SVG outline，
 //      免去 :focus-visible rect 描边的备选方案）——focused 且 outline 生效即证明选型成立。
-import { expect, test, type Browser, type Locator, type Page } from "@playwright/test";
-import { startFakeStack } from "../helpers/fake-stack.mjs";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+import { startUiStack, stopUiStack, type StartedStack } from "./stack";
 
 /** w1 的三节点小树（进度指针 1-2，方向键可走 1-1↔1-3） */
 function smallTree(): string {
@@ -39,24 +39,22 @@ async function expectFocusRing(locator: Locator): Promise<void> {
   expect(outline.style).not.toBe("none");
 }
 
-let stack: Awaited<ReturnType<typeof startFakeStack>>;
+let stack: StartedStack;
 let page: Page;
 
-test.beforeAll(async ({ browser }: { browser: Browser }) => {
-  stack = await startFakeStack({
+test.beforeAll(async ({ browser }) => {
+  ({ stack, page } = await startUiStack(browser, {
     presets: [{ id: "demo", title: "示例剧本" }],
     worlds: [{ id: "w2" }], // w1 默认存在：两行世界线，↑↓ 才有得走
     trees: { w1: smallTree() },
     turns: [
       { match: "继续世界：w1", ops: ["雨停了，教堂门口的石阶泛着冷光。\n\n**行动**\n1. 推门进去\n2. 原地等待\n"] },
     ],
-  });
-  page = await (await browser.newContext()).newPage();
+  }));
 });
 
 test.afterAll(async () => {
-  if (page) await page.close().catch(() => {});
-  await stack?.stop();
+  await stopUiStack(page, stack);
 });
 
 /** 标题屏插卡 → 世界线屏（列表就绪） */

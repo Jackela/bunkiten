@@ -7,8 +7,8 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, test, type Browser, type Page } from "@playwright/test";
-import { startFakeStack } from "../helpers/fake-stack.mjs";
+import { expect, test, type Page } from "@playwright/test";
+import { startUiStack, stopUiStack, type StartedStack } from "./stack";
 import { enterProtagonist } from "./flow";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -35,11 +35,11 @@ function silentWav(): Buffer {
   return buf;
 }
 
-let stack: Awaited<ReturnType<typeof startFakeStack>>;
+let stack: StartedStack;
 let page: Page;
 
-test.beforeAll(async ({ browser }: { browser: Browser }) => {
-  stack = await startFakeStack({
+test.beforeAll(async ({ browser }) => {
+  ({ stack, page } = await startUiStack(browser, {
     // 单剧本轮播（flow.ts 的前提）；body 追加 protagonist_card 小节供捏人屏出题
     presets: [
       {
@@ -70,13 +70,11 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
         ],
       },
     ],
-  });
-  page = await (await browser.newContext()).newPage();
+  }));
 });
 
 test.afterAll(async () => {
-  if (page) await page.close().catch(() => {});
-  await stack?.stop();
+  await stopUiStack(page, stack);
 });
 
 test("开局全链路：捏人填卡→跳过美术开演→正文/选项/立绘、状态就绪", async () => {

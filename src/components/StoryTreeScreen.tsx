@@ -414,7 +414,7 @@ function TreeCanvas({
         data-testid="tree-canvas"
         viewBox={viewBoxOf(view, layout.width, layout.height)}
         preserveAspectRatio="xMidYMid meet"
-        className="w-full cursor-grab touch-none rounded-xl border border-white/[.06] bg-[rgba(12,14,20,.5)] active:cursor-grabbing"
+        className="w-full cursor-grab touch-none rounded-xl border border-white/[.06] bg-panel-soft active:cursor-grabbing"
         style={{ height: "auto", aspectRatio: `${layout.width} / ${layout.height}` }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
@@ -754,7 +754,7 @@ function TreeDetail({
       )}
 
       {diffOpen && snapshot && prevSeq !== null && (
-        <div data-testid="snapshot-diff" className="mt-3 rounded-lg border border-white/10 bg-[rgba(8,10,16,.55)] p-3">
+        <div data-testid="snapshot-diff" className="mt-3 rounded-lg border border-white/10 bg-panel-soft p-3">
           {/* 标题行允许换行：右栏只有 380px，一行放不下「第 N 幕 → 第 M 幕（…）+ 关闭对比」 */}
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
             <p className="text-meta tracking-[.08em] text-ink-body">
@@ -822,7 +822,7 @@ function TreeDetail({
                 id="snapshot-diff-panel"
                 role="tabpanel"
                 aria-labelledby={`snapshot-diff-tab-${diffTab}`}
-                className="mt-2 max-h-72 overflow-y-auto rounded-md border border-white/[.06] bg-[rgba(12,14,20,.6)] p-2"
+                className="mt-2 max-h-72 overflow-y-auto rounded-md border border-white/[.06] bg-panel-soft p-2"
               >
                 {((diffShowAll ? [{ kind: "rows", rows: diffRows[diffTab] }] : partitionDiff(diffRows[diffTab])) as DiffPart[]).map((part, i) =>
                   part.kind === "gap" ? (
@@ -1222,7 +1222,7 @@ export default function StoryTreeScreen() {
           {!loading && !error && markdown !== null && tree === null && (
             <pre
               data-testid="tree-raw"
-              className="mt-4 max-h-[60vh] overflow-auto whitespace-pre-wrap rounded-lg border border-white/10 bg-[rgba(12,14,20,.6)] p-4 text-ui leading-relaxed text-ink-body"
+              className="mt-4 max-h-[60vh] overflow-auto whitespace-pre-wrap rounded-lg border border-white/10 bg-panel-soft p-4 text-ui leading-relaxed text-ink-body"
             >
               {markdown}
             </pre>
@@ -1350,7 +1350,7 @@ export default function StoryTreeScreen() {
               onKeyDown={onKeyDown}
               placeholder="用一句话改这棵树…（例：加一个雨夜遇袭的场景）"
               autoComplete="off"
-              className="flex-1 rounded-lg border border-white/10 bg-[rgba(12,14,20,.8)] px-3.5 py-2.5 text-body tracking-[.02em] transition-colors focus:border-gold/35"
+              className="flex-1 rounded-lg border border-white/10 bg-panel-sunken px-3.5 py-2.5 text-body tracking-[.02em] transition-colors focus:border-gold/35"
             />
             <button
               type="button"

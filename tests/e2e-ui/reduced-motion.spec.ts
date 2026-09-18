@@ -8,8 +8,8 @@
 // 反向（默认 no-preference 下「先见前缀再补全」）刻意不做：那要断言一个真实定时器的中间进度，
 // 快慢机上窗口都会抖，无法与 reduce 侧保持同一确定性口径——该路径由 tests/ui.test.tsx 的
 // matchMedia 缺失用例（不降级、照常逐字）在 jsdom 里确定性覆盖。
-import { expect, test, type Browser, type Page } from "@playwright/test";
-import { startFakeStack } from "../helpers/fake-stack.mjs";
+import { expect, test, type Page } from "@playwright/test";
+import { startUiStack, stopUiStack, type StartedStack } from "./stack";
 import { enterProtagonist, quickStartToGame } from "./flow";
 
 /** ≥80 字长正文；末句放最后，当「打字进度」探针（打字路径下它最后才轮到） */
@@ -19,11 +19,11 @@ const BODY =
   "她深吸一口气，终于伸手推向那扇虚掩的门。";
 const LAST_SENTENCE = "她深吸一口气，终于伸手推向那扇虚掩的门。";
 
-let stack: Awaited<ReturnType<typeof startFakeStack>>;
+let stack: StartedStack;
 let page: Page;
 
-test.beforeAll(async ({ browser }: { browser: Browser }) => {
-  stack = await startFakeStack({
+test.beforeAll(async ({ browser }) => {
+  ({ stack, page } = await startUiStack(browser, {
     presets: [{ id: "demo", title: "示例剧本" }],
     turns: [
       {
@@ -31,14 +31,13 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
         ops: [`${BODY}\n\n**行动**\n1. 推门进去\n2. 转身先去天台\n`],
       },
     ],
-  });
-  // context 级模拟系统「减少动态效果」：页面内 prefers-reduced-motion 查询命中 reduce
-  page = await (await browser.newContext({ reducedMotion: "reduce" })).newPage();
+    // context 级模拟系统「减少动态效果」：页面内 prefers-reduced-motion 查询命中 reduce
+    contextOptions: { reducedMotion: "reduce" },
+  }));
 });
 
 test.afterAll(async () => {
-  if (page) await page.close().catch(() => {});
-  await stack?.stop();
+  await stopUiStack(page, stack);
 });
 
 test("reduce 下开局：正文整段立现（无打字过程），game 屏照常可用", async () => {

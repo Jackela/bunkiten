@@ -5,8 +5,8 @@
 // 快照对比（w3）：seed 两条内容不同的快照（#1 挂 1-1、#2 挂 1-2）→ 节点详情「与上一快照对比」→
 // diff 面板渲染 add/remove 行（seed 的两条 files 可控，运行时回合只会追加更晚的 seq，不动基线）。
 // 树文用 parseStoryTree 的容错格式构造（`## 第 N 章：标题` / `### 节点 N-M（拍点）` / `- 字段: 值`）。
-import { expect, test, type Browser, type Page } from "@playwright/test";
-import { startFakeStack } from "../helpers/fake-stack.mjs";
+import { expect, test, type Page } from "@playwright/test";
+import { startUiStack, stopUiStack, type StartedStack } from "./stack";
 
 /** w1 的三节点小树（1-1 → 1-2 → 1-3，进度指针在 1-2） */
 function smallTree(): string {
@@ -54,11 +54,11 @@ function bigTree(nodeCount = 45): string {
   return lines.join("\n");
 }
 
-let stack: Awaited<ReturnType<typeof startFakeStack>>;
+let stack: StartedStack;
 let page: Page;
 
-test.beforeAll(async ({ browser }: { browser: Browser }) => {
-  stack = await startFakeStack({
+test.beforeAll(async ({ browser }) => {
+  ({ stack, page } = await startUiStack(browser, {
     presets: [{ id: "demo", title: "示例剧本" }],
     worlds: [{ id: "w2" }, { id: "w3" }],
     trees: { w1: smallTree(), w2: bigTree(), w3: smallTree() },
@@ -88,13 +88,11 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
       { match: "继续世界：w2", ops: ["又是清晨，长廊尽头的灯还亮着。\n\n**行动**\n1. 往前走\n2. 回房\n"] },
       { match: "继续世界：w3", ops: ["中殿的烛火晃了一下。\n\n**行动**\n1. 追问账册\n2. 沉默\n"] },
     ],
-  });
-  page = await (await browser.newContext()).newPage();
+  }));
 });
 
 test.afterAll(async () => {
-  if (page) await page.close().catch(() => {});
-  await stack?.stop();
+  await stopUiStack(page, stack);
 });
 
 /** 标题屏插卡 → 世界线屏（不新开世界线，由调用方点「继续」） */

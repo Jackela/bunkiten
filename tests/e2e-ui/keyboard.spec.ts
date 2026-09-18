@@ -2,15 +2,15 @@
 // 数字键：OptionList 的 window keydown（1-9/Numpad，焦点在输入框时让路）→ send(选项文本) →
 // fake-engine 用 match 命中该文本回下一回合正文。空格：DialogueBox 的 completeNow 走点击同一条路，
 // 打字未完成时立即补全文——断言用「按键后单次读取即含末句」证明瞬时补全（不打轮询硬等）。
-import { expect, test, type Browser, type Page } from "@playwright/test";
-import { startFakeStack } from "../helpers/fake-stack.mjs";
+import { expect, test, type Page } from "@playwright/test";
+import { startUiStack, stopUiStack, type StartedStack } from "./stack";
 import { enterProtagonist, quickStartToGame } from "./flow";
 
-let stack: Awaited<ReturnType<typeof startFakeStack>>;
+let stack: StartedStack;
 let page: Page;
 
-test.beforeAll(async ({ browser }: { browser: Browser }) => {
-  stack = await startFakeStack({
+test.beforeAll(async ({ browser }) => {
+  ({ stack, page } = await startUiStack(browser, {
     presets: [{ id: "demo", title: "示例剧本" }],
     turns: [
       // 测试 1 的开局回合：三个选项（数字键 2 = 第二项「推开侧门走进回廊」）
@@ -27,13 +27,11 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
         ],
       },
     ],
-  });
-  page = await (await browser.newContext()).newPage();
+  }));
 });
 
 test.afterAll(async () => {
-  if (page) await page.close().catch(() => {});
-  await stack?.stop();
+  await stopUiStack(page, stack);
 });
 
 test("数字键 2 选中第二项：prompt 带选项文本、下一回合正文上屏", async () => {

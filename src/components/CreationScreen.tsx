@@ -90,7 +90,7 @@ export default function CreationScreen() {
                 transition={{ duration: 0.35, ease: "easeOut" }}
                 className={`mb-3 max-w-[86%] whitespace-pre-wrap rounded-2xl px-4 py-3 text-body leading-[1.85] tracking-[.02em] ${
                   m.role === "engine"
-                    ? "border border-white/[.07] bg-[rgba(16,19,28,.72)] text-ink-body"
+                    ? "border border-white/[.07] bg-panel text-ink-body"
                     : "ml-auto border border-gold/25 bg-gold/10 text-ink"
                 }`}
               >
@@ -125,7 +125,7 @@ export default function CreationScreen() {
             <motion.div
               {...BUBBLE}
               transition={{ duration: 0.35 }}
-              className="mb-3 rounded-2xl border border-gold/20 bg-[rgba(16,19,28,.6)] px-4 py-3"
+              className="mb-3 rounded-2xl border border-gold/20 bg-panel-soft px-4 py-3"
             >
               <p className="text-ui tracking-[.25em] text-gold/80">装 配 中</p>
               <ul className="mt-2 space-y-1 text-ui text-ink-body">
@@ -186,7 +186,7 @@ export default function CreationScreen() {
               onKeyDown={onKeyDown}
               placeholder="描述你想要的故事（题材、角色、基调…）"
               autoComplete="off"
-              className="flex-1 rounded-lg border border-white/10 bg-[rgba(12,14,20,.8)] px-3.5 py-2.5 text-body tracking-[.02em] transition-colors focus:border-gold/35"
+              className="flex-1 rounded-lg border border-white/10 bg-panel-sunken px-3.5 py-2.5 text-body tracking-[.02em] transition-colors focus:border-gold/35"
             />
             <button
               type="button"

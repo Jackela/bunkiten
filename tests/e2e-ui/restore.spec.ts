@@ -7,8 +7,8 @@
 // 第二个 test 让回退后的第一条「继续世界：」命中 {error} → 图屏提示「重同步失败」、返回 game 屏后
 // TopBar 亮待重同步徽章 + 再同步按钮 → 点再同步，第二条同 match 的 turn 回成功正文 → 徽章消失
 //（match 条目不重复消费，天然按序）。
-import { expect, test, type Browser, type Page } from "@playwright/test";
-import { startFakeStack } from "../helpers/fake-stack.mjs";
+import { expect, test, type Page } from "@playwright/test";
+import { startUiStack, stopUiStack, type StartedStack } from "./stack";
 
 /** w1 当前三节点树（进度指针 1-2；含快照 1 的节点 1-1，供点选回退） */
 function currentTree(): string {
@@ -83,11 +83,11 @@ function treeOfSnapshot2(): string {
   ].join("\n");
 }
 
-let stack: Awaited<ReturnType<typeof startFakeStack>>;
+let stack: StartedStack;
 let page: Page;
 
-test.beforeAll(async ({ browser }: { browser: Browser }) => {
-  stack = await startFakeStack({
+test.beforeAll(async ({ browser }) => {
+  ({ stack, page } = await startUiStack(browser, {
     presets: [{ id: "demo", title: "示例剧本" }],
     trees: { w1: currentTree() },
     snapshots: {
@@ -128,13 +128,11 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
       // test2 点「再同步」重发的「继续世界：」→ 成功
       { match: "继续世界：", ops: ["重同步正文：引擎重新读档，画面从快照一再次亮起。\n\n**行动**\n1. 继续\n"] },
     ],
-  });
-  page = await (await browser.newContext()).newPage();
+  }));
 });
 
 test.afterAll(async () => {
-  if (page) await page.close().catch(() => {});
-  await stack?.stop();
+  await stopUiStack(page, stack);
 });
 
 test("回退到快照 #1：两段确认→已回退提示→补发续玩→画面重建就绪", async () => {

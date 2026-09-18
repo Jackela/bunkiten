@@ -88,6 +88,8 @@ export default function FreeInput() {
   return (
     <div className="mt-2.5 flex gap-2">
       {/* 输入行：左侧笔形图标 + 稍强的静息描边 + 主题色聚焦态，和 HUD 其余控件同一套面板语言。
+          底色吃面板 token：静息 = --panel-sunken（内凹输入面），聚焦 = --panel-strong（族内最实一档，
+          原手写的偏蓝 .9 归位到面板族，不再多一个说不清的面板色）。
           图标只是装饰（aria-hidden），悬停/聚焦不给它行为；外层 group 只用来把聚焦态递给图标。
           外层 flex-1 顶替原来输入框自己的 flex-1（输入框改 w-full），焦点/回车/语音/IME 流程逐字未动。 */}
       <div className="group relative flex-1">
@@ -107,7 +109,7 @@ export default function FreeInput() {
           }}
           placeholder={listening ? "聆听中…说完自动发送" : "想说什么就写在这里（也可输入数字）"}
           autoComplete="off"
-          className="w-full rounded-lg border border-white/15 bg-[rgba(12,14,20,.8)] py-2.5 pl-9 pr-3.5 text-body tracking-[.02em] shadow-[inset_0_1px_0_rgba(255,255,255,.04)] transition-colors placeholder:text-ink-hint focus:border-gold/45 focus:bg-[rgba(16,19,28,.9)]"
+          className="w-full rounded-lg border border-white/15 bg-panel-sunken py-2.5 pl-9 pr-3.5 text-body tracking-[.02em] shadow-[inset_0_1px_0_rgba(255,255,255,.04)] transition-colors placeholder:text-ink-hint focus:border-gold/45 focus:bg-panel-strong"
         />
       </div>
       {srAvailable && (
