@@ -12,7 +12,7 @@ import { isCrossSiteRequest, readBodyText, MIME, resolveAppDist } from "./http-u
 import { PRESET_ID_RE, LEGACY_ASSET_RE, ASSET_DELETE_FILE_RE, presetIdFromPath, legacyAssetCandidates, resolvePersistPreset } from "./assets.mjs";
 import { scanPresets, assetTargetFile, buildPresetBundle, importPresetBundle, PRESET_IMPORT_MAX_BYTES } from "./presets.mjs";
 import { scanPresetAudio } from "./audio.mjs";
-import { WORLD_ID_RE, readSnapshot, readSnapshots } from "./snapshots.mjs";
+import { WORLD_ID_RE, TREE_FILE, readSnapshot, readSnapshots } from "./snapshots.mjs";
 import {
   moveToTrash, readWorldsIndex, listWorlds, createWorld, forkWorld, restoreWorld, updateWorld,
   exportWorld, importWorld, deleteWorld, stateViewFor,
@@ -275,7 +275,7 @@ export function createRequestHandler(ctx) {
       const worldId = url.searchParams.get("worldId") || "main";
       let markdown = null;
       if (WORLD_ID_RE.test(worldId)) {
-        try { markdown = fs.readFileSync(path.join(WORLDS_ROOT, worldId, "story-tree.md"), "utf8"); } catch {}
+        try { markdown = fs.readFileSync(path.join(WORLDS_ROOT, worldId, TREE_FILE), "utf8"); } catch {}
       }
       if (markdown === null) {
         res.writeHead(404, { "content-type": "application/json; charset=utf-8" });

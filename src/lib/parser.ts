@@ -1,5 +1,12 @@
 // 文本协议解析纯函数：行为迁移自 shell/index.html（旧版是交互事实源），不依赖 React/DOM。
 // 可被 node 直接 import 做冒烟测试，勿引入副作用。
+import { ART_KINDS, ASSET_KINDS, AUDIO_KINDS, CHAPTER_MARK_RE, PROTOCOL_HEADS } from "../../shared/protocol.mjs";
+
+// 协议常量唯一真源（v1.7，docs/adr/0012）：PROTOCOL_HEADS / AUDIO_KINDS / ART_KINDS / ASSET_KINDS 的值住在
+// shared/protocol.mjs（server 也 import 同一份）。这里 re-export 维持公共 API 逐字不变——store 与测试仍从
+// src/lib/parser import。顺序即契约声明顺序（CONTRACTS §6）；改真源前先同步 SKILL.md / ARCHITECTURE.md 的
+// 备忘与表格，以及 server 侧对应的各 parse*（协议是四处一致的字符串契约，不是各自实现的巧合）。
+export { AUDIO_KINDS, PROTOCOL_HEADS };
 
 /** 【图】标记（立绘/背景/封面） */
 export interface Marker {
@@ -49,8 +56,8 @@ function toMarker(kind: string, name: string, path: string, regen?: string): Mar
   return { kind: KIND_MAP[kind] ?? "portrait", name: name.trim(), path: path.trim(), ...(regen ? { regen: true } : {}) };
 }
 
-/** 【图】标记行的段体：类型|名|路径[|重绘]（重绘段存在=覆盖旧图的重新生成） */
-const ART_LINE_BODY = "(立绘|背景|封面)\\|([^|\\n]+)\\|([^|\\n]+?)(?:\\|(重绘))?";
+/** 【图】标记行的段体：类型|名|路径[|重绘]（重绘段存在=覆盖旧图的重新生成）；类型集合取 shared 真源 */
+const ART_LINE_BODY = `(${ART_KINDS.join("|")})\\|([^|\\n]+)\\|([^|\\n]+?)(?:\\|(重绘))?`;
 
 /**
  * 流式扫描【图】标记：只匹配以换行结束的完整标记行。
@@ -79,14 +86,6 @@ export function finalMarkers(text: string): Marker[] {
   return out;
 }
 
-// 协议常量唯一真源（v1.7，docs/adr/0012）：PROTOCOL_HEADS 与 AUDIO_KINDS 的值住在 shared/protocol.mjs
-//（server 也 import 同一份）。这里 re-export 维持公共 API 逐字不变——store 与测试仍从 src/lib/parser import。
-// 顺序即契约声明顺序（CONTRACTS §6）；改真源前先同步 SKILL.md / ARCHITECTURE.md 的备忘与表格，
-// 以及 server 侧对应的各 parse*（协议是四处一致的字符串契约，不是各自实现的巧合）。
-import { AUDIO_KINDS, CHAPTER_MARK_RE, PROTOCOL_HEADS } from "../../shared/protocol.mjs";
-
-export { AUDIO_KINDS, PROTOCOL_HEADS };
-
 /**
  * 音频协议行的三种类型字面（v1.6）：【曲】切 BGM、【环境】切环境音、【音效】一次性音效。
  * 名必须与 `presets/<剧本 id>/audio/<类型>-<名>.<ext>` 的文件名一致；客户端不做路径拼接解析（走 /api/audio 索引）。
@@ -107,6 +106,9 @@ export function isProtocolLine(line: string): boolean {
   return PROTOCOL_LINE_RE.test(line.trim());
 }
 
+/** 【清单】行：类型只认立绘/背景（shared 的 ASSET_KINDS 真源）——封面不走制作清单 */
+const MANIFEST_LINE_RE = new RegExp(`^【清单】(${ASSET_KINDS.join("|")})\\|([^\\n]+)$`, "gm");
+
 /**
  * 解析规划回合输出的制作清单：整行匹配 `【清单】立绘|<名>` / `【清单】背景|<地点>`。
  * @param {string} text 规划回合的定稿全文
@@ -114,8 +116,7 @@ export function isProtocolLine(line: string): boolean {
  */
 export function parseManifest(text: string): ManifestEntry[] {
   const out: ManifestEntry[] = [];
-  for (const m of text.matchAll(/^【清单】(立绘|背景)\|([^\n]+)$/gm)) {
-    // 清单只有立绘/背景两种（封面不走制作清单）
+  for (const m of text.matchAll(MANIFEST_LINE_RE)) {
     out.push({ kind: m[1] === "背景" ? "background" : "portrait", name: m[2].trim() });
   }
   return out;
@@ -338,8 +339,8 @@ export function parseCardLines(lines: string[]): CardQuestion[] {
 const STANDBY_SUFFIX = "待命：只初始化，不开始剧情，等待分项美术指令与「开演。」";
 const SKIP_SUFFIX = "跳过美术预载，直接开演。";
 
-/** 分项美术指令的种类（与引擎【图】标记的种类字面对齐；封面只出现在重绘指令） */
-export type ArtKind = "立绘" | "背景" | "封面";
+/** 分项美术指令的种类（与引擎【图】标记的种类字面对齐；类型源 = shared 的 ART_KINDS；封面只出现在重绘指令） */
+export type ArtKind = (typeof ART_KINDS)[number];
 
 /**
  * 分项美术指令（待命模式下逐项发送）。

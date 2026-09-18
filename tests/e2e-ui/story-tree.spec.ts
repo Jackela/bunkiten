@@ -117,7 +117,7 @@ test("小树：SVG 树图可见，滚轮中心缩放与按住拖拽平移都改 
   await continueWorld(page, "w1");
 
   // 命令轨「剧情图」进 overlay：三个节点都画出来了
-  await page.getByRole("button", { name: "剧情图", exact: true }).click();
+  await page.getByTestId("tree").click();
   const canvas = page.getByTestId("tree-canvas");
   await expect(canvas).toBeVisible();
   await expect(page.getByTestId("tree-node-1-1")).toBeVisible();
@@ -147,7 +147,7 @@ test("大树（45 节点）：默认降级为列表形态，SVG 画布不渲染"
   await openWorlds(page);
   await continueWorld(page, "w2");
 
-  await page.getByRole("button", { name: "剧情图", exact: true }).click();
+  await page.getByTestId("tree").click();
 
   // 降级提示行 + 列表可见 + 图形画布缺席；行数与节点数一致
   await expect(page.getByTestId("tree-view-toggle")).toBeVisible();
@@ -166,7 +166,7 @@ test("快照对比：节点详情与上一快照 diff，remove/add 行可见（w
   await openWorlds(page);
   await continueWorld(page, "w3");
 
-  await page.getByRole("button", { name: "剧情图", exact: true }).click();
+  await page.getByTestId("tree").click();
 
   // 节点 1-2 的详情快照是 seed #2（最早匹配），基线是 #1 → 对比入口出现
   await page.getByTestId("tree-node-1-2").click();

@@ -36,7 +36,8 @@ export function createWorldSlice(
   return {
     beginNewWorld(worldId) {
       ctx.clearWatchdog();
-      ctx.resetRunState({ worldId, worldLabel: worldId, screen: "protagonist" });
+      // 服务端刚建出的世界快照数确定为 0：重掷按钮在攒够两条 turn 快照前不出现（spec P3-T1）
+      ctx.resetRunState({ worldId, worldLabel: worldId, screen: "protagonist", turnSnapshots: 0 });
     },
 
     resumeWorld(entry) {
@@ -48,6 +49,8 @@ export function createWorldSlice(
         screen: "game",
       });
       get().send(buildResumeCommand(entry.worldId));
+      // 续玩的旧世界磁盘上可能已有快照：补拉一次快照数，重掷按钮据此决定是否出现（失败=未知，照常展示）
+      ctx.refreshTurnSnapshots();
     },
 
     async updateWorld(p) {

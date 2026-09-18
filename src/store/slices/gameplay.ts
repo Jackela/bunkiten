@@ -216,6 +216,10 @@ export function createGameplaySlice(
         set({ pendingRerollPrompt: null });
         get().sendPlayerTurn(rerollPrompt);
       }
+      // 重掷入口的可见性：按钮要「有前序快照」才出现（spec P3-T1），而快照数只有服务端知道——
+      // 只在还没数够（未知或 < 2）时补拉一次 /api/history（有列表缓存，代价小；数够即停，不再逐回合拉）
+      const snaps = get().turnSnapshots;
+      if (snaps === null || snaps < 2) ctx.refreshTurnSnapshots();
       ctx.clearWatchdog();
       void ctx.advancePreload();
       const g = get();

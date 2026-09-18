@@ -130,6 +130,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
     lastTurnPrompt: null,
     pendingTurnPrompt: null,
     pendingRerollPrompt: null,
+    turnSnapshots: null,
     settings: loadSettings(),
     autoAdvanceDeadline: null,
     autoAdvanceMuted: false,

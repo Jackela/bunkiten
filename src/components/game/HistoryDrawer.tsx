@@ -54,12 +54,12 @@ export default function HistoryDrawer() {
           transition={{ duration: 0.35, ease: "easeOut" }}
           className="fixed inset-y-0 right-0 z-50 flex w-[min(420px,92vw)] flex-col border-l border-white/10 bg-[rgba(9,11,16,.96)]"
         >
-          <header className="flex items-center border-b border-white/10 px-4 py-3.5 text-[13px] tracking-[.2em] text-ink/60">
+          <header className="flex items-center border-b border-white/10 px-4 py-3.5 text-[13px] tracking-[.2em] text-ink-hint">
             回 合 记 录
             <button
               type="button"
               onClick={toggleDrawer}
-              className="ml-auto rounded-md p-1 text-ink/60 transition-colors hover:text-ink"
+              className="ml-auto rounded-md p-1 text-ink-hint transition-colors hover:text-ink"
             >
               <X size={16} />
             </button>

@@ -34,8 +34,8 @@ export default function BootScreen() {
 
       {state === "login" && (
         <div className="max-w-md rounded-xl border border-white/10 bg-white/5 p-6 text-center">
-          <p className="text-sm leading-relaxed text-ink/80">还没有登录 Grok 引擎。</p>
-          <p className="mt-2 text-sm leading-relaxed text-ink/60">
+          <p className="text-sm leading-relaxed text-ink-body">还没有登录 Grok 引擎。</p>
+          <p className="mt-2 text-sm leading-relaxed text-ink-hint">
             打开终端，运行
             <code className="mx-1.5 rounded bg-black/40 px-2 py-0.5 text-gold">grok login</code>
             完成登录，然后回到这里重试。
@@ -52,8 +52,8 @@ export default function BootScreen() {
 
       {state === "error" && (
         <div className="max-w-md rounded-xl border border-white/10 bg-white/5 p-6 text-center">
-          <p className="text-sm leading-relaxed text-ink/80">连不上引擎服务。</p>
-          <p className="mt-2 text-sm leading-relaxed text-ink/60">请确认 acp-server 已启动（终端运行 node server/acp-server.mjs）。</p>
+          <p className="text-sm leading-relaxed text-ink-body">连不上引擎服务。</p>
+          <p className="mt-2 text-sm leading-relaxed text-ink-hint">请确认 acp-server 已启动（终端运行 node server/acp-server.mjs）。</p>
           <button
             type="button"
             onClick={() => void check()}

@@ -24,7 +24,7 @@ import {
   type ArtKind,
   type Marker,
 } from "../lib/parser";
-import { fetchAssets, imageUrl, assetFileUrl, assetPath, type Preset } from "../lib/acp";
+import { fetchAssets, fetchHistory, imageUrl, assetFileUrl, assetPath, type Preset } from "../lib/acp";
 import { normName } from "./portrait";
 import type { GameStore, PortraitState, Screen } from "./types";
 
@@ -101,6 +101,9 @@ export interface StoreContext {
   applyMarkers(markers: Marker[], dedupe: boolean): void;
   resetTurnState(turnKey: number): void;
   resetRunState(patch: Partial<GameStore>): void;
+  /** 补齐「当前世界已有多少条 turn 快照」的已知值（重掷按钮的可见性判据）：拉一次 /api/history，
+   *  仅在 worldId 未变时落库；失败静默（保持 null=未知，按钮退回「展示 + 点击时判定」的兜底路径） */
+  refreshTurnSnapshots(): void;
   /** 发「开演。」（跳过剩余项/无清单回退都用它；幂等） */
   sendStart(): void;
   /** 取下一个 pending 项开跑；没有则收尾发「开演。」 */
@@ -452,6 +455,8 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
       lastTurnPrompt: null,
       pendingTurnPrompt: null,
       pendingRerollPrompt: null,
+      // 快照数同理不跨玩法：新世界从「未知」开始（建新世界由调用方置 0，入场时按需补拉）
+      turnSnapshots: null,
       // 自动前进不跨玩法：换本/开新局时把倒计时清掉
       autoAdvanceDeadline: null,
       autoAdvanceMuted: false,
@@ -471,6 +476,26 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
       turnKey: get().turnKey + 1,
       ...patch,
     });
+  }
+
+  /**
+   * 刷新「当前世界有多少条 turn 快照」（重掷按钮的可见性判据）：只有服务端知道磁盘上的快照数，
+   * 客户端按需补拉一次 /api/history（服务端有列表缓存，代价小）。await 期间换世界/重开就丢弃结果。
+   * 补拉失败**回落为未知（null）**：已知 0/1 的世界若一直拉不到，按钮会永久藏住一个可能可用的功能——
+   * 回落未知后按钮照常展示，点击时由 rerollTurn 的 fetch 再判定；后续回合收尾还会继续重试补拉。
+   */
+  function refreshTurnSnapshots() {
+    const worldId = get().worldId;
+    if (!worldId) return;
+    fetchHistory(worldId)
+      .then((h) => {
+        if (get().worldId !== worldId) return; // 期间换世界：旧世界的账本不许写进新世界
+        set({ turnSnapshots: h.snapshots.filter((s) => s.kind === "turn").length });
+      })
+      .catch(() => {
+        if (get().worldId !== worldId) return;
+        if (get().turnSnapshots !== null) set({ turnSnapshots: null }); // 已知 → 未知：不藏功能
+      });
   }
 
   /** 启动自动前进倒计时（动作在 gameplay slice 暴露；此处与 fireAutoAdvance 同处一个闭包域便于管定时器） */
@@ -508,6 +533,7 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
     applyMarkers,
     resetTurnState,
     resetRunState,
+    refreshTurnSnapshots,
     sendStart,
     runNextPending,
     beginPlanning,

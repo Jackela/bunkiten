@@ -86,7 +86,7 @@ test("开局全链路：捏人填卡→跳过美术开演→正文/选项/立绘
   // 填主角卡：两问各选一项（chips 按钮文本即选项词），「开演」按钮随之解锁
   await page.getByRole("button", { name: "女", exact: true }).click();
   await page.getByRole("button", { name: "转学插班生", exact: true }).click();
-  await page.getByRole("button", { name: "跳过美术，直接开演" }).click();
+  await page.getByTestId("skip-preload").click();
 
   // fake 回合秒回：TopBar 状态回到「就绪」
   await expect(page.getByTestId("status")).toHaveText("就绪");

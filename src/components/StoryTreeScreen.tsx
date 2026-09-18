@@ -325,7 +325,7 @@ function TreeCanvas({
             data-testid="tree-zoom-out"
             aria-label="缩小"
             onClick={() => zoomBy(1 / ZOOM_STEP)}
-            className="rounded-md border border-white/10 p-1.5 text-ink/60 transition-colors hover:border-gold/40 hover:text-ink"
+            className="rounded-md border border-white/10 p-1.5 text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
           >
             <ZoomOut size={12} />
           </button>
@@ -334,7 +334,7 @@ function TreeCanvas({
             data-testid="tree-zoom-in"
             aria-label="放大"
             onClick={() => zoomBy(ZOOM_STEP)}
-            className="rounded-md border border-white/10 p-1.5 text-ink/60 transition-colors hover:border-gold/40 hover:text-ink"
+            className="rounded-md border border-white/10 p-1.5 text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
           >
             <ZoomIn size={12} />
           </button>
@@ -342,7 +342,7 @@ function TreeCanvas({
             type="button"
             data-testid="tree-zoom-fit"
             onClick={fit}
-            className="flex items-center gap-1 rounded-md border border-white/10 px-2 py-1 text-ink/60 transition-colors hover:border-gold/40 hover:text-ink"
+            className="flex items-center gap-1 rounded-md border border-white/10 px-2 py-1 text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
           >
             <Maximize2 size={12} /> 适应
           </button>
@@ -507,7 +507,7 @@ function TreeList({
                 >
                   <span className="w-12 flex-none tracking-wide text-gold">{ln.id}</span>
                   <span className="w-28 flex-none truncate text-ink-hint">{ln.node.location || "（无地点）"}</span>
-                  <span className="min-w-0 flex-1 truncate text-ink/80">
+                  <span className="min-w-0 flex-1 truncate text-ink-body">
                     {truncate(ln.node.synopsis || ln.node.beat || "（无梗概）", 44)}
                   </span>
                   {snap && <span className="flex-none text-[11px] text-ink-hint">快照 #{snap.seq}</span>}
@@ -526,7 +526,7 @@ function DetailRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex gap-2">
       <dt className="flex-none text-[11px] tracking-[.2em] text-ink-hint">{label}</dt>
-      <dd className="min-w-0 flex-1 text-[13.5px] text-ink/85">{value || "（暂无）"}</dd>
+      <dd className="min-w-0 flex-1 text-[13.5px] text-ink-body">{value || "（暂无）"}</dd>
     </div>
   );
 }
@@ -649,11 +649,11 @@ function TreeDetail({
     <div data-testid="tree-detail" className="mt-4 rounded-xl border border-white/10 bg-[rgba(12,14,20,.72)] p-4">
       <div className="flex items-center gap-3">
         <h3 className="text-[15px] tracking-[.1em] text-ink">节点 {node.id}</h3>
-        <span className="rounded-sm border border-white/15 px-1.5 py-0.5 text-[11px] text-ink/60">{node.status}</span>
+        <span className="rounded-sm border border-white/15 px-1.5 py-0.5 text-[11px] text-ink-hint">{node.status}</span>
         <button
           type="button"
           onClick={onClose}
-          className="ml-auto rounded-md border border-white/10 px-3 py-1 text-[12px] tracking-[.15em] text-ink/60 transition-colors hover:border-gold/40 hover:text-ink"
+          className="ml-auto rounded-md border border-white/10 px-3 py-1 text-[12px] tracking-[.15em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
         >
           关闭
         </button>
@@ -671,7 +671,7 @@ function TreeDetail({
           type="button"
           data-testid="snapshot-diff-open"
           onClick={openDiff}
-          className="mt-2 rounded-lg border border-white/15 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink/70 transition-colors hover:border-gold/40 hover:text-ink"
+          className="mt-2 rounded-lg border border-white/15 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink-body transition-colors hover:border-gold/40 hover:text-ink"
         >
           与上一快照对比（#{prevSeq} → #{snapshot.seq}）
         </button>
@@ -680,7 +680,7 @@ function TreeDetail({
       {diffOpen && snapshot && prevSeq !== null && (
         <div data-testid="snapshot-diff" className="mt-3 rounded-lg border border-white/10 bg-[rgba(8,10,16,.55)] p-3">
           <div className="flex items-center gap-3">
-            <p className="text-[12px] tracking-[.08em] text-ink/70">
+            <p className="text-[12px] tracking-[.08em] text-ink-body">
               快照 #{prevSeq} → #{snapshot.seq}（红=上一份独有，绿=这一份新增）
             </p>
             <button
@@ -690,7 +690,7 @@ function TreeDetail({
                 diffReqRef.current += 1;
                 setDiffOpen(false);
               }}
-              className="ml-auto rounded-md border border-white/10 px-2.5 py-0.5 text-[11.5px] tracking-[.1em] text-ink/60 transition-colors hover:border-gold/40 hover:text-ink"
+              className="ml-auto rounded-md border border-white/10 px-2.5 py-0.5 text-[11.5px] tracking-[.1em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
             >
               关闭对比
             </button>
@@ -771,7 +771,7 @@ function TreeDetail({
 
       <div className="mt-3">
         <p className="text-[11px] tracking-[.2em] text-ink-hint">梗概</p>
-        <p className="mt-1 whitespace-pre-wrap text-[13.5px] leading-relaxed text-ink/85">{node.synopsis || "（暂无）"}</p>
+        <p className="mt-1 whitespace-pre-wrap text-[13.5px] leading-relaxed text-ink-body">{node.synopsis || "（暂无）"}</p>
       </div>
 
       <div className="mt-3">
@@ -781,7 +781,7 @@ function TreeDetail({
         ) : (
           <ul className="mt-1 space-y-1">
             {node.edges.map((e, i) => (
-              <li key={i} className="text-[13px] text-ink/75">
+              <li key={i} className="text-[13px] text-ink-body">
                 <span className="text-ink-hint">{e.label || "（未命名）"}</span>
                 <span className="mx-1.5 text-ink-faint">→</span>
                 <span className="text-gold">{e.target}</span>
@@ -833,7 +833,7 @@ function TreeDetail({
                 type="button"
                 data-testid={`tree-restore-cancel-${node.id}`}
                 onClick={() => setConfirming(false)}
-                className="rounded-lg border border-white/10 px-3 py-2 text-[12.5px] tracking-[.1em] text-ink/60 transition-colors hover:border-gold/40 hover:text-ink"
+                className="rounded-lg border border-white/10 px-3 py-2 text-[12.5px] tracking-[.1em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
               >
                 取消
               </button>
@@ -847,7 +847,7 @@ function TreeDetail({
               className={`rounded-lg border px-4 py-2 text-[13px] tracking-[.1em] transition-colors ${
                 engineBusy
                   ? "cursor-not-allowed border-white/10 text-ink-hint"
-                  : "border-white/15 text-ink/70 hover:border-gold/40 hover:text-ink"
+                  : "border-white/15 text-ink-body hover:border-gold/40 hover:text-ink"
               }`}
             >
               回退到此节点（原地）
@@ -1006,14 +1006,15 @@ export default function StoryTreeScreen() {
             <button
               type="button"
               onClick={refreshTree}
-              className="flex items-center gap-1.5 rounded-md border border-white/10 px-3 py-1.5 text-[12px] tracking-[.2em] text-ink/60 transition-colors hover:border-gold/40 hover:text-ink"
+              className="flex items-center gap-1.5 rounded-md border border-white/10 px-3 py-1.5 text-[12px] tracking-[.2em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
             >
               <RefreshCw size={12} /> 刷新
             </button>
             <button
               type="button"
+              data-testid="tree-back"
               onClick={closeOverlay}
-              className="rounded-md border border-white/10 px-3 py-1.5 text-[12px] tracking-[.2em] text-ink/60 transition-colors hover:border-gold/40 hover:text-ink"
+              className="rounded-md border border-white/10 px-3 py-1.5 text-[12px] tracking-[.2em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
             >
               返回
             </button>
@@ -1036,7 +1037,7 @@ export default function StoryTreeScreen() {
             {tree.archive.map((line, i) => (
               <span
                 key={i}
-                className="whitespace-nowrap rounded-full border border-white/10 bg-white/[.03] px-3 py-1 text-[11.5px] text-ink/60"
+                className="whitespace-nowrap rounded-full border border-white/10 bg-white/[.03] px-3 py-1 text-[11.5px] text-ink-hint"
               >
                 {line}
               </span>
@@ -1079,7 +1080,7 @@ export default function StoryTreeScreen() {
           {!loading && !error && markdown !== null && tree === null && (
             <pre
               data-testid="tree-raw"
-              className="mt-4 max-h-[60vh] overflow-auto whitespace-pre-wrap rounded-lg border border-white/10 bg-[rgba(12,14,20,.6)] p-4 text-[12.5px] leading-relaxed text-ink/70"
+              className="mt-4 max-h-[60vh] overflow-auto whitespace-pre-wrap rounded-lg border border-white/10 bg-[rgba(12,14,20,.6)] p-4 text-[12.5px] leading-relaxed text-ink-body"
             >
               {markdown}
             </pre>

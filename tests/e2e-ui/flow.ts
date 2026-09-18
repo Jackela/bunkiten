@@ -18,7 +18,7 @@ export async function enterProtagonist(page: Page, title: string): Promise<void>
 
 /** 捏人屏快速开局（quick_start 预设主角）→ 跳过美术 → 等 game 屏首个回合「就绪」 */
 export async function quickStartToGame(page: Page): Promise<void> {
-  await page.getByRole("button", { name: /快速开局/ }).click();
-  await page.getByRole("button", { name: "跳过美术，直接开演" }).click();
+  await page.getByTestId("quick-start").click();
+  await page.getByTestId("skip-preload").click();
   await expect(page.getByTestId("status")).toHaveText("就绪");
 }

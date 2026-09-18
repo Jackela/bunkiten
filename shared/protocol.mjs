@@ -12,16 +12,16 @@
  * 消费点也在客户端；server 侧对应各 parse* 出口）。顺序即契约声明顺序（CONTRACTS §6），
  * 改这里前先同步 SKILL.md / ARCHITECTURE.md 的备忘与表格，以及 server 侧对应的各 parse*。
  */
-export const PROTOCOL_HEADS = ["图", "清单", "章", "立绘", "新剧本", "树", "曲", "环境", "音效"];
+export const PROTOCOL_HEADS = Object.freeze(["图", "清单", "章", "立绘", "新剧本", "树", "曲", "环境", "音效"]);
 
 /**
  * 音频协议行的三种类型字面（v1.6）：【曲】切 BGM、【环境】切环境音、【音效】一次性音效。
  * server（scanPresetAudio/AUDIO_FILE_RE）与客户端（parser re-export → AudioKind 类型）共用。
  */
-export const AUDIO_KINDS = ["曲", "环境", "音效"];
+export const AUDIO_KINDS = Object.freeze(["曲", "环境", "音效"]);
 
 /** 音频文件扩展名白名单（直服 /audio 与剧本导入包共用；客户端不设第二份，只认 /api/audio 索引给的 url） */
-export const AUDIO_EXTS = ["mp3", "ogg", "m4a", "wav", "flac"];
+export const AUDIO_EXTS = Object.freeze(["mp3", "ogg", "m4a", "wav", "flac"]);
 
 /** 音频文件名 `<类型>-<名>.<ext>`：类型与扩展名都过白名单（名可含中文，不含路径分隔符） */
 export const AUDIO_FILE_RE = new RegExp(`^(${AUDIO_KINDS.join("|")})-(.+)\\.(${AUDIO_EXTS.join("|")})$`);
@@ -31,6 +31,22 @@ export const AUDIO_REL_RE = new RegExp(`^presets/[A-Za-z0-9_-]+/audio/[^/]+\\.($
 
 /** 扩展名 → Content-Type（键必须与 AUDIO_EXTS 同集，漏一个直服就回落 octet-stream） */
 export const AUDIO_MIME = { mp3: "audio/mpeg", ogg: "audio/ogg", m4a: "audio/mp4", wav: "audio/wav", flac: "audio/flac" };
+
+/**
+ * 美术类型字面（**唯一真源**，v1.7 收尾）：【图】标记与【清单】行的类型段（立绘/背景/封面）。
+ * 资产文件名（`<类型>-<名>.jpe?g`，落盘与 /img 直服白名单）只认立绘/背景（ASSET_KINDS 子集）——
+ * 封面走 `presets/<id>/cover.jpg`，不进 assets/。消费方：src/lib/parser.ts（ART_LINE_BODY / parseManifest /
+ * ArtKind 类型）、server/protocol-lines.mjs（parseArtLine）、server/assets.mjs（ASSET_FILE_RE 构造与 re-export）、
+ * scripts/doctor.mjs（资产命名契约）。RULES 的【图】句仍是逐字文本（引擎只读 .grok/、不 import 代码）——
+ * 改这里要同步那句，以及 SKILL.md【美术】小节。
+ */
+export const ART_KINDS = Object.freeze(["立绘", "背景", "封面"]);
+
+/** 资产文件名的类型子集（立绘/背景；封面走 cover.jpg 不进 assets/） */
+export const ASSET_KINDS = Object.freeze(["立绘", "背景"]);
+
+/** 资产文件名 `<类型>-<名>.jpe?g`（由 ASSET_KINDS 构造）：落盘与 /img 直服白名单共用一份 */
+export const ASSET_FILE_RE = new RegExp(`^(${ASSET_KINDS.join("|")})-(.+)\\.jpe?g$`);
 
 /**
  * 客户端指令前缀正则（**单一真源**，v1.7 收编）：以这些前缀开头的提示词是「建档/规划类回合」——

@@ -28,6 +28,7 @@ import { CHAPTER_MARK_RE, DIRECTIVE_PREFIX_RE } from "../shared/protocol.mjs";
 import { GAME_ROOT, BASE_PORT, PORT_MAX_RETRY, SESSION_FILE, WORLDS_ROOT } from "./config.mjs";
 import {
   PRESET_ID_RE,
+  ASSET_FILE_RE,
   sanitizeAssetName,
   splitAssetVariant,
   mtimeOf,
@@ -43,7 +44,7 @@ import { createAcpSession } from "./acp.mjs";
 import { createRequestHandler } from "./routes.mjs";
 
 // ---------- 外部 import 面保活：拆出模块的既有导出符号逐名 re-export（electron/tests/doctor 从这里 import） ----------
-export { PRESET_ID_RE, presetAssetsDir, assetRelPath, presetIdFromPath, legacyAssetCandidates, resolvePersistPreset } from "./assets.mjs";
+export { PRESET_ID_RE, ASSET_FILE_RE, ASSET_KINDS, presetAssetsDir, assetRelPath, presetIdFromPath, legacyAssetCandidates, resolvePersistPreset } from "./assets.mjs";
 export { AUDIO_KINDS, AUDIO_EXTS, AUDIO_FILE_RE, scanPresetAudio } from "./audio.mjs";
 export {
   FM_KEYS,
@@ -367,7 +368,8 @@ export function startServer() {
       for (const f of fs.readdirSync(presetAssetsDir(presetId))) {
         // 只认立绘/背景：封面不在 assets/ 里（契约是 presets/<id>/cover.jpg，另见下面那条），
         // `assets/封面-X.jpg` 是死路径，扫了只会给画廊塞进永远 404 的项。
-        const m = /^(立绘|背景)-(.+)\.jpe?g$/.exec(f);
+        // 文件名正则取 shared 真源（ASSET_FILE_RE，由 ASSET_KINDS 构造）：落盘白名单与画廊扫描同一份
+        const m = ASSET_FILE_RE.exec(f);
         // file 用**磁盘上的真实文件名**拼（v1.5 之前的素材可能是 .jpeg，硬拼 .jpg 会让画廊 404）
         if (m) push(`${m[1]}|${m[2]}`, m[1], m[2], `presets/${presetId}/assets/${f}`, true);
       }

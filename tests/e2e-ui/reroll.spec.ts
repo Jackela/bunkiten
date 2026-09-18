@@ -85,7 +85,7 @@ test("重掷本回合：退回次新快照 → 重同步 → 自动重发同一�
   expect(await page.getByTestId("reroll").isVisible()).toBe(true); // 连掷入口还在
 
   // 抽屉：分割线是 reroll 措辞；回合甲在分割线之前（置灰），回合乙在分割线之后（正常）
-  await page.getByRole("button", { name: "历史", exact: true }).click();
+  await page.getByTestId("history").click();
   const rollback = page.getByTestId("history-rollback");
   await expect(rollback).toBeVisible();
   await expect(rollback).toContainText("重掷本回合");

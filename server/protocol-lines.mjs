@@ -3,7 +3,7 @@
 // 纯函数（音频类型交替组取 shared/protocol.mjs 真源）——只有完整行传入才可能命中（行完整性由上游
 // flushArtLines 的换行累积保证）。
 // 入口 server/acp-server.mjs 逐名 re-export 这些符号（tests/server.test.ts 与契约 lint 都从入口 import）。
-import { AUDIO_KINDS } from "../shared/protocol.mjs";
+import { ART_KINDS, AUDIO_KINDS } from "../shared/protocol.mjs";
 
 // 导出供契约 lint（tests/contract.test.ts）逐句比对 docs/ARCHITECTURE.md 的副本。
 // 为什么导出「逐句数组」而不是只导出拼接后的串：句内本身含句号（如「世界：<id>。」），
@@ -28,10 +28,12 @@ export const RULES = RULES_SENTENCES.join("");
 // DIRECTIVE_PREFIX_RE（分档/正戏判定）与 PROTOCOL_HEADS（协议行过滤）都与它无关，真源只需要 server 一侧。
 export const SUPPLEMENT_PROMPT = "补充：上一回合缺少 **行动** 选项段。请只补发完整的每轮协议回合尾（含 **行动** 与选项行），不要重述正文。";
 
-// 【图】(立绘|背景|封面)|<名>|<路径>[|重绘]：资产标记（封面即剧本标题，重绘要求覆盖同名文件）
+// 【图】<类型>|<名>|<路径>[|重绘]：资产标记（类型 = shared 的 ART_KINDS：立绘/背景/封面；封面即剧本标题，重绘要求覆盖同名文件）
+// 类型交替组由 ART_KINDS（shared 真源）构造——与客户端 parser.ts 的 ART_LINE_BODY 同一份类型集合
+const ART_LINE_RE = new RegExp(`^\\s*【图】(${ART_KINDS.join("|")})\\|([^|]+)\\|([^|]+?)(?:\\|(重绘))?\\s*$`);
 /** @param {string} line 协议行原文 @returns {{type: string, name: string, srcRel: string, regen: boolean}|null} */
 export function parseArtLine(line) {
-  const m = /^\s*【图】(立绘|背景|封面)\|([^|]+)\|([^|]+?)(?:\|(重绘))?\s*$/.exec(line);
+  const m = ART_LINE_RE.exec(line);
   return m ? { type: m[1], name: m[2], srcRel: m[3], regen: m[4] === "重绘" } : null;
 }
 

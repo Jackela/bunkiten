@@ -49,6 +49,9 @@ export function createCraftingSlice(
         // 制作队列由第 1 章规划回合的制作清单构建，开局不预填槽位
         preloadPhase: preload ? "init" : "finished",
         engineBusy: true,
+        // 开局 = 新世界的第一个回合：快照数确定为 0（beginNewWorld 置的 0 会被这里的 resetRunState 清掉）。
+        // 重掷入口因此在首回合不出现；首个回合收尾后由 turn_end 的按需补拉把真实数（0/1）写回来。
+        turnSnapshots: 0,
       });
       if (preload) ctx.armWatchdog();
       get().send(prompt);

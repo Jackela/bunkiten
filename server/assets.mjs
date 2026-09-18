@@ -1,10 +1,14 @@
 // 美术资产路径契约纯函数（v1.7 拆模块）：文件名净化、剧本 id 白名单、落盘/直服路径的判定与拆分。
-// 零业务依赖（只 import config 的 GAME_ROOT）——注意 assetTargetFile 不在这里而在 presets.mjs：
+// 零业务依赖（只 import shared/protocol.mjs 与 config 的 GAME_ROOT）——注意 assetTargetFile 不在这里而在 presets.mjs：
 // 封面的「标题 → 剧本 id」反查要读剧本目录（scanPresets），放本模块会造成 assets↔presets 环形依赖。
 // 入口 server/acp-server.mjs 逐名 re-export 这些符号（tests/server.test.ts 与 scripts/doctor.mjs 都从入口 import）。
 import fs from "fs";
 import path from "path";
+import { ASSET_FILE_RE } from "../shared/protocol.mjs";
 import { GAME_ROOT } from "./config.mjs";
+
+// 资产类型的文件名正则的真源在 shared/protocol.mjs（由 ASSET_KINDS 构造）；这里 re-export 给 doctor 与入口，不抄第二份
+export { ASSET_FILE_RE, ASSET_KINDS } from "../shared/protocol.mjs";
 
 // 文件名安全字符：名字里的路径分隔符与引号类字符一律替换为 _
 /** @param {string} name 标记里的原始名 @returns {string} 净化后的安全文件名（空名兜底 unnamed） */
@@ -100,6 +104,21 @@ export function resolvePersistPreset({ queryPreset = "", srcRel = "", currentPre
 export function splitAssetVariant(rest) {
   const i = rest.indexOf("-");
   return i === -1 ? { name: rest, variant: "" } : { name: rest.slice(0, i), variant: rest.slice(i + 1) };
+}
+
+/**
+ * 在 taken 集合里给 base 取一个不冲突的落地名：base 空闲即 base，否则 base-2、base-3…（世界线导入与
+ * 剧本导入共用的重名策略——**绝不覆盖**既有目录；两种导入的目标形态不同，策略必须一致）。
+ * createWorld 的 `<preset>-N` 递增（从 -1 起）是另一种编号策略，仍用本地循环。
+ * @param {Set<string>} taken 已占用名字（索引 id ∪ 磁盘目录名）
+ * @param {string} base 期望名（调用方保证非空且形态合法）
+ * @returns {string} 不冲突的落地名
+ */
+export function uniqueSuffixedName(taken, base) {
+  if (!taken.has(base)) return base;
+  let n = 2;
+  while (taken.has(`${base}-${n}`)) n += 1;
+  return `${base}-${n}`;
 }
 
 /** @param {string} file 绝对路径 @returns {number} mtime 毫秒；读不到（不存在）为 0 */

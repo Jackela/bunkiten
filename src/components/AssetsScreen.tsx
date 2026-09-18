@@ -67,7 +67,7 @@ function AssetCard({
           在用
         </span>
       )}
-      <div className="truncate px-2 py-1.5 text-[12px] text-ink/70">{label}</div>
+      <div className="truncate px-2 py-1.5 text-[12px] text-ink-body">{label}</div>
     </>
   );
 
@@ -269,15 +269,16 @@ export default function AssetsScreen() {
             className={`ml-auto rounded-md border px-3 py-1.5 text-[12px] tracking-[.2em] transition-colors ${
               selectMode
                 ? "border-gold/40 bg-gold/15 text-gold"
-                : "border-white/10 text-ink/60 hover:border-gold/40 hover:text-ink"
+                : "border-white/10 text-ink-hint hover:border-gold/40 hover:text-ink"
             }`}
           >
             选择模式
           </button>
           <button
             type="button"
+            data-testid="assets-back"
             onClick={closeOverlay}
-            className="ml-2 rounded-md border border-white/10 px-3 py-1.5 text-[12px] tracking-[.2em] text-ink/60 transition-colors hover:border-gold/40 hover:text-ink"
+            className="ml-2 rounded-md border border-white/10 px-3 py-1.5 text-[12px] tracking-[.2em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
           >
             返回
           </button>
@@ -298,7 +299,7 @@ export default function AssetsScreen() {
               data-testid="assets-select-all"
               disabled={(assets ?? []).length === 0}
               onClick={() => setPicked((assets ?? []).map((a) => a.file))}
-              className="rounded-md border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink/60 transition-colors hover:border-gold/40 hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint"
+              className="rounded-md border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint"
             >
               全选
             </button>
@@ -307,7 +308,7 @@ export default function AssetsScreen() {
               data-testid="assets-select-none"
               disabled={picked.length === 0}
               onClick={() => setPicked([])}
-              className="rounded-md border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink/60 transition-colors hover:border-gold/40 hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint"
+              className="rounded-md border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint"
             >
               清空
             </button>
@@ -348,7 +349,7 @@ export default function AssetsScreen() {
                 data-testid="assets-delete-selected"
                 disabled={deletable.length === 0 || assetsBusy}
                 onClick={() => setConfirmDelete(true)}
-                className="rounded-md border border-white/10 px-3.5 py-1.5 text-[12.5px] tracking-[.1em] text-ink/60 transition-colors hover:border-red-400/40 hover:text-red-300 disabled:cursor-not-allowed disabled:text-ink-faint"
+                className="rounded-md border border-white/10 px-3.5 py-1.5 text-[12.5px] tracking-[.1em] text-ink-hint transition-colors hover:border-red-400/40 hover:text-red-300 disabled:cursor-not-allowed disabled:text-ink-faint"
               >
                 删除选中({deletable.length})
               </button>
@@ -360,7 +361,7 @@ export default function AssetsScreen() {
               type="button"
               data-testid="assets-exit-select"
               onClick={exitSelect}
-              className="ml-auto rounded-md border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.2em] text-ink/60 transition-colors hover:border-gold/40 hover:text-ink"
+              className="ml-auto rounded-md border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.2em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
             >
               退出选择
             </button>
@@ -491,7 +492,7 @@ export default function AssetsScreen() {
                 data-testid="assets-preview-close"
                 aria-label="关闭预览"
                 onClick={() => setAssetsPreview(null)}
-                className="absolute right-3 top-3 rounded-md p-1 text-ink/60 transition-colors hover:text-ink"
+                className="absolute right-3 top-3 rounded-md p-1 text-ink-hint transition-colors hover:text-ink"
               >
                 <X size={16} />
               </button>

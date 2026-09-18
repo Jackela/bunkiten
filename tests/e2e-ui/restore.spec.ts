@@ -149,7 +149,7 @@ test("回退到快照 #1：两段确认→已回退提示→补发续玩→画�
   await expect(page.getByTestId("status")).toHaveText("就绪");
 
   // 进剧情图，点快照 1 对应节点 1-1：详情出现并带快照标注
-  await page.getByRole("button", { name: "剧情图", exact: true }).click();
+  await page.getByTestId("tree").click();
   await expect(page.getByTestId("tree-canvas")).toBeVisible();
   await page.getByTestId("tree-node-1-1").click();
   await expect(page.getByTestId("tree-detail")).toBeVisible();
@@ -164,7 +164,7 @@ test("回退到快照 #1：两段确认→已回退提示→补发续玩→画�
   await expect(page.getByTestId("tree-notice")).toContainText("已回退");
 
   // 返回 game 屏：补发的续玩回合已应答——状态回就绪、正文区出现续演文本
-  await page.getByRole("button", { name: "返回", exact: true }).click();
+  await page.getByTestId("tree-back").click();
   await expect(page.getByTestId("status")).toHaveText("就绪");
   await expect(page.getByTestId("dialogue-text")).toContainText("续演正文");
 });
@@ -182,7 +182,7 @@ test("重同步失败与恢复：回退后首条续玩命中引擎 error → 徽
   await expect(page.getByTestId("resync-badge")).toHaveCount(0); // 还没回退：无徽章
 
   // 回退：两条「继续世界」队列里下一条是 {error} → 重同步失败
-  await page.getByRole("button", { name: "剧情图", exact: true }).click();
+  await page.getByTestId("tree").click();
   await page.getByTestId("tree-node-1-1").click();
   await page.getByTestId("tree-restore-1-1").click();
   await page.getByTestId("tree-restore-confirm-1-1").click();
@@ -192,7 +192,7 @@ test("重同步失败与恢复：回退后首条续玩命中引擎 error → 徽
   await expect(page.getByTestId("tree-notice")).toContainText("再同步");
 
   // 返回 game 屏（tree 屏不挂 TopBar）：徽章 + 「再同步」入口出现
-  await page.getByRole("button", { name: "返回", exact: true }).click();
+  await page.getByTestId("tree-back").click();
   await expect(page.getByTestId("resync-badge")).toBeVisible();
   const retry = page.getByTestId("resync-retry");
   await expect(retry).toBeVisible();

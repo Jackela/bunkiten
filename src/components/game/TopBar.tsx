@@ -10,7 +10,7 @@ function RailButton({ label, onClick, testId, aria }: { label: string; onClick: 
       title={aria ?? label}
       aria-label={aria ?? label}
       data-testid={testId}
-      className="rounded-md px-1.5 py-2.5 text-[11.5px] tracking-[.25em] text-ink/60 transition-colors duration-200 hover:bg-white/[.06] hover:text-[color:var(--accent)] [writing-mode:vertical-rl]"
+      className="rounded-md px-1.5 py-2.5 text-[11.5px] tracking-[.25em] text-ink-hint transition-colors duration-200 hover:bg-white/[.06] hover:text-[color:var(--accent)] [writing-mode:vertical-rl]"
     >
       {label}
     </button>
@@ -31,6 +31,7 @@ export default function TopBar() {
   const pendingResync = useGameStore((s) => s.pendingResync);
   const resyncFailed = useGameStore((s) => s.resyncFailed);
   const lastTurnPrompt = useGameStore((s) => s.lastTurnPrompt);
+  const turnSnapshots = useGameStore((s) => s.turnSnapshots);
   const send = useGameStore((s) => s.send);
   const rerollTurn = useGameStore((s) => s.rerollTurn);
   const retryResync = useGameStore((s) => s.retryResync);
@@ -41,11 +42,13 @@ export default function TopBar() {
   const openSettings = useGameStore((s) => s.openSettings);
   const busy = status.includes("…");
   const elapsed = useTurnElapsed();
-  const canReroll = status === "就绪" && !!lastTurnPrompt && !pendingResync;
+  // 有上一回合输入、不处于待重同步、且世界已知至少有两条 turn 快照（重掷要退到「次新」那条）——
+  // turnSnapshots 为 null（未知，如续玩补拉失败）时照常展示，点击后再由 rerollTurn 的 fetch 判定
+  const canReroll = status === "就绪" && !!lastTurnPrompt && !pendingResync && (turnSnapshots === null || turnSnapshots >= 2);
 
   return (
     <>
-      <div className="fixed top-0 left-0 z-30 flex items-center gap-2.5 px-3.5 py-2.5 text-xs text-ink/60">
+      <div className="fixed top-0 left-0 z-30 flex items-center gap-2.5 px-3.5 py-2.5 text-xs text-ink-hint">
         <span
           className={`h-[7px] w-[7px] flex-none rounded-full ${busy ? "animate-pulse bg-gold" : "bg-[#3d4254]"}`}
         />
@@ -80,11 +83,11 @@ export default function TopBar() {
       </div>
 
       <nav className="fixed top-1/2 right-2.5 z-30 flex -translate-y-1/2 flex-col gap-0.5 rounded-lg border border-white/[.08] bg-[rgba(10,12,18,.5)] p-1 backdrop-blur-md">
-        <RailButton label="设置" onClick={openSettings} />
-        <RailButton label="历史" onClick={toggleDrawer} />
+        <RailButton label="设置" testId="settings" onClick={openSettings} />
+        <RailButton label="历史" testId="history" onClick={toggleDrawer} />
         <RailButton label="角色" aria="角色面板" testId="characters" onClick={toggleCharacters} />
-        <RailButton label="素材" onClick={openAssets} />
-        <RailButton label="剧情图" onClick={openTree} />
+        <RailButton label="素材" testId="assets" onClick={openAssets} />
+        <RailButton label="剧情图" testId="tree" onClick={openTree} />
         {canReroll && <RailButton label="重掷" aria="重掷本回合" testId="reroll" onClick={() => void rerollTurn()} />}
         <RailButton label="重开" onClick={() => send("/new-game")} />
         <RailButton label="前情" onClick={() => send("/recap")} />

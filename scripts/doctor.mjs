@@ -4,14 +4,16 @@
 // 而「仓库此刻的 preset 健康度」随游玩数据（state/worlds、素材增删）漂移，适合按需跑而非门禁化。
 //
 // 解析口径与 server 同源（import 复用，不抄第二份）：parseFrontmatter/parseCharacterSections/
-// parseSectionLines/normalizeTheme/PRESET_ID_RE/FM_KEYS/THEME_KEYS/AUDIO_KINDS/AUDIO_EXTS/AUDIO_FILE_RE
-// 都来自 server/acp-server.mjs（模块以 invokedDirectly 守卫自启，import 无副作用）。
+// parseSectionLines/normalizeTheme/PRESET_ID_RE/FM_KEYS/THEME_KEYS/AUDIO_KINDS/AUDIO_EXTS/AUDIO_FILE_RE/
+// ASSET_KINDS/ASSET_FILE_RE 都来自 server/acp-server.mjs（模块以 invokedDirectly 守卫自启，import 无副作用）。
 // theme 叠加客户端更严的一层（src/theme.ts 的 HEX_RE/MOTIFS/FALLBACK_THEME：server 的 isColor 放行
 // 3-8 位 hex、motif 只要求非空，落到客户端才会被拦）——.ts 在 Node ≥23.6 由 type stripping 直接 import。
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  ASSET_FILE_RE,
+  ASSET_KINDS,
   AUDIO_EXTS,
   AUDIO_FILE_RE,
   AUDIO_KINDS,
@@ -29,8 +31,7 @@ import { FALLBACK_THEME, HEX_RE, MOTIFS } from "../src/theme.ts";
 // 开发模式 = 项目根；Electron 打包后由 main 进程注入资源目录（与 server 同款约定）
 const GAME_ROOT = process.env.GROK_GAME_ROOT || path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-// 资产文件名契约：presets/<id>/assets/<类型>-<名>.jpe?g（落盘与 /img 直服白名单都只认这个形态）
-const ASSET_FILE_RE = /^(立绘|背景)-(.+)\.jpe?g$/;
+// 资产文件名契约 presets/<id>/assets/<类型>-<名>.jpe?g：正则取 shared 真源（ASSET_FILE_RE），不抄第二份
 // 角色节建议字段（SKILL「剧本创作」装配模板：每人含 art_prompt 与 agenda）——缺了引擎只能即兴，warning 而非 error
 const CAST_RECOMMENDED_FIELDS = ["art_prompt", "agenda"];
 
@@ -180,8 +181,8 @@ function checkCover(presetDir) {
 }
 
 /**
- * 资产命名组：assets/ 下每个文件都须匹配 `<立绘|背景>-<名>.jpe?g`——
- * 落盘（persistAsset）与 /img 白名单只认这个形态，别的名字永远不会被服务到。
+ * 资产命名组：assets/ 下每个文件都须匹配 `<类型>-<名>.jpe?g`（类型 = shared 的 ASSET_KINDS：立绘/背景；
+ * 正则 ASSET_FILE_RE）——落盘（persistAsset）与 /img 白名单只认这个形态，别的名字永远不会被服务到。
  * @param {string[]|null} assets assets/ 的文件名列表（null = 目录不存在）
  * @returns {Finding[]}
  */
@@ -189,7 +190,7 @@ function checkAssetNames(assets) {
   if (assets == null || assets.length === 0) return [ok("资产：assets/ 无素材（尚未生成或已清空）")];
   const bad = assets.filter((f) => !ASSET_FILE_RE.test(f));
   if (bad.length) {
-    return bad.map((f) => error(`资产文件名非法：assets/${f}（应为 <${["立绘", "背景"].join("|")}>-<名>.jpg——落盘与直服白名单都认这个形态，别的名字永远 404）`));
+    return bad.map((f) => error(`资产文件名非法：assets/${f}（应为 <${ASSET_KINDS.join("|")}>-<名>.jpg——落盘与直服白名单都认这个形态，别的名字永远 404）`));
   }
   return [ok(`资产命名：assets/ ${assets.length} 个文件全部符合 <类型>-<名>.jpg`)];
 }

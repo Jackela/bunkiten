@@ -462,7 +462,7 @@ export default function WorldsScreen() {
           <button
             type="button"
             onClick={toTitle}
-            className="ml-auto flex-none rounded-md border border-white/10 px-3 py-1.5 text-[12px] tracking-[.2em] text-ink/60 transition-colors hover:border-gold/40 hover:text-[color:var(--accent)]"
+            className="ml-auto flex-none rounded-md border border-white/10 px-3 py-1.5 text-[12px] tracking-[.2em] text-ink-hint transition-colors hover:border-gold/40 hover:text-[color:var(--accent)]"
           >
             返回
           </button>
@@ -501,7 +501,7 @@ export default function WorldsScreen() {
             data-testid="worlds-import"
             disabled={importing || worldBusy}
             onClick={() => fileRef.current?.click()}
-            className="ml-auto rounded-lg border border-white/10 px-4 py-2 text-[13px] tracking-[.1em] text-ink/60 transition-colors hover:border-gold/40 hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint"
+            className="ml-auto rounded-lg border border-white/10 px-4 py-2 text-[13px] tracking-[.1em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint"
           >
             {importing ? "导入中…" : "导入"}
           </button>
@@ -570,7 +570,7 @@ export default function WorldsScreen() {
             data-testid="worlds-empty"
             className="mt-6 flex flex-col items-center gap-3 rounded-2xl border border-dashed border-white/15 bg-[rgba(10,12,18,.5)] px-6 py-10 backdrop-blur-md"
           >
-            <p className="text-[14px] tracking-[.12em] text-ink/60">还没有世界线——开始新的吧</p>
+            <p className="text-[14px] tracking-[.12em] text-ink-hint">还没有世界线——开始新的吧</p>
             <p className="text-[11.5px] tracking-[.2em] text-ink-hint">新世界线从捏人开始</p>
           </div>
         )}

@@ -108,7 +108,7 @@ function ArtSlot({ item, url }: { item: PreloadItem; url: string | null }) {
           </span>
         )}
       </div>
-      <div className={`text-[13px] ${item.state === "failed" ? "text-ink-hint" : url ? "text-gold" : "text-ink/60"}`}>
+      <div className={`text-[13px] ${item.state === "failed" ? "text-ink-hint" : url ? "text-gold" : "text-ink-hint"}`}>
         {item.label}
         <span className="ml-1.5 text-[10px] tracking-[.1em] text-ink-hint">{STATE_LABEL[item.state]}</span>
       </div>
@@ -123,7 +123,7 @@ function OutlineSlot({ active }: { active: boolean }) {
       <div className="relative aspect-[3/4] w-full overflow-hidden rounded-xl border border-white/10 bg-white/[.03]">
         <Silhouette scene dim={!active} />
       </div>
-      <div className="text-[13px] text-ink/60">
+      <div className="text-[13px] text-ink-hint">
         章节大纲
         <span data-testid="crafting-plan-slot" className="ml-1.5 text-[10px] tracking-[.1em] text-ink-hint">{active ? "撰写大纲与剧情树…" : "排队中"}</span>
       </div>
@@ -156,7 +156,7 @@ export default function CraftingScreen() {
       <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col items-center px-6 py-12">
         <h2 className="text-xl tracking-[.6em] [text-indent:.6em]">{chapterNo > 1 ? `第 ${chapterNo} 章 · 制作中` : "制 作 中"}</h2>
         {chapterNo > 1 && <p className="mt-2 text-[11px] tracking-[.2em] text-gold/70">本章完 · 下一章制作中</p>}
-        <p data-testid="crafting-status" className="mt-4 flex items-center gap-2 text-xs text-ink/60">
+        <p data-testid="crafting-status" className="mt-4 flex items-center gap-2 text-xs text-ink-hint">
           <span className={`h-[7px] w-[7px] rounded-full ${busy ? "animate-pulse bg-gold" : "bg-[#3d4254]"}`} />
           {status}
           {busy && elapsed !== null && <span className="tabular-nums">{elapsed}s</span>}
@@ -183,7 +183,7 @@ export default function CraftingScreen() {
           <button
             type="button"
             onClick={skipPreload}
-            className="mt-10 rounded-lg border border-dashed border-white/20 px-5 py-2.5 text-sm tracking-[.1em] text-ink/70 transition-colors hover:border-gold/40 hover:text-ink"
+            className="mt-10 rounded-lg border border-dashed border-white/20 px-5 py-2.5 text-sm tracking-[.1em] text-ink-body transition-colors hover:border-gold/40 hover:text-ink"
           >
             跳过剩余，立即开演
           </button>
