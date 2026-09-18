@@ -1,14 +1,14 @@
 // 音频素材（v1.6，CONTRACTS §1）：作者手放到 presets/<id>/audio/，server 只扫描+直服，不生成不落盘。
 // AUDIO_KINDS/AUDIO_EXTS/AUDIO_FILE_RE/AUDIO_REL_RE/AUDIO_MIME 的真源在 shared/protocol.mjs；
-// 这里 re-export AUDIO_KINDS/AUDIO_EXTS 给 scripts/doctor.mjs（剧本体检查音频文件名用同一集合，不抄第二份）。
-// 入口 server/acp-server.mjs 同样从这里 re-export（tests 从入口 import）。
+// 这里 re-export AUDIO_KINDS/AUDIO_EXTS/AUDIO_FILE_RE 给 scripts/doctor.mjs（剧本体检查音频文件名
+// 用同一集合、同一文件名正则，不抄第二份）。入口 server/acp-server.mjs 同样从这里 re-export（tests 从入口 import）。
 import fs from "fs";
 import path from "path";
 import { AUDIO_FILE_RE } from "../shared/protocol.mjs";
 import { GAME_ROOT } from "./config.mjs";
 import { PRESET_ID_RE } from "./assets.mjs";
 
-export { AUDIO_KINDS, AUDIO_EXTS } from "../shared/protocol.mjs";
+export { AUDIO_KINDS, AUDIO_EXTS, AUDIO_FILE_RE } from "../shared/protocol.mjs";
 
 /**
  * 扫描 `presets/<id>/audio/`（导出纯读函数，root 可注入以便单测）。

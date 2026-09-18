@@ -9,7 +9,7 @@
 //   presets.mjs preset.md 解析 + assetTargetFile + 剧本导出包（buildPresetBundle/importPresetBundle）
 //   snapshots.mjs 世界三文件与逐轮快照的地基（WORLD_FILES/WORLD_ID_RE/读写/选择/fork 纯函数）
 //   worlds.mjs 世界线索引/CRUD/导出导入/migrateLegacyState/角色面板解析
-//   audio.mjs presets/<id>/audio/ 扫描（AUDIO_KINDS/AUDIO_EXTS re-export 给 doctor）
+//   audio.mjs presets/<id>/audio/ 扫描（AUDIO_KINDS/AUDIO_EXTS/AUDIO_FILE_RE re-export 给 doctor）
 //   http-util.mjs 本地端点防护（跨站 403/body 413）+ /app 静态托管的 MIME 与目录解析
 //   acp.mjs ACP 子进程封装（spawn/JSON-RPC request/sessionId 存取/boot/会话图片定位）
 //   routes.mjs HTTP 路由链（createRequestHandler(ctx)，闭包能力由本文件注入）
@@ -44,7 +44,7 @@ import { createRequestHandler } from "./routes.mjs";
 
 // ---------- 外部 import 面保活：拆出模块的既有导出符号逐名 re-export（electron/tests/doctor 从这里 import） ----------
 export { PRESET_ID_RE, presetAssetsDir, assetRelPath, presetIdFromPath, legacyAssetCandidates, resolvePersistPreset } from "./assets.mjs";
-export { AUDIO_KINDS, AUDIO_EXTS, scanPresetAudio } from "./audio.mjs";
+export { AUDIO_KINDS, AUDIO_EXTS, AUDIO_FILE_RE, scanPresetAudio } from "./audio.mjs";
 export {
   FM_KEYS,
   THEME_KEYS,
