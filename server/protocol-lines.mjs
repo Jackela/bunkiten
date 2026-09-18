@@ -1,7 +1,9 @@
 // 协议行常量与解析（v1.7 拆模块）：注入 agent 的 RULES 原文 + 引擎输出流里的五种协议行 parse*
 // + 质量守卫的内部追问指令 SUPPLEMENT_PROMPT（server → 引擎方向，不进 shared/protocol.mjs）。
-// 零依赖纯函数——只有完整行传入才可能命中（行完整性由上游 flushArtLines 的换行累积保证）。
+// 纯函数（音频类型交替组取 shared/protocol.mjs 真源）——只有完整行传入才可能命中（行完整性由上游
+// flushArtLines 的换行累积保证）。
 // 入口 server/acp-server.mjs 逐名 re-export 这些符号（tests/server.test.ts 与契约 lint 都从入口 import）。
+import { AUDIO_KINDS } from "../shared/protocol.mjs";
 
 // 导出供契约 lint（tests/contract.test.ts）逐句比对 docs/ARCHITECTURE.md 的副本。
 // 为什么导出「逐句数组」而不是只导出拼接后的串：句内本身含句号（如「世界：<id>。」），
@@ -56,9 +58,11 @@ export function parseTreeLine(line) {
 
 // 【曲】/<名>、【环境】/<名>、【音效】/<名>：音频切换指令（演出指令，与【立绘】同级；server 不落盘，只广播）
 // 行首 trim 后匹配（CONTRACTS §1）：名里不再夹带路径，`停` 也是普通名字（客户端自行处理淡出）
+// 类型交替组由 AUDIO_KINDS（shared 真源）构造——加类型只需改真源一处，不会与 AUDIO_FILE_RE 脱钩
+const AUDIO_LINE_RE = new RegExp(`^【(${AUDIO_KINDS.join("|")})】([^\\n]*)$`);
 /** @param {string} line 协议行原文 @returns {{kind: "曲"|"环境"|"音效", name: string}|null} */
 export function parseAudioLine(line) {
-  const m = /^【(曲|环境|音效)】([^\n]*)$/.exec(String(line ?? "").trim());
+  const m = AUDIO_LINE_RE.exec(String(line ?? "").trim());
   // 正则的交替组保证 m[1] 只能是这三个字面之一——cast 只是把这个不变式写进类型
   return m ? { kind: /** @type {"曲"|"环境"|"音效"} */ (m[1]), name: m[2] } : null;
 }

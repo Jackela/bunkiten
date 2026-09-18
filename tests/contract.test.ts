@@ -462,11 +462,12 @@ describe("⑤ 设置键与音频扩展名：settings.ts / shared 真源 / 文档
     const fileRe = /const AUDIO_FILE_RE = new RegExp\(`[^`]*`\)/.exec(shared)?.[0] ?? "";
     expect(fileRe, `${rel} 的 AUDIO_FILE_RE 不再由 AUDIO_KINDS 构造：现在是「${fileRe}」`).toContain('${AUDIO_KINDS.join("|")}');
     expect(fileRe, `${rel} 的 AUDIO_FILE_RE 不再由 AUDIO_EXTS 构造：现在是「${fileRe}」`).toContain('${AUDIO_EXTS.join("|")}');
-    // server 消费真源（import 自 shared），不得再自持第二份扩展名/MIME 声明——
-    // v1.7 拆模块后 server/ 有 10 个文件，防第二真源的扫描必须覆盖全目录而不只入口
-    const serverRel = "server/acp-server.mjs";
-    const serverSrc = read(serverRel);
-    expect(serverSrc, `${serverRel} 应从 shared/protocol.mjs import 音频常量（真源在那）：找不到对应的 import 语句`).toContain('from "../shared/protocol.mjs"');
+    // server 消费真源：音频常量/正则的消费方是 server/audio.mjs（入口只从它 re-export 给 doctor/tests）。
+    // 断言钉在 audio.mjs 的那条 import 上——入口 v1.7 起自己也 import shared（DIRECTIVE_PREFIX_RE/CHAPTER_MARK_RE），
+    // 只对入口源码 toContain('from "../shared/protocol.mjs"') 会被那两条 import 满足，音频这条实际空转。
+    const audioRel = "server/audio.mjs";
+    expect(read(audioRel), `${audioRel} 应从 shared/protocol.mjs import 音频真源（AUDIO_KINDS/EXTS/FILE_RE）：找不到对应的 import 语句`).toMatch(/import \{[^}]*\bAUDIO_(?:FILE_RE|KINDS|EXTS)\b[^}]*\} from "\.\.\/shared\/protocol\.mjs"/);
+    // 不得再自持第二份扩展名/MIME 声明——v1.7 拆模块后 server/ 有 10 个文件，防第二真源的扫描必须覆盖全目录而不只入口
     for (const file of serverSources()) {
       expect(file.src, `${file.rel} 里出现了第二份 AUDIO_EXTS 声明：真源已在 ${rel}`).not.toMatch(/const AUDIO_EXTS = \[/);
       expect(file.src, `${file.rel} 里出现了第二份 AUDIO_MIME 声明：真源已在 ${rel}`).not.toMatch(/const AUDIO_MIME = \{/);

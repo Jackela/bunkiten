@@ -4,8 +4,8 @@
 // 而「仓库此刻的 preset 健康度」随游玩数据（state/worlds、素材增删）漂移，适合按需跑而非门禁化。
 //
 // 解析口径与 server 同源（import 复用，不抄第二份）：parseFrontmatter/parseCharacterSections/
-// parseSectionLines/normalizeTheme/PRESET_ID_RE/FM_KEYS/THEME_KEYS/AUDIO_KINDS/AUDIO_EXTS 都来自
-// server/acp-server.mjs（模块以 invokedDirectly 守卫自启，import 无副作用）。
+// parseSectionLines/normalizeTheme/PRESET_ID_RE/FM_KEYS/THEME_KEYS/AUDIO_KINDS/AUDIO_EXTS/AUDIO_FILE_RE
+// 都来自 server/acp-server.mjs（模块以 invokedDirectly 守卫自启，import 无副作用）。
 // theme 叠加客户端更严的一层（src/theme.ts 的 HEX_RE/MOTIFS/FALLBACK_THEME：server 的 isColor 放行
 // 3-8 位 hex、motif 只要求非空，落到客户端才会被拦）——.ts 在 Node ≥23.6 由 type stripping 直接 import。
 import fs from "node:fs";
@@ -13,6 +13,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   AUDIO_EXTS,
+  AUDIO_FILE_RE,
   AUDIO_KINDS,
   FM_KEYS,
   PRESET_ID_RE,
@@ -30,8 +31,6 @@ const GAME_ROOT = process.env.GROK_GAME_ROOT || path.resolve(path.dirname(fileUR
 
 // 资产文件名契约：presets/<id>/assets/<类型>-<名>.jpe?g（落盘与 /img 直服白名单都只认这个形态）
 const ASSET_FILE_RE = /^(立绘|背景)-(.+)\.jpe?g$/;
-// 音频文件名契约：由 server 的集合构造（<类型>-<名>.<扩展名>；与 server 的 AUDIO_FILE_RE 同源，但 doctor 要看见非法文件而不是静默跳过）
-const AUDIO_FILE_RE = new RegExp(`^(${AUDIO_KINDS.join("|")})-(.+)\\.(${AUDIO_EXTS.join("|")})$`);
 // 角色节建议字段（SKILL「剧本创作」装配模板：每人含 art_prompt 与 agenda）——缺了引擎只能即兴，warning 而非 error
 const CAST_RECOMMENDED_FIELDS = ["art_prompt", "agenda"];
 
