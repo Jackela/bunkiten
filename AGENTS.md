@@ -93,4 +93,5 @@ LLM 互动 AVG（文字冒险 / 视觉小说）：Electron 壳 + React 前端 + 
 - 动 ACP 会话、`/img` 与 `/audio` 解析顺序、资产/音频管线、世界线状态布局、逐轮快照与精确回退、世界线导出包、打包布局与已知限制 → `docs/ARCHITECTURE.md` 对应章节
 - 动引擎叙事行为（导演层、音频纪律、状态纪律、尺度）→ `.grok/skills/bunkiten/SKILL.md`
 - 想知道某个设计被否决的备选方案 → `docs/adr/0001-0017`；术语口径 → `CONTEXT.md`
+- 想知道下一步做什么、每项卡在哪个决策上 → `docs/ROADMAP.md`
 - 给玩家的安装说明 → `QUICKSTART.md`
