@@ -77,9 +77,13 @@ async function continueWorld(p: Page): Promise<void> {
 test("世界线屏 ↑↓：焦点跟到第二行，行上出 :focus-visible 环", async () => {
   await openWorlds(page);
 
-  // 焦点在 body（插卡按钮已随屏卸载）：↓ 一次 → 高亮与真实焦点都到 w2 行
+  // 清单是异步拉的，且按 lastPlayed 排序（两行 mtime 谁新谁排前，不写死具体 id）：
+  // 先等两行都挂载——不然 ↓ 落在空列表上只会钳住光标索引、不会搬焦点（CI 上翻过车）；
+  // 再按 DOM 顺序取第二行断言。焦点在 body（插卡按钮已随屏卸载）：↓ 一次 → 高亮与真实焦点都到第二行
+  const rows = page.locator('[data-testid^="world-row-"]');
+  await expect(rows).toHaveCount(2);
   await page.keyboard.press("ArrowDown");
-  await expectFocusRing(page.getByTestId("world-row-w2"));
+  await expectFocusRing(rows.nth(1));
 });
 
 test("game 屏 Tab：首个焦点是命令轨「设置」，按钮出 :focus-visible 环", async () => {
