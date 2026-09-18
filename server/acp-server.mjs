@@ -96,6 +96,9 @@ export {
   migrateLegacyState,
 } from "./worlds.mjs";
 export { isCrossSiteRequest, readBodyText } from "./http-util.mjs";
+// 剧本体检（v1.8）的纯函数视图：路由链住在 routes.mjs，这里只把测试面（tests/server.test.ts 直测 tmp 根）
+// 一起 re-export——与本文件其余拆出符号同款（外部 import 面永远是入口）。
+export { presetCheckResult, presetCheckView } from "./routes.mjs";
 
 export const EFFORT = process.env.EFFORT || "medium"; // 正戏回合档位：低推理换节奏，可设 high
 // 建档/规划类回合（出清单、改树、装配）不需要高推理：单独一档更省、更快（v1.6 分档）

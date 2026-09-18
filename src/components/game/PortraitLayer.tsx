@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { fallbackPortraitUrl, useGameStore, type PortraitState } from "../../store/game";
+import { warmPortraitVariants } from "../../lib/preload";
 
 /** 单个角色的立绘：换差分只做交叉淡入（0.4s，无位移）；差分图 404 回退基础图 */
 function PortraitFigure({ portrait }: { portrait: PortraitState }) {
@@ -50,6 +51,16 @@ function PortraitFigure({ portrait }: { portrait: PortraitState }) {
 /** 立绘层：右下、竖排名牌、浮入（0.9s，对齐旧版 setPortrait）。同一角色重复标记不重放动画 */
 export default function PortraitLayer() {
   const portrait = useGameStore((s) => s.portrait);
+  const presetId = useGameStore((s) => s.selected?.id ?? "");
+  const who = portrait?.name ?? "";
+
+  // 差分预热（lib/preload）：显示中的角色一变，就把她在这个剧本下的**全部**立绘（基础 + 差分）
+  // 塞进浏览器缓存——【立绘】换差分时命中的是已经解码好的图，不再空白一下才画出来。
+  // fire-and-forget：不 await、不 setState、失败静默（清单拉不到就是不预热），渲染路径零等待。
+  useEffect(() => {
+    if (!presetId || !who) return;
+    warmPortraitVariants(presetId, who);
+  }, [presetId, who]);
 
   return (
     <AnimatePresence>

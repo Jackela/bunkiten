@@ -36,6 +36,8 @@ import {
   parseWorldRef,
   pickEffort,
   presetAssetsDir,
+  presetCheckResult,
+  presetCheckView,
   presetFromStateFile,
   presetIdFromPath,
   readSnapshots,
@@ -55,6 +57,8 @@ import {
   __snapshotCacheStats,
   WORLD_FILES,
 } from "../server/acp-server.mjs";
+// 剧本体检的判定真源（server 只做 id 校验/目录存在性/归组，检查逻辑一份都不重写）：测试直接用真函数
+import { checkPreset } from "../scripts/doctor.mjs";
 
 describe("server parseArtLine：【图】三段 + 可选第四段「重绘」", () => {
   it("标准三段（立绘/背景），字段为 type/name/srcRel/regen", () => {
@@ -1588,5 +1592,129 @@ describe("server stateViewFor：GET /api/state 路由判定（v1.7，临时 root
     mkdirSync(path.join(root, "w2"), { recursive: true }); // 目录在、state.md 不在
     expect(stateViewFor("w2", root)).toMatchObject({ code: 404 });
     expect(stateViewFor("nope-1", root)).toMatchObject({ code: 404 }); // 目录都不在
+  });
+});
+
+// ————————————— 剧本体检：GET /api/presets/check 的路由判定与响应形状（v1.8） —————————————
+
+describe("server presetCheckView：GET /api/presets/check 的判定与响应形状（v1.8，临时 root）", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), "preset-check-"));
+    mkdirSync(path.join(root, "presets"), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  /** 一份七组全绿的 preset.md：frontmatter 五键齐全（id 可参数化）、`# 主要角色` 带建议字段、protagonist_card 有行 */
+  function goodMd(id = "demo"): string {
+    return [
+      "---",
+      `id: ${id}`,
+      "title: 体检样本",
+      "tagline: 一句话简介",
+      "genre: 演示",
+      "rating: 全年龄",
+      "theme:",
+      '  accent: "#c9a86a"',
+      '  accent2: "#e8e4da"',
+      "  motif: aurora",
+      "  font: serif",
+      "  dialog: plain",
+      "---",
+      "",
+      "# 主要角色",
+      "",
+      "## 薇拉（沉默的书记官）",
+      "- art_prompt: silver hair, gray eyes",
+      "- agenda: 交出账册缺页",
+      "",
+      "# protagonist_card",
+      "",
+      "- 性别: 男 / 女",
+    ].join("\n");
+  }
+
+  /** 造剧本目录（写好 preset.md 与 cover.jpg；assets/audio 目录按需由用例自己建） */
+  function writePreset(dir: string, md: string) {
+    const d = path.join(root, "presets", dir);
+    mkdirSync(d, { recursive: true });
+    writeFileSync(path.join(d, "preset.md"), md);
+    writeFileSync(path.join(d, "cover.jpg"), "x");
+  }
+
+  it("id 缺失或非法 → 400；剧本目录不存在 → 404（两者都先于模块可用性：坏请求/空目录不该报「模块不可用」）", () => {
+    for (const bad of ["", "../etc", "a/b", "中文剧本"]) {
+      expect(presetCheckView(bad, root, checkPreset)).toMatchObject({ code: 400 });
+      expect(presetCheckView(bad, root, null)).toMatchObject({ code: 400 }); // 没有 doctor 模块也照旧 400
+    }
+    expect(presetCheckView("nope", root, checkPreset)).toMatchObject({ code: 404 });
+    expect(presetCheckView("nope", root, null)).toMatchObject({ code: 404 });
+    expect(presetCheckView("nope", root, null).body.ok).toBe(false);
+  });
+
+  it("doctor 模块不可用 → 503 + ok:false 说明（scripts/ 不在打包 layout 里，server 不能因此起不来）", () => {
+    writePreset("demo", goodMd());
+    const out = presetCheckView("demo", root, null) as { code: number; body: { ok: boolean; error: string } };
+    expect(out.code).toBe(503);
+    expect(out.body.ok).toBe(false);
+    expect(out.body.error).toContain("scripts/doctor.mjs");
+  });
+
+  it("全绿剧本：200，七组各一条 ok，title 取 frontmatter、行原文逐字来自 doctor（组名与报告顺序一致）", () => {
+    writePreset("demo", goodMd());
+    const out = presetCheckView("demo", root, checkPreset) as {
+      code: number;
+      body: { ok: boolean; id: string; title: string; items: Array<{ level: string; group: string; label: string }> };
+    };
+    expect(out.code).toBe(200);
+    expect(out.body.ok).toBe(true);
+    expect(out.body.id).toBe("demo");
+    expect(out.body.title).toBe("体检样本");
+
+    // 组名与顺序 = doctor 的七组（归组表必须认得出 doctor 的每一行——认不出的会被归到「其他」并在这里暴露）
+    expect(out.body.items.map((i) => i.group)).toEqual([
+      "frontmatter",
+      "theme",
+      "正文小节",
+      "封面",
+      "资产命名",
+      "孤儿素材",
+      "音频",
+    ]);
+    expect(out.body.items.map((i) => i.level)).toEqual(["ok", "ok", "ok", "ok", "ok", "ok", "ok"]);
+    // 行原文与 doctor 自己的产出逐字相同（同参数再跑一次真函数对照）
+    const doctorOut = checkPreset(path.join(root, "presets", "demo"), root) as { findings: Array<{ message: string }> };
+    expect(out.body.items.map((i) => i.label)).toEqual(doctorOut.findings.map((f) => f.message));
+    expect(out.body.items[0].label.startsWith("frontmatter：")).toBe(true);
+  });
+
+  it("id 与目录名不一致 → ok:false 且 error 落在 frontmatter 组；表外行归「其他」但不丢条目", () => {
+    writePreset("demo", goodMd("demo-x"));
+    const out = presetCheckView("demo", root, checkPreset) as {
+      code: number;
+      body: { ok: boolean; items: Array<{ level: string; group: string; label: string }> };
+    };
+    expect(out.code).toBe(200); // 目录在 → 200：体检结论本身是「有问题」，不是请求失败
+    expect(out.body.ok).toBe(false); // ok 为 false ⟺ 至少一条 error
+    const errors = out.body.items.filter((i) => i.level === "error");
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors.every((i) => i.group === "frontmatter")).toBe(true);
+    expect(errors.map((i) => i.label).join("\n")).toContain("≠ 目录名");
+    expect(errors.map((i) => i.label).join("\n")).toContain("demo-x");
+
+    // 归属表兜底：doctor 以后新增的行（或措辞变了）归「其他」而不是被静默丢掉——组名只是画块用，条目一条不少
+    const fallback = presetCheckResult({ id: "demo", findings: [{ level: "error", message: "将来某天新增的一行" }] }, "") as {
+      ok: boolean;
+      id: string;
+      title: string;
+      items: Array<{ group: string; label: string }>;
+    };
+    expect(fallback.items).toEqual([{ level: "error", group: "其他", label: "将来某天新增的一行" }]);
+    expect(fallback.ok).toBe(false);
+    expect(fallback.title).toBe("demo"); // 没有标题就回落 id，不留空行
   });
 });

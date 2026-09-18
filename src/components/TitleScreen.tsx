@@ -41,7 +41,7 @@ function ringOffset(i: number, current: number, n: number): number {
 
 /** 标题屏：老游戏机式的卡带轮播。← → 切卡，Enter/点中央卡「插卡」进入世界线屏（选卡后由那里落定世界）。
  *  v1.8 壳层化：产品字标（bunkiten / 分岐点）+ 左下「继续上次」直通入口 + 右下角落簇（导出当前卡 /
- *  导入剧本 / 素材 / 创作新剧本）；卡面按实体卡带分带（顶部标签带 / 磁带窗 / 底缘脊柱），文案字号走
+ *  导入剧本 / 素材 / 剧本体检 / 创作新剧本）；卡面按实体卡带分带（顶部标签带 / 磁带窗 / 底缘脊柱），文案字号走
  *  global.css 的档位类（不再手写 text-[Npx]）。 */
 export default function TitleScreen() {
   const selectPreset = useGameStore((s) => s.selectPreset);
@@ -50,6 +50,7 @@ export default function TitleScreen() {
   const clearTitleNotice = useGameStore((s) => s.clearTitleNotice);
   const titleNotice = useGameStore((s) => s.titleNotice);
   const openAssets = useGameStore((s) => s.openAssets);
+  const openCheck = useGameStore((s) => s.openCheck);
   const openCreation = useGameStore((s) => s.openCreation);
   const resumeWorld = useGameStore((s) => s.resumeWorld);
   const engineBusy = useGameStore((s) => s.engineBusy);
@@ -293,6 +294,20 @@ export default function TitleScreen() {
           className="transition-colors hover:text-[color:var(--accent)]"
         >
           素材
+        </button>
+        {/* 剧本体检（v1.8）：对象恒为**当前中央卡**——标题屏还没「插卡」时 store 的 selected 可能还是空
+            或上一局的剧本，所以把卡带进 openCheck（只落 selected，不进世界线屏、不重置运行态）。
+            没有卡可检时禁用并说明原因，不留一个点了没反应的死按钮 */}
+        <button
+          type="button"
+          data-testid="preset-check"
+          disabled={!current}
+          title={current ? `体检《${current.title}》` : "还没有可体检的剧本"}
+          onClick={() => current && openCheck(current)}
+          onKeyDown={(e) => e.stopPropagation()}
+          className="transition-colors hover:text-[color:var(--accent)] disabled:cursor-not-allowed disabled:text-ink-faint"
+        >
+          剧本体检
         </button>
         <button
           type="button"

@@ -193,13 +193,37 @@ body {
   background-image: linear-gradient(180deg, color-mix(in oklab, var(--accent2) 8%, transparent), transparent 24%);
 }
 
+/* 背景换图的交叉淡入（game/BgLayer）：底图常驻不透明，新图以 .stage-bg-fade 挂在上层从 0 淡到 1——
+   合成结果就是交叉淡化（旧图被逐渐盖掉），不会出现「先压暗到黑、再亮起来」的中场。
+   时长由 BgLayer 用内联 animation-duration = BG_FADE_MS（600ms，与 AudioManager 的交叉淡入同档）覆盖；
+   这里的 600ms 是这条类脱离组件单独使用时的兜底值。
+   为什么用 keyframe 而不是 transition：CSS transition 需要「先把 opacity:0 渲染一帧、再翻到 1」的起手，
+   那要靠 rAF 或强制回流（本仓对 rAF 驱动的时序有明确取舍，见 lib/audio.ts）；CSS 动画在元素挂载的
+   那一帧由浏览器自己起步，不依赖任何 JS 时序——晋级（setTimeout）与动画互不依赖，各自可失败自愈。 */
+@keyframes stage-bg-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.stage-bg-fade {
+  animation: stage-bg-fade 600ms ease-in-out;
+}
+
 /* 动效降级（v1.7）：系统开了「减少动态效果」（prefers-reduced-motion: reduce）时关停装饰性动画。
    framer-motion 侧由 App 根的 <MotionConfig reducedMotion="user"> 全局接管（transform/opacity 动画降为瞬时）；
    这里只管 Tailwind 的 keyframes 类（光标/忙点/加载点的 pulse、加载圈 spin）——静止但仍渲染，
-   可见性不丢；.grain 是静态噪点纹理，本来就不动，无需处理。打字机的整段化在 DialogueBox 里按同一媒体查询检测。 */
+   可见性不丢；.grain 是静态噪点纹理，本来就不动，无需处理。打字机的整段化在 DialogueBox 里按同一媒体查询检测。
+   .stage-bg-fade（背景换图的交叉淡入）一并关停：animation:none 时新图直接以不透明挂上屏 = **瞬时换图**。
+   这一条与 framer 侧「opacity 交叉淡入照常播放」的口径刻意不同——整屏亮度的大面积缓慢渐变是 reduce 下
+   最该消失的一类动效；屏转场/差分切换的淡入仍是 WCAG 推荐的降级替代，照旧保留。 */
 @media (prefers-reduced-motion: reduce) {
   .animate-pulse,
-  .animate-spin {
+  .animate-spin,
+  .stage-bg-fade {
     animation: none;
   }
 }

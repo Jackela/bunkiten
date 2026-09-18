@@ -1,5 +1,5 @@
 // nav slice（v1.6 拆分）：屏幕流与全局 overlay 的进入/返回——title 主屏、剧本选择、
-// 设置屏（settings 是无状态片，动作就近放这里）、overlay 通用返回。
+// 设置屏（settings 是无状态片，动作就近放这里）、剧本体检屏（check，v1.8：只切屏 + 记返回目标）、overlay 通用返回。
 // v1.7 加剧本导出包的导入（importPresetText：TitleScreen 的「导入剧本」入口；presets 的刷新也走这里，
 // 与 setPresets 同一片——轮播数据只有这一个写入方族）。各动作的接口文档见 ../types.ts 的 GameStore。
 import { fetchPresets, postPresetImport, type PresetBundle } from "../../lib/acp";
@@ -41,6 +41,7 @@ export function createNavSlice(
   | "importPresetText"
   | "clearTitleNotice"
   | "openSettings"
+  | "openCheck"
   | "updateSettings"
   | "closeOverlay"
 > {
@@ -110,6 +111,13 @@ export function createNavSlice(
     openSettings() {
       // 同 overlay 模式：只切屏不动回合、不动画面；返回目标交给 closeOverlay（Esc 链在 App）
       set({ screen: "settings", screenReturn: get().screen });
+    },
+
+    openCheck(preset) {
+      // 剧本体检是只读的诊断片：只切屏 + 记返回目标，不动回合/画面状态（同 openSettings）。
+      // 从标题屏进来时把当前中央卡落进 selected——那时它可能还是 null 或上一局的剧本，
+      // 而体检的对象必须是玩家看着的那张卡（selectPreset 那条路要进世界线屏并重置运行态，不能用）
+      set({ screen: "check", screenReturn: get().screen, ...(preset ? { selected: preset } : {}) });
     },
 
     updateSettings(patch) {

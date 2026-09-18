@@ -15,7 +15,8 @@ export type Screen =
   | "assets"
   | "creation"
   | "tree"
-  | "settings";
+  | "settings"
+  | "check";
 
 /** 制作中屏单个槽位的生命周期 */
 export type PreloadItemState = "pending" | "running" | "done" | "failed" | "skipped";
@@ -294,6 +295,14 @@ export interface GameStore {
   openTree(): void;
   /** 打开设置（overlay，TopBar 齿轮；记住返回屏，Esc/返回走 closeOverlay） */
   openSettings(): void;
+  /**
+   * 打开剧本体检（overlay，标题屏角落「剧本体检」；记住返回屏，Esc/返回走 closeOverlay）。
+   * 与其它 overlay 同款：只切屏、不动回合与画面状态。
+   * @param {Preset} [preset] 体检对象：从标题屏进来时传**当前中央卡**（那时 store 的 selected 可能还是空
+   *   或上一局的剧本，而玩家要体检的正是看着的那张卡；这条路径不能借道 selectPreset——它会进世界线屏
+   *   并重置运行态）。缺省（游戏内/画廊等已有 selected 的场景）沿用 store 里的 selected。
+   */
+  openCheck(preset?: Preset): void;
   /**
    * 更新设置：合并补丁 → 写 localStorage → 立即作用到 AudioManager → 落 store。
    * 设置屏的每个控件都直接调它（无「保存」按钮，改动即时生效）。

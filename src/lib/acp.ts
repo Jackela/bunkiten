@@ -365,6 +365,42 @@ export interface PresetImportResult {
   error?: string;
 }
 
+/** 剧本体检的一条结论（GET /api/presets/check；形状与 server 的 presetCheckResult 对齐） */
+export interface PresetCheckItem {
+  /** ok=这一组干净（整组恰好一条）、warn=建议修、error=会让剧本进不了轮播或素材永远 404 */
+  level: "ok" | "warn" | "error";
+  /** doctor 的分组名（frontmatter / theme / 正文小节 / 封面 / 资产命名 / 孤儿素材 / 音频 / preset.md） */
+  group: string;
+  /** doctor 产出的那一行中文原文（**逐字照抄**：`npm run doctor` 里看到什么，屏上就是什么） */
+  label: string;
+}
+
+/**
+ * GET /api/presets/check?id=<id> 的响应体（v1.8，作者侧 `npm run doctor` 的判定直出）。
+ * items 顺序与 doctor 的报告一致（同组的行连着）；`ok` 为 false ⟺ 至少一条 error（warning 不影响）。
+ * 注意「孤儿素材」组扫的是**整个游戏根**的引用面（全部世界 state.md ∪ 全部 preset.md），
+ * 所以那一条是全局上下文的结论，不全是这个剧本目录内部的问题。
+ */
+export interface PresetCheckResult {
+  ok: boolean;
+  id: string;
+  title: string;
+  items: PresetCheckItem[];
+}
+
+/**
+ * 剧本体检（v1.8）：把作者侧 `npm run doctor` 的判定搬进屏里，作者不必离开游戏去终端看报告。
+ * @param {string} id 剧本 id（服务端过 PRESET_ID_RE；缺失/非法 400、目录不存在 404、doctor 模块不可用 503）
+ * @param {AbortSignal} [signal] 屏卸载时取消
+ * @returns {Promise<PresetCheckResult>} 逐条结论（行原文来自 doctor，屏上不加工）
+ * @throws HTTP 非 200 时带上下文抛错（屏内走错误态 + 重试）
+ */
+export async function fetchPresetCheck(id: string, signal?: AbortSignal): Promise<PresetCheckResult> {
+  const r = await fetch(`/api/presets/check?id=${encodeURIComponent(id)}`, { signal });
+  if (!r.ok) throw new Error(`GET /api/presets/check -> HTTP ${r.status}`);
+  return (await r.json()) as PresetCheckResult;
+}
+
 /**
  * 剧本导出包下载地址（浏览器直接开或喂给 <a download>；服务端带 Content-Disposition）。
  * @param {string} id 剧本 id

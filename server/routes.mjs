@@ -10,7 +10,7 @@ import { AUDIO_MIME, AUDIO_REL_RE } from "../shared/protocol.mjs";
 import { GAME_ROOT, BASE_PORT, WORLDS_ROOT } from "./config.mjs";
 import { isCrossSiteRequest, readBodyText, MIME, resolveAppDist } from "./http-util.mjs";
 import { PRESET_ID_RE, LEGACY_ASSET_RE, ASSET_DELETE_FILE_RE, presetIdFromPath, legacyAssetCandidates, resolvePersistPreset } from "./assets.mjs";
-import { scanPresets, assetTargetFile, buildPresetBundle, importPresetBundle, PRESET_IMPORT_MAX_BYTES } from "./presets.mjs";
+import { parseFrontmatter, scanPresets, assetTargetFile, buildPresetBundle, importPresetBundle, PRESET_IMPORT_MAX_BYTES } from "./presets.mjs";
 import { scanPresetAudio } from "./audio.mjs";
 import { WORLD_ID_RE, TREE_FILE, readSnapshot, readSnapshots } from "./snapshots.mjs";
 import {
@@ -30,6 +30,146 @@ import {
  * @property {string} currentPresetId 嗅探出的当前剧本 id
  * @property {string|null} sessionId 当前 ACP 会话 id
  */
+
+// ---------- 剧本体检（v1.8）：GET /api/presets/check?id=<id> 的作者侧 doctor 直出 ----------
+// 判定只有一份：scripts/doctor.mjs 的 checkPreset（`npm run doctor` 的核，作者侧 CLI 与这里 import 同一个函数）。
+// 本模块只做三件事：id 白名单 → 剧本目录存在性 → 把 DoctorResult 归一成客户端画得出块的契约。
+
+/**
+ * 体检响应里的一条结论（与 src/lib/acp.ts 的 PresetCheckItem 对齐）。
+ * @typedef {Object} PresetCheckItem
+ * @property {"ok"|"warn"|"error"} level 严重度（doctor 的 Finding.level 原样，不改口径）
+ * @property {string} group 组名（doctor 七组 + 「preset.md」缺档；见 PRESET_CHECK_GROUPS）
+ * @property {string} label 那一行的中文原文（doctor 逐字产出，屏上照抄）
+ */
+
+/**
+ * GET /api/presets/check?id=<id> 的响应体（与 src/lib/acp.ts 的 PresetCheckResult 对齐）。
+ * @typedef {Object} PresetCheckResult
+ * @property {boolean} ok 无 error 级问题时为 true（warning 不影响；⟺ doctor 的 errors === 0）
+ * @property {string} id 剧本 id（frontmatter id；缺失/非法时 doctor 回落目录名）
+ * @property {string} title 剧本标题（frontmatter title；读不到回落 id）
+ * @property {PresetCheckItem[]} items 逐条结论，顺序与 doctor 的报告一致
+ */
+
+/**
+ * findings → 组名的归属表：**只列 doctor 自己写死的行首字面**，不复制任何检查逻辑（判定仍只有 doctor 一份）。
+ * 为什么需要它：checkPreset 把七组 findings `flat()` 成扁平数组，组名只活在各组干净时的 ok 行与它自己的注释里；
+ * 客户端要按组画块、又不能在屏上丢条目，所以这里把行首前缀映射回组名；表外的条目归「其他」而不是被丢掉
+ * （宁可在屏上看到一条没归类的行，也不要静默吞掉一条 error）。
+ * 组名取 doctor JSDoc 里的用法：frontmatter / theme / 正文小节 / 封面 / 资产命名 / 孤儿素材 / 音频。
+ */
+const PRESET_CHECK_GROUPS = [
+  { group: "preset.md", re: /^preset\.md 缺失/ },
+  { group: "frontmatter", re: /^(frontmatter|id「)/ },
+  { group: "theme", re: /^theme/ },
+  { group: "正文小节", re: /^(正文|`# 主要角色`|角色「)/ },
+  { group: "封面", re: /^(封面|只有 cover\.jpeg|缺封面)/ },
+  { group: "资产命名", re: /^资产/ },
+  { group: "孤儿素材", re: /^孤儿素材/ },
+  { group: "音频", re: /^音频/ },
+];
+
+/**
+ * 一条 finding 归哪个组（组名归属的唯一判定点，presetCheckResult 消费）。
+ * @param {string} message doctor 产出的行原文
+ * @returns {string} 组名；表外归「其他」
+ */
+function presetCheckGroupOf(message) {
+  const line = String(message ?? "");
+  for (const { group, re } of PRESET_CHECK_GROUPS) if (re.test(line)) return group;
+  return "其他";
+}
+
+/**
+ * 把 doctor 的 DoctorResult 归一成客户端契约（纯函数，导出给 tests/server.test.ts 直测）。
+ * 只搬不改：`level` 与 `label`（行原文）逐字来自 doctor，`ok` = 没有任何 error（与 doctor 的退出码同判据）。
+ * @param {{id?: string, findings?: {level: "ok"|"warn"|"error", message: string}[]}} doctorOut checkPreset 的返回值
+ * @param {string} [title] 剧本标题（frontmatter title；缺省回落 id）
+ * @returns {PresetCheckResult}
+ */
+export function presetCheckResult(doctorOut, title) {
+  const id = String(doctorOut?.id ?? "");
+  const items = (doctorOut?.findings ?? []).map((f) => ({
+    level: f.level,
+    group: presetCheckGroupOf(f.message),
+    label: f.message,
+  }));
+  return { ok: !items.some((i) => i.level === "error"), id, title: title || id, items };
+}
+
+/**
+ * 眉标用的剧本标题：preset.md 的 frontmatter `title`（读不到/没写就回落 id 自己）。
+ * 只取一个展示用键——体检判定仍在 doctor，这里不碰任何检查口径。
+ * @param {string} presetDir 剧本目录绝对路径
+ * @param {string} id 请求里的剧本 id（回落值）
+ * @returns {string}
+ */
+function presetTitle(presetDir, id) {
+  let text = "";
+  try {
+    text = fs.readFileSync(path.join(presetDir, "preset.md"), "utf8");
+  } catch {}
+  const fm = text ? parseFrontmatter(text) : null;
+  const title = typeof fm?.title === "string" ? fm.title.trim() : "";
+  return title || id;
+}
+
+/**
+ * GET /api/presets/check 的路由判定（纯函数，root 与 checkPreset 都可注入以便单测：tests/server.test.ts 用
+ * tmp 根 + scripts/doctor.mjs 的真函数直测，不起 HTTP）。
+ * 状态码与既有端点同口径：id 缺失/非法 400（坏请求）、剧本目录不存在 404（真路过的 id）、
+ * doctor 模块不可用 503（scripts/ 不进打包 layout，见 docs/ARCHITECTURE.md「已知限制」）。
+ * @param {string} id 查询串里的剧本 id
+ * @param {string} root 游戏根目录
+ * @param {((presetDir: string, root: string) => any) | null | undefined} check doctor 的 checkPreset（缺省=模块没拿到 → 503）
+ * @returns {{code: number, body: PresetCheckResult | {ok: false, error: string}}}
+ */
+export function presetCheckView(id, root, check) {
+  if (!PRESET_ID_RE.test(id)) return { code: 400, body: { ok: false, error: "缺少或非法的 id 参数" } };
+  const presetDir = path.join(root, "presets", id);
+  if (!fs.existsSync(presetDir)) return { code: 404, body: { ok: false, error: "剧本不存在" } };
+  if (typeof check !== "function") {
+    return { code: 503, body: { ok: false, error: "剧本体检不可用：scripts/doctor.mjs 只在源码树里" } };
+  }
+  return { code: 200, body: presetCheckResult(check(presetDir, root), presetTitle(presetDir, id)) };
+}
+
+/**
+ * doctor 模块的惰性加载：`scripts/doctor.mjs` 是**源码树里的作者工具**（electron-builder 的 files 不含
+ * scripts/，它自己还要 import `src/theme.ts`），所以静态 import 会让打包态启动即挂——这里按需加载，
+ * 拿不到就由 presetCheckView 回 503 说明，server 照常起。
+ * 注：doctor 反向 import 本目录的 acp-server.mjs（解析口径复用）形成 ESM 环，它顶层不读 acp-server 的
+ * 任何绑定（只在函数体内用），环安全——tests/doctor.test.ts 里是同一个环。
+ * @returns {Promise<(presetDir: string, root: string) => any>} checkPreset
+ */
+/** @type {Promise<(presetDir: string, root: string) => any>|null} */
+let doctorPromise = null;
+function loadCheckPreset() {
+  if (!doctorPromise) {
+    doctorPromise = import("../scripts/doctor.mjs").then(
+      (m) => m.checkPreset,
+      (e) => {
+        doctorPromise = null; // 失败不缓存：源码树补齐/修好后无需重启 server
+        throw e;
+      },
+    );
+  }
+  return doctorPromise;
+}
+
+/**
+ * /api/presets/check 的响应（异步只因为 doctor 模块要惰性 import；判定与响应形状都在 presetCheckView）。
+ * @param {string} id 查询串里的剧本 id
+ * @param {import("http").ServerResponse} res 响应对象
+ * @returns {Promise<void>}
+ */
+async function respondPresetCheck(id, res) {
+  const check = await loadCheckPreset().catch(() => null);
+  const out = presetCheckView(id, GAME_ROOT, check);
+  res.writeHead(out.code, { "content-type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify(out.body));
+}
 
 /**
  * @param {HandlerContext} ctx 入口闭包注入
@@ -51,7 +191,7 @@ export function createRequestHandler(ctx) {
       res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
       // 首页导览：把 v1.6 的新路由（音频列表/直服、历史快照、世界导出）一并列上，方便 curl 排查
       res.end(
-        "galgame acp-server running. API: /api/presets(GET,POST:import) /api/presets/export?id= /api/auth /api/assets?preset=(GET,POST删除) " +
+        "galgame acp-server running. API: /api/presets(GET,POST:import) /api/presets/export?id= /api/presets/check?id= /api/auth /api/assets?preset=(GET,POST删除) " +
           "/api/audio?preset= /api/worlds(POST: create/fork/restore/update/delete/import) /api/worlds/export?worldId= /api/history?worldId=[&seq=] " +
           "/api/tree /api/state?worldId= /events(SSE) /prompt(POST) /img?p=&t=&n=&preset= /audio?p=. 打包前端见 /app。",
       );
@@ -80,6 +220,14 @@ export function createRequestHandler(ctx) {
         "content-disposition": `attachment; filename="${id}.preset.json"`,
       });
       res.end(JSON.stringify(out.bundle));
+      return;
+    }
+
+    // 剧本体检（v1.8）：GET /api/presets/check?id=<id> → 作者侧 doctor 的体检结果（判定见 presetCheckView）。
+    // 响应形状：{ ok, id, title, items: [{ level:"ok"|"warn"|"error", group, label }] }——
+    // items 顺序与 doctor 的报告一致（各组连着），查不出来就是 400/404/503 + { ok:false, error }。
+    if (req.method === "GET" && url.pathname === "/api/presets/check") {
+      void respondPresetCheck(url.searchParams.get("id") || "", res);
       return;
     }
 

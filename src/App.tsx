@@ -14,6 +14,7 @@ import CreationScreen from "./components/CreationScreen";
 import WorldsScreen from "./components/WorldsScreen";
 import StoryTreeScreen from "./components/StoryTreeScreen";
 import SettingsScreen from "./components/SettingsScreen";
+import PresetCheckScreen from "./components/PresetCheckScreen";
 import GameStage from "./components/game/GameStage";
 import BgLayer from "./components/game/BgLayer";
 import ChapterCard from "./components/game/ChapterCard";
@@ -97,8 +98,8 @@ export default function App() {
         s.closeCreationExitPrompt();
         return;
       }
-      // overlay 屏（剧情图/设置）：Esc 返回进入前的原屏
-      if (s.screen === "tree" || s.screen === "settings") {
+      // overlay 屏（剧情图/设置/剧本体检）：Esc 返回进入前的原屏
+      if (s.screen === "tree" || s.screen === "settings" || s.screen === "check") {
         s.closeOverlay();
         return;
       }
@@ -136,6 +137,7 @@ export default function App() {
           {screen === "creation" && <CreationScreen key="creation" />}
           {screen === "tree" && <StoryTreeScreen key="tree" />}
           {screen === "settings" && <SettingsScreen key="settings" />}
+          {screen === "check" && <PresetCheckScreen key="check" />}
           {screen === "game" && <GameStage key="game" />}
         </AnimatePresence>
         <Atmosphere />

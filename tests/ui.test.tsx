@@ -26,6 +26,7 @@ import AssetsScreen from "../src/components/AssetsScreen";
 import WorldsScreen, { relativeTime, worldDisplayName } from "../src/components/WorldsScreen";
 import StoryTreeScreen, { earliestSnapshotByNode, prevSnapshotSeq, snapshotTurnNo } from "../src/components/StoryTreeScreen";
 import SettingsScreen from "../src/components/SettingsScreen";
+import PresetCheckScreen from "../src/components/PresetCheckScreen";
 import App, { StatusAnnouncer } from "../src/App";
 import { useGameStore, type PreloadItem } from "../src/store/game";
 import { FADE_MS, MAX_SFX, SFX_TIMEOUT_MS, audioManager } from "../src/lib/audio";
@@ -35,7 +36,7 @@ import { playerStatus } from "../src/lib/status";
 import { TREE_ZOOM_MAX, clampZoom, fitView, panView, viewBoxOf, zoomViewAt } from "../src/lib/treeLayout";
 import { layoutGenealogy } from "../src/lib/genealogy";
 import { FONT_STACKS, dialogClass, getTheme, themeVars } from "../src/theme";
-import type { AssetEntry, AudioItem, Preset, StateView, WorldEntry, WorldSnapshotMeta } from "../src/lib/acp";
+import type { AssetEntry, AudioItem, Preset, PresetCheckResult, StateView, WorldEntry, WorldSnapshotMeta } from "../src/lib/acp";
 
 /** ui 测试用的最小剧本 fixture（与世界线屏/顶栏的展示字段对齐） */
 const PRESET: Preset = {
@@ -4436,5 +4437,170 @@ describe("WorldsScreen：家谱画布缩放与渲染宽度上界（v1.8）", () 
     fireEvent.click(screen.getByTestId("worlds-view-list"));
     await waitFor(() => expect(screen.getByText("↑ ↓ 选择 · Enter 继续")).toBeTruthy());
     expect(screen.queryByText(HINT)).toBeNull();
+  });
+});
+
+describe("PresetCheckScreen：剧本体检（v1.8）", () => {
+  /**
+   * 一份「三过一警一错」的响应（行原文照抄 doctor 的真实产出）：覆盖摘要计数、组块切分、
+   * error 行与 ok 行的区分——frontmatter 组里同一条 error 与一条 ok 并存（组内不得整块染红/染绿）。
+   */
+  const CHECK: PresetCheckResult = {
+    ok: false,
+    id: "campus-summer",
+    title: "盛夏偏差值",
+    items: [
+      {
+        level: "ok",
+        group: "frontmatter",
+        label: "frontmatter：必填键齐全（id/title/tagline/genre/rating），id 合法且与目录名一致",
+      },
+      {
+        level: "error",
+        group: "frontmatter",
+        label:
+          "frontmatter id「campus-summer」≠ 目录名「campus_summer」——轮播按 id 认剧本、素材按目录名落盘，两边会互相找不到",
+      },
+      { level: "ok", group: "theme", label: "theme：accent/accent2/motif/font/dialog 全部合法（server 与客户端两层判定都通过）" },
+      { level: "warn", group: "正文小节", label: "正文缺 `# protagonist_card` 小节——捏人屏没有问题可问（快速开局路径不受影响）" },
+      { level: "ok", group: "封面", label: "封面：cover.jpg 存在" },
+    ],
+  };
+
+  let fetchMock: ReturnType<typeof vi.fn>;
+  /** 每次请求的 URL（重新检查要多打一次） */
+  let calls: string[];
+
+  beforeEach(() => {
+    calls = [];
+    fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      return jsonResponse(CHECK);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    useGameStore.setState({
+      selected: PRESET,
+      screen: "check",
+      screenReturn: "title",
+      engineBusy: false,
+    });
+  });
+
+  it("摘要计数 + 分组块：error 行按 error 渲染（不是 ok），行原文逐字照抄 doctor；返回回进入前的屏", async () => {
+    render(<PresetCheckScreen />);
+    expect(screen.getByTestId("preset-check-screen")).toBeTruthy();
+
+    // 眉标是当前剧本的标题，标题是屏名（ShellPage 页框）
+    const page = screen.getByTestId("shell-page");
+    expect(within(page).getByText("盛夏偏差值")).toBeTruthy();
+    expect(within(page).getByText("剧 本 体 检")).toBeTruthy();
+
+    const summary = await screen.findByTestId("preset-check-summary");
+    expect(summary.textContent).toBe("3 项通过 · 1 警告 · 1 错误"); // 与 doctor 的小结同口径
+    expect(screen.getByTestId("preset-check-verdict").textContent).toContain("必须修");
+    expect(calls).toEqual(["/api/presets/check?id=campus-summer"]); // 按当前剧本查，不查全局
+
+    // 组块顺序 = doctor 的报告顺序（按首现切块）；一条 group 一个块
+    expect(screen.getAllByTestId(/^preset-check-group-\d$/)).toHaveLength(4);
+    const g0 = screen.getByTestId("preset-check-group-0");
+    expect(within(g0).getByText("frontmatter")).toBeTruthy();
+    const rows = within(g0).getAllByRole("listitem");
+    expect(rows).toHaveLength(2);
+    // 同一组里 ok 行与 error 行各按自己的级别渲染（不是整块一个色）
+    expect(rows[0].getAttribute("data-level")).toBe("ok");
+    expect(within(rows[0] as HTMLElement).getByText("通过")).toBeTruthy();
+    expect(rows[1].getAttribute("data-level")).toBe("error");
+    expect(within(rows[1] as HTMLElement).getByText("错误")).toBeTruthy();
+    expect(rows[1].textContent).toContain(CHECK.items[1].label); // 行原文一个字不改
+    expect(rows[1].textContent).toContain("≠ 目录名");
+    expect(within(screen.getByTestId("preset-check-group-2")).getByText("警告")).toBeTruthy();
+
+    // 「返回」走 closeOverlay：回到进入前的屏（这里 title）
+    fireEvent.click(screen.getByTestId("preset-check-back"));
+    expect(useGameStore.getState().screen).toBe("title");
+    expect(useGameStore.getState().screenReturn).toBeNull();
+  });
+
+  it("加载失败 → 错误态；点「重新检查」重取成功后摘要上屏（错误态与动作簇不共用 testid）", async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      if (calls.length === 1) throw new Error("HTTP 500");
+      return jsonResponse(CHECK);
+    });
+    render(<PresetCheckScreen />);
+
+    const err = await screen.findByTestId("preset-check-error");
+    expect(err.textContent).toContain("体检失败");
+    expect(err.textContent).toContain("HTTP 500");
+    expect(screen.queryByTestId("preset-check-summary")).toBeNull();
+    expect(screen.getAllByTestId("preset-check-retry")).toHaveLength(1); // 只有动作簇那一处重试
+
+    fireEvent.click(screen.getByTestId("preset-check-retry"));
+    const summary = await screen.findByTestId("preset-check-summary");
+    expect(summary.textContent).toBe("3 项通过 · 1 警告 · 1 错误");
+    expect(screen.queryByTestId("preset-check-error")).toBeNull();
+    expect(calls).toHaveLength(2); // 重新检查真的又查了一次
+  });
+
+  it("没有选中的剧本：不白打请求，提示先选剧本且「重新检查」禁用（不是点了没反应的死按钮）", async () => {
+    useGameStore.setState({ selected: null });
+    render(<PresetCheckScreen />);
+    expect(screen.getByTestId("preset-check-nopreset")).toBeTruthy();
+    expect(calls).toEqual([]);
+    expect((screen.getByTestId("preset-check-retry") as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByTestId("preset-check-summary")).toBeNull();
+  });
+});
+
+describe("TitleScreen：剧本体检入口（v1.8）", () => {
+  let presetResp: Preset[];
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    presetResp = [PRESET];
+    fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname === "/api/presets") return jsonResponse({ presets: presetResp, errors: [] });
+      if (url.pathname === "/api/worlds") return jsonResponse({ worlds: [] });
+      return jsonResponse({}, 404);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    useGameStore.setState({
+      presets: [],
+      screen: "title",
+      screenReturn: null,
+      selected: null,
+      // 上一局的运行态：体检进屏不得碰它们（不借道 selectPreset）
+      worldId: "campus-summer-9",
+      worldLabel: "雨夜的岔口",
+      cardAnswers: { 性别: ["女"] },
+      engineBusy: false,
+    });
+  });
+
+  it("点「剧本体检」把当前中央卡带进体检屏（只落 selected），运行态原样；没有卡时禁用", async () => {
+    render(<TitleScreen />);
+    const btn = await screen.findByTestId("preset-check");
+    expect((btn as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(btn);
+
+    const s = useGameStore.getState();
+    expect(s.screen).toBe("check"); // overlay：进体检屏
+    expect(s.screenReturn).toBe("title"); // 返回目标交给 closeOverlay
+    expect(s.selected?.id).toBe("campus-summer"); // 体检对象 = 当前中央卡（不是 null、也不是上一局的本）
+    expect(s.worldId).toBe("campus-summer-9"); // 运行态原样：不进世界线屏、不重置
+    expect(s.cardAnswers).toEqual({ 性别: ["女"] });
+
+    // 没有剧本时（轮播空）：按钮禁用并说明原因，点了也不会切屏
+    cleanup();
+    presetResp = [];
+    useGameStore.setState({ presets: [], screen: "title", screenReturn: null, selected: null, worldId: null });
+    render(<TitleScreen />);
+    await waitFor(() => expect(fetchMock.mock.calls.some((c) => String(c[0]) === "/api/presets")).toBe(true));
+    const off = screen.getByTestId("preset-check") as HTMLButtonElement;
+    expect(off.disabled).toBe(true);
+    expect(off.getAttribute("title")).toBe("还没有可体检的剧本");
+    fireEvent.click(off);
+    expect(useGameStore.getState().screen).toBe("title");
   });
 });
