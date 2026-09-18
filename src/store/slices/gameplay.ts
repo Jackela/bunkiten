@@ -257,11 +257,13 @@ export function createGameplaySlice(
       const t = text.trim();
       if (!t) return;
       // 回退后的重同步还挂着（补发投递失败过、徽章在），玩家却发了普通指令：静默放弃重同步——
-      // 玩家选择继续走，不假称「完成重同步」（引擎并没有重读档），徽章与失败入口一并撤下；
+      // 玩家选择继续走，不假称「完成重同步」（引擎并没有重读档）：徽章、失败入口与图屏提示一并撤下
+      //（treeNotice 不撤会在图屏留下「点「再同步」重试」的残影，而按钮已随徽章消失）；
+      // resyncing 同步落回 false，免得本次普通指令的失败被 markResyncFailed 记到已放弃的重同步头上；
       // 排队中的重掷跟进同理作废（档没退回去，重发就无从谈起）
       const pending = get().pendingResync;
       if (pending && t !== buildResumeCommand(pending.worldId)) {
-        set({ pendingResync: null, resyncFailed: false, pendingRerollPrompt: null });
+        set({ pendingResync: null, resyncFailed: false, resyncing: false, pendingRerollPrompt: null, treeNotice: null });
       }
       // 手选/自由输入即接管：倒计时作废（否则刚发出去的回合结束前倒计时会再补一条 409）
       ctx.clearAutoAdvanceTimer();

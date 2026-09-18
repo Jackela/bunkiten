@@ -2595,10 +2595,13 @@ describe("回退后玩家继续走：普通指令不冒充重同步（v1.7）", 
   let promptResps: { ok: boolean; error?: string }[];
   /** POST /prompt 收到的指令（按顺序） */
   let prompts: string[];
+  /** 可选闸门：让下一条 /prompt 响应挂起不落定（「重同步仍在途」用例用），release 后才返回 */
+  let promptGate: Promise<void> | null;
 
   beforeEach(() => {
     promptResps = [];
     prompts = [];
+    promptGate = null;
     useGameStore.setState({
       worldId: "campus-summer-1",
       worldLabel: "campus-summer-1",
@@ -2625,6 +2628,7 @@ describe("回退后玩家继续走：普通指令不冒充重同步（v1.7）", 
         if (url.pathname === "/prompt") {
           prompts.push((JSON.parse(String(init?.body)) as { text: string }).text);
           const resp = promptResps.shift() ?? { ok: true };
+          if (promptGate) { const g = promptGate; promptGate = null; await g; } // 先记本次开关，响应挂到闸门放行
           return jsonResponse(resp.ok ? resp : { ok: false, error: resp.error ?? "HTTP 409" }, resp.ok ? 200 : 409);
         }
         if (url.pathname === "/api/worlds" && init?.method === "POST") {
@@ -2665,7 +2669,7 @@ describe("回退后玩家继续走：普通指令不冒充重同步（v1.7）", 
     const s = useGameStore.getState();
     expect(s.pendingResync).toBeNull(); // send 入口静默清，不是回合收尾认领的
     expect(s.resyncFailed).toBe(false);
-    expect(s.treeNotice).not.toContain("完成重同步"); // 引擎从未重读档：不许假称完成
+    expect(s.treeNotice).toBeNull(); // 失败文案的残影一并撤下（按钮已随徽章消失，留着会指向不存在的入口）
     expect(screen.queryByTestId("resync-badge")).toBeNull(); // 徽章消失
     expect(s.status).toBe("就绪"); // 普通回合收尾一切照旧
   });
@@ -2688,8 +2692,33 @@ describe("回退后玩家继续走：普通指令不冒充重同步（v1.7）", 
     expect(prompts).toEqual(["继续世界：campus-summer-1。", "推门进去"]);
     expect(s.pendingResync).toBeNull(); // send 入口已静默清
     expect(s.resyncFailed).toBe(false); // 玩家指令的失败不再记账到重同步头上
-    expect(s.treeNotice).not.toContain("HTTP 500"); // 也不追加新的「重同步失败」文案
+    expect(s.treeNotice).toBeNull(); // 残影一并撤（按钮已随徽章消失）；玩家指令的失败也不再被写成「重同步失败」
     expect(s.status).toBe("出错：HTTP 500"); // 普通出错文案照常
+  });
+
+  it("重同步仍在途时玩家发普通指令：迟到的 resume 失败不写「重同步失败」残影", async () => {
+    promptResps = [{ ok: false, error: "上一回合还在进行" }]; // resume 的失败结果迟到一步
+    let releaseResume!: () => void;
+    promptGate = new Promise<void>((r) => { releaseResume = r; }); // 挂起 resume 的响应
+    await act(async () => {
+      await useGameStore.getState().restoreSnapshot(7);
+    });
+    expect(useGameStore.getState().resyncing).toBe(true); // 前置：resume 投递还没落定
+
+    await act(async () => {
+      useGameStore.getState().send("推门进去"); // 不等结果，先放弃重同步
+    });
+    await act(async () => {
+      releaseResume(); // 放行迟到的 resume 失败
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    const s = useGameStore.getState();
+    expect(prompts).toEqual(["继续世界：campus-summer-1。", "推门进去"]);
+    expect(s.pendingResync).toBeNull();
+    expect(s.resyncing).toBe(false);
+    expect(s.resyncFailed).toBe(false); // 已放弃的重同步不许把这次失败记进来
+    expect(s.treeNotice).toBeNull(); // 也不许写「点再同步重试」的残影
   });
 });
 
