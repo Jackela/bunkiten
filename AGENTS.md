@@ -34,7 +34,7 @@ LLM 互动 AVG（文字冒险 / 视觉小说）：Electron 壳 + React 前端 + 
 | `docs/ARCHITECTURE.md` | 架构真相：ACP 契约、文本协议契约（含【曲】【环境】【音效】三行）、世界线与状态文件布局（含家谱视图）、逐轮状态快照与精确回退（含回退后语义/重掷/快照对比）、回合日志与质量守卫（v1.7）、世界线导出包、剧本导出包（v1.7）、角色面板（v1.7）、API/SSE 一览、资产与音频管线、剧本体检查（doctor，v1.7）、动效降级与焦点对比度（v1.7）、打包布局与已知限制、修改指引 |
 | `docs/adr/0001-0017` | 裁决记录（kebab-case，编号递增）：剧情树骨架、全分支预生成、差分分层、表情由引擎驱动、缓存权威、世界线与分叉、剧情图、资产随故事走、逐轮快照与精确分叉、音频协议、打 tag 即发版、协议单一真源（shared/protocol.mjs）、server 模块化、删除进回收站、回合日志与质量守卫、剧本导出包、a11y 基线 |
 | `CONTEXT.md` | 领域词表（术语 → 定义 → _Avoid_ 反例），改术语先改这里 |
-| `.github/workflows/ci.yml` | CI：push/PR 跑 `npm ci` + `npm run build` + `npm run typecheck:server` + `npm run test:coverage`（395 例 + 契约 lint + 覆盖率防下滑阈值，替代 `npm test` 单独步骤）+ 上传 coverage 报告 artifact + `npx playwright install chromium` + `npm run test:e2e:ui`（假引擎确定性 UI e2e，随 CI 跑；真引擎 e2e 仍不在 CI，需本机登录引擎） |
+| `.github/workflows/ci.yml` | CI：push/PR 跑 `npm ci` + `npm run build` + `npm run typecheck:server` + `npm run test:coverage`（396 例 + 契约 lint + 覆盖率防下滑阈值，替代 `npm test` 单独步骤）+ 上传 coverage 报告 artifact + `npx playwright install chromium` + `npm run test:e2e:ui`（假引擎确定性 UI e2e，随 CI 跑；真引擎 e2e 仍不在 CI，需本机登录引擎） |
 | `.github/workflows/release.yml` | 发版（v1.6）：push `v*` tag（或手动 dispatch）→ guard 校验 tag == `v<package.json version>` 且 `npm test` 绿 → mac/win 矩阵打包（都 `--publish never`）→ 合并纯 LF `SHA256SUMS.txt` → 建/更新 GitHub Release |
 | `docs/releases/` | 每版一篇发布说明 `docs/releases/<tag>.md`；release job 优先拿它当 Release body（其次是 gh api 自动 notes、最后兜底文案） |
 
@@ -74,14 +74,14 @@ LLM 互动 AVG（文字冒险 / 视觉小说）：Electron 壳 + React 前端 + 
 
 - 交付前跑 `npm run build`（`tsc -b && vite build`）。
 - 交付前跑 `npm run typecheck:server`（server/shared/scripts 的 checkJs 门禁：`tsconfig.server.json` 对 `server/**/*.mjs` + `shared/protocol.mjs` + `scripts/doctor.mjs` 开 strict 检查，类型全靠 JSDoc；CI 也会跑）。
-- `npm test`（`vitest run --exclude "tests/e2e/**" --exclude "tests/e2e-ui/**"`）：parser 65 + server 106 + crafting 52 + treeLayout 7 + genealogy 8 + diff 8 + doctor 12 + ui 110 + integration 27（pipeline 15 + audio-history 9 + http-guard 3），**共 395 例**，秒级——默认含集成层，改契约字符串必须同步改快照；另跑契约 lint `tests/contract.test.ts`（v1.6 防漂移门禁，**不计入这 395**——它断言的就是上面这些数字与协议真源）。
-- `npm run test:coverage`：**同一批测试文件**加覆盖率仪表（`@vitest/coverage-v8`，include 只圈 src/server/shared/scripts 四棵树；与 395/contract lint 计数无关，CASE_GROUPS 不动）。2026-09 基线：lines 75.77 / branches 65.87 / functions 78.56 / statements 73.62（server 树偏低是集成层在子进程里跑真 acp-server、coverage 追不到子进程，属已知口径）。thresholds = 基线四舍五入 - 2pp（lines 74 / branches 64 / functions 77 / statements 72），语义是**防下滑线**而非硬指标（实际余量约 2pp：1.56-1.87pp），主动提升覆盖率时同步上调。CI 以它替代 `npm test` 步骤（同一套测试避免双跑），并上传 HTML 报告 artifact。
+- `npm test`（`vitest run --exclude "tests/e2e/**" --exclude "tests/e2e-ui/**"`）：parser 65 + server 106 + crafting 52 + treeLayout 7 + genealogy 8 + diff 8 + doctor 12 + ui 111 + integration 27（pipeline 15 + audio-history 9 + http-guard 3），**共 396 例**，秒级——默认含集成层，改契约字符串必须同步改快照；另跑契约 lint `tests/contract.test.ts`（v1.6 防漂移门禁，**不计入这 396**——它断言的就是上面这些数字与协议真源）。
+- `npm run test:coverage`：**同一批测试文件**加覆盖率仪表（`@vitest/coverage-v8`，include 只圈 src/server/shared/scripts 四棵树；与 396/contract lint 计数无关，CASE_GROUPS 不动）。2026-09 基线：lines 75.77 / branches 65.87 / functions 78.56 / statements 73.62（server 树偏低是集成层在子进程里跑真 acp-server、coverage 追不到子进程，属已知口径）。thresholds = 基线四舍五入 - 2pp（lines 74 / branches 64 / functions 77 / statements 72），语义是**防下滑线**而非硬指标（实际余量约 2pp：1.56-1.87pp），主动提升覆盖率时同步上调。CI 以它替代 `npm test` 步骤（同一套测试避免双跑），并上传 HTML 报告 artifact。
 - `npm run doctor`：剧本体检查（`scripts/doctor.mjs`，作者侧工具）——改 preset 结构/新增剧本后跑；退出码非 0 当且仅当有 error（warning 不影响）。**刻意不进 CI**：报告面向作者按需看，且「仓库此刻的 preset 健康度」随游玩数据（state/worlds、素材增删）漂移，门禁化会误伤；doctor 的纯函数判定已由 doctor 12 例守在 `npm test` 里。
 - `npm run test:e2e`：真引擎冒烟（约 6 分钟，2 个回合），改前端流程/协议后跑。
 - `npm run test:e2e:ui`：假引擎确定性 UI e2e（`tests/e2e-ui/`，默认 chromium、不重试，秒级），改前端流程/协议/harness 后跑；CI 也会跑（先 `npx playwright install chromium --with-deps`）。
 - 打包预检：`npm run dist:win` / `npm run dist:mac`，产物在 `release/`；`npm run dist:mac:dir` 只出 `.app` 目录（**不含 `app-update.yml`**，electron-updater 会静默降级）。
 - 发版：打 `v<package.json version>` tag 即触发 `.github/workflows/release.yml`（guard 先校验 tag 与 `package.json` version 一致、并跑 `npm test`，两个平台 job 都 `needs: guard`）；本地 `dist:*` 只作预检，正式产物由 CI 双平台矩阵出。签名/公证条件化：`CSC_LINK` / `APPLE_*` 缺失时显式走未签名路径，构建照常成功。
-- CI（`.github/workflows/ci.yml`）在 push/PR 上跑 `npm ci` + `npm run build` + `npm run typecheck:server` + `npm run test:coverage`（即上述 395 例 + 契约 lint + 覆盖率阈值，**替代** `npm test` 步骤避免双跑，另传 coverage 报告 artifact）+ 假引擎 UI e2e（`test:e2e:ui`，CI 内自装 chromium）；真引擎 e2e 需要本机登录 grok CLI，只在开发机跑。
+- CI（`.github/workflows/ci.yml`）在 push/PR 上跑 `npm ci` + `npm run build` + `npm run typecheck:server` + `npm run test:coverage`（即上述 396 例 + 契约 lint + 覆盖率阈值，**替代** `npm test` 步骤避免双跑，另传 coverage 报告 artifact）+ 假引擎 UI e2e（`test:e2e:ui`，CI 内自装 chromium）；真引擎 e2e 需要本机登录 grok CLI，只在开发机跑。
 
 ## 深入材料
 
