@@ -55,7 +55,7 @@ test("画廊：分组清单→选择模式勾 2 项批量删除（两段确认�
   await quickStartToGame(page);
 
   // TopBar 命令轨「素材」进画廊 overlay
-  await page.getByRole("button", { name: "素材", exact: true }).click();
+  await page.getByTestId("assets").click();
 
   // 清单：6 项（立绘组 薇拉×2 + 阿澈×1、背景×3），按 testid 点名存在
   await expect.poll(cardCount).toBe(6);
@@ -101,7 +101,7 @@ test("画廊：分组清单→选择模式勾 2 项批量删除（两段确认�
 
   // 关预览、返回 game 屏：状态回就绪、无错误提示
   await page.getByTestId("assets-preview-close").click();
-  await page.getByRole("button", { name: "返回", exact: true }).click();
+  await page.getByTestId("assets-back").click();
   await expect(page.getByTestId("status")).toHaveText("就绪");
   await expect(page.getByTestId("assets-error")).toHaveCount(0);
 });

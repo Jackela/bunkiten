@@ -28,18 +28,19 @@ export default function ProtagonistScreen() {
 
         <button
           type="button"
+          data-testid="quick-start"
           onClick={() => setQuick(true)}
           className={`mb-8 inline-flex items-center gap-2 self-start rounded-lg border px-4 py-2 text-[13px] tracking-[.15em] transition-colors ${
             quick
               ? "border-gold/50 bg-gold/15 text-gold"
-              : "border-dashed border-white/20 text-ink/60 hover:border-gold/40 hover:text-ink"
+              : "border-dashed border-white/20 text-ink-hint hover:border-gold/40 hover:text-ink"
           }`}
         >
           <Sparkles size={14} /> 快速开局 · 用剧本预设主角
         </button>
 
         {quick ? (
-          <section className="mb-10 rounded-xl border border-white/10 bg-white/5 p-5 text-sm leading-relaxed text-ink/70">
+          <section className="mb-10 rounded-xl border border-white/10 bg-white/5 p-5 text-sm leading-relaxed text-ink-body">
             将使用剧本 quick_start 预设主角直接开始。
             <button type="button" onClick={() => setQuick(false)} className="ml-2 text-gold underline-offset-4 hover:underline">
               重新捏人
@@ -66,7 +67,7 @@ export default function ProtagonistScreen() {
                           className={`rounded-full border px-4 py-1.5 text-sm transition-colors ${
                             on
                               ? "border-gold bg-gold/20 text-gold"
-                              : "border-white/15 text-ink/70 hover:border-gold/40 hover:text-ink"
+                              : "border-white/15 text-ink-body hover:border-gold/40 hover:text-ink"
                           }`}
                         >
                           {opt}
@@ -92,9 +93,10 @@ export default function ProtagonistScreen() {
           </button>
           <button
             type="button"
+            data-testid="skip-preload"
             disabled={!canStart}
             onClick={() => startGame(quick, false)}
-            className="rounded-lg border border-dashed border-white/20 px-5 py-2.5 text-sm tracking-[.1em] text-ink/70 transition-colors hover:border-gold/40 hover:text-ink disabled:pointer-events-none disabled:opacity-40"
+            className="rounded-lg border border-dashed border-white/20 px-5 py-2.5 text-sm tracking-[.1em] text-ink-body transition-colors hover:border-gold/40 hover:text-ink disabled:pointer-events-none disabled:opacity-40"
           >
             跳过美术，直接开演
           </button>

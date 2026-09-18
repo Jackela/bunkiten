@@ -306,7 +306,7 @@ export default function TitleScreen() {
                       // 全拦会把 ← → 切卡也吞掉，直到玩家点别处才恢复
                       if (e.key === "Enter") e.stopPropagation();
                     }}
-                    className="absolute right-3 top-3 z-30 rounded-md border border-white/15 bg-black/45 px-2 py-1 text-[11px] tracking-[.2em] text-ink/70 backdrop-blur-sm transition-colors hover:border-gold/50 hover:text-ink"
+                    className="absolute right-3 top-3 z-30 rounded-md border border-white/15 bg-black/45 px-2 py-1 text-[11px] tracking-[.2em] text-ink-body backdrop-blur-sm transition-colors hover:border-gold/50 hover:text-ink"
                   >
                     导出
                   </a>

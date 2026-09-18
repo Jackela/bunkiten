@@ -55,7 +55,7 @@ test("设置屏：改主音量与文本速度→localStorage 落盘→刷新后�
   await quickStartToGame(page);
 
   // TopBar 右侧竖排命令轨的「设置」进 overlay
-  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByTestId("settings").click();
   await expect(page.getByTestId("settings-screen")).toBeVisible();
 
   // 默认值渲染：主音量 100（DEFAULT_SETTINGS.master = 1）
@@ -78,7 +78,7 @@ test("设置屏：改主音量与文本速度→localStorage 落盘→刷新后�
   // 刷新后重走开局进 game 屏，再开设置屏：改动被 loadSettings 应用并渲染
   await enterProtagonist(page, "示例剧本");
   await quickStartToGame(page);
-  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByTestId("settings").click();
   await expect(page.getByTestId("settings-screen")).toBeVisible();
   await expect(page.getByTestId("settings-master")).toHaveValue("0.3");
   await expect(page.getByTestId("settings-textspeed-instant")).toHaveAttribute("aria-pressed", "true");

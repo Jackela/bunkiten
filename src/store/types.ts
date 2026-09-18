@@ -237,6 +237,10 @@ export interface GameStore {
   /** 重掷的排队跟进：重同步回合成功收尾（pendingResync 清除）后要补发的玩家输入。重同步失败时保留，
    *  玩家点「再同步」成功后照常跟进；玩家改发普通指令时随 pendingResync 一起静默作废（见 send 入口）。 */
   pendingRerollPrompt: string | null;
+  /** 当前世界已知的 `kind:"turn"` 快照数（重掷按钮的可见性判据）：null = 未知。建新世界置 0；
+   *  入场（resumeWorld）与「还不够两条」的回合收尾按需向 /api/history 补拉（见 context.refreshTurnSnapshots）。
+   *  判定口径：重掷要退到「次新」快照 = 至少两条 turn 快照；未知（null）时不藏功能，点击后再 fetch 判定。 */
+  turnSnapshots: number | null;
 
   // —— v1.6 设置（settings overlay）——
   /** 玩家设置（初始值读自 localStorage；updateSettings 是唯一写入方） */

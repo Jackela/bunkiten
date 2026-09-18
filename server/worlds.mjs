@@ -5,11 +5,12 @@
 import fs from "fs";
 import path from "path";
 import { WORLDS_ROOT } from "./config.mjs";
-import { mtimeOf } from "./assets.mjs";
+import { mtimeOf, uniqueSuffixedName } from "./assets.mjs";
 import { scanPresets } from "./presets.mjs";
 import {
   WORLD_FILES,
   WORLD_ID_RE,
+  TREE_FILE,
   HISTORY_DIRNAME,
   parseTreePointer,
   readWorldFiles,
@@ -331,7 +332,7 @@ export function forkWorld(root, originId, nodeId, seq = null) {
       const src = path.join(srcDir, f);
       if (fs.existsSync(src)) fs.copyFileSync(src, path.join(dstDir, f));
     }
-    const treeFile = path.join(dstDir, "story-tree.md");
+    const treeFile = path.join(dstDir, TREE_FILE);
     const treeText = fs.existsSync(treeFile) ? fs.readFileSync(treeFile, "utf8") : "";
     if (treeText) fs.writeFileSync(treeFile, forkTreeMarkdown(treeText, nodeId));
     chapterNo = treeText ? worldChapterNo(forkTreeMarkdown(treeText, nodeId)) : entry.chapterNo;
@@ -471,12 +472,8 @@ export function importWorld(root, bundle) {
       if (ent.isDirectory()) taken.add(ent.name);
     }
   } catch {}
-  let id = String(w.worldId);
-  let n = 1;
-  while (taken.has(id)) {
-    n += 1;
-    id = `${w.worldId}-${n}`; // 重名后缀：-2、-3…（不覆盖既有世界）
-  }
+  // 重名后缀：-2、-3…（与 importPresetBundle 共用 uniqueSuffixedName，不覆盖既有世界）
+  const id = uniqueSuffixedName(taken, String(w.worldId));
   const dir = path.join(root, id);
   fs.mkdirSync(dir, { recursive: true });
   writeWorldFiles(dir, filesIn); // 三键：字符串写入；null/undefined 删除（新目录下即无操作）
@@ -528,7 +525,7 @@ export function listWorlds(root, presetFilter = null) {
       let chapterNo = e.chapterNo || 1;
       let lastPlayed = e.lastPlayed || 0;
       if (exists) {
-        try { chapterNo = worldChapterNo(fs.readFileSync(path.join(dir, "story-tree.md"), "utf8")); } catch {}
+        try { chapterNo = worldChapterNo(fs.readFileSync(path.join(dir, TREE_FILE), "utf8")); } catch {}
         lastPlayed = Math.max(lastPlayed, ...WORLD_FILES.map((f) => mtimeOf(path.join(dir, f))), 0);
       }
       // label 是 v1.6 新增的展示名（update 写入）；老索引没有该字段时补空串，客户端不必判 undefined
@@ -555,7 +552,7 @@ export function migrateLegacyState(stateDir, worldsRoot) {
   try {
     preset = (fs.readFileSync(path.join(dir, "state.md"), "utf8").match(/^-\s*preset\s*[:：]\s*(\S+)/m) || [])[1] || "";
   } catch {}
-  const tree = path.join(dir, "story-tree.md");
+  const tree = path.join(dir, TREE_FILE);
   writeWorldsIndex(worldsRoot, [
     {
       worldId: "main",

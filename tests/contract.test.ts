@@ -116,7 +116,7 @@ describe("① 协议头集合唯一真源：PROTOCOL_HEADS ↔ isProtocolLine �
     // 真源本体：shared 的数组字面量逐字等于契约清单（源码级钉住）
     const sharedRel = "shared/protocol.mjs";
     const sharedSrc = read(sharedRel);
-    const decl = /export const PROTOCOL_HEADS = \[([^\]]+)\]/.exec(sharedSrc);
+    const decl = /export const PROTOCOL_HEADS = (?:Object\.freeze\()?\[([^\]]+)\]/.exec(sharedSrc);
     if (!decl) throw new Error(`${sharedRel} 里找不到 \`export const PROTOCOL_HEADS = [...]\`：协议头集合没有真源（v1.7 起从 src/lib/parser.ts 搬来），无法与文档/解析出口比对`);
     const sharedHeads = [...decl[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
     expect(
@@ -284,7 +284,7 @@ describe("③ 指令字符串双处存在：src/lib/parser.ts 源码 ↔ SKILL.m
 
 // ——————————————————————— ④ 用例数 ———————————————————————
 
-/** 文档口径的分组（README / AGENTS / ARCHITECTURE 三处声明），合计 396 例；不含 e2e 与本文件 */
+/** 文档口径的分组（README / AGENTS / ARCHITECTURE 三处声明），合计 399 例；不含 e2e 与本文件 */
 const CASE_GROUPS = [
   { name: "parser", files: ["tests/parser.test.ts"], declared: 65 },
   { name: "server", files: ["tests/server.test.ts"], declared: 106 },
@@ -293,7 +293,7 @@ const CASE_GROUPS = [
   { name: "genealogy", files: ["tests/genealogy.test.ts"], declared: 8 },
   { name: "diff", files: ["tests/diff.test.ts"], declared: 8 },
   { name: "doctor", files: ["tests/doctor.test.ts"], declared: 12 },
-  { name: "ui", files: ["tests/ui.test.tsx"], declared: 111 },
+  { name: "ui", files: ["tests/ui.test.tsx"], declared: 114 },
   {
     name: "integration",
     files: ["tests/integration/pipeline.test.ts", "tests/integration/audio-history.test.ts", "tests/integration/http-guard.test.ts"],
@@ -308,11 +308,11 @@ const CASE_SUB_GROUPS = [
   { name: "http-guard", file: "tests/integration/http-guard.test.ts", declared: 3 },
 ];
 
-/** 契约 lint 自己（也被 npm test 收录，但按文档口径**不计入** 396） */
+/** 契约 lint 自己（也被 npm test 收录，但按文档口径**不计入** 399） */
 const CONTRACT_FILE = "tests/contract.test.ts";
 
 /** 文档声明的合计口径 */
-const CASE_TOTAL = 396;
+const CASE_TOTAL = 399;
 
 /** 三份声明口径的文档 */
 const DOCS = ["README.md", "AGENTS.md", "docs/ARCHITECTURE.md"];
@@ -364,7 +364,7 @@ describe("④ 用例数：文档声明的分组数字 ↔ 各文件实际用例�
     expect(sum, `integration 的分组口径自相矛盾：三个子文件相加 ${sum} 例，文档写 integration ${integration?.declared} 例`).toBe(integration?.declared);
   });
 
-  it("九个分组合计等于文档口径 396，且本文件不计入其中", () => {
+  it("九个分组合计等于文档口径 399，且本文件不计入其中", () => {
     const sum = CASE_GROUPS.reduce((n, g) => n + g.declared, 0);
     expect(sum, `文档的分组口径自相矛盾：九个分组相加 ${sum} 例，文档合计写的是 ${CASE_TOTAL} 例`).toBe(CASE_TOTAL);
     const self = countCases(CONTRACT_FILE);
@@ -425,7 +425,7 @@ describe("④ 用例数：文档声明的分组数字 ↔ 各文件实际用例�
   });
 });
 
-// ——————————————————————— ⑤ 设置键与音频扩展名 ———————————————————————
+// ——————————————————————— ⑤ 设置键与协议类型集合（音频/美术） ———————————————————————
 
 /** 契约集合（逐字）：设置键与音频扩展名 */
 const SETTINGS_KEY = "bunkiten.settings.v1";
@@ -436,7 +436,7 @@ function extTokens(line: string): string[] {
   return [...new Set([...line.matchAll(/\b(mp3|ogg|m4a|wav|flac)\b/g)].map((m) => m[1]))].sort();
 }
 
-describe("⑤ 设置键与音频扩展名：settings.ts / shared 真源 / 文档三处一致", () => {
+describe("⑤ 设置键与协议类型集合（音频/美术）：settings.ts / shared 真源 / 文档一致", () => {
   it("设置键 bunkiten.settings.v1 在 settings.ts 与文档里一致", () => {
     expect(SETTINGS_STORAGE_KEY, `src/lib/settings.ts 的 SETTINGS_STORAGE_KEY 是「${SETTINGS_STORAGE_KEY}」，契约键是「${SETTINGS_KEY}」`).toBe(SETTINGS_KEY);
     for (const doc of ["docs/ARCHITECTURE.md", "README.md"]) {
@@ -448,7 +448,7 @@ describe("⑤ 设置键与音频扩展名：settings.ts / shared 真源 / 文档
     const rel = "shared/protocol.mjs";
     const shared = read(rel);
     // 真源一：扩展名数组
-    const decl = /const AUDIO_EXTS = \[([^\]]+)\]/.exec(shared);
+    const decl = /const AUDIO_EXTS = (?:Object\.freeze\()?\[([^\]]+)\]/.exec(shared);
     if (!decl) throw new Error(`${rel} 里找不到 \`const AUDIO_EXTS = [...]\`：音频扩展名没有真源（v1.7 起从 server/acp-server.mjs 搬来），无法与文档/客户端比对`);
     const sharedExts = [...decl[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
     expect(sharedExts, `${rel} 的 AUDIO_EXTS 与契约集合不一致：现在是 [${sharedExts.join(", ")}]，契约是 [${EXTS.join(", ")}]`).toEqual(EXTS);
@@ -500,10 +500,42 @@ describe("⑤ 设置键与音频扩展名：settings.ts / shared 真源 / 文档
 
   it("音频类型集合（曲/环境/音效）shared 与 parser 同序同字面", () => {
     const rel = "shared/protocol.mjs";
-    const decl = /const AUDIO_KINDS = \[([^\]]+)\]/.exec(read(rel));
+    const decl = /const AUDIO_KINDS = (?:Object\.freeze\()?\[([^\]]+)\]/.exec(read(rel));
     if (!decl) throw new Error(`${rel} 里找不到 \`const AUDIO_KINDS = [...]\`：音频类型字面没有真源（v1.7 起从 server/acp-server.mjs 搬来）`);
     const sharedKinds = [...decl[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
     expect(sharedKinds, `${rel} 的 AUDIO_KINDS 与 src/lib/parser.ts 的 AUDIO_KINDS 不一致：shared [${sharedKinds.join("、")}]、parser [${[...AUDIO_KINDS].join("、")}]（parser 应 re-export 真源，分叉即第二真源）`).toEqual([...AUDIO_KINDS]);
+  });
+
+  it("美术类型集合（立绘/背景/封面）与资产文件名正则：shared 真源、双侧构造、无第二份字面", async () => {
+    const rel = "shared/protocol.mjs";
+    const src = read(rel);
+    const kinds = /const ART_KINDS = Object\.freeze\(\[([^\]]+)\]\)/.exec(src) ?? /const ART_KINDS = \[([^\]]+)\]/.exec(src);
+    if (!kinds) throw new Error(`${rel} 里找不到 \`const ART_KINDS = [...]\`：美术类型字面没有真源（v1.7 收尾收编）`);
+    expect(
+      [...kinds[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]),
+      `${rel} 的 ART_KINDS 不是 [立绘、背景、封面]：parser.ts 的 ArtKind 字面联合与 server 的 parseArtLine 都以它为真源`,
+    ).toEqual(["立绘", "背景", "封面"]);
+    expect(src, `${rel} 的 ASSET_FILE_RE 不再由 ASSET_KINDS 构造：落盘/直服白名单会与类型真源脱钩`).toMatch(/const ASSET_FILE_RE = new RegExp\(`[^`]*\$\{ASSET_KINDS\.join\("\|"\)\}/);
+    // 双侧构造（源码级）：parser.ts 的 ART_LINE_BODY/制作清单正则、protocol-lines.mjs 的 parseArtLine
+    for (const [file, marker] of [
+      ["src/lib/parser.ts", "ART_KINDS.join"],
+      ["src/lib/parser.ts", "ASSET_KINDS.join"],
+      ["server/protocol-lines.mjs", "ART_KINDS.join"],
+    ]) {
+      expect(read(file), `${file} 没有用 ${marker} 从 shared 真源构造类型交替组：手写字面会与真源分叉`).toContain(marker);
+    }
+    // 无第二份手写字面：server/ 与 scripts/ 里不许再出现「立绘|背景」/「背景|立绘」形态的类型交替组
+    //（注释也不行——注释里写死就还是会被人抄；两种顺序都查，防换个写法绕过）
+    const offenders = [...serverSources(), { rel: "scripts/doctor.mjs", src: read("scripts/doctor.mjs") }]
+      .filter((f) => /立绘\|背景|背景\|立绘/.test(f.src))
+      .map((f) => f.rel);
+    expect(offenders, `这些文件手写了 立绘|背景 形态的类型交替组：类型真源在 ${rel} 的 ART_KINDS/ASSET_KINDS，落盘白名单走 ASSET_FILE_RE`).toEqual([]);
+    // RULES 第 3 句（发给引擎的提示词）与真源同集：改 ART_KINDS 忘了同步那句就是静默漂移
+    const { RULES_SENTENCES } = await loadServer();
+    const rules = (RULES_SENTENCES as string[]).join("");
+    for (const kind of ["立绘", "背景", "封面"]) {
+      expect(rules, `RULES 的【图】句没有枚举美术类型「${kind}」：改 ${rel} 的 ART_KINDS 要同步 RULES 第 3 句（以及 SKILL.md【美术】）`).toContain(kind);
+    }
   });
 });
 

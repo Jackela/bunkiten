@@ -85,7 +85,7 @@ export default function OptionList() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: Math.min(i * 0.08, 0.32), ease: "easeOut" }}
           onClick={() => sendPlayerTurn(o.t)}
-          className="group flex items-center justify-center gap-2.5 rounded-lg border border-transparent bg-[rgba(10,12,18,.55)] px-5 py-2 text-center text-[15.5px] tracking-[.03em] text-ink/85 backdrop-blur-md transition-[color,border-color,transform,background-color] duration-200 hover:-translate-y-0.5 hover:border-[color:var(--accent)] hover:bg-[rgba(16,19,28,.8)] hover:text-ink"
+          className="group flex items-center justify-center gap-2.5 rounded-lg border border-transparent bg-[rgba(10,12,18,.55)] px-5 py-2 text-center text-[15.5px] tracking-[.03em] text-ink-body backdrop-blur-md transition-[color,border-color,transform,background-color] duration-200 hover:-translate-y-0.5 hover:border-[color:var(--accent)] hover:bg-[rgba(16,19,28,.8)] hover:text-ink"
         >
           <span className="text-[10px] leading-none text-[color:var(--accent)]/80 transition-transform duration-200 group-hover:rotate-90">
             ◇

@@ -28,7 +28,7 @@ function VolumeRow({
 }) {
   return (
     <label className="flex items-center gap-3 py-1.5">
-      <span className="w-16 flex-none text-[12.5px] tracking-[.2em] text-ink/60">{label}</span>
+      <span className="w-16 flex-none text-[12.5px] tracking-[.2em] text-ink-hint">{label}</span>
       <input
         type="range"
         min={0}
@@ -75,7 +75,7 @@ function Segmented({
             className={`rounded-lg border px-4 py-1.5 text-[13px] tracking-[.1em] transition-colors duration-200 ${
               on
                 ? "border-gold/40 bg-gold/15 text-gold"
-                : "border-white/10 text-ink/60 hover:border-gold/25 hover:text-ink"
+                : "border-white/10 text-ink-hint hover:border-gold/25 hover:text-ink"
             }`}
           >
             {o.label}
@@ -111,7 +111,7 @@ export default function SettingsScreen() {
             type="button"
             data-testid="settings-back"
             onClick={closeOverlay}
-            className="ml-auto rounded-md border border-white/10 px-3 py-1.5 text-[12px] tracking-[.2em] text-ink/60 transition-colors hover:border-gold/40 hover:text-ink"
+            className="ml-auto rounded-md border border-white/10 px-3 py-1.5 text-[12px] tracking-[.2em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
           >
             返回
           </button>
@@ -131,7 +131,7 @@ export default function SettingsScreen() {
               className={`ml-auto flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-[12px] tracking-[.15em] transition-colors ${
                 settings.muted
                   ? "border-gold/40 bg-gold/15 text-gold"
-                  : "border-white/10 text-ink/60 hover:border-gold/30 hover:text-ink"
+                  : "border-white/10 text-ink-hint hover:border-gold/30 hover:text-ink"
               }`}
             >
               {settings.muted ? <VolumeX size={13} /> : <Volume2 size={13} />}

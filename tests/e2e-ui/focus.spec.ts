@@ -90,13 +90,13 @@ test("game 屏 Tab：首个焦点是命令轨「设置」，按钮出 :focus-vis
   // 再 Tab——命令轨「设置」是 game 屏 DOM 里第一个可聚焦元素
   await page.getByTestId("status").click();
   await page.keyboard.press("Tab");
-  await expectFocusRing(page.getByRole("button", { name: "设置", exact: true }));
+  await expectFocusRing(page.getByTestId("settings"));
 });
 
 test("剧情图方向键：SVG 节点 <g> 聚焦，outline 画在 g 上（无需 rect 描边备选）", async () => {
   await openWorlds(page);
   await continueWorld(page);
-  await page.getByRole("button", { name: "剧情图", exact: true }).click();
+  await page.getByTestId("tree").click();
   await expect(page.getByTestId("tree-canvas")).toBeVisible();
 
   // 剧情图是整屏切换：TopBar 卸载后焦点在 body，方向键的 onKeyDown 挂在画布包裹层上——

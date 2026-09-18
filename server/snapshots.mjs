@@ -7,8 +7,10 @@ import fs from "fs";
 import path from "path";
 import { WORLDS_ROOT } from "./config.mjs";
 
+/** 三文件里的剧情树文件名（fork/listWorlds/migrate 与 /api/tree 直接读写它——单一字面，别再手写） */
+export const TREE_FILE = "story-tree.md";
 /** @type {readonly ["state.md", "summary.md", "story-tree.md"]} */
-export const WORLD_FILES = ["state.md", "summary.md", "story-tree.md"];
+export const WORLD_FILES = ["state.md", "summary.md", TREE_FILE];
 // 世界 id 白名单（防路径穿越）：世界线所有读写的第一道闸（快照与 CRUD 共用，所以钉在这层地基里）
 export const WORLD_ID_RE = /^[A-Za-z0-9_-]+$/;
 // ---------- 逐轮状态快照与精确回退（v1.6，CONTRACTS §2） ----------
@@ -18,7 +20,7 @@ export const WORLD_ID_RE = /^[A-Za-z0-9_-]+$/;
 export const HISTORY_DIRNAME = "history";
 const SNAPSHOT_SEQ_MAX = 9999; // 4 位上限：seq > 9999 不再写（warn once），避免文件名溢出 5 位
 /** @type {Record<"state.md"|"summary.md"|"story-tree.md", "state"|"summary"|"tree">} */
-const WORLD_FILE_KEY = { "state.md": "state", "summary.md": "summary", "story-tree.md": "tree" };
+const WORLD_FILE_KEY = { "state.md": "state", "summary.md": "summary", [TREE_FILE]: "tree" };
 
 /**
  * 世界三文件全文（快照条目、导出 bundle 与各处读写的公共形状）：null = 该文件当时不存在。
@@ -40,13 +42,13 @@ const WORLD_FILE_KEY = { "state.md": "state", "summary.md": "summary", "story-tr
  */
 let warnedSnapshotOverflow = false; // 溢出告警只打一次（每回合都会触发判断，不去重会刷屏）
 
-// readSnapshots 的列表缓存（v1.7 读路径索引化）：/api/history 列表形态会 strip 掉 files，
-// 却照样为每次读付出「逐文件 readFileSync + JSON.parse 全文（含 files 大字符串）」——
-// 长世界 history 目录上百条时每次打开剧情图都要全量解析一遍。
+// readSnapshots 的列表缓存（v1.7 读路径索引化，收尾改为**逐文件**复用）：/api/history 列表形态会 strip 掉
+// files，却照样为每次读付出「逐文件 readFileSync + JSON.parse 全文（含 files 大字符串）」——
+// 长世界 history 目录上百条时每次打开剧情图都要全量解析一遍。现在按「文件名 + mtimeMs」逐条复用：
+// 只有新增/被覆盖的文件需要读盘解析，其余条目直接沿用（全量重解析只发生在缓存首次建立）。
 /**
  * @typedef {Object} SnapshotCacheSlot
- * @property {SnapshotEntry[]} entries 已按 seq 升序的规范化条目（缓存内部形状；出口一律给浅拷贝）
- * @property {Map<string, number>} stamp 文件名 → mtimeMs（失效判据：名字集合或任一 mtime 变了就全量重解析）
+ * @property {Map<string, {mtimeMs: number, entry: SnapshotEntry}>} byFile 文件名 → 已解析条目与解析时的 mtimeMs
  */
 /** @type {Map<string, SnapshotCacheSlot>} */
 const snapCache = new Map(); // key = history 目录绝对路径
@@ -56,7 +58,8 @@ const cacheStats = { parses: 0, hits: 0 };
 /**
  * readSnapshots 缓存计数探针（**仅测试用**，tests/server.test.ts 断言缓存行为；
  * 产品代码不要依赖——它的存在就是为了让「缓存真的命中了」可断言）。
- * @returns {{parses: number, hits: number}} parses = 全量重解析次数、hits = stamp 一致命中次数
+ * @returns {{parses: number, hits: number}} parses = 逐文件解析次数（全量重解析 N 个文件即 +N）、
+ *   hits = 零解析完成（全部条目复用）的读取次数
  */
 export function __snapshotCacheStats() {
   return { ...cacheStats };
@@ -150,9 +153,9 @@ export function isSnapshotEntry(obj) {
 
 /**
  * 读某世界全部快照（升序）。文件名即 seq 来源；坏 JSON / 越界文件名一律跳过（不让单条坏档拖垮回退界面）。
- * 列表缓存（v1.7）：目录项「名字集合 + 逐文件 mtimeMs」与缓存 stamp 逐项一致 → 直接回缓存；
- * 不一致（新增/删除/覆盖快照文件）→ 全量重解析并更新缓存。出口条目一律拷贝（含 files 一层）——
- * 调用方拿到的是自己的数组与自己的条目对象，任何属性赋值都改不到缓存。
+ * 列表缓存（v1.7，逐文件复用）：文件名 + mtimeMs 都没变的条目直接沿用缓存里的解析结果，只有新增/被覆盖的
+ * 文件才读盘解析；文件被删除时随新表自然消失。出口条目一律拷贝（含 files 一层）——调用方拿到的是自己的
+ * 数组与自己的条目对象，任何属性赋值都改不到缓存。
  * @param {string} worldId 世界 id（调用方先用 WORLD_ID_RE 校验）
  * @param {string} [root] 世界根目录（缺省 WORLDS_ROOT）
  * @returns {SnapshotEntry[]} 规范化后的快照条目（含 files），按 seq 升序
@@ -164,6 +167,7 @@ export function readSnapshots(worldId, root = WORLDS_ROOT) {
   try {
     dirents = fs.readdirSync(dir, { withFileTypes: true });
   } catch {
+    snapCache.delete(dir); // 目录没了：顺手释放缓存，别让它挂在 Map 里
     return [];
   }
   // stamp：候选文件（合法 NNNN.json 且是普通文件）→ mtimeMs；stat 不到的文件不进 stamp，
@@ -176,21 +180,31 @@ export function readSnapshots(worldId, root = WORLDS_ROOT) {
       stamp.set(d.name, fs.statSync(path.join(dir, d.name)).mtimeMs);
     } catch {}
   }
-  const cached = snapCache.get(dir);
-  if (cached && stamp.size === cached.stamp.size && [...stamp].every(([n, t]) => cached.stamp.get(n) === t)) {
-    cacheStats.hits += 1;
-    return copyEntries(cached.entries); // 深一层拷 files：出口不脏缓存由结构保证，不靠调用方自觉
+  let slot = snapCache.get(dir);
+  if (!slot) {
+    slot = { byFile: new Map() };
+    snapCache.set(dir, slot);
   }
-  cacheStats.parses += 1;
-  const out = [];
-  for (const name of stamp.keys()) {
-    try {
-      const entry = normalizeSnapshot(JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")));
-      if (entry.seq >= 1) out.push(entry);
-    } catch {}
+  let parsed = 0;
+  /** @type {SnapshotCacheSlot["byFile"]} */
+  const next = new Map();
+  for (const [name, mtimeMs] of stamp) {
+    const prev = slot.byFile.get(name);
+    if (prev && prev.mtimeMs === mtimeMs) {
+      next.set(name, prev); // 复用：不读盘、不解析
+      continue;
+    }
+    const entry = readSnapshotFile(dir, name); // 坏档 → null（不进缓存，下次再试）
+    if (!entry) continue;
+    next.set(name, { mtimeMs, entry });
+    parsed += 1;
   }
-  out.sort((a, b) => a.seq - b.seq);
-  snapCache.set(dir, { entries: out, stamp });
+  slot.byFile = next; // 已被删除的文件名随新表消失
+  if (parsed === 0) {
+    // 整表零解析才算「命中」；空目录/整目录坏档（readSnapshotFile 返回 null、永不入缓存）不算
+    if (next.size > 0) cacheStats.hits += 1;
+  } else cacheStats.parses += parsed;
+  const out = [...next.values()].map((x) => x.entry).sort((a, b) => a.seq - b.seq);
   return copyEntries(out);
 }
 
@@ -201,8 +215,9 @@ function copyEntries(entries) {
   return entries.map((e) => ({ ...e, files: { ...e.files } }));
 }
 
-/** 主动失效某个世界的快照缓存（writeSnapshot 写盘后与 deleteWorld 删目录后都调：
- *  mtime 比对已可兜底，但写方/删方主动失效让同进程下一次读立刻见新/释放内存，不等下次 readdir）。
+/** 整体释放某个世界的快照缓存（deleteWorld 删目录后调用：长世界的 files 字符串可达 MB 级，
+ *  别让它在 Electron 长驻进程里滞留）。写盘路径**不需要**调用它——缓存按「文件名 + mtime」逐条复用，
+ *  产品路径只写新文件名，天然未命中；外部原地覆盖写由逐文件 mtime 比对兜底。
  * @param {string} worldId 世界 id
  * @param {string} [root] 世界根目录（缺省 WORLDS_ROOT） */
 export function invalidateSnapshots(worldId, root = WORLDS_ROOT) {
@@ -300,9 +315,9 @@ export function writeSnapshot(root, worldId, entry, { dedupe = true } = {}) {
   const final = { ...norm, seq };
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, `${String(seq).padStart(4, "0")}.json`), JSON.stringify(final, null, 2) + "\n");
-  // 写方主动失效：mtime 比对已可兜底（新文件名必然不在 stamp 里），但同进程读要立刻见新，
-  // 不等下一次 readSnapshots 的 readdir/stat 比对——逐轮落盘后紧跟着的 /api/history 就是这个场景
-  invalidateSnapshots(worldId, root);
+  // 无需失效快照列表缓存：seq 递增意味着这里**永远写新文件名**（产品路径没有任何「原地覆盖同名快照」的写法——
+  // importWorld 写全新目录、fork/restore 不写 history），新名字天然未命中，下一次 readSnapshots 只解析这一个文件。
+  // 外部进程若在同一秒内原地覆盖同名文件，理论上可能被 mtime 粒度漏判（历史行为同款、无产品路径触发）。
   return { ok: true, seq, entry: final };
 }
 

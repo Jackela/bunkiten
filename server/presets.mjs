@@ -10,7 +10,7 @@ import fs from "fs";
 import path from "path";
 import { AUDIO_EXTS } from "../shared/protocol.mjs";
 import { GAME_ROOT } from "./config.mjs";
-import { PRESET_ID_RE, sanitizeAssetName, assetRelPath, ASSET_DELETE_FILE_RE } from "./assets.mjs";
+import { PRESET_ID_RE, sanitizeAssetName, assetRelPath, ASSET_DELETE_FILE_RE, uniqueSuffixedName } from "./assets.mjs";
 import { FONT_PRESETS, DIALOG_TEXTURES, DEFAULT_THEME } from "./acp-server.mjs";
 
 // ---------- presets 解析（手写简易解析，不引依赖） ----------
@@ -404,7 +404,7 @@ export function importPresetBundle(root, bundle) {
   if (total > PRESET_IMPORT_MAX_BYTES) {
     return { error: `包体解码总量超上限（${Math.round(PRESET_IMPORT_MAX_BYTES / 1024 / 1024)}MB）` };
   }
-  // 重名后缀：-2、-3…（与 importWorld 同款循环，不覆盖既有剧本）
+  // 重名后缀：-2、-3…（与 importWorld 共用 uniqueSuffixedName，不覆盖既有剧本）
   const presetsRoot = path.join(root, "presets");
   const taken = new Set();
   try {
@@ -412,12 +412,7 @@ export function importPresetBundle(root, bundle) {
       if (ent.isDirectory()) taken.add(ent.name);
     }
   } catch {}
-  let finalId = id;
-  let n = 1;
-  while (taken.has(finalId)) {
-    n += 1;
-    finalId = `${id}-${n}`;
-  }
+  const finalId = uniqueSuffixedName(taken, id);
   // 落盘：先写临时目录（presets/.tmp-<id>-<随机>，点前缀就算极端残留也进不了轮播），全量写完再
   // rename 进位——中途失败（磁盘满/ENAMETOOLONG/被占用）不留半个剧本。整个写盘段包 try/catch，
   // 异常绝不冒出函数（见函数头注释：冒泡即 uncaughtException，Electron 主进程会同进程闪退）。

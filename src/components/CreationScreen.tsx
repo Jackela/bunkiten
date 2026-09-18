@@ -63,7 +63,7 @@ export default function CreationScreen() {
           <button
             type="button"
             onClick={requestCreationExit}
-            className="ml-auto rounded-md border border-white/10 px-3 py-1.5 text-[12px] tracking-[.2em] text-ink/60 transition-colors hover:border-gold/40 hover:text-ink"
+            className="ml-auto rounded-md border border-white/10 px-3 py-1.5 text-[12px] tracking-[.2em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
           >
             返回
           </button>
@@ -85,7 +85,7 @@ export default function CreationScreen() {
                 transition={{ duration: 0.35, ease: "easeOut" }}
                 className={`mb-3 max-w-[86%] whitespace-pre-wrap rounded-2xl px-4 py-3 text-[14.5px] leading-[1.85] tracking-[.02em] ${
                   m.role === "engine"
-                    ? "border border-white/[.07] bg-[rgba(16,19,28,.72)] text-ink/90"
+                    ? "border border-white/[.07] bg-[rgba(16,19,28,.72)] text-ink-body"
                     : "ml-auto border border-gold/25 bg-gold/10 text-ink"
                 }`}
               >
@@ -97,7 +97,7 @@ export default function CreationScreen() {
                         key={o.n}
                         type="button"
                         onClick={() => setValue(o.t)}
-                        className="rounded-full border border-white/15 bg-white/[.04] px-3 py-1 text-[12.5px] text-ink/75 transition-colors hover:border-gold/40 hover:text-ink"
+                        className="rounded-full border border-white/15 bg-white/[.04] px-3 py-1 text-[12.5px] text-ink-body transition-colors hover:border-gold/40 hover:text-ink"
                       >
                         {o.t}
                       </button>
@@ -123,7 +123,7 @@ export default function CreationScreen() {
               className="mb-3 rounded-2xl border border-gold/20 bg-[rgba(16,19,28,.6)] px-4 py-3"
             >
               <p className="text-[12px] tracking-[.25em] text-gold/80">装 配 中</p>
-              <ul className="mt-2 space-y-1 text-[13.5px] text-ink/70">
+              <ul className="mt-2 space-y-1 text-[13.5px] text-ink-body">
                 <li className={coverDone ? "text-ink" : ""}>
                   {coverDone ? "封面 ✓" : "封面 · 生成中…"}
                 </li>
@@ -195,7 +195,7 @@ export default function CreationScreen() {
             type="button"
             disabled={engineBusy || !!result}
             onClick={() => sendCreation(BUILD_ASSEMBLE)}
-            className="mt-2.5 w-full rounded-lg border border-dashed border-white/20 px-5 py-2.5 text-sm tracking-[.1em] text-ink/70 transition-colors hover:border-gold/40 hover:text-ink disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink-faint"
+            className="mt-2.5 w-full rounded-lg border border-dashed border-white/20 px-5 py-2.5 text-sm tracking-[.1em] text-ink-body transition-colors hover:border-gold/40 hover:text-ink disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink-faint"
           >
             {result ? "装配已完成" : assembling ? "装配中…" : "开始装配"}
           </button>
@@ -216,7 +216,7 @@ export default function CreationScreen() {
               onClick={(e) => e.stopPropagation()}
               className="flex items-center gap-4 rounded-xl border border-white/10 bg-[rgba(10,12,18,.95)] px-6 py-5"
             >
-              <p className="text-[14px] text-ink/85">返回？创作对话将保留</p>
+              <p className="text-[14px] text-ink-body">返回？创作对话将保留</p>
               <button
                 type="button"
                 onClick={() => useGameStore.getState().closeOverlay()}
@@ -227,7 +227,7 @@ export default function CreationScreen() {
               <button
                 type="button"
                 onClick={closeCreationExitPrompt}
-                className="rounded-lg border border-white/15 px-4 py-1.5 text-[13px] text-ink/60 transition-colors hover:text-ink"
+                className="rounded-lg border border-white/15 px-4 py-1.5 text-[13px] text-ink-hint transition-colors hover:text-ink"
               >
                 取消
               </button>

@@ -27,7 +27,7 @@ function viewIsEmpty(v: StateView | null): boolean {
 
 /** 小节标题：与画廊/剧情图详情同款的字距小标 */
 function SectionTitle({ children }: { children: React.ReactNode }) {
-  return <h3 className="mt-5 mb-2 text-[11px] tracking-[.25em] text-ink/60 first:mt-0">{children}</h3>;
+  return <h3 className="mt-5 mb-2 text-[11px] tracking-[.25em] text-ink-hint first:mt-0">{children}</h3>;
 }
 
 /** 键值两列：键淡、值亮（主角卡与导演手记共用；引擎可自由加字段，按出现顺序铺） */
@@ -37,7 +37,7 @@ function KeyValueRows({ entries }: { entries: [string, string][] }) {
       {entries.map(([k, v]) => (
         <div key={k} className="flex gap-2 text-[13px] leading-relaxed">
           <dt className="w-[7.5em] flex-none text-ink-hint">{k}</dt>
-          <dd className="min-w-0 flex-1 whitespace-pre-wrap text-ink/90">{v || "—"}</dd>
+          <dd className="min-w-0 flex-1 whitespace-pre-wrap text-ink-body">{v || "—"}</dd>
         </div>
       ))}
     </dl>
@@ -76,7 +76,7 @@ function CharacterCard({ c }: { c: StateCharacter }) {
       <div className="mb-2 flex items-center gap-2">
         <h4 className="text-[14px] tracking-[.1em] text-ink">{c.name}</h4>
         {c.expression && (
-          <span data-testid={`character-expression-${c.name}`} className="rounded-sm border border-white/15 px-1.5 py-0.5 text-[10px] tracking-[.12em] text-ink/70">
+          <span data-testid={`character-expression-${c.name}`} className="rounded-sm border border-white/15 px-1.5 py-0.5 text-[10px] tracking-[.12em] text-ink-body">
             {c.expression}
           </span>
         )}
@@ -94,13 +94,13 @@ function CharacterCard({ c }: { c: StateCharacter }) {
             data-testid={`character-secret-${c.name}`}
             aria-expanded={secretOpen}
             onClick={() => setSecretOpen(!secretOpen)}
-            className="flex items-center gap-1 text-[11px] tracking-[.15em] text-ink-hint transition-colors hover:text-ink/80"
+            className="flex items-center gap-1 text-[11px] tracking-[.15em] text-ink-hint transition-colors hover:text-ink-body"
           >
             <ChevronDown size={12} className={`transition-transform duration-200 ${secretOpen ? "rotate-180" : ""}`} />
             秘密（剧透）
           </button>
           {secretOpen && (
-            <p data-testid={`character-secret-text-${c.name}`} className="mt-1.5 text-[12.5px] leading-relaxed text-ink/85">
+            <p data-testid={`character-secret-text-${c.name}`} className="mt-1.5 text-[12.5px] leading-relaxed text-ink-body">
               {c.secret}
             </p>
           )}
@@ -139,13 +139,13 @@ export default function CharactersDrawer() {
           data-testid="characters-panel"
           className="fixed inset-y-0 right-0 z-50 flex w-[min(420px,92vw)] flex-col border-l border-white/10 bg-[rgba(9,11,16,.96)]"
         >
-          <header className="flex items-center border-b border-white/10 px-4 py-3.5 text-[13px] tracking-[.2em] text-ink/60">
+          <header className="flex items-center border-b border-white/10 px-4 py-3.5 text-[13px] tracking-[.2em] text-ink-hint">
             角 色 面 板
             <button
               type="button"
               onClick={toggle}
               aria-label="关闭角色面板"
-              className="ml-auto rounded-md p-1 text-ink/60 transition-colors hover:text-ink"
+              className="ml-auto rounded-md p-1 text-ink-hint transition-colors hover:text-ink"
             >
               <X size={16} />
             </button>
@@ -196,7 +196,7 @@ export default function CharactersDrawer() {
                     {view.flags.length > 0 && (
                       <>
                         <SectionTitle>Flags · {view.flags.length}</SectionTitle>
-                        <ul className="space-y-1 text-[12.5px] leading-relaxed text-ink/85">
+                        <ul className="space-y-1 text-[12.5px] leading-relaxed text-ink-body">
                           {view.flags.map((f) => (
                             <li key={f.name} className="flex gap-2">
                               <span className="text-ink-hint">{f.name}</span>
@@ -209,7 +209,7 @@ export default function CharactersDrawer() {
                     {view.foreshadowing.length > 0 && (
                       <>
                         <SectionTitle>未回收伏笔 · {view.foreshadowing.length}</SectionTitle>
-                        <ul className="space-y-1 text-[12.5px] leading-relaxed text-ink/85">
+                        <ul className="space-y-1 text-[12.5px] leading-relaxed text-ink-body">
                           {view.foreshadowing.map((f, i) => (
                             <li key={`${i}-${f.text}`} className="flex gap-2">
                               <span className="min-w-0 flex-1">{f.text}</span>

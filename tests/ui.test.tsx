@@ -2733,6 +2733,8 @@ describe("重掷本回合：次新 turn 快照 restore + 重同步收尾后重�
   let worldPosts: Record<string, unknown>[];
   /** GET /api/history 返回的快照索引（用例内改写，模拟重掷后的新账本） */
   let historySnapshots: WorldSnapshotMeta[];
+  /** GET /api/history 是否整体失败（快照数补拉失败的回落路径用） */
+  let historyFails: boolean;
 
   /** 一条快照元信息（nodeId/chapterNo 对重掷无意义，占位） */
   const snap = (seq: number, kind: "turn" | "backup"): WorldSnapshotMeta => ({ seq, at: "2026-09-17T00:00:00.000Z", kind, nodeId: null, chapterNo: 1 });
@@ -2741,6 +2743,7 @@ describe("重掷本回合：次新 turn 快照 restore + 重同步收尾后重�
     promptOk = true;
     prompts = [];
     worldPosts = [];
+    historyFails = false;
     // 升序三条：turn 2 / backup 3 / turn 5——重掷只认 kind:"turn"，最新 5 = 刚结束的本回合，次新 = 2
     historySnapshots = [snap(2, "turn"), snap(3, "backup"), snap(5, "turn")];
     useGameStore.setState({
@@ -2761,6 +2764,7 @@ describe("重掷本回合：次新 turn 快照 restore + 重同步收尾后重�
       lastTurnPrompt: "推门进去",
       pendingTurnPrompt: null,
       pendingRerollPrompt: null,
+      turnSnapshots: null,
       history: [{ n: "第 3 幕", t: "回合甲：门轴一声闷响。" }],
       turnNo: 3,
       segs: { 0: "" },
@@ -2776,7 +2780,10 @@ describe("重掷本回合：次新 turn 快照 restore + 重同步收尾后重�
           prompts.push((JSON.parse(String(init?.body)) as { text: string }).text);
           return jsonResponse(promptOk ? { ok: true } : { ok: false, error: "上一回合还在进行" }, promptOk ? 200 : 409);
         }
-        if (url.pathname === "/api/history") return jsonResponse({ worldId: "campus-summer-1", snapshots: historySnapshots });
+        if (url.pathname === "/api/history") {
+          if (historyFails) return jsonResponse({ error: "boom" }, 500);
+          return jsonResponse({ worldId: "campus-summer-1", snapshots: historySnapshots });
+        }
         if (url.pathname === "/api/worlds" && init?.method === "POST") {
           const body = JSON.parse(String(init.body)) as { action: string };
           worldPosts.push(body);
@@ -2834,8 +2841,9 @@ describe("重掷本回合：次新 turn 快照 restore + 重同步收尾后重�
     expect(acts[acts.length - 1].className).toContain("opacity-50");
   });
 
-  it("快照不足（本世界第一回合）：不 restore、不重发、不插分割线，status 反馈不可重掷", async () => {
+  it("快照数未知（尚未补拉到）：仍展示入口，点击后 status 反馈不可重掷", async () => {
     historySnapshots = [snap(1, "turn"), snap(2, "backup")]; // turn 只有一条：没有「上一回合结束态」可回
+    useGameStore.setState({ turnSnapshots: null }); // 未知：不藏功能，点击时再判定
     render(<TopBar />);
     await act(async () => {
       fireEvent.click(screen.getByTestId("reroll"));
@@ -2848,6 +2856,40 @@ describe("重掷本回合：次新 turn 快照 restore + 重同步收尾后重�
     expect(s.history).toHaveLength(1); // 没有插分割线
     expect(s.status).toContain("无法重掷");
     expect(screen.queryByTestId("reroll")).toBeNull(); // 状态行已离开「就绪」：入口收起
+  });
+
+  it("已知快照不足（turnSnapshots < 2）：重掷入口不渲染（spec：首个回合禁用按钮）", async () => {
+    useGameStore.setState({ turnSnapshots: 1 }); // 已知只有一条 turn 快照：没有「上一回合结束态」可回
+    render(<TopBar />);
+    expect(screen.queryByTestId("reroll")).toBeNull();
+    act(() => useGameStore.setState({ turnSnapshots: 2 })); // 攒够两条：入口出现
+    expect(screen.getByTestId("reroll")).toBeTruthy();
+  });
+
+  it("回合收尾按需补拉快照数：未知 → 拉到两条后重掷入口仍在（不误藏）", async () => {
+    useGameStore.setState({ turnSnapshots: null, lastTurnPrompt: "推门进去", status: "就绪" });
+    render(<TopBar />);
+    expect(screen.getByTestId("reroll")).toBeTruthy(); // 未知态：先展示
+    act(() => {
+      useGameStore.setState({ segs: { 0: "回合正文" }, curSeg: 0 });
+      useGameStore.getState().handleEvent({ type: "turn_end" });
+    });
+    await waitFor(() => expect(useGameStore.getState().turnSnapshots).toBe(2)); // 补拉成功（mock 两条 turn）
+    expect(screen.getByTestId("reroll")).toBeTruthy();
+  });
+
+  it("补拉失败：已知计数回落未知（不藏功能），后续回合会再试", async () => {
+    historyFails = true; // GET /api/history 整体失败
+    useGameStore.setState({ turnSnapshots: 0, lastTurnPrompt: "推门进去", status: "就绪" });
+    render(<TopBar />);
+    expect(screen.queryByTestId("reroll")).toBeNull(); // 前置：已知 0 → 入口不渲染
+    await act(async () => {
+      useGameStore.setState({ segs: { 0: "回合正文" }, curSeg: 0 });
+      useGameStore.getState().handleEvent({ type: "turn_end" });
+      await new Promise((r) => setTimeout(r, 0)); // 放行失败的补拉（catch 分支）
+    });
+    expect(useGameStore.getState().turnSnapshots).toBeNull(); // 回落未知：宁可展示 + 点击判定，不藏功能
+    expect(screen.getByTestId("reroll")).toBeTruthy();
   });
 
   it("连掷：第一次重掷完整走完后，再点重掷取此刻账本的次新 turn 快照", async () => {

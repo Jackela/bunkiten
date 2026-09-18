@@ -23,6 +23,15 @@ export const AUDIO_REL_RE: RegExp;
 /** 扩展名 → Content-Type（键与 AUDIO_EXTS 同集） */
 export const AUDIO_MIME: Readonly<Record<string, string>>;
 
+/** 美术类型字面（【图】标记与【清单】行的类型段；ArtKind 字面联合的类型源） */
+export const ART_KINDS: readonly ["立绘", "背景", "封面"];
+
+/** 资产文件名的类型子集（立绘/背景；封面走 cover.jpg） */
+export const ASSET_KINDS: readonly ["立绘", "背景"];
+
+/** 资产文件名 `<类型>-<名>.jpe?g`（由 ASSET_KINDS 构造，见 protocol.mjs 源码；落盘与直服白名单共用） */
+export const ASSET_FILE_RE: RegExp;
+
 /** 客户端指令前缀（pickEffort 推理分档与 isMainTurn 正戏回合判定共用；「待命：」后缀判定不在此） */
 export const DIRECTIVE_PREFIX_RE: RegExp;
 

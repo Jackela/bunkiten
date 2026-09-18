@@ -863,7 +863,7 @@ describe("server 快照子系统纯函数（CONTRACTS §2）", () => {
   });
 });
 
-describe("server readSnapshots 列表缓存（v1.7 读路径索引化：mtime stamp 比对失效 + 写方主动失效）", () => {
+describe("server readSnapshots 列表缓存（v1.7 读路径索引化：逐文件名字+mtime 复用）", () => {
   // 缓存是模块级（key = history 目录绝对路径），计数探针只看**每次调用前后的增量**，
   // 不依赖其他用例有没有碰过 readSnapshots（每个用例各自 mkdtemp 出独立目录，互不串）。
   const seedSnap = (root: string, seq: number, state: string) => {
@@ -875,12 +875,12 @@ describe("server readSnapshots 列表缓存（v1.7 读路径索引化：mtime st
     );
   };
 
-  it("stamp 一致 → 第二次读命中缓存：不再 JSON.parse（parses 不变、hits +1）", () => {
+  it("文件与 mtime 都没变 → 第二次读命中缓存：不再 JSON.parse（parses 不变、hits +1）", () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "snapcache-"));
     try {
       seedSnap(root, 1, "s1");
       const before = __snapshotCacheStats();
-      expect((readSnapshots("w1", root) as any[]).map((s) => s.seq)).toEqual([1]); // 第一次：全量解析
+      expect((readSnapshots("w1", root) as any[]).map((s) => s.seq)).toEqual([1]); // 第一次：解析这一个文件
       const mid = __snapshotCacheStats();
       expect(mid.parses).toBe(before.parses + 1);
       expect(mid.hits).toBe(before.hits);
@@ -893,18 +893,19 @@ describe("server readSnapshots 列表缓存（v1.7 读路径索引化：mtime st
     }
   });
 
-  it("目录新增快照文件（外部写入，不经 writeSnapshot）→ stamp 失效，读到新条目", () => {
+  it("目录新增快照文件（外部写入，不经 writeSnapshot）→ 只补解析新文件，旧条目复用", () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "snapcache-add-"));
     try {
       seedSnap(root, 1, "s1");
       expect((readSnapshots("w1", root) as any[]).map((s) => s.seq)).toEqual([1]); // 先填缓存
       const before = __snapshotCacheStats();
-      seedSnap(root, 2, "s2"); // 新文件名不在 stamp 里 → 下次读必须全量重解析
+      seedSnap(root, 2, "s2"); // 新文件名不在 byFile 里 → 只解析它
       const snaps = readSnapshots("w1", root) as any[];
       const after = __snapshotCacheStats();
       expect(snaps.map((s) => s.seq)).toEqual([1, 2]);
       expect(snaps[1].files.state).toBe("s2");
-      expect(after.parses).toBe(before.parses + 1); // 失效后重解析，而不是回旧缓存
+      // 逐文件解析计数：parses 只 +1——若走了全量重解析会是 +2（旧条目也重新读盘）
+      expect(after.parses).toBe(before.parses + 1);
       expect(after.hits).toBe(before.hits);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -923,7 +924,7 @@ describe("server readSnapshots 列表缓存（v1.7 读路径索引化：mtime st
     }
   });
 
-  it("同名覆盖写（文件名集合不变、mtime 变）→ stamp 逐文件比对失效，读到新内容", () => {
+  it("同名覆盖写（文件名不变、mtime 变）→ 该文件重解析，其余条目照常复用", () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "snapcache-mtime-"));
     try {
       seedSnap(root, 1, "s1");
@@ -936,7 +937,7 @@ describe("server readSnapshots 列表缓存（v1.7 读路径索引化：mtime st
       utimesSync(file, t, t);
       const snaps = readSnapshots("w1", root) as any[];
       const after = __snapshotCacheStats();
-      expect(snaps[0].files.state).toBe("s1-改"); // mtime 比对兜住了「只比名字集合」抓不到的覆盖写
+      expect(snaps[0].files.state).toBe("s1-改"); // 逐文件 mtime 比对兜住了「只看文件名」抓不到的覆盖写
       expect(after.parses).toBe(before.parses + 1);
       expect(after.hits).toBe(before.hits);
     } finally {
@@ -944,19 +945,20 @@ describe("server readSnapshots 列表缓存（v1.7 读路径索引化：mtime st
     }
   });
 
-  it("writeSnapshot 写盘后主动失效：紧跟的 readSnapshots 重解析见新条目（不等 mtime 比对兜底）", () => {
+  it("writeSnapshot 写盘后无需失效：新文件名即缓存未命中，旧条目复用、只解析新文件", () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "snapcache-write-"));
     try {
       seedSnap(root, 1, "s1");
       expect((readSnapshots("w1", root) as any[]).map((s) => s.seq)).toEqual([1]); // 先填缓存
       const before = __snapshotCacheStats();
-      // writeSnapshot（与正戏回合落盘同一条路径）写入 seq=2；即便文件系统 mtime 粒度粗到与 stamp 同值，主动失效也保证见新
+      // writeSnapshot（与正戏回合落盘同一条路径）写入 seq=2：seq 递增**永远写新文件名**，
+      // 名字比对必然未命中 → 只解析它、旧条目照常复用（若走整体失效，parses 会是 +2）
       const w = writeSnapshot(root, "w1", { kind: "turn", nodeId: "1-2", chapterNo: 1, files: { state: "s2", summary: null, tree: null } }) as any;
       expect(w.seq).toBe(2);
       const snaps = readSnapshots("w1", root) as any[];
       const after = __snapshotCacheStats();
       expect(snaps.map((s) => s.seq)).toEqual([1, 2]);
-      expect(after.parses).toBe(before.parses + 1); // 写方删了缓存，读必须重解析
+      expect(after.parses).toBe(before.parses + 1); // 只解析新写入的那一个文件
       expect(after.hits).toBe(before.hits);
     } finally {
       rmSync(root, { recursive: true, force: true });
