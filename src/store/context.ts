@@ -21,6 +21,7 @@ import {
   buildRegenCommand,
   parseManifest,
   splitAssetVariant,
+  variantLabel,
   type ArtKind,
   type Marker,
 } from "../lib/parser";
@@ -345,7 +346,7 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
             kind: m.kind,
             name: m.name,
             variant,
-            label: variant ? `${base} · ${variant}` : m.name,
+            label: variantLabel(base, variant),
             command: buildArtCommand(ART_KIND[m.kind], m.name),
             state: "pending" as const,
             url: null,

@@ -39,7 +39,7 @@ function PortraitFigure({ portrait }: { portrait: PortraitState }) {
         </AnimatePresence>
       </div>
       {portrait.name && (
-        <span className="absolute -left-3.5 top-2.5 rounded-sm border border-gold/35 bg-[rgba(10,12,18,.72)] px-[5px] py-3 text-sm tracking-[.35em] text-gold [writing-mode:vertical-rl]">
+        <span className="absolute -left-3.5 top-2.5 rounded-sm border border-gold/35 bg-panel px-[5px] py-3 text-sm tracking-[.35em] text-gold [writing-mode:vertical-rl]">
           {portrait.name}
         </span>
       )}

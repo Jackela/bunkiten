@@ -28,7 +28,7 @@ function Rule() {
  * 3) z-40：压在对话区（z-20）与命令轨（z-30）之上、抽屉与 overlay（z-50）之下——
  *    卡在屏时开回想/角色抽屉，抽屉照样盖在最上面。
  *
- * **挂在 App 根、不在 GameStage 里**（v1.7.1）：GameStage 与 game 屏同生共死——画廊/剧情图/设置
+ * **挂在 App 根、不在 GameStage 里**（v1.8）：GameStage 与 game 屏同生共死——画廊/剧情图/设置
  * 这类整屏 overlay 返回 game 屏时它整棵被重建，卡若挂在它里面就必然「同章号再亮一次」（旧版的已知副作用）。
  * 卡要活得比 game 屏长，于是挪到 App 的常驻层，跨屏记忆放一个 ref（`{ worldId, chapterNo }` = 上次亮过的）：
  * 进 game 屏时与 ref 比对，世界线或章号变过才亮。四条行为由此同时成立——首次进 game 屏照亮（ref 尚空，

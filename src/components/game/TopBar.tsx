@@ -1,6 +1,6 @@
 import { useGameStore } from "../../store/game";
 import { playerStatus } from "../../lib/status";
-import { isLegacyForkNote } from "../../lib/worlds";
+import { resolveWorldLabel } from "../../lib/worlds";
 import { useTurnElapsed } from "../useTurnElapsed";
 
 /** 快捷命令按钮：竖排文字，贴右侧边缘（galgame 规范的操作轨）；testId/aria 供 e2e 与无障碍名分离于短标签 */
@@ -58,11 +58,11 @@ export default function TopBar() {
   const canReroll = status === "就绪" && !!lastTurnPrompt && !pendingResync && (turnSnapshots === null || turnSnapshots >= 2);
   // 一切正常 = 没有需要玩家读的状态：状态簇整块不画（见文件头注释）
   const idle = status === "就绪" && !busy && !pendingResync;
-  // 世界名只在「有备注名」时出现：store 在无备注时会把它写成 worldId，
-  // 这时显示出来就是一条 slug（campus-summer-1），对玩家零信息量——干脆不渲染。
-  // 旧版 server 自动写的分叉备注同理（「分叉自 campus-summer-1 @ 2-2」也是裸 id 串，
+  // 世界名只在「有名字」时出现：无显示名时 store 退化为空串；`worldLabel !== worldId` 只是防旧状态/手改数据
+  // （裸 id 对玩家零信息量）。旧版 server 自动写的分叉备注同理（「分叉自 campus-summer-1 @ 2-2」也是裸 id 串，
   // 见 lib/worlds）：当前世界线的来历在剧情图/世界线屏看，顶栏只留玩家自己起的名字。
-  const showWorldLabel = !!worldLabel && worldLabel !== worldId && !isLegacyForkNote(worldLabel);
+  const label = resolveWorldLabel(worldLabel, worldId);
+  const showWorldLabel = label !== "";
 
   return (
     <>
@@ -76,7 +76,7 @@ export default function TopBar() {
         </span>
         {showWorldLabel && (
           <span data-testid="world-label" className="max-w-[26ch] truncate text-ink-hint">
-            {worldLabel}
+            {label}
           </span>
         )}
         {/* 回退后的待重同步徽章：重同步回合成功即消失；失败时旁边长出「再同步」重试入口 */}

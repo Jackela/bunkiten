@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 
 /**
- * 壳层页框（v1.8）：title/worlds/protagonist/crafting/settings/assets 这些非游戏舞台屏共用的外框——
+ * 壳层页框（v1.8）：worlds/protagonist/crafting/settings/assets 这些非游戏舞台屏共用的外框——
  * 满幅主题底（由屏外层吃 global.css 的 .shell-backdrop）+ 宽栏（本文件唯一的定宽：max-w-[84rem]）+
  * 统一表头（eyebrow → 标题 + 短 accent 分隔线 → 右侧动作簇）+ 可选 ≥xl 右栏 + 可选页脚提示行。
  *
@@ -13,7 +13,7 @@ import type { ReactNode } from "react";
  * @param {object} props eyebrow 眉标：短标记（剧本名/分类这类），text-meta 上限；
  *   title 屏标题，text-title；actions 右侧动作簇（按钮/分段控件，窄屏自动换行）；
  *   aside 右栏内容（仅 ≥xl 与正文并排）；footer 页脚提示行（快捷键提示/统计；不传则不渲染该行）；
- *   children 主体；className 追加到外框（屏级微调：栅格、min-h 覆盖等）
+ *   children 主体
  */
 export function ShellPage({
   eyebrow,
@@ -22,7 +22,6 @@ export function ShellPage({
   aside,
   footer,
   children,
-  className = "",
 }: {
   eyebrow?: ReactNode;
   title: ReactNode;
@@ -30,12 +29,11 @@ export function ShellPage({
   aside?: ReactNode;
   footer?: ReactNode;
   children: ReactNode;
-  className?: string;
 }) {
   return (
     <div
       data-testid="shell-page"
-      className={`mx-auto flex min-h-full w-full max-w-[84rem] flex-col px-6 py-8 lg:px-10 ${className}`}
+      className="mx-auto flex min-h-full w-full max-w-[84rem] flex-col px-6 py-8 lg:px-10"
     >
       <header className="mb-7 flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">

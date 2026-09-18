@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Sparkles } from "lucide-react";
 import { BUILD_ASSEMBLE, parseOptions, stripOptionsBlock } from "../lib/parser";
+import { playerStatus } from "../lib/status";
 import { useGameStore } from "../store/game";
 import { ScreenShell } from "./ScreenShell";
 
@@ -63,7 +64,7 @@ export default function CreationScreen() {
             <h2 className="text-title tracking-[.6em] [text-indent:.6em]">剧 本 创 作</h2>
             <span
               className={`h-[7px] w-[7px] flex-none rounded-full ${engineBusy ? "animate-pulse bg-gold" : "bg-[#3d4254]"}`}
-              title={status}
+              title={playerStatus(status)}
             />
             <button
               type="button"
@@ -218,7 +219,7 @@ export default function CreationScreen() {
           >
             <div
               onClick={(e) => e.stopPropagation()}
-              className="flex items-center gap-4 rounded-xl border border-white/10 bg-[rgba(10,12,18,.95)] px-6 py-5"
+              className="flex items-center gap-4 rounded-xl border border-white/10 bg-panel-strong px-6 py-5"
             >
               <p className="text-body text-ink-body">返回？创作对话将保留</p>
               <button

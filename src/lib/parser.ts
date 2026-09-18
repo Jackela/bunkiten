@@ -348,12 +348,6 @@ export type ArtKind = (typeof ART_KINDS)[number];
  * @param {string} name 角色名或地点名（v1.2 起来自制作清单）
  * @returns {string} 形如「美术：立绘 沈屿」的指令原文
  */
-/**
- * 分项美术指令（待命模式下逐项发送）。
- * @param {ArtKind} kind 立绘或背景
- * @param {string} name 角色名或地点名（v1.2 起来自制作清单）
- * @returns {string} 形如「美术：立绘 沈屿」的指令原文
- */
 export function buildArtCommand(kind: ArtKind, name: string): string {
   return `美术：${kind} ${name}`;
 }
@@ -388,6 +382,17 @@ export function buildTreeEditCommand(text: string): string {
 export function splitAssetVariant(name: string): { base: string; variant: string } {
   const i = name.indexOf("-");
   return i === -1 ? { base: name, variant: "" } : { base: name.slice(0, i), variant: name.slice(i + 1) };
+}
+
+/**
+ * 资产显示名的变体后缀：有变体拼成「<名> · <变体>」（画廊卡片与制作槽位共用这一处格式），
+ * 基础版/背景/封面原样返回。
+ * @param {string} base 基础名（角色名或地点名）
+ * @param {string | null} [variant] 变体名（空/缺省 = 基础版）
+ * @returns {string} 展示用名
+ */
+export function variantLabel(base: string, variant?: string | null): string {
+  return variant ? `${base} · ${variant}` : base;
 }
 
 /** 资产名归一化：去掉全部空白（引擎措辞与落盘名之间的唯一稳定等价关系） */

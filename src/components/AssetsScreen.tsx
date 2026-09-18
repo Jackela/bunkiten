@@ -2,13 +2,14 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { RefreshCw, X } from "lucide-react";
 import { assetFileUrl, fetchAssets, type AssetEntry } from "../lib/acp";
+import { variantLabel } from "../lib/parser";
 import { useGameStore, type RegenJob } from "../store/game";
 import { ScreenShell } from "./ScreenShell";
 import { ShellPage } from "./ShellPage";
 
-/** 卡片显示名：差分拆开为「薇拉 · 微笑」，基础/背景/封面原样 */
+/** 卡片显示名：差分拆开为「薇拉 · 微笑」（格式见 lib/parser 的 variantLabel），基础/背景/封面原样 */
 function assetLabel(a: AssetEntry): string {
-  return a.type === "立绘" && a.variant ? `${a.name} · ${a.variant}` : a.name;
+  return a.type === "立绘" && a.variant ? variantLabel(a.name, a.variant) : a.name;
 }
 
 /** 发给引擎的重绘 key 与【图|重绘】标记匹配名（封面用 preset id 下指令、用标题匹配标记） */
@@ -516,7 +517,7 @@ export default function AssetsScreen() {
               exit={{ scale: 0.96, opacity: 0 }}
               transition={{ duration: 0.25, ease: "easeOut" }}
               onClick={(e) => e.stopPropagation()}
-              className="relative flex w-[min(560px,92vw)] flex-col gap-3 rounded-2xl border border-white/10 bg-[rgba(10,12,18,.95)] p-4"
+              className="relative flex w-[min(560px,92vw)] flex-col gap-3 rounded-2xl border border-white/10 bg-panel-strong p-4"
             >
               <button
                 ref={closeRef}
@@ -557,7 +558,7 @@ export default function AssetsScreen() {
                       <RefreshCw size={13} className="animate-spin" /> 生成中…
                     </>
                   ) : engineBusy ? (
-                    "引擎忙"
+                    "忙碌中"
                   ) : regenActive ? (
                     "生成中…"
                   ) : (

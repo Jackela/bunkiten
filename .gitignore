@@ -10,8 +10,9 @@ playwright-report/
 *.tsbuildinfo
 .DS_Store
 
-# 运行时数据：引擎按世界线写入 state/worlds/<worldId>/（只保留说明文件）
+# 运行时数据：引擎按世界线写入 state/worlds/<worldId>/，删除的世界线/素材先挪进 state/trash/（只保留说明文件）
 state/worlds/
+state/trash/
 state/*.md
 !state/README.md
 

@@ -13,6 +13,7 @@ import { motion } from "framer-motion";
 import { Maximize2, ZoomIn, ZoomOut } from "lucide-react";
 import { fetchWorlds, postWorld, worldExportUrl, type WorldEntry } from "../lib/acp";
 import { genealogyStep, layoutGenealogy, type GenealogyLayout } from "../lib/genealogy";
+import { truncate } from "../lib/text";
 import { fitView, panView, viewBoxOf, zoomViewAt, type TreeView } from "../lib/treeLayout";
 import { isLegacyForkNote } from "../lib/worlds";
 import { getTheme, themeVars } from "../theme";
@@ -27,8 +28,8 @@ const ROW = { initial: { opacity: 0, y: 8 }, animate: { opacity: 1, y: 0 } } as 
 const STALE_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** 显示名/备注的字数上限（与 server POST /api/worlds update 校验一致，超了服务端会拒） */
-export const LABEL_MAX = 60;
-export const NOTE_MAX = 200;
+const LABEL_MAX = 60;
+const NOTE_MAX = 200;
 
 /** ⋯ 菜单项基类（三项共用；删除/确认项在其后追加红色 hover 类） */
 const MENU_ITEM_CLS =
@@ -92,11 +93,6 @@ const GEN_MAX_NODE_PX = 270;
 /** 缩放步进倍数与拖拽死区：与剧情图 TreeCanvas 同值（两块画布的体感与测试口径保持一致） */
 const GEN_ZOOM_STEP = 1.25;
 const GEN_DRAG_SLOP = 4;
-
-/** 显示名超长时截断（SVG text 不会自动省略）；n 按最宽字形（CJK ≈ 1em）估算，见节点处调用 */
-function truncateName(s: string, n: number): string {
-  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
-}
 
 /**
  * 家谱画布（v1.7 / v1.8 缩放平移）：把 forkedFrom 血缘的森林画成 SVG——节点 = 圆角矩形卡
@@ -385,6 +381,7 @@ function GenealogyCanvas({
                   }}
                   strokeWidth={focused ? 2.6 : 1.5}
                 />
+                {/* 显示名超长时截断（SVG text 不会自动省略）；n 按最宽字形（CJK ≈ 1em）估算 */}
                 <text
                   x={n.x + 12}
                   y={n.y + 25}
@@ -393,7 +390,7 @@ function GenealogyCanvas({
                   fontWeight={600}
                   letterSpacing="0.06em"
                 >
-                  {truncateName(name, badged ? 10 : 12)}
+                  {truncate(name, badged ? 10 : 12)}
                 </text>
                 <text x={n.x + 12} y={n.y + 46} style={{ fill: "var(--ink)", opacity: 0.55 }} fontSize={12}>
                   第 {n.entry.chapterNo} 章
@@ -821,7 +818,7 @@ export default function WorldsScreen() {
                       data-testid="worlds-resume-continue"
                       aria-label={`继续上次的世界线 ${worldDisplayName(lastWorld, presetTitle)}`}
                       disabled={!lastWorld.exists || engineBusy}
-                      title={!lastWorld.exists ? "目录缺失" : engineBusy ? "引擎忙" : undefined}
+                      title={!lastWorld.exists ? "目录缺失" : engineBusy ? "忙碌中，稍后再试" : undefined}
                       onClick={() => continueWorld(lastWorld)}
                       className={`mt-3 w-full rounded-lg border px-4 py-2 text-ui tracking-[.1em] transition-colors ${
                         !lastWorld.exists || engineBusy
@@ -829,7 +826,7 @@ export default function WorldsScreen() {
                           : "border-gold/35 bg-gold/15 text-gold hover:bg-gold/30"
                       }`}
                     >
-                      {engineBusy ? "引擎忙" : "继续"}
+                      {engineBusy ? "忙碌中" : "继续"}
                     </button>
                   </>
                 ) : (
@@ -1046,7 +1043,7 @@ export default function WorldsScreen() {
                           data-testid={`world-continue-${entry.worldId}`}
                           aria-label={`继续世界线 ${name}`}
                           disabled={missing || engineBusy}
-                          title={missing ? "目录缺失" : engineBusy ? "引擎忙" : undefined}
+                          title={missing ? "目录缺失" : engineBusy ? "忙碌中，稍后再试" : undefined}
                           onClick={() => continueWorld(entry)}
                           className={`rounded-lg border px-3.5 py-1.5 text-ui tracking-[.1em] transition-colors ${
                             missing || engineBusy
@@ -1054,7 +1051,7 @@ export default function WorldsScreen() {
                               : "border-gold/35 bg-gold/15 text-gold hover:bg-gold/30"
                           }`}
                         >
-                          {engineBusy ? "引擎忙" : "继续"}
+                          {engineBusy ? "忙碌中" : "继续"}
                         </button>
 
                         {/* ⋯ 菜单：触发器 + 弹层同在一个容器里（点外面就以此为准）。Esc 与「焦点离开本行」
@@ -1284,7 +1281,7 @@ export default function WorldsScreen() {
                               : "border-gold/35 bg-gold/15 text-gold hover:bg-gold/30"
                           }`}
                         >
-                          {engineBusy ? "引擎忙" : "继续"}
+                          {engineBusy ? "忙碌中" : "继续"}
                         </button>
                         <button
                           type="button"

@@ -107,7 +107,7 @@ describe("TopBar：章节指示与回合耗时", () => {
   });
 });
 
-describe("ChapterCard：章节过场卡（v1.7.1）", () => {
+describe("ChapterCard：章节过场卡（v1.8）", () => {
   beforeEach(() => {
     useGameStore.setState({ screen: "game", worldId: "campus-summer-1", chapterNo: 1 });
   });
@@ -181,7 +181,7 @@ describe("lib/status：引擎状态文案的玩家化映射（v1.6）", () => {
   });
 });
 
-describe("lib/worlds：旧版分叉备注识别（v1.7.1）", () => {
+describe("lib/worlds：旧版分叉备注识别（v1.8）", () => {
   it("isLegacyForkNote 真值表：两种真实形态（含前后空白）为 true，空值与近似形态为 false", () => {
     // 旧版 server 自动写的两种真实形态
     expect(isLegacyForkNote("分叉自 campus-summer-1 @ 2-2")).toBe(true);
@@ -541,7 +541,7 @@ describe("StoryTreeScreen：树图、详情与编辑（v1.5）", () => {
   });
 });
 
-describe("AssetsScreen：分组、在用徽标与预览", () => {
+describe("AssetsScreen：分组、未使用徽标与预览", () => {
   // v1.5.1：资产随剧本走，清单只含目录 presets/<preset>/assets/ 下的文件（封面 presets/<preset>/cover.jpg）；
   // 每条都带 preset，画廊按它做防御性过滤（跨剧本条目见下一条用例）
   const ASSETS: AssetEntry[] = [
@@ -614,13 +614,13 @@ describe("AssetsScreen：分组、在用徽标与预览", () => {
     vi.stubGlobal("fetch", fetchMock);
   });
 
-  it("立绘按角色分组（差分显示为 名 · 变体），背景/封面各自成组，未使用徽标只标未在用的项", async () => {
+  it("立绘按角色分组（差分显示为 名 · 变体），背景/封面各自成组，未使用徽标只标未被引用的项", async () => {
     render(<AssetsScreen />);
     await waitFor(() => expect(screen.getByText("立 绘")).toBeTruthy());
     expect(screen.getByText("薇拉 · 微笑")).toBeTruthy();
     expect(screen.getByText("背 景")).toBeTruthy();
     expect(screen.getByText("封 面")).toBeTruthy();
-    // 在用途是多数（标了等于没标）：角标只标异常——4 项里只有基础薇拉 inUse
+    // inUse 是多数态（标了等于没标）：角标只标异常——4 项里只有基础薇拉 inUse
     expect(screen.queryByText("在用")).toBeNull();
     expect(screen.getAllByText("未使用")).toHaveLength(3);
     // 清单请求按当前剧本过滤

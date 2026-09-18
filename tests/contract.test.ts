@@ -328,9 +328,9 @@ function countCases(rel: string): number {
 
 /**
  * 文档里「分组 → 数字」的宽松抓取（允许「例」字、允许加号列、允许目录树形态）：
- * ① 加号列与括号注：`parser 65 + server 76`、`（server 76 例）`
- * ② 目录树形态：`parser.test.ts        # …（65 例）`、`integration/  # … 18 例`
- * ③ ARCHITECTURE 的「另有真 server 子进程的集成测试 18 例」——这句里没有 integration 字面
+ * ① 加号列与括号注：`parser 65 + server 106`、`（server 106 例）`
+ * ② 目录树形态：`parser.test.ts        # …（65 例）`、`integration/  # … 27 例`
+ * ③ ARCHITECTURE 的「另有真 server 子进程的集成测试 27 例」——这句里没有 integration 字面
  */
 const DOC_GROUP_RES: { re: RegExp; group: (m: RegExpExecArray) => string }[] = [
   { re: /\b(parser|crafting|server|treeLayout|genealogy|diff|doctor|ui|integration)[ \t]+(\d+)\b/g, group: (m) => m[1] },
@@ -338,15 +338,15 @@ const DOC_GROUP_RES: { re: RegExp; group: (m: RegExpExecArray) => string }[] = [
   { re: /集成测试\s*(\d+)\s*例/g, group: () => "integration" },
 ];
 
-/** 子分组声明（`pipeline 8`、`` `integration/pipeline` 8 ``） */
+/** 子分组声明（`pipeline 15`、`` `integration/pipeline` 15 ``） */
 const DOC_SUB_RE = /(pipeline|audio-history|http-guard)`?\s*(\d+)/g;
-/** 合计声明（README「单测 + 集成全量 369 例」、AGENTS「**共 369 例**」） */
+/** 合计声明（README「单测 + 集成全量 415 例」、AGENTS「**共 415 例**」） */
 const DOC_TOTAL_RE = /(?:共|全量)\s*(?:\*\*)?(\d+)(?:\*\*)?\s*例/g;
 
 /**
- * 「合计口径」的其它既有写法：这些数字同样必须等于 CASE_TOTAL。
- * 由来：AGENTS 的「自身不计入 395 口径」在两次计数同步里都漏网（395→405 时靠人眼才发现）——
- * 措辞换了但数字没改的漂移，由这几条模式兜住；文档换新措辞时把新模式补进来。
+ * 「合计口径」的其它既有写法：这些数字同样必须等于 CASE_TOTAL（现在 415）。
+ * 由来：AGENTS 的「自身不计入 415 口径」这类措辞在历次计数同步里都漏网过——数字换了、措辞没跟上，
+ * 只能靠人眼才发现——这几条模式专门兜住这种漂移；文档换新措辞时把新模式补进来。
  */
 const DOC_TOTAL_ALT_RES = [
   /不计入(?:这)?\s*(?:\*\*)?(\d+)/g, // 「不计入 415 口径」「不计入这 415**」

@@ -87,7 +87,7 @@ export interface WorldEntry {
   /** 最近游玩时间（ms；取三份文件最新 mtime） */
   lastPlayed: number;
   /**
-   * 备注（≤200 字）。v1.7.1 起 server **不再**给分叉世界自动写「分叉自 <世界> @ <节点>」
+   * 备注（≤200 字）。v1.8 起 server **不再**给分叉世界自动写「分叉自 <世界> @ <节点>」
    * （血缘改由 `forkedFrom` 与 `fork.md` 记录），但老索引里还留着那种串——显示层用
    * `lib/worlds.ts` 的 `isLegacyForkNote` 把它当作「没有备注」，免得把裸 id 端给玩家。
    */

@@ -1,7 +1,7 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useGameStore, type PreloadItem } from "../store/game";
 import { playerStatus } from "../lib/status";
-import { isLegacyForkNote } from "../lib/worlds";
+import { resolveWorldLabel } from "../lib/worlds";
 import { ScreenShell } from "./ScreenShell";
 import { ShellPage } from "./ShellPage";
 import { useTurnElapsed } from "./useTurnElapsed";
@@ -157,9 +157,10 @@ export default function CraftingScreen() {
   const doneCount = preload.filter((i) => i.state === "done").length;
   const busy = status.includes("…");
   const canSkip = preloadPhase === "init" || preloadPhase === "planning" || preloadPhase === "queue";
-  // 世界名只在「有名字」时出现（与顶栏同一条规则）：store 无备注时会写成 worldId，
-  // 旧版 server 自动写的分叉备注也是裸 id 串（见 lib/worlds）——两条 slug 都不上玩家的屏
-  const showWorldLabel = !!worldLabel && worldLabel !== worldId && !isLegacyForkNote(worldLabel);
+  // 世界名只在「有名字」时出现（与顶栏同一条规则）：无显示名时 store 退化为空串；
+  // `worldLabel !== worldId` 只是防旧状态/手改数据（旧版 server 自动写的分叉备注也是裸 id 串，见 lib/worlds）
+  const label = resolveWorldLabel(worldLabel, worldId);
+  const showWorldLabel = label !== "";
 
   return (
     <ScreenShell className="overflow-y-auto shell-backdrop">
@@ -198,7 +199,7 @@ export default function CraftingScreen() {
         </p>
         <p className="mt-1.5 text-meta tracking-[.2em] text-ink-hint">
           {planning ? `正在为《${selected.title}》筹备第 ${chapterNo} 章` : `美术 ${doneCount} / ${preload.length} 就绪`}
-          {showWorldLabel && <span className="ml-2 text-ink-hint">· {worldLabel}</span>}
+          {showWorldLabel && <span className="ml-2 text-ink-hint">· {label}</span>}
         </p>
 
         {planning ? (

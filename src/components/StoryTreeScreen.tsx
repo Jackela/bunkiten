@@ -27,8 +27,9 @@ import {
   type TreeNode,
   type TreeNodeStatus,
 } from "../lib/parser";
-import { isLegacyForkNote } from "../lib/worlds";
+import { truncate } from "../lib/text";
 import { fitView, layoutTree, panView, viewBoxOf, zoomViewAt, type LayoutNode, type TreeLayout, type TreeView } from "../lib/treeLayout";
+import { resolveWorldLabel } from "../lib/worlds";
 import { useGameStore } from "../store/game";
 import { ScreenShell } from "./ScreenShell";
 
@@ -50,11 +51,6 @@ const DRAG_SLOP = 4;
 interface SnapshotRef {
   seq: number;
   turn: number;
-}
-
-/** beat/梗概太长时截断（SVG 文字与列表行都不会自动省略） */
-function truncate(s: string, n: number): string {
-  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
 /** 节点状态 → 配色：已走过=主题金、可达=中性水墨、已剪枝=暗+虚线、嫁接=紫 */
@@ -1110,7 +1106,7 @@ export default function StoryTreeScreen() {
   // 无世界线：不开图，给一句引导
   if (!worldId) {
     return (
-      <ScreenShell className="bg-bg/70">
+      <ScreenShell className="shell-backdrop">
         <div className="absolute inset-0 flex items-center justify-center px-6 text-center">
           <p className="text-ui tracking-[.1em] text-ink-hint">先开始或继续一条世界线，再来看剧情图</p>
         </div>
@@ -1118,14 +1114,13 @@ export default function StoryTreeScreen() {
     );
   }
 
-  // 标题上的世界名：显名只在它是**真名字**时用——store 在无显示名时会退化（label→note），
-  // 若那串恰好是裸 worldId（老 store 的旧行为 / 手改的 store 状态）也不能上屏；旧版 server 自动写的
-  // 分叉备注（isLegacyForkNote）同理不算名字，落回「本世界线」。裸 worldId 只活在目录名与日志里。
-  const worldName =
-    worldLabel.trim() && worldLabel !== worldId && !isLegacyForkNote(worldLabel) ? worldLabel.trim() : "本世界线";
+  // 标题上的世界名：真有名字才用（无显示名时 store 已退化为空串；`worldLabel === worldId` 只是防旧状态/
+  // 手改数据，旧版 server 自动写的分叉备注同理不算名字——两条 slug 都由 lib/worlds 的显示层兜底滤掉），
+  // 都没有就落回「本世界线」。裸 worldId 只活在目录名与日志里。
+  const worldName = resolveWorldLabel(worldLabel, worldId, "本世界线");
 
   return (
-    <ScreenShell className="bg-bg/70">
+    <ScreenShell className="shell-backdrop">
       <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}

@@ -286,8 +286,8 @@ export interface GameStore {
   beginNewWorld(worldId: string): void;
   /**
    * 世界线屏：继续某个已有世界（读档续演，跳过初始化与开场卡）。
-   * entry 直接收 {@link WorldEntry} 的这四项：显示名（label）要走同一条回退链，缺了它顶栏/图屏
-   * 就只能拿 worldId 或备注顶上去（见 {@link GameStore.worldLabel}）。
+   * entry 直接收 {@link WorldEntry} 的这四项：显示名（label）要走同一条回退链，缺了它就退化为备注或空串，
+   * 绝不落裸 worldId（见 {@link GameStore.worldLabel}）。
    */
   resumeWorld(entry: Pick<WorldEntry, "worldId" | "chapterNo" | "note" | "label">): void;
   /** 打开剧情图（overlay；游戏内与章间制作屏都可进入） */

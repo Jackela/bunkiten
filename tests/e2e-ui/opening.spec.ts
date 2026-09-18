@@ -120,8 +120,8 @@ test("开局全链路：捏人填卡→跳过美术开演→正文/选项/立绘
     dialogueBox!.x + dialogueBox!.width,
     `对话区右缘 ${dialogueBox!.x + dialogueBox!.width} 压住了立绘左缘 ${portraitBox!.x}（立绘 ${portraitBox!.width}×${portraitBox!.height}）：右侧预留没生效`,
   ).toBeLessThan(portraitBox!.x);
-  // 让位是「整体左移」而不是「把对话面板挤窄」：1280 宽下 min(860px,100vw) 扣掉 px-3.5 后应 ≈832，
-  // 只有把预留 padding 加在对话面板自身上才会缩到 ~430（可用宽度被面板自己吃掉）。
+  // 让位是「整体左移」而不是「把对话面板挤窄」：1280 宽下 max-w-[800px] 扣掉 px-3.5 后应 ≈772，
+  // 只有把预留 padding 加在对话面板自身上才会缩到 ~350（可用宽度被面板自己吃掉）。
   expect(dialogueBox!.width, "对话面板被右侧预留挤窄了：预留应加在满宽外层而不是面板自身").toBeGreaterThan(700);
 
   // 【图】背景标记 → BgLayer 离屏预载 onload 后上屏（style.backgroundImage 已设置，URL 即 marker 直服目标）

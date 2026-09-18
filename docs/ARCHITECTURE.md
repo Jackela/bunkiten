@@ -300,7 +300,7 @@ SKILL 要求引擎全程文本静默，但模型不一定完全遵守（如读�
 运行时进度以「世界」为单位：`state/worlds/<worldId>/` 下三份文件（state.md / summary.md / story-tree.md）；同一剧本可并行多条世界线（多周目、平行线），互相完全独立。`state/worlds/index.json` 是索引（server 侧 `readWorldsIndex`/`writeWorldsIndex`，根常量 `WORLDS_ROOT`，三文件常量 `WORLD_FILES`）。
 
 - **index.json 字段**：每条形如 `{ worldId, preset, title, label, note, chapterNo, lastPlayed, forkedFrom }`；`worldId` 白名单 `[A-Za-z0-9_-]+`（`WORLD_ID_RE`，防路径穿越）；`forkedFrom` 为 `{ worldId, nodeId }` 或 `{ worldId, nodeId, seq }`（精确分叉才带 `seq`）或 `null`。
-- **`label` / `note`（v1.6；`note` 的分叉语义 v1.7.1 起撤销）**：`label` 是玩家起的显示名（`POST /api/worlds {action:"update"}` 写入，≤60 字），`note` 是备注（≤200 字）；两者空串=清除，`listWorlds` 对老索引补 `label: ""`。**分叉不再往 `note` 里写任何东西**：`forkWorld` 把 `note` 固定成空串，血缘只走索引的 `forkedFrom`（精确分叉另带 `seq`）与 `fork.md`——旧版 server 写的「分叉自 <世界> @ <节点>」是裸 id 串，而 `note` 会被显示层当成世界名，等于把 slug 端给玩家。客户端显示名（`WorldsScreen.worldDisplayName`）的回退链是 **`label` → `note` → 所属剧本标题 →「未命名世界线」**，其中 `note` 这一档先过 `src/lib/worlds.ts` 的 `isLegacyForkNote`（旧版分叉备注按「没有备注」处理；顶栏世界名 chip、剧情图标题、制作中屏的世界名同款判定）；**裸 `worldId` 永不上玩家的屏**——它只活在目录名、导出文件名与日志里。改名编辑器在世界线行上的 `⋯` 菜单里，导出/导入的提示位也在世界线屏（`WorldsScreen.tsx`）。
+- **`label` / `note`（v1.6；`note` 的分叉语义 v1.8 起撤销）**：`label` 是玩家起的显示名（`POST /api/worlds {action:"update"}` 写入，≤60 字），`note` 是备注（≤200 字）；两者空串=清除，`listWorlds` 对老索引补 `label: ""`。**分叉不再往 `note` 里写任何东西**：`forkWorld` 把 `note` 固定成空串，血缘只走索引的 `forkedFrom`（精确分叉另带 `seq`）与 `fork.md`——旧版 server 写的「分叉自 <世界> @ <节点>」是裸 id 串，而 `note` 会被显示层当成世界名，等于把 slug 端给玩家。客户端显示名（`WorldsScreen.worldDisplayName`）的回退链是 **`label` → `note` → 所属剧本标题 →「未命名世界线」**，其中 `note` 这一档先过 `src/lib/worlds.ts` 的 `isLegacyForkNote`（旧版分叉备注按「没有备注」处理；顶栏世界名 chip、剧情图标题、制作中屏的世界名同款判定）；**裸 `worldId` 永不上玩家的屏**——它只活在目录名、导出文件名与日志里。改名编辑器在世界线行上的 `⋯` 菜单里，导出/导入的提示位也在世界线屏（`WorldsScreen.tsx`）。
 - **磁盘自愈**（`listWorlds`）：`/api/worlds` 以 index 为准但实时纠正磁盘真况——`chapterNo` 读该世界 story-tree.md 正文的最后一个 `## 第 N 章`（`worldChapterNo`）、`lastPlayed` 取三文件最新 mtime（与索引取大者），并补 `exists` 字段；列表按 `lastPlayed` 倒序（最近游玩优先）。
 - **旧数据迁移**：server 首次启动跑 `migrateLegacyState`，把旧扁平 `state/*.md` 一次性移入 `state/worlds/main/` 并写索引（幂等：`index.json` 已存在即跳过；无旧数据返回 false 不动）。
 - **删除进回收站（v1.7，ADR-0014）**：删除世界线（`{action:"delete"}`，先移索引再挪目录）与画廊素材（`POST /api/assets {action:"delete"}`）都不直删，统一走 `moveToTrash(root, ...rel)`：整个目录/文件 `rename` 进 `state/trash/<删除时间戳ms>-<随机4>-<原名>/`。trash 长在 `state/` 下，不在任何扫描面内（presets 扫描、worlds 索引、旧档迁移都看不到它），挪进去即从游戏里消失；EXDEV 等 rename 失败回退 `rmSync` 直删并标 `fallback:"purged"`（删除语义优先于回收站）。**不自动清理**，恢复只走手工文档（`state/README.md`「回收站」：世界线目录挪回 `state/worlds/` 并手工补 index.json 条目、素材剥掉 trash 前缀挪回 `presets/<id>/assets/`），客户端只在删除成功文案里说明去向，不做恢复 UI。
@@ -583,11 +583,11 @@ presets/<剧本 id>/audio/音效-门响.wav       # 一次性音效
 
 ## 角色面板（v1.7）
 
-游戏屏随时查看引擎维护的角色状态（好感度 / 表情 / 秘密 / 最近互动 / 导演手记 / Flags / 未回收伏笔）——此前这些信息只躺在 state.md 里，前端零解析、server 无对外接口。
+游戏屏随时查看引擎维护的角色状态（好感度 / 表情 / 秘密 / 最近互动 / 幕后手记 / 线索 / 未了伏笔——后三项在 state.md 里仍叫「导演手记 / Flags / 未回收伏笔」，改名只动呈现层）——此前这些信息只躺在 state.md 里，前端零解析、server 无对外接口。
 
 - **数据源与端点**：`GET /api/state?worldId=<id>` 读当前世界的 `state.md`（与引擎的 SSOT 同一份文件，不另建缓存）。路由判定收敛在纯函数 `stateViewFor(worldId, root)`（导出、root 可注入单测）：`worldId` 缺失或不过白名单 400、世界没有 `state.md` 404；`/` 首页 banner 也列了它。
 - **容错解析原则**（`parseStateFile(text)`，导出纯函数）：state.md 由引擎（LLM）维护，**小节可能缺、顺序可能乱、值可能越界**——解析绝不抛错，缺的静默缺省（字符串字段空串、数值 null）。逐条规则：`# 剧情状态` 的固定键 → `status`（preset/周目→playthrough/时间→time/场景→scene，缺 null）；`# 主角`/`# 导演手记` 的键值行原样收进 Record（引擎可自由加字段）；`# 角色卡` 的 `## <角色名>` 子节 → `characters`（身份→role、性格关键词→traits、口癖→catchphrase、好感度→favor、art_file→artFile、表情→expression、秘密→secret、最近互动→recentInteraction；好感度取行内整数**夹进 [0,100]**，非整数（如「很高」）为 null）；`# Flags` → 键值列表；`# 未回收伏笔` → 文本列表（行尾「埋于第 N 轮」拆出 `turn`，缺 null）。未知小节（场景美术等）与角色卡的未知键（`art_prompt`）忽略、不进响应。冒号全半角都认。
-- **客户端**（`lib/acp.ts` `fetchState`/`StateView` + `store/slices/characters.ts` + `components/game/CharactersDrawer.tsx`）：TopBar 命令轨「角色」入口（`data-testid="characters"`，面板容器 `characters-panel`）开右滑入抽屉，分块渲染剧情状态/主角/角色卡/导演手记/Flags·伏笔。好感度用 ink 阶梯 + accent（数字与细进度条），不引入新颜色 token。
+- **客户端**（`lib/acp.ts` `fetchState`/`StateView` + `store/slices/characters.ts` + `components/game/CharactersDrawer.tsx`）：TopBar 命令轨「角色」入口（`data-testid="characters"`，面板容器 `characters-panel`）开右滑入抽屉，分块渲染剧情状态/主角/角色卡/幕后手记/线索·未了伏笔（后三块的标题是玩家侧说法，state.md 的 `# 导演手记` / `# Flags` / `# 未回收伏笔` 原样解析）。好感度用 ink 阶梯 + accent（数字与细进度条），不引入新颜色 token。
 - **剧透折叠**：角色的「秘密」默认收起（按钮 `aria-expanded`，点击展开）；引擎写「无」或空串时不留折叠位。剧情图/面板都不替玩家预判剧透边界——折叠而非隐藏。
 - **刷新时机**：面板打开拉一次；`turn_end` 后面板开着自动重拉（好感度/导演手记/伏笔随回合变）；关着不拉。换世界/换本/新开局（`resetRunState`）收起面板并清空视图；请求失败（含 404 还没写过 state.md）保持 null → 面板显示占位说明文案。
 

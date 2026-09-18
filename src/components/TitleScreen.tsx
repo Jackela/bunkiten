@@ -216,7 +216,7 @@ export default function TitleScreen() {
           data-testid="title-continue"
           aria-label={`继续上次的世界线 ${continueName}`}
           disabled={continueDisabled}
-          title={!lastWorld.exists ? "目录缺失" : !resumePreset ? "剧本已移除" : engineBusy ? "引擎忙" : undefined}
+          title={!lastWorld.exists ? "目录缺失" : !resumePreset ? "剧本已移除" : engineBusy ? "忙碌中，稍后再试" : undefined}
           onClick={resumeLast}
           onKeyDown={(e) => {
             if (e.key === "Enter") e.stopPropagation();
@@ -238,7 +238,7 @@ export default function TitleScreen() {
           </span>
           <span className="mt-0.5 block truncate text-meta text-ink-hint">
             第 {lastWorld.chapterNo} 章 · {relativeTime(lastWorld.lastPlayed)}
-            {engineBusy && <span className="ml-1.5">引擎忙</span>}
+            {engineBusy && <span className="ml-1.5">忙碌中</span>}
             {!lastWorld.exists && <span className="ml-1.5 text-red-400/90">目录缺失</span>}
             {lastWorld.exists && !resumePreset && <span className="ml-1.5 text-red-400/90">剧本已移除</span>}
           </span>

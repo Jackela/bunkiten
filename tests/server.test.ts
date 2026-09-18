@@ -226,7 +226,7 @@ describe("server 世界线索引与建 / 分叉 / 删（临时目录）", () => 
 
     const entry = readWorldsIndex(root).find((e) => e.worldId === f.worldId)!;
     expect(entry.forkedFrom).toEqual({ worldId: origin.worldId, nodeId: "2-2" });
-    // v1.7.1：血缘只走 forkedFrom/fork.md，索引 note 不再兜底写裸 id（玩家可见处不出现 slug）
+    // v1.8：血缘只走 forkedFrom/fork.md，索引 note 不再兜底写裸 id（玩家可见处不出现 slug）
     expect(entry.note).toBe("");
     expect(entry.chapterNo).toBe(2); // 从回退后的树读章号
 

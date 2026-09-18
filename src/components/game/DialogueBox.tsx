@@ -162,7 +162,7 @@ export default function DialogueBox() {
     <div
       data-testid="dialogue-box"
       onClick={completeNow}
-      className={`relative min-h-32 cursor-pointer rounded-xl border border-white/10 border-t-gold/35 bg-[rgba(10,12,18,.72)] p-5 pb-4 shadow-[0_20px_60px_rgba(0,0,0,.5)] backdrop-blur-xl ${texture}`}
+      className={`relative min-h-32 cursor-pointer rounded-xl border border-white/10 border-t-gold/35 bg-panel p-5 pb-4 shadow-[0_20px_60px_rgba(0,0,0,.5)] backdrop-blur-xl ${texture}`}
     >
       {/* 顶部主题色发丝线 */}
       <span
