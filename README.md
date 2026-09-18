@@ -141,7 +141,7 @@ bunkiten/
 | `npm test` | 单测 + 集成全量 399 例：parser 65 + server 106 + crafting 52 + treeLayout 7 + genealogy 8 + diff 8 + doctor 12 + ui 114 + integration 27（含假引擎集成层，整体秒级；改协议字符串必须同步快照）；另跑契约 lint `tests/contract.test.ts`（防漂移门禁：协议常量真源断言 + 双侧逐字比对，**不计入这 399**） |
 | `npm run test:coverage` | 同一批测试 + 覆盖率仪表（`@vitest/coverage-v8`，量 `src`/`server`/`shared`/`scripts` 四棵树，配置在 `vitest.config.ts`）：thresholds 是**防下滑线**（2026-09 基线 - 2pp：lines 74 / branches 64 / functions 77 / statements 72）——实际余量 1.56-1.87pp（基线未取整），不是硬指标；CI 用它替代 `npm test` 步骤（同一套测试避免双跑）并上传 HTML 报告 artifact |
 | `npm run doctor` | 剧本体检查（作者侧工具，按需跑、不进 CI）：`node scripts/doctor.mjs` 校验 `presets/` 每个剧本的结构健康度——frontmatter 必填键与 id=目录名、theme 逐键回退预警、`# 主要角色` 与角色建议字段、封面、assets/audio 文件名契约、孤儿素材；输出 `[ok]`/`[warn]`/`[error]` 明细报告，**退出码非 0 当且仅当有 error**（warning 不影响——孤儿素材这类可解释项不拦你发布） |
-| `npm run test:e2e` | 真引擎 E2E 冒烟（约 6 分钟，2 回合） |
+| `npm run test:e2e` | 真引擎 E2E 冒烟（2 回合；约 6–12 分钟，视模型与网络。前提：本机登录 grok CLI 且能出网到 x.ai——代理环境开 TUN 或给命令带 `https_proxy`，直连被墙的表现是回合 600s 超时） |
 | `npm run test:e2e:ui` | 假引擎确定性 UI e2e（`tests/e2e-ui/`，默认 chromium、秒级）：12 个 spec 覆盖开局/设置/键盘/画廊/剧情图/世界线/回退/重掷/动效降级/焦点/角色面板/剧本导入导出，进程由 `helpers/fake-stack.mjs` 编排（假引擎 + 真 acp-server + vite dev）；CI 也会跑（真引擎 e2e 仍只在本机） |
 | `npm run dist:win` | build 后打 Windows x64 包（nsis + portable，不签名） |
 | `npm run dist:mac` | build 后打 macOS 包（dmg + zip，arm64 + x64，不签名） |

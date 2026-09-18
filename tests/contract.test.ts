@@ -343,6 +343,17 @@ const DOC_SUB_RE = /(pipeline|audio-history|http-guard)`?\s*(\d+)/g;
 /** 合计声明（README「单测 + 集成全量 369 例」、AGENTS「**共 369 例**」） */
 const DOC_TOTAL_RE = /(?:共|全量)\s*(?:\*\*)?(\d+)(?:\*\*)?\s*例/g;
 
+/**
+ * 「合计口径」的其它既有写法：这些数字同样必须等于 CASE_TOTAL。
+ * 由来：AGENTS 的「自身不计入 395 口径」在两次计数同步里都漏网（395→399 时靠人眼才发现）——
+ * 措辞换了但数字没改的漂移，由这几条模式兜住；文档换新措辞时把新模式补进来。
+ */
+const DOC_TOTAL_ALT_RES = [
+  /不计入(?:这)?\s*(?:\*\*)?(\d+)/g, // 「不计入 399 口径」「不计入这 399**」
+  /与\s*(\d+)\s*\/\s*contract lint/g, // 「与 399/contract lint 计数无关」
+  /上述\s*(\d+)\s*例/g, // 「即上述 399 例 + 契约 lint」
+];
+
 describe("④ 用例数：文档声明的分组数字 ↔ 各文件实际用例数", () => {
   it("九个分组的实际用例数逐项等于文档口径", () => {
     for (const group of CASE_GROUPS) {
@@ -404,7 +415,7 @@ describe("④ 用例数：文档声明的分组数字 ↔ 各文件实际用例�
     }
   });
 
-  it("文档里的子分组数字与合计（「共/全量 N 例」）都等于 CASE_TOTAL 口径", () => {
+  it("文档里的子分组数字与合计（「共/全量 N 例」及「不计入/上述 N」等写法）都等于 CASE_TOTAL 口径", () => {
     let totals = 0;
     for (const doc of DOCS) {
       const text = read(doc);
@@ -419,6 +430,15 @@ describe("④ 用例数：文档声明的分组数字 ↔ 各文件实际用例�
           `${at(doc, text, m.index)} 的合计口径是 ${m[1]} 例，文档分组口径是 ${CASE_TOTAL} 例（本文件 ${CONTRACT_FILE} 不计入合计——改断言不该改这个数字）`,
         ).toBe(CASE_TOTAL);
         totals += 1;
+      }
+      // 同一合计口径的其它措辞：数字同样必须是 CASE_TOTAL（换措辞但漏改数字的漂移靠这几条兜住）
+      for (const re of DOC_TOTAL_ALT_RES) {
+        for (const m of text.matchAll(re)) {
+          expect(
+            Number(m[1]),
+            `${at(doc, text, m.index)} 的合计口径写法是 ${m[1]}，应等于 ${CASE_TOTAL}（本文件 ${CONTRACT_FILE} 不计入合计）`,
+          ).toBe(CASE_TOTAL);
+        }
       }
     }
     expect(totals, `README / AGENTS 各应有一处「共/全量 N 例」的合计陈述，现在只数到 ${totals} 处：合计口径没了，本文件是否计入就说不清`).toBeGreaterThanOrEqual(2);
