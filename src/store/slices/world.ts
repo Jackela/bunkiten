@@ -36,15 +36,17 @@ export function createWorldSlice(
   return {
     beginNewWorld(worldId) {
       ctx.clearWatchdog();
-      // 服务端刚建出的世界快照数确定为 0：重掷按钮在攒够两条 turn 快照前不出现（spec P3-T1）
-      ctx.resetRunState({ worldId, worldLabel: worldId, screen: "protagonist", turnSnapshots: 0 });
+      // 服务端刚建出的世界快照数确定为 0：重掷按钮在攒够两条 turn 快照前不出现（spec P3-T1）。
+      // 显示名留空：新世界的 label 还没起，此时把 worldId 塞进去就是一条 slug 上屏（见 types.ts worldLabel）
+      ctx.resetRunState({ worldId, worldLabel: "", screen: "protagonist", turnSnapshots: 0 });
     },
 
     resumeWorld(entry) {
       ctx.clearWatchdog();
       ctx.resetRunState({
         worldId: entry.worldId,
-        worldLabel: entry.note || entry.worldId,
+        // 显示名回退链：玩家显示名 → 备注（旧索引里的「分叉自 <id> @ <节点>」由显示层再滤）→ 空串
+        worldLabel: entry.label?.trim() || entry.note?.trim() || "",
         chapterNo: entry.chapterNo || 1,
         screen: "game",
       });

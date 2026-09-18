@@ -183,7 +183,7 @@ describe("集成：逐轮快照 + 世界线精确回退/导出导入（CONTRACTS
     expect(await until(() => stack.stdout().includes("reasoning_effort -> low"))).toBe(true);
   }, 20000);
 
-  it("⑤ fork 带 seq → 新世界三文件与快照逐字一致，索引标「精确快照」", async () => {
+  it("⑤ fork 带 seq → 新世界三文件与快照逐字一致，索引记 forkedFrom.seq", async () => {
     const snapFiles = {
       state: readWorldFile(w1Dir(stack), "state.md"),
       summary: readWorldFile(w1Dir(stack), "summary.md"),
@@ -194,7 +194,7 @@ describe("集成：逐轮快照 + 世界线精确回退/导出导入（CONTRACTS
     expect(r.body.ok).toBe(true);
     expect(r.body.worldId).toMatch(/^demo-\d+$/);
     expect(r.body.entry.forkedFrom).toEqual({ worldId: "w1", nodeId: "1-1", seq: 1 });
-    expect(r.body.entry.note).toContain("精确快照");
+    expect(r.body.entry.note).toBe(""); // 血缘不进 note（v1.7.1：不再写「分叉自 … @ …」裸 id 串）
 
     const fdir = path.join(stack.root, "state", "worlds", r.body.worldId);
     expect(readWorldFile(fdir, "state.md")).toBe(snapFiles.state); // 逐字一致

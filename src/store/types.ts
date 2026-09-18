@@ -61,7 +61,7 @@ export interface HistoryEntry {
 
 /**
  * 回退分割线（非破坏式回退标记）：restoreSnapshot 成功时插进 history，**不删除**之前的任何幕——
- * 渲染层把标记之前的幕降不透明度、标记本身画成居中细线「—— 已回退到快照 #N ——」。
+ * 渲染层把标记之前的幕降不透明度、标记本身画成居中细线「—— 已回溯到第 N 幕 ——」。
  */
 export interface HistoryRollbackMark {
   kind: "rollback";
@@ -69,7 +69,7 @@ export interface HistoryRollbackMark {
   seq: number;
   /** 落标记的时刻（ms） */
   at: number;
-  /** 分割线来历：缺省/restore=剧情图原地回退（「已回退到快照 #N」）；reroll=重掷本回合（文案随 reason 切换） */
+  /** 分割线来历：缺省/restore=剧情图原地回退（「已回溯到第 N 幕」）；reroll=重演这一幕（「第 N 幕已重演」） */
   reason?: "restore" | "reroll";
 }
 
@@ -189,7 +189,11 @@ export interface GameStore {
   // —— v1.5 世界线（worlds 屏）——
   /** 当前世界 id（`state/worlds/<worldId>/`；由世界线屏 POST /api/worlds 分配） */
   worldId: string | null;
-  /** 世界显示名（分叉备注或 id；顶栏展示） */
+  /**
+   * 世界显示名（顶栏/剧情图屏展示）：玩家显示名 label → 备注 note，两者都空就是空串。
+   * 绝不落裸 worldId——它只活在目录名、导出文件名与日志里（显示层还要再滤一道
+   * {@link isLegacyForkNote}：老索引的 note 可能就是「分叉自 <裸 id> @ <节点>」）。
+   */
   worldLabel: string;
 
   // —— v1.6 世界线管理（worlds 屏）——
@@ -261,6 +265,12 @@ export interface GameStore {
   awaitCommand: string | null;
 
   toTitle(): void;
+  /**
+   * 回到世界线屏（捏人屏的「返回」与 Esc 链共用）：**只切屏**，不重置运行态——
+   * 世界已由 `/api/worlds` create 落在服务端，玩家回去只是想改主意/换世界，选卡与答题照旧留着
+   * （重置路径是 selectPreset / resetRunState，别混用）。
+   */
+  toWorlds(): void;
   selectPreset(preset: Preset): void;
   setPresets(presets: Preset[]): void;
   /**
@@ -274,8 +284,12 @@ export interface GameStore {
   clearTitleNotice(): void;
   /** 世界线屏：开始一条全新世界线（id 已由 POST /api/worlds 分配） */
   beginNewWorld(worldId: string): void;
-  /** 世界线屏：继续某个已有世界（读档续演，跳过初始化与开场卡） */
-  resumeWorld(entry: Pick<WorldEntry, "worldId" | "chapterNo" | "note">): void;
+  /**
+   * 世界线屏：继续某个已有世界（读档续演，跳过初始化与开场卡）。
+   * entry 直接收 {@link WorldEntry} 的这四项：显示名（label）要走同一条回退链，缺了它顶栏/图屏
+   * 就只能拿 worldId 或备注顶上去（见 {@link GameStore.worldLabel}）。
+   */
+  resumeWorld(entry: Pick<WorldEntry, "worldId" | "chapterNo" | "note" | "label">): void;
   /** 打开剧情图（overlay；游戏内与章间制作屏都可进入） */
   openTree(): void;
   /** 打开设置（overlay，TopBar 齿轮；记住返回屏，Esc/返回走 closeOverlay） */
@@ -329,6 +343,8 @@ export interface GameStore {
    * 累计 ~2s 仍忙才放弃（见 context.fireAutoAdvance）——抢发必 409，表现为「偶发不自动前进」。
    */
   armAutoAdvance(): void;
+  /** 玩家显式打开自动前进（面板上的「自动」开关）：解掉本回合的「交互即取消」标记后立即尝试武装 */
+  resumeAutoAdvance(): void;
   /** 用户交互（点击/按键/输入）取消本次自动前进，并记住本回合不再自动（turnKey 变化时复位） */
   cancelAutoAdvance(): void;
   /** 切到刚分叉出的世界线继续（引擎忙时拒绝） */

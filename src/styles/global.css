@@ -32,10 +32,97 @@
   --color-ink-faint: color-mix(in oklab, var(--ink) 45%, transparent);
 }
 
+/* 字号阶梯（v1.8）：全站唯一真源的 8 档字号。写进 Tailwind v4 的 --text-* 命名空间，
+   `text-micro` / `text-meta` / … 即为可用工具类（Tailwind 从本命名空间生成字号工具类，
+   无需 tailwind.config —— 本仓 CSS-first，配置只在本文件）。
+   取用规则（挡住「哪里字小改哪里」的老毛病，旧屏 11px/12.5px 那批手写 px 随各屏迁移归位）：
+   - 需要读的文字一律 ≥ text-meta(13px)：提示、图例、元信息、说明句的下限；
+   - text-micro(12px) 只给短标记：角标/徽章/分叉缩写这类不承载需细读信息的标签；
+   - 正文 text-body(16px)，对话框叙事正文 text-read(17px)，强调正文 text-lead(18px)，
+     屏标题 text-title(20px)，封面/主标题 text-display(28px)；
+   - 新代码禁止再手写 text-[Npx]。
+   （Tailwind 默认档 text-sm/base/… 仍可编译，过渡期并存；新写的界面只取上面这 8 档。）
+   注意 `inline` 的语义：起手就用了 inline（与上面的颜色块同）→ 字号是**编译期内联**进工具类的
+   （.text-meta{font-size:.8125rem}），运行时并不存在 --text-* 自定义属性——所以别写
+   `var(--text-meta)` / `text-[var(--text-meta)]`，取档位类就行。
+   （颜色块反过来：--color-* 内联出的是 `var(--bg)`/`var(--panel)`，运行时真变量在 `:root`，
+   主题注入与 token 覆盖照常生效。） */
+@theme inline {
+  --text-micro: 0.75rem;      /* 12px — 仅角标/徽章短标记，不承载需细读的信息 */
+  --text-meta: 0.8125rem;     /* 13px — 提示/图例/元信息：需要读的文字的下限 */
+  --text-ui: 0.875rem;        /* 14px — 标签/按钮/次级正文 */
+  --text-body: 1rem;          /* 16px — 正文 */
+  --text-read: 1.0625rem;     /* 17px — 叙事正文（对话框） */
+  --text-lead: 1.125rem;      /* 18px — 强调正文 */
+  --text-title: 1.25rem;      /* 20px — 屏标题 */
+  --text-display: 1.75rem;    /* 28px — 主标题/封面字 */
+}
+
+/* 壳层表面与遮罩 token（v1.8）：面板底色与两层遮罩原来散在组件类名里手写（三档面板 rgba 字面
+   全仓 36 处、bg-bg/N 手写底 7 处），屏与屏之间悄悄色偏；提到这里当 token 后改一次全站生效。
+   --panel 是常规毛玻璃面板（原 bg-[rgba(12,14,20,.72)] 那批）、--panel-strong 是不透光实底
+   （模态/确认框底座，仍在 --bg 色系内、比 --panel 更沉）；
+   --scrim 是压在内容上的全遮罩（overlay 背后压死底图）、--scrim-soft 是半遮罩
+   （侧栏/悬浮抽屉这类不必把底图压死的场景）。 */
+:root {
+  --panel: rgba(12,14,20,.72);
+  --panel-strong: rgba(9,11,16,.96);
+  --scrim: rgba(7,8,12,.66);
+  --scrim-soft: rgba(7,8,12,.38);
+}
+
+/* 暴露为 tailwind 主题色：bg-panel / bg-panel-strong / bg-scrim / bg-scrim-soft，
+   带透明度修饰符（bg-scrim/70）时 Tailwind 用 color-mix 就地混——rgba 值同样吃得下 */
+@theme inline {
+  --color-panel: var(--panel);
+  --color-panel-strong: var(--panel-strong);
+  --color-scrim: var(--scrim);
+  --color-scrim-soft: var(--scrim-soft);
+}
+
+/* 壳层满幅底（v1.8）：title/worlds/protagonist/crafting/settings 这些「壳层屏」统一吃这一层底。
+   非显而易见的两点：
+   1) 壳层屏此前各写各的底（bg-bg/70、各自手搓的深色 radial），屏间明暗不一；这里把那句话收成一条类。
+      它**不是**全屏底：App 的 BgLayer/MotifLayer（以及 Atmosphere 颗粒）仍在最底下常驻，这层是叠在
+      其上的主题色洗色——顶部一团 accent 光晕 + 顶部 1/3 的 accent2 极淡冷调 + 底部 .58→.9 的深色
+      渐变压深（压住亮底图，保证面板与文字对比度稳定，ink-* 阶梯的实算就基于这个最深底）。
+   2) 与 .shell-panel 一起刻意写在 unlayered 区（同上面的焦点环、立绘让位）：级联层外的规则优先于
+      Tailwind utilities 层，所以屏里随手写的 bg-gradient-* / bg-radial-* 盖不掉这层洗色（同一属性
+      background/background-image）——那正是意图：壳层底是契约不是默认值，要改就改上面的 token，
+      别在单屏加覆盖类。（底色类 bg-panel/bg-scrim 是 background-color、与渐变异属性：照常生效、
+      画在洗色之下，这是允许的组合，比如底图后面还想垫一层实色。） */
+.shell-backdrop {
+  background:
+    radial-gradient(120% 80% at 50% -18%, color-mix(in oklab, var(--accent) 15%, transparent), transparent 62%),
+    linear-gradient(180deg, color-mix(in oklab, var(--accent2) 5%, transparent), transparent 36%),
+    linear-gradient(180deg, rgba(7,8,12,.58), rgba(7,8,12,.9));
+}
+
+/* 壳层面板基线：底色 + 毛玻璃 + 一道 ink 描边。圆角/内边距仍由组件用工具类选（rounded-xl/px-4…），
+   本类只管「面板的三件套底色」，避免每屏各写一遍 bg-[rgba(...)] backdrop-blur-md border-white/10。 */
+.shell-panel {
+  background: var(--panel);
+  backdrop-filter: blur(14px);
+  border: 1px solid color-mix(in oklab, var(--ink) 9%, transparent);
+}
+
 html,
 body {
   background: var(--bg);
   color: var(--ink);
+}
+
+/* 立绘让位：≥lg 且屏上有立绘时，GameStage 的满宽对话外层右侧留出立绘宽度（立绘层 fixed 在右下、
+   最多 46vw 宽，不预留就会被居中的对话区压住）。padding 加在满宽外层、内层再 mx-auto——
+   预留吃掉的是居中可用宽度，对话面板自身（上限 800px）随可用宽度收缩，不再从预留区里溢出去压住立绘；
+   <lg 无预留（窄屏优先保证对话区可读宽度）。
+   配额 min(40vw,420px) 覆盖常见 ≥lg 视口下的立绘实宽（1280×720：58vh×0.75 ≈ 313px）。
+   刻意写在 unlayered 区（同下面的焦点环）：级联层外的规则优先于 Tailwind utilities 层，
+   px-3.5 的 padding-right（utilities 层）才会被这一条覆盖。 */
+@media (min-width: 1024px) {
+  .portrait-reserve {
+    padding-right: min(40vw, 420px);
+  }
 }
 
 /* 统一焦点环（v1.7）：键盘导航（:focus-visible）全站一圈 accent2 描边，鼠标点击不触发。

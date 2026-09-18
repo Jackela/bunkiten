@@ -101,12 +101,28 @@ test("开局全链路：捏人填卡→跳过美术开演→正文/选项/立绘
     .toBeGreaterThanOrEqual(2);
   await expect(page.getByTestId("options").locator("button").first()).toContainText("撑伞迎上去");
 
-  // 【图】标记链路断言：立绘 img 挂载且真实解码（marker→URL→/img 命中 seed 资产→naturalWidth>0）。
-  // 注：PortraitFigure 的 img 是 absolute + max-w-full 于 shrink-to-fit 容器——布局宽度为 0、视觉按
-  // intrinsic 宽绘制（Chromium 实测：删掉 img 立绘消失，但 rect.width 恒 0），toBeVisible 会误报 hidden。
+  // 【图】标记链路断言：立绘 img 挂载、真实解码（marker→URL→/img 命中 seed 资产→naturalWidth>0）
+  // 且**真的占了版面**——立绘层用 grid 单格堆叠（差分交叉淡化要同格重叠），容器因此拿到立绘宽度。
+  // 此处刻意断言渲染尺寸：曾经写成 absolute + shrink-to-fit，img 布局宽恒为 0（视觉靠 intrinsic 绘制），
+  // 只断言 attached/naturalWidth 会漏掉「立绘根本没上屏」的整类回归。
   const portrait = page.getByRole("img", { name: "薇拉" });
-  await expect(portrait).toBeAttached();
+  await expect(portrait).toBeVisible();
+  const portraitBox = await portrait.boundingBox();
+  expect(portraitBox, "立绘 boundingBox 为 null：img 挂载了但没参与布局").not.toBeNull();
+  expect(portraitBox!.width, "立绘渲染宽为 0：img 没拿到真实布局盒").toBeGreaterThan(0);
+  expect(portraitBox!.height, "立绘渲染高为 0：img 没拿到真实布局盒").toBeGreaterThan(0);
   expect(await portrait.evaluate((el) => (el as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+
+  // 右侧让位：立绘上屏时对话区不再压住立绘（GameStage 的 .portrait-reserve，≥lg 生效；1280×720 满足）
+  const dialogueBox = await page.getByTestId("dialogue-box").boundingBox();
+  expect(dialogueBox, "对话框没有布局盒（data-testid=dialogue-box 挂了但没渲染）").not.toBeNull();
+  expect(
+    dialogueBox!.x + dialogueBox!.width,
+    `对话区右缘 ${dialogueBox!.x + dialogueBox!.width} 压住了立绘左缘 ${portraitBox!.x}（立绘 ${portraitBox!.width}×${portraitBox!.height}）：右侧预留没生效`,
+  ).toBeLessThan(portraitBox!.x);
+  // 让位是「整体左移」而不是「把对话面板挤窄」：1280 宽下 min(860px,100vw) 扣掉 px-3.5 后应 ≈832，
+  // 只有把预留 padding 加在对话面板自身上才会缩到 ~430（可用宽度被面板自己吃掉）。
+  expect(dialogueBox!.width, "对话面板被右侧预留挤窄了：预留应加在满宽外层而不是面板自身").toBeGreaterThan(700);
 
   // 【图】背景标记 → BgLayer 离屏预载 onload 后上屏（style.backgroundImage 已设置，URL 即 marker 直服目标）
   const bg = await page.evaluate(() => document.querySelector('div[class*="bg-cover"]')?.style.backgroundImage ?? "");

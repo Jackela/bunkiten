@@ -86,11 +86,15 @@ export interface WorldEntry {
   chapterNo: number;
   /** 最近游玩时间（ms；取三份文件最新 mtime） */
   lastPlayed: number;
-  /** 显示名/备注（分叉世界自动写「分叉自 <世界> @ <节点>」） */
+  /**
+   * 备注（≤200 字）。v1.7.1 起 server **不再**给分叉世界自动写「分叉自 <世界> @ <节点>」
+   * （血缘改由 `forkedFrom` 与 `fork.md` 记录），但老索引里还留着那种串——显示层用
+   * `lib/worlds.ts` 的 `isLegacyForkNote` 把它当作「没有备注」，免得把裸 id 端给玩家。
+   */
   note: string;
-  /** 显示用名（v1.6 POST update 写入，≤60 字；空串=未设置，UI 回退 note/id） */
+  /** 显示用名（v1.6 POST update 写入，≤60 字；空串=未设置）。显示名回退链见 `WorldsScreen.worldDisplayName` */
   label?: string;
-  /** 分叉来源（非分叉世界为 null） */
+  /** 分叉来源（非分叉世界为 null）；服务端索引条目在精确分叉时另带 `seq`，UI 不消费故类型未列 */
   forkedFrom: { worldId: string; nodeId: string } | null;
   /** 目录是否存在（索引记录但目录被删时为 false） */
   exists: boolean;
@@ -463,7 +467,8 @@ export async function fetchSnapshot(worldId: string, seq: number, signal?: Abort
   if (!r.ok) throw new Error(`GET /api/history?seq=${seq} -> HTTP ${r.status}`);
   const data = (await r.json()) as SnapshotResponse;
   const hit = (data.snapshots ?? []).find((s) => s.seq === seq);
-  if (!hit) throw new Error(`快照 ${seq} 不在世界 ${worldId} 的历史里`);
+  // 文案不带 seq/worldId：它会被剧情图的对比面板原样贴到玩家眼前（「当前世界线」在屏内语境里已足够定位）
+  if (!hit) throw new Error("该存档点已不在当前世界线的历史里");
   return hit;
 }
 

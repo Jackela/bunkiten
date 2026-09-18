@@ -3,7 +3,7 @@
 // 快照 seq 3）。流程：世界线屏继续 w1 → game 就绪（开局回合选项含「推门进去」）→ 点选项消费回合甲 →
 // 点「重掷」→ store 取次新 turn 快照（= 2）POST restore → 补发「继续世界：w1。」（fake-engine 第二条
 // 同 match 应答回短正文）→ 重同步回合收尾后自动重发「推门进去」（第二条同 match 应笔回合乙，
-// match 条目按序不重复消费）。断言：分割线文案是「重掷本回合（回到快照 #2）」、正文区出现回合乙、
+// match 条目按序不重复消费）。断言：分割线文案是「—— 第 2 幕已重演 ——」、正文区出现回合乙、
 // 抽屉里回合甲在分割线之前已置灰（回合乙正常）。
 import { expect, test, type Browser, type Page } from "@playwright/test";
 import { startFakeStack } from "../helpers/fake-stack.mjs";
@@ -84,12 +84,13 @@ test("重掷本回合：退回次新快照 → 重同步 → 自动重发同一�
   await expect(page.getByTestId("dialogue-text")).toContainText("回合乙");
   expect(await page.getByTestId("reroll").isVisible()).toBe(true); // 连掷入口还在
 
-  // 抽屉：分割线是 reroll 措辞；回合甲在分割线之前（置灰），回合乙在分割线之后（正常）
+  // 抽屉：分割线是 reroll 措辞（退到的是次新 turn 快照 seq=2 = 刚结束那一幕的重演位）；
+  // v1.7 文案不再带快照 # 序号——reroll 走「第 N 幕已重演」，restore 走「已回溯到第 N 幕」
   await page.getByTestId("history").click();
   const rollback = page.getByTestId("history-rollback");
   await expect(rollback).toBeVisible();
-  await expect(rollback).toContainText("重掷本回合");
-  await expect(rollback).toContainText("#2");
+  await expect(rollback).toHaveText("—— 第 2 幕已重演 ——");
+  await expect(rollback).not.toContainText("#");
   const acts = page.getByTestId("history-act");
   await expect(acts.filter({ hasText: "回合甲" })).toHaveClass(/opacity-50/);
   await expect(acts.filter({ hasText: "回合乙" })).not.toHaveClass(/opacity-50/);

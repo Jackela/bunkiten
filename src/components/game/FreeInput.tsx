@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { PenLine, Send } from "lucide-react";
 import { useGameStore } from "../../store/game";
 
 /** webkitSpeechRecognition 最小接口（DOM lib 不保证声明） */
@@ -86,24 +87,36 @@ export default function FreeInput() {
 
   return (
     <div className="mt-2.5 flex gap-2">
-      <input
-        ref={inputRef}
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        onKeyDown={(e) => {
-          // 中文输入法选词的 Enter 不算发送
-          if (e.key === "Enter" && !e.nativeEvent.isComposing) submit();
-        }}
-        placeholder={listening ? "聆听中…说完自动发送" : "想说什么就写在这里（也可输入数字）"}
-        autoComplete="off"
-        className="flex-1 rounded-lg border border-white/10 bg-[rgba(12,14,20,.8)] px-3.5 py-2.5 text-[15px] tracking-[.02em] transition-colors focus:border-gold/35"
-      />
+      {/* 输入行：左侧笔形图标 + 稍强的静息描边 + 主题色聚焦态，和 HUD 其余控件同一套面板语言。
+          图标只是装饰（aria-hidden），悬停/聚焦不给它行为；外层 group 只用来把聚焦态递给图标。
+          外层 flex-1 顶替原来输入框自己的 flex-1（输入框改 w-full），焦点/回车/语音/IME 流程逐字未动。 */}
+      <div className="group relative flex-1">
+        <PenLine
+          aria-hidden
+          size={16}
+          className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-hint transition-colors group-focus-within:text-gold/80"
+        />
+        <input
+          ref={inputRef}
+          data-testid="free-input-field"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            // 中文输入法选词的 Enter 不算发送
+            if (e.key === "Enter" && !e.nativeEvent.isComposing) submit();
+          }}
+          placeholder={listening ? "聆听中…说完自动发送" : "想说什么就写在这里（也可输入数字）"}
+          autoComplete="off"
+          className="w-full rounded-lg border border-white/15 bg-[rgba(12,14,20,.8)] py-2.5 pl-9 pr-3.5 text-body tracking-[.02em] shadow-[inset_0_1px_0_rgba(255,255,255,.04)] transition-colors placeholder:text-ink-hint focus:border-gold/45 focus:bg-[rgba(16,19,28,.9)]"
+        />
+      </div>
       {srAvailable && (
         <button
           type="button"
+          data-testid="free-input-mic"
           onClick={toggleMic}
           title="语音输入"
-          className={`rounded-lg border px-4 text-[15px] transition-colors ${
+          className={`rounded-lg border px-4 text-body transition-colors ${
             listening
               ? "animate-pulse border-[rgba(200,80,80,.6)] bg-[rgba(200,80,80,.35)] text-ink"
               : "border-gold/35 bg-gold/15 text-gold hover:bg-gold/30"
@@ -112,12 +125,16 @@ export default function FreeInput() {
           🎙
         </button>
       )}
+      {/* 发送：图标版，与麦克风同重量（同一圈描边 + 同色系填充），可读名走 aria-label/title 而不是「→」字形 */}
       <button
         type="button"
+        data-testid="free-input-send"
         onClick={submit}
-        className="rounded-lg border border-gold/35 bg-gold/15 px-4 text-[15px] text-gold transition-colors hover:bg-gold/30"
+        aria-label="发送"
+        title="发送"
+        className="flex items-center rounded-lg border border-gold/35 bg-gold/15 px-3.5 text-gold transition-colors hover:border-gold/60 hover:bg-gold/30"
       >
-        →
+        <Send aria-hidden size={16} />
       </button>
     </div>
   );

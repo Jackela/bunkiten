@@ -1,10 +1,24 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { motion } from "framer-motion";
+import { Maximize2, ZoomIn, ZoomOut } from "lucide-react";
 import { fetchWorlds, postWorld, worldExportUrl, type WorldEntry } from "../lib/acp";
 import { genealogyStep, layoutGenealogy, type GenealogyLayout } from "../lib/genealogy";
+import { fitView, panView, viewBoxOf, zoomViewAt, type TreeView } from "../lib/treeLayout";
+import { isLegacyForkNote } from "../lib/worlds";
 import { getTheme, themeVars } from "../theme";
 import { useGameStore } from "../store/game";
 import { ScreenShell } from "./ScreenShell";
+import { ShellPage } from "./ShellPage";
 
 /** 列表行进出：与创作屏气泡同款克制位移淡入 */
 const ROW = { initial: { opacity: 0, y: 8 }, animate: { opacity: 1, y: 0 } } as const;
@@ -15,6 +29,10 @@ const STALE_MS = 30 * 24 * 60 * 60 * 1000;
 /** 显示名/备注的字数上限（与 server POST /api/worlds update 校验一致，超了服务端会拒） */
 export const LABEL_MAX = 60;
 export const NOTE_MAX = 200;
+
+/** ⋯ 菜单项基类（三项共用；删除/确认项在其后追加红色 hover 类） */
+const MENU_ITEM_CLS =
+  "w-full rounded-lg px-3 py-2 text-left text-ui text-ink-hint transition-colors hover:bg-white/[.06] hover:text-ink";
 
 /**
  * 相对时间中文文案（世界线行的「最近游玩」；时钟回拨/时间戳缺失都算「更早」兜底）。
@@ -36,43 +54,156 @@ export function relativeTime(ms: number, now: number = Date.now()): string {
 }
 
 /**
- * 行的显示名（纯函数，供单测）：v1.6 的显示名 label 优先，其次沿用既有备注 note
- * （分叉世界自动写「分叉自 <世界> @ <节点>」，玩家一眼看出血缘），最后回退世界 id。
+ * 行的显示名（纯函数，供单测）：显示名 label → 备注 note → 剧本名 → 「未命名世界线」。
+ * 末两档是刻意的：**裸 worldId 永远不上玩家的屏**（它只活在目录名、导出文件名与日志里）。
+ * 备注这一档还要过 {@link isLegacyForkNote}：旧版 server 给分叉世界自动写的「分叉自 <id> @ <节点>」
+ * 正是裸 id 串，显示层把它当作「没有备注」，让位给剧本名——分叉关系由徽标（forkPhrase）交代。
  * @param {WorldEntry} w 世界线条目
+ * @param {string} [presetTitle] 当前剧本标题（没显示名也没备注时的兜底）
  * @returns {string} 行主行文案
  */
-export function worldDisplayName(w: WorldEntry): string {
-  return w.label?.trim() || w.note?.trim() || w.worldId;
+export function worldDisplayName(w: WorldEntry, presetTitle = ""): string {
+  const note = isLegacyForkNote(w.note) ? "" : w.note;
+  return w.label?.trim() || note?.trim() || presetTitle.trim() || "未命名世界线";
+}
+
+/**
+ * 分叉说明（纯函数，供单测）：父线还在清单里 → 「自《父线显示名》延伸」；父线已删（不在清单里）
+ * → 「自已删除的父线延伸」。两侧都不露裸 worldId/nodeId——玩家看的是血缘的名字，不是目录名。
+ * @param {{worldId: string}} fork 分叉来源（WorldEntry.forkedFrom）
+ * @param {WorldEntry[]} worlds 当前清单（把父线 id 还原成显示名的唯一来源）
+ * @param {string} [presetTitle] 剧本标题兜底（父线自身也没 label/note 时用）
+ * @returns {string} 徽标与无障碍文案里的分叉说明
+ */
+export function forkPhrase(fork: { worldId: string }, worlds: WorldEntry[], presetTitle = ""): string {
+  const parent = worlds.find((w) => w.worldId === fork.worldId);
+  return parent ? `自《${worldDisplayName(parent, presetTitle)}》延伸` : "自已删除的父线延伸";
 }
 
 /** 家谱节点绘制尺寸：须与 layoutGenealogy 的缺省几何一致（布局定坐标、SVG 画矩形） */
 const GEN_NODE_W = 210;
 const GEN_NODE_H = 64;
 
-/** 显示名超长时截断（SVG text 不会自动省略） */
+/** 单节点最大渲染宽度（px）：家谱只有两三张卡时，`<svg w-full>` 会把 viewBox 等比放大到
+    ~490px/节点（屏幕大半空着、卡片像放大的缩略图）。画布渲染宽度据此封顶，落回 260–280px 档。
+    只封**上界**：森林更宽时这个上界够不着，画布照旧铺满可用宽度。 */
+const GEN_MAX_NODE_PX = 270;
+
+/** 缩放步进倍数与拖拽死区：与剧情图 TreeCanvas 同值（两块画布的体感与测试口径保持一致） */
+const GEN_ZOOM_STEP = 1.25;
+const GEN_DRAG_SLOP = 4;
+
+/** 显示名超长时截断（SVG text 不会自动省略）；n 按最宽字形（CJK ≈ 1em）估算，见节点处调用 */
 function truncateName(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
 /**
- * 家谱画布（v1.7）：把 forkedFrom 血缘的森林画成 SVG——节点 = 圆角矩形卡（显示名/章数/
- * 分叉节点徽章），边 = 父底边中点 → 子顶边中点的圆角拐弯。整图一个可 Tab 的节点
- * （roving tabIndex），方向键走节点（`genealogyStep` 的确定性规则）、Enter/点击选中；
- * 家谱规模小，fit-view 全量展示，不做缩放平移。焦点环走全局 :focus-visible（同 TreeCanvas）。
+ * 家谱画布（v1.7 / v1.8 缩放平移）：把 forkedFrom 血缘的森林画成 SVG——节点 = 圆角矩形卡
+ * （显示名/章数/分叉徽章），边 = 父底边中点 → 子顶边中点的圆角拐弯。整图一个可 Tab 的节点
+ * （roving tabIndex），方向键走节点（`genealogyStep` 的确定性规则）、Enter/点击选中。
+ * 视图能力（滚轮缩放锚点 / 拖拽平移 / 双击复位 / ± 与「适应」按钮 / `+ - 0`）复用
+ * `lib/treeLayout` 的 TreeView 纯函数与剧情图 TreeCanvas 的交互约定，不另写一套几何。
+ *
+ * 两条非显而易见的不变量：
+ * 1) 画布渲染宽度**只封上界**（GEN_MAX_NODE_PX）：家谱小的时候 `<svg w-full>` 会把 viewBox
+ *    等比放大到 ~490px/节点，封顶后落回 260–280px；森林更宽时上界够不着 → 照旧铺满可用宽度。
+ * 2) 画布容器的键盘只认 `+ - 0`（缩放）；节点自己的按键只认方向键/Enter/Space（走位/选中）——
+ *    两套键位不相交，节点没消费的按键照旧冒泡到容器，故与 `genealogyStep` 不抢键。
+ * 焦点环走全局 :focus-visible（同 TreeCanvas）。
+ * SVG 里的 fontSize 是 viewBox 坐标系里的数值、随画布整体缩放，故不走文字阶梯类。
  */
 function GenealogyCanvas({
   layout,
+  worlds,
+  presetTitle,
   focusId,
   onFocus,
 }: {
   layout: GenealogyLayout;
+  /** 当前清单：把 forkedFrom 的父线 id 换成分叉说明里的显示名 */
+  worlds: WorldEntry[];
+  presetTitle: string;
   focusId: string | null;
   onFocus: (id: string) => void;
 }) {
+  const svgRef = useRef<SVGSVGElement>(null);
   const nodeRefs = useRef(new Map<string, SVGGElement>());
   const ids = useMemo(() => layout.nodes.map((n) => n.worldId), [layout.nodes]);
   // roving tabIndex：没选中时落在第一个节点
   const tabbableId = focusId && ids.includes(focusId) ? focusId : ids[0];
+
+  /** 画布视图：中心点 + 相对「适应」的缩放倍数（zoom=1 即整片森林铺满画布宽度） */
+  const [view, setView] = useState<TreeView>(() => fitView(layout.width, layout.height));
+  /** 拖拽态：按下点 + 是否已越过死区；`draggedRef` 活到 click 之后（拖完那一下不算点选） */
+  const dragRef = useRef<{ x: number; y: number; moved: boolean } | null>(null);
+  const draggedRef = useRef(false);
+
+  // 布局换了（增删世界线、换剧本）：回到「适应」，别让上一片森林的缩放平移漂到新图上
+  useEffect(() => {
+    setView(fitView(layout.width, layout.height));
+  }, [layout.width, layout.height]);
+
+  const fit = useCallback(() => setView(fitView(layout.width, layout.height)), [layout.width, layout.height]);
+  const zoomBy = useCallback(
+    (factor: number, fx = 0.5, fy = 0.5) =>
+      setView((v) => zoomViewAt(v, factor, fx, fy, layout.width, layout.height)),
+    [layout.width, layout.height],
+  );
+
+  // 滚轮缩放：以指针为锚点。必须自己挂非 passive 监听（React 的 onWheel 在根上是被动的，preventDefault 无效）
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault(); // 画布内滚轮 = 缩放，不滚页面
+      const rect = el.getBoundingClientRect();
+      // 指针在画布里的归一化落点；jsdom（rect 全 0）与旧浏览器退化为中心缩放
+      const fx = rect.width > 0 ? (e.clientX - rect.left) / rect.width : 0.5;
+      const fy = rect.height > 0 ? (e.clientY - rect.top) / rect.height : 0.5;
+      setView((v) => zoomViewAt(v, e.deltaY < 0 ? GEN_ZOOM_STEP : 1 / GEN_ZOOM_STEP, fx, fy, layout.width, layout.height));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [layout.width, layout.height]);
+
+  /** 屏幕像素位移 → 布局坐标位移（viewBox 等比铺满，横竖同一个比例；rect 已含封顶后的真实宽度） */
+  const layoutDelta = (px: number): number => {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect || rect.width === 0) return 0; // 量不到宽度就不平移，宁可不响应也不乱跳
+    return (px * layout.width) / view.zoom / rect.width;
+  };
+
+  const onPointerDown = (e: ReactPointerEvent<SVGSVGElement>) => {
+    if (e.button !== 0) return;
+    draggedRef.current = false;
+    dragRef.current = { x: e.clientX, y: e.clientY, moved: false };
+  };
+
+  const onPointerMove = (e: ReactPointerEvent<SVGSVGElement>) => {
+    const d = dragRef.current;
+    if (!d) return;
+    const dx = e.clientX - d.x;
+    const dy = e.clientY - d.y;
+    if (!d.moved) {
+      if (Math.abs(dx) + Math.abs(dy) < GEN_DRAG_SLOP) return; // 死区内：还是点选
+      d.moved = true;
+      // 指针捕获让手滑出画布也能继续拖（老环境不支持就退化为画布内拖）
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        // 指针已失效（pointerId 不存在）：这轮拖拽按画布内拖继续
+      }
+    }
+    setView((v) => panView(v, layoutDelta(dx), layoutDelta(dy), layout.width, layout.height));
+    d.x = e.clientX;
+    d.y = e.clientY;
+  };
+
+  const onPointerUp = () => {
+    draggedRef.current = dragRef.current?.moved ?? false;
+    dragRef.current = null;
+  };
 
   /** 方向键步进：换选中并把 DOM 焦点一起搬过去（不是只换描边） */
   const step = (id: string, dir: "up" | "down" | "left" | "right") => {
@@ -111,86 +242,182 @@ function GenealogyCanvas({
     }
   };
 
-  return (
-    <svg
-      data-testid="genealogy-canvas"
-      viewBox={`0 0 ${layout.width} ${layout.height}`}
-      preserveAspectRatio="xMidYMid meet"
-      className="w-full rounded-xl border border-white/[.06] bg-[rgba(12,14,20,.5)]"
-      style={{ height: "auto", aspectRatio: `${layout.width} / ${layout.height}` }}
-    >
-      {layout.edges.map((e, i) => (
-        <path
-          key={`${e.from}->${e.to}-${i}`}
-          className="genealogy-edge"
-          d={e.d}
-          fill="none"
-          style={{ stroke: "rgba(236,231,219,.25)" }}
-          strokeWidth={1.4}
-          strokeDasharray={e.dashed ? "4 4" : undefined}
-        />
-      ))}
+  /**
+   * 画布键盘：`+`/`=` 放大、`-`/`_` 缩小、`0` 适应。
+   * 与节点级按键（方向键/Enter/Space）不相交，节点未消费的按键冒泡到这里 —— 两套键位可以共存。
+   */
+  const onCanvasKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (e.nativeEvent.isComposing) return; // 中文输入法组字中的按键不算快捷键
+    switch (e.key) {
+      // 「+」在不同键盘布局/主键盘区可能是 =，一起收
+      case "+":
+      case "=":
+        e.preventDefault();
+        zoomBy(GEN_ZOOM_STEP);
+        return;
+      case "-":
+      case "_":
+        e.preventDefault();
+        zoomBy(1 / GEN_ZOOM_STEP);
+        return;
+      case "0":
+        e.preventDefault();
+        fit();
+        return;
+      default:
+        return;
+    }
+  };
 
-      {layout.nodes.map((n) => {
-        const focused = focusId === n.worldId;
-        const missing = !n.entry.exists;
-        const fork = n.entry.forkedFrom;
-        const name = worldDisplayName(n.entry);
-        return (
-          <g
-            key={n.worldId}
-            data-testid={`genealogy-node-${n.worldId}`}
-            role="button"
-            tabIndex={n.worldId === tabbableId ? 0 : -1}
-            aria-label={`世界线 ${name} · 第 ${n.entry.chapterNo} 章${fork ? ` · 分叉自 ${fork.worldId} @ ${fork.nodeId}` : ""}${
-              n.missingParent ? " · 父线已删" : ""
-            }${missing ? " · 目录缺失" : ""}`}
-            onClick={() => onFocus(n.worldId)}
-            onKeyDown={onNodeKey(n.worldId)}
-            ref={(el) => {
-              if (el) nodeRefs.current.set(n.worldId, el);
-              else nodeRefs.current.delete(n.worldId);
-            }}
-            className="cursor-pointer"
-            opacity={missing ? 0.55 : 1}
+  /** 渲染宽度上界：单节点 ≤ GEN_MAX_NODE_PX（`layout.width × (270 / 210)`；forest 更宽时上界不起作用） */
+  const maxRenderW = Math.round(layout.width * (GEN_MAX_NODE_PX / GEN_NODE_W));
+
+  return (
+    <div data-testid="genealogy-canvas-wrap" onKeyDown={onCanvasKey} className="mt-1">
+      {/* 工具条：缩放控件 + 鼠标/键盘提示。提示放这一行（画布之上）而不是屏脚：
+          画布高时屏脚会被顶到折叠线以下，1440×900 不滚动就看不到 */}
+      <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-meta tracking-[.05em] text-ink-hint">
+        <span className="flex items-center gap-1">
+          <button
+            type="button"
+            data-testid="genealogy-zoom-out"
+            aria-label="缩小"
+            onClick={() => zoomBy(1 / GEN_ZOOM_STEP)}
+            className="rounded-md border border-white/10 p-1.5 transition-colors hover:border-gold/40 hover:text-ink"
           >
-            <rect
-              x={n.x}
-              y={n.y}
-              width={GEN_NODE_W}
-              height={GEN_NODE_H}
-              rx={10}
-              style={{
-                fill: "rgba(236,231,219,.05)",
-                stroke: focused ? "var(--accent2)" : "rgba(236,231,219,.4)",
-                ...(missing && !focused ? { strokeDasharray: "5 4" } : {}),
-              }}
-              strokeWidth={focused ? 2.6 : 1.5}
+            <ZoomOut size={13} />
+          </button>
+          <button
+            type="button"
+            data-testid="genealogy-zoom-in"
+            aria-label="放大"
+            onClick={() => zoomBy(GEN_ZOOM_STEP)}
+            className="rounded-md border border-white/10 p-1.5 transition-colors hover:border-gold/40 hover:text-ink"
+          >
+            <ZoomIn size={13} />
+          </button>
+          <button
+            type="button"
+            data-testid="genealogy-zoom-fit"
+            onClick={fit}
+            className="flex items-center gap-1 rounded-md border border-white/10 px-2 py-1 transition-colors hover:border-gold/40 hover:text-ink"
+          >
+            <Maximize2 size={13} /> 适应
+          </button>
+          <span data-testid="genealogy-zoom-level" className="ml-1 w-10 text-right">
+            {Math.round(view.zoom * 100)}%
+          </span>
+        </span>
+        <span className="ml-auto">滚轮缩放 · 拖拽平移 · 双击复位 · 方向键走节点</span>
+      </div>
+
+      {/* 上界盒子（只封渲染宽度，mx-auto 居中）：森林更大时上界够不着，照旧铺满可用宽度 */}
+      <div data-testid="genealogy-canvas-cap" className="mx-auto w-full" style={{ maxWidth: `${maxRenderW}px` }}>
+        <svg
+          ref={svgRef}
+          data-testid="genealogy-canvas"
+          viewBox={viewBoxOf(view, layout.width, layout.height)}
+          preserveAspectRatio="xMidYMid meet"
+          className="block w-full cursor-grab touch-none rounded-xl border border-white/[.06] bg-panel active:cursor-grabbing"
+          style={{ height: "auto", aspectRatio: `${layout.width} / ${layout.height}` }}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerUp}
+          onDoubleClick={fit}
+        >
+          {layout.edges.map((e, i) => (
+            <path
+              key={`${e.from}->${e.to}-${i}`}
+              className="genealogy-edge"
+              d={e.d}
+              fill="none"
+              style={{ stroke: "rgba(236,231,219,.25)" }}
+              strokeWidth={1.4}
+              strokeDasharray={e.dashed ? "4 4" : undefined}
             />
-            <text x={n.x + 12} y={n.y + 25} style={{ fill: "var(--ink)" }} fontSize={13} fontWeight={600} letterSpacing="0.06em">
-              {truncateName(name, 12)}
-            </text>
-            <text x={n.x + 12} y={n.y + 46} style={{ fill: "var(--ink)", opacity: 0.55 }} fontSize={10.5}>
-              第 {n.entry.chapterNo} 章
-            </text>
-            {/* 分叉节点徽章（nodeId 缩写）；父线已删的孤儿前面加 ⌫ */}
-            {(fork || n.missingParent) && (
-              <text
-                data-testid={n.missingParent ? `genealogy-orphan-${n.worldId}` : undefined}
-                x={n.x + GEN_NODE_W - 12}
-                y={n.y + 25}
-                textAnchor="end"
-                style={{ fill: n.missingParent ? "rgba(248,113,113,.9)" : "var(--accent)", opacity: 0.9 }}
-                fontSize={10}
-                letterSpacing="0.08em"
+          ))}
+
+          {layout.nodes.map((n) => {
+            const focused = focusId === n.worldId;
+            const missing = !n.entry.exists;
+            const fork = n.entry.forkedFrom;
+            const name = worldDisplayName(n.entry, presetTitle);
+            const forkText = fork ? forkPhrase(fork, worlds, presetTitle) : "";
+            // 徽章（⑂ / ⌫ ⑂）右对齐占掉约 3em：带徽章的卡显示名收窄到 10 字，
+            // 否则 fontSize 14 的最宽字形（CJK ≈ 1em）会顶到徽章上
+            const badged = Boolean(fork) || n.missingParent;
+            return (
+              <g
+                key={n.worldId}
+                data-testid={`genealogy-node-${n.worldId}`}
+                role="button"
+                tabIndex={n.worldId === tabbableId ? 0 : -1}
+                aria-label={`世界线 ${name} · 第 ${n.entry.chapterNo} 章${forkText ? ` · ${forkText}` : ""}${
+                  missing ? " · 目录缺失" : ""
+                }`}
+                onClick={() => {
+                  // 拖完手抬起那一下不算点选（否则平移顺手就把节点选中了）
+                  if (draggedRef.current) {
+                    draggedRef.current = false;
+                    return;
+                  }
+                  onFocus(n.worldId);
+                }}
+                onKeyDown={onNodeKey(n.worldId)}
+                ref={(el) => {
+                  if (el) nodeRefs.current.set(n.worldId, el);
+                  else nodeRefs.current.delete(n.worldId);
+                }}
+                className="cursor-pointer"
+                opacity={missing ? 0.55 : 1}
               >
-                {`${n.missingParent ? "⌫ " : ""}@${fork?.nodeId ?? "?"}`}
-              </text>
-            )}
-          </g>
-        );
-      })}
-    </svg>
+                <rect
+                  x={n.x}
+                  y={n.y}
+                  width={GEN_NODE_W}
+                  height={GEN_NODE_H}
+                  rx={10}
+                  style={{
+                    fill: "rgba(236,231,219,.05)",
+                    stroke: focused ? "var(--accent2)" : "rgba(236,231,219,.4)",
+                    ...(missing && !focused ? { strokeDasharray: "5 4" } : {}),
+                  }}
+                  strokeWidth={focused ? 2.6 : 1.5}
+                />
+                <text
+                  x={n.x + 12}
+                  y={n.y + 25}
+                  style={{ fill: "var(--ink)" }}
+                  fontSize={14}
+                  fontWeight={600}
+                  letterSpacing="0.06em"
+                >
+                  {truncateName(name, badged ? 10 : 12)}
+                </text>
+                <text x={n.x + 12} y={n.y + 46} style={{ fill: "var(--ink)", opacity: 0.55 }} fontSize={12}>
+                  第 {n.entry.chapterNo} 章
+                </text>
+                {/* 分叉徽章：只留「分叉了」这个信号（⑂），节点 id 不上屏；父线已删的孤儿前面加 ⌫ */}
+                {badged && (
+                  <text
+                    data-testid={n.missingParent ? `genealogy-orphan-${n.worldId}` : undefined}
+                    x={n.x + GEN_NODE_W - 12}
+                    y={n.y + 25}
+                    textAnchor="end"
+                    style={{ fill: n.missingParent ? "rgba(248,113,113,.9)" : "var(--accent)", opacity: 0.9 }}
+                    fontSize={12}
+                    letterSpacing="0.08em"
+                  >
+                    {n.missingParent ? "⌫ ⑂" : "⑂"}
+                  </text>
+                )}
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+    </div>
   );
 }
 
@@ -202,6 +429,12 @@ function GenealogyCanvas({
  * v1.7：列表/家谱视图切换——家谱把 forkedFrom 血缘画成 SVG 森林（`lib/genealogy` 纯函数布局，
  * 孤儿标「⌫ 父线已删」、fork 环容错），节点方向键走位 + Enter 选中，选中后的快捷条复用
  * `continueWorld` 继续；「查看」跳回列表并聚焦对应行。
+ * v1.8：壳层页框（ShellPage：眉标 = 剧本名 + 题材/分级，右栏 = 继续上次 + 键盘）；行从「四个按钮平铺」
+ * 收成**一个主行动（继续）+ 一个 ⋯ 菜单**（改名/导出/删除，删除的两段确认收在菜单内：菜单一关即作废）；
+ * 文案去掉裸 id（`worldDisplayName`/`forkPhrase`），字号走 global.css 的档位类。
+ * v1.8 家谱画布：缩放平移（滚轮锚点 / 拖拽 / 双击 / ± 与适应 / `+ - 0`，复用 `lib/treeLayout` 的
+ * TreeView 纯函数）、渲染宽度只封上界（小森林不再把节点撑到 ~490px）、详情条吸底 +
+ * 提示挂在画布工具条（1440×900 不滚动即可见）。
  */
 export default function WorldsScreen() {
   const selected = useGameStore((s) => s.selected);
@@ -218,6 +451,8 @@ export default function WorldsScreen() {
   const pendingResync = useGameStore((s) => s.pendingResync);
 
   const presetId = selected?.id;
+  /** 剧本标题：显示名与分叉说明的最后一道兜底（合成显示名只在屏内算，不进 store/服务端） */
+  const presetTitle = selected?.title ?? "";
 
   const [worlds, setWorlds] = useState<WorldEntry[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -246,6 +481,10 @@ export default function WorldsScreen() {
   const [genFocus, setGenFocus] = useState<string | null>(null);
   /** 「查看」跳回列表后要聚焦的行（世界 id；effect 里消费一次即清） */
   const [listJumpId, setListJumpId] = useState<string | null>(null);
+  /** 打开着 ⋯ 菜单的世界 id（同屏只开一个；null=全关） */
+  const [menuId, setMenuId] = useState<string | null>(null);
+  /** 菜单向上翻：默认向下展开，靠近视口底边（末行）时翻到触发器上方，别被折叠线裁掉 */
+  const [menuUp, setMenuUp] = useState(false);
 
   /** 行元素引用：↑↓ 把 DOM 焦点一起搬到光标行（roving tabIndex 的完整语义，不是只换个描边） */
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
@@ -253,6 +492,22 @@ export default function WorldsScreen() {
   const fileRef = useRef<HTMLInputElement | null>(null);
   /** 打开编辑器时把光标送进「显示名」输入框 */
   const labelRef = useRef<HTMLInputElement | null>(null);
+  /** 打开着的那行 ⋯ 菜单：外层（触发器 + 弹层）用来判点外面，触发器用来接回 Esc 后的焦点 */
+  const menuWrapRef = useRef<HTMLDivElement | null>(null);
+  const menuTriggerRef = useRef<HTMLButtonElement | null>(null);
+  /** 弹层本体：开着时量一次底边，决定向下还是向上展开 */
+  const menuPopupRef = useRef<HTMLDivElement | null>(null);
+
+  /**
+   * 关菜单：同时撤销半截删除确认（重开菜单回到「改名/导出/删除」第一屏）。
+   * 刻意定义在下面那两条 document 级 effect **之前**：effect 的依赖数组在渲染期就地求值，
+   * 声明在后会踩 TDZ（整屏渲染直接抛错）。useCallback 只为身份稳定——两个监听把它当依赖。
+   */
+  const closeMenu = useCallback(() => {
+    setMenuId(null);
+    setConfirmId(null);
+    setMenuUp(false);
+  }, []);
 
   const list = useMemo(() => worlds ?? [], [worlds]);
 
@@ -260,6 +515,12 @@ export default function WorldsScreen() {
   const genealogy = useMemo(
     // 画布常量显式传进布局（StoryTreeScreen 的惯例）：单侧改尺寸不会让 rect 与坐标静默错位
     () => layoutGenealogy(list, { nodeW: GEN_NODE_W, nodeH: GEN_NODE_H }),
+    [list],
+  );
+
+  /** aside「继续上次」的世界：清单里最近游玩的那条（不依赖 fetch 的排序，自己取最大 lastPlayed） */
+  const lastWorld = useMemo(
+    () => list.reduce<WorldEntry | null>((best, w) => (!best || w.lastPlayed > best.lastPlayed ? w : best), null),
     [list],
   );
 
@@ -304,6 +565,65 @@ export default function WorldsScreen() {
     if (editId) labelRef.current?.focus();
   }, [editId]);
 
+  // 菜单开着时把焦点送进第一项（键盘路径：⋯ 上 Enter → 菜单第一项已聚焦 → ↓ 走位/Tab 前进）。
+  // confirmId 也进依赖：删除→确认这一拍里「第一项」变成了确认按钮，焦点要跟着换过去
+  // （否则被替换掉的「删除」按钮会把焦点丢回 body）。
+  useEffect(() => {
+    if (!menuId) return;
+    menuWrapRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+  }, [menuId, confirmId]);
+
+  // 点菜单外面关掉：用 mousedown（在 click 之前）判定，别的行的 ⋯ 因此能「先关这行、再开自己」。
+  // 关菜单顺手撤销半截删除确认——菜单一关，那条确认就不该还挂着。
+  useEffect(() => {
+    if (!menuId) return;
+    const onDown = (e: MouseEvent) => {
+      if (menuWrapRef.current?.contains(e.target as Node)) return;
+      closeMenu();
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [menuId, closeMenu]);
+
+  // 菜单开着时的两条 document 级兜底（不能只靠行上的 onKeyDown：它只在焦点还在菜单里时收得到键）：
+  // ① Esc 在**捕获阶段**就地关菜单并 stopPropagation——Tab 一旦走出菜单，按键就冒到 App 挂在 window 上的
+  //    Esc 关闭链（那一下会连整屏一起关回标题屏，而 aria-expanded 还留着 true）。捕获阶段先于 React 根容器，
+  //    也先于 window 的冒泡监听，拦在这里最靠前；非 Esc 的按键照旧放行（探针/别处监听都不受影响）。
+  // ② 焦点离开这一行（focusin 落到行外）就关菜单：菜单的存活跟着焦点走，不留「开着却没人管」的孤儿菜单。
+  useEffect(() => {
+    if (!menuId) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.isComposing) return;
+      e.preventDefault();
+      e.stopPropagation();
+      closeMenu();
+      menuTriggerRef.current?.focus(); // Esc 收菜单是「回到触发器」：卸载时焦点会丢回 body，键盘用户会断线
+    };
+    const onFocusIn = (e: FocusEvent) => {
+      if (rowRefs.current.get(menuId)?.contains(e.target as Node)) return;
+      closeMenu();
+    };
+    document.addEventListener("keydown", onKey, true);
+    document.addEventListener("focusin", onFocusIn);
+    return () => {
+      document.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("focusin", onFocusIn);
+    };
+  }, [menuId, closeMenu]);
+
+  // ⋯ 菜单默认向下展开，末行的菜单会被视口折叠线裁掉。开菜单后量一次：触发器底边 + 菜单高 + 间隔
+  // 越过视口下沿就翻到上方。刻意量「触发器底边 + offsetHeight」而不是弹层自己的 bottom——
+  // 后者会读回已经翻上去的位置，第二次量就把结论推翻（两段确认换高时尤其明显）；本式与放置方向无关，
+  // 所以不会自激。layout effect：在绘制前定好位，玩家看不到「先向下再跳上去」。confirmId 进依赖
+  // 因为「删除 → 确认删除/取消」会换高。
+  useLayoutEffect(() => {
+    if (!menuId) return;
+    const el = menuPopupRef.current;
+    if (!el) return;
+    const anchorBottom = menuTriggerRef.current?.getBoundingClientRect().bottom ?? el.getBoundingClientRect().bottom;
+    setMenuUp(anchorBottom + el.offsetHeight + 12 > window.innerHeight);
+  }, [menuId, confirmId]);
+
   // 键盘：↑↓ 移动高亮，Enter 继续高亮的世界线；确认态/编辑态下全部让位给按钮与输入框。
   // 家谱视图下让位（方向键由家谱节点自己接，Enter 只选中不清档续演）
   useEffect(() => {
@@ -312,7 +632,7 @@ export default function WorldsScreen() {
       if (view !== "list") return; // 家谱视图：节点级键盘，不做屏级列表导航
       if (confirmId || editId) return; // 确认删除/行内改名中：不拦截
       const el = e.target instanceof HTMLElement ? e.target : null;
-      // 焦点在按钮/输入框上时不做屏级导航，避免 Enter 被激活两次
+      // 焦点在按钮/输入框上时不做屏级导航，避免 Enter 被激活两次（⋯ 菜单项也在这条里）
       if (el && (el.tagName === "BUTTON" || el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
       if (e.key === "ArrowUp" || e.key === "ArrowDown") {
         e.preventDefault();
@@ -333,6 +653,18 @@ export default function WorldsScreen() {
   const continueWorld = (entry: WorldEntry) => {
     if (!entry.exists || engineBusy) return;
     resumeWorld(entry);
+  };
+
+  /** ⋯ 开/关：换行打开时先收掉上一行的菜单与半截确认 */
+  const toggleMenu = (entry: WorldEntry) => {
+    if (menuId === entry.worldId) {
+      closeMenu();
+      return;
+    }
+    setActionError("");
+    setActionNotice("");
+    setConfirmId(null);
+    setMenuId(entry.worldId);
   };
 
   /** 新建世界线：id 由 server 分配，成功才带着 id 去捏人；失败留在本屏展示错误 */
@@ -356,7 +688,7 @@ export default function WorldsScreen() {
       });
   };
 
-  /** 删除（第二段确认触发）：成功即重取清单并提示去向（回收站可手工找回），失败在列表上方行内报错 */
+  /** 删除（第二段确认触发）：成功即重取清单并提示去向（回收站可找回），失败在列表上方行内报错 */
   const removeWorld = (entry: WorldEntry) => {
     if (deleting) return;
     setDeleting(entry.worldId);
@@ -369,10 +701,10 @@ export default function WorldsScreen() {
           setDeleting(null);
           return;
         }
-        setConfirmId(null);
+        closeMenu();
         setDeleting(null);
-        // trashed:false = 回收站 rename 失败、服务端已回退直删——文案不能再说「可手工找回」
-        setActionNotice(r.trashed === false ? "已删除（未能进回收站，无法找回）" : "已移入回收站（state/trash/ 可手工找回）");
+        // trashed:false = 回收站 rename 失败、服务端已回退直删——文案不能再说「可找回」
+        setActionNotice(r.trashed === false ? "已删除（未能进回收站，无法找回）" : "已移入回收站，可从数据目录找回");
         setStamp((v) => v + 1);
       })
       .catch((e: unknown) => {
@@ -439,421 +771,545 @@ export default function WorldsScreen() {
     }
   };
 
+  /** aside「键盘」卡的提示行：视图不同、可用键不同（与页脚那条一句话提示互补） */
+  const keyHints: [string, string][] =
+    view === "list"
+      ? [
+          ["↑ ↓", "选择世界线"],
+          ["Enter", "读档续演"],
+          ["Tab", "行内按钮与 ⋯ 菜单"],
+          ["Esc", "关菜单 / 返回标题"],
+        ]
+      : [
+          ["方向键", "走血缘节点"],
+          ["Enter", "选中节点"],
+          ["+ − 0", "缩放 / 适应"],
+          ["Tab", "快捷条按钮"],
+          ["Esc", "返回标题"],
+        ];
+
   return (
-    <ScreenShell className="overflow-y-auto bg-bg/70" style={themeVars(getTheme(selected))}>
-      <div data-testid="worlds-screen" className="mx-auto w-full max-w-3xl px-6 py-10">
-        <header className="flex items-start gap-4">
-          <div className="min-w-0">
-            <h2 className="truncate text-2xl tracking-[.18em]">{selected?.title ?? "世 界 线"}</h2>
-            {selected && (
+    <ScreenShell className="overflow-y-auto shell-backdrop" style={themeVars(getTheme(selected))}>
+      <div data-testid="worlds-screen" className="min-h-full">
+        <ShellPage
+          // 眉标：剧本名 + 题材/分级（不再用药丸，评级不是标签墙而是这一行的元信息）
+          eyebrow={
+            selected ? (
               <>
-                <div className="mt-2 flex flex-wrap items-center gap-2">
-                  <span className="rounded-full border border-gold/30 bg-gold/10 px-2.5 py-0.5 text-[11px] tracking-[.2em] text-gold">
-                    {selected.genre}
-                  </span>
-                  <span className="rounded-full border border-white/10 bg-white/[.03] px-2.5 py-0.5 text-[11px] tracking-[.2em] text-ink-hint">
-                    {selected.rating}
-                  </span>
-                </div>
-                <p className="mt-2 text-[12.5px] leading-relaxed text-ink-body">{selected.tagline}</p>
+                {selected.title}
+                <span className="text-ink-hint"> · {selected.genre} · {selected.rating}</span>
               </>
-            )}
-          </div>
-          <button
-            type="button"
-            onClick={toTitle}
-            className="ml-auto flex-none rounded-md border border-white/10 px-3 py-1.5 text-[12px] tracking-[.2em] text-ink-hint transition-colors hover:border-gold/40 hover:text-[color:var(--accent)]"
-          >
-            返回
-          </button>
-        </header>
-
-        {/* 工具栏：视图切换（列表/家谱）、导入（收 .world.json）与主行动「新世界线」（空态下也用它） */}
-        <div className="mt-7 flex items-center gap-3">
-          <h3 className="text-[13px] tracking-[.35em] text-gold/80">世 界 线</h3>
-          {/* 视图切换（v1.7）：平铺列表 ↔ forkedFrom 家谱森林（分段按钮） */}
-          <div role="group" aria-label="世界线视图" className="flex items-center rounded-lg border border-white/10 p-0.5">
-            <button
-              type="button"
-              data-testid="worlds-view-list"
-              aria-pressed={view === "list"}
-              onClick={() => setView("list")}
-              className={`rounded-md px-3 py-1 text-[12px] tracking-[.15em] transition-colors ${
-                view === "list" ? "bg-gold/15 text-gold" : "text-ink-hint hover:text-ink"
-              }`}
-            >
-              列表
-            </button>
-            <button
-              type="button"
-              data-testid="worlds-view-genealogy"
-              aria-pressed={view === "genealogy"}
-              onClick={() => setView("genealogy")}
-              className={`rounded-md px-3 py-1 text-[12px] tracking-[.15em] transition-colors ${
-                view === "genealogy" ? "bg-gold/15 text-gold" : "text-ink-hint hover:text-ink"
-              }`}
-            >
-              家谱
-            </button>
-          </div>
-          <button
-            type="button"
-            data-testid="worlds-import"
-            disabled={importing || worldBusy}
-            onClick={() => fileRef.current?.click()}
-            className="ml-auto rounded-lg border border-white/10 px-4 py-2 text-[13px] tracking-[.1em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint"
-          >
-            {importing ? "导入中…" : "导入"}
-          </button>
-          <input
-            ref={fileRef}
-            type="file"
-            accept=".json,application/json"
-            data-testid="worlds-import-input"
-            className="hidden"
-            onChange={onImportPick}
-          />
-          <button
-            type="button"
-            data-testid="worlds-new"
-            disabled={!presetId || creating}
-            onClick={createWorld}
-            className="rounded-lg border border-gold/35 bg-gold/15 px-5 py-2 text-[13.5px] tracking-[.1em] text-gold transition-colors hover:bg-gold/30 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink-faint"
-          >
-            {creating ? "创建中…" : "新世界线"}
-          </button>
-        </div>
-
-        {/* 提示位：导入/改名的成功与失败（删除/新建的行内提示在下面） */}
-        {worldNotice && (
-          <p
-            data-testid="worlds-notice"
-            data-kind={worldNotice.kind}
-            className={`mt-3 rounded-xl border px-4 py-2.5 text-[13px] leading-relaxed backdrop-blur-md ${
-              worldNotice.kind === "error"
-                ? "border-red-400/25 bg-[rgba(10,12,18,.5)] text-red-400"
-                : "border-gold/25 bg-gold/10 text-gold/90"
-            }`}
-          >
-            {worldNotice.text}
-          </p>
-        )}
-
-        {/* 行内动作提示：错误（红）与删除成功的回收站去向（金）各一行 */}
-        {actionError && <p className="mt-3 text-sm text-red-400">{actionError}</p>}
-        {actionNotice && <p className="mt-3 text-sm text-gold/80">{actionNotice}</p>}
-
-        {/* 加载 / 失败态 */}
-        {loading && worlds === null && !error && (
-          <p className="mt-6 animate-pulse text-sm text-ink-hint">清点世界线…</p>
-        )}
-        {error && (
-          <div
-            data-testid="worlds-error"
-            className="mt-6 flex items-center gap-3 rounded-xl border border-red-400/25 bg-[rgba(10,12,18,.5)] px-4 py-3 backdrop-blur-md"
-          >
-            <p className="text-sm text-red-400">世界线加载失败：{error}</p>
-            <button
-              type="button"
-              data-testid="worlds-retry"
-              onClick={() => setStamp((v) => v + 1)}
-              className="ml-auto flex-none rounded-md border border-gold/35 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-gold transition-colors hover:bg-gold/20"
-            >
-              重试
-            </button>
-          </div>
-        )}
-
-        {/* 空态 */}
-        {!error && worlds !== null && list.length === 0 && (
-          <div
-            data-testid="worlds-empty"
-            className="mt-6 flex flex-col items-center gap-3 rounded-2xl border border-dashed border-white/15 bg-[rgba(10,12,18,.5)] px-6 py-10 backdrop-blur-md"
-          >
-            <p className="text-[14px] tracking-[.12em] text-ink-hint">还没有世界线——开始新的吧</p>
-            <p className="text-[11.5px] tracking-[.2em] text-ink-hint">新世界线从捏人开始</p>
-          </div>
-        )}
-
-        {/* 世界列表（列表视图）：listbox + option，光标行独占 tabIndex 0（roving tabIndex）。
-            家谱视图下整块卸载：行的存在与否就是视图状态本身（测试与读屏都以此为准） */}
-        {view === "list" && (
-        <div role="listbox" aria-label="世界线" className="mt-4 space-y-2.5">
-          {list.map((entry, i) => {
-            const missing = !entry.exists;
-            const confirming = confirmId === entry.worldId;
-            const busy = deleting === entry.worldId;
-            const editing = editId === entry.worldId;
-            const name = worldDisplayName(entry);
-            return (
-              <motion.div
-                key={entry.worldId}
-                {...ROW}
-                transition={{ duration: 0.3, ease: "easeOut" }}
-                role="option"
-                aria-selected={i === focus}
-                tabIndex={i === focus ? 0 : -1}
-                ref={(el) => {
-                  // 取消挂载/换行时清掉引用，别把脱管元素留在 Map 里
-                  if (el) rowRefs.current.set(entry.worldId, el);
-                  else rowRefs.current.delete(entry.worldId);
-                }}
-                data-testid={`world-row-${entry.worldId}`}
-                onMouseEnter={() => setFocus(i)}
-                onFocus={() => setFocus(i)}
-                onClick={() => setFocus(i)}
-                className={`rounded-xl border bg-[rgba(10,12,18,.5)] px-4 py-3 backdrop-blur-md transition-colors ${
-                  i === focus ? "border-gold/40" : "border-white/10 hover:border-gold/25"
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className={`truncate text-[15px] ${missing ? "text-ink-hint" : "text-ink"}`}>{name}</span>
-                      {entry.forkedFrom && (
-                        <span className="flex-none rounded-sm border border-white/10 bg-white/[.03] px-1.5 py-0.5 text-[10px] tracking-[.12em] text-ink-hint">
-                          分叉自 {entry.forkedFrom.worldId} @ {entry.forkedFrom.nodeId}
-                        </span>
-                      )}
-                      {pendingResync?.worldId === entry.worldId && (
-                        <span
-                          data-testid={`world-resync-${entry.worldId}`}
-                          className="flex-none rounded-sm border border-gold/40 px-1.5 py-0.5 text-[10px] tracking-[.12em] text-gold/90"
-                        >
-                          待重同步
-                        </span>
-                      )}
-                    </div>
-                    <p className="mt-1 text-[11.5px] tracking-[.12em] text-ink-hint">
-                      第 {entry.chapterNo} 章 · {relativeTime(entry.lastPlayed)}
-                      {missing && <span className="ml-2 text-red-400/90">目录缺失</span>}
+            ) : undefined
+          }
+          title="世 界 线"
+          aside={
+            <div className="space-y-4 xl:sticky xl:top-8">
+              {/* 继续上次：最近游玩的那条（aside 里的快捷入口，复用行上那个 continueWorld） */}
+              <section data-testid="worlds-resume-card" className="shell-panel rounded-2xl p-4">
+                <h2 className="text-ui tracking-[.25em] text-gold/80">继 续 上 次</h2>
+                {lastWorld ? (
+                  <>
+                    <p className={`mt-3 truncate text-body ${lastWorld.exists ? "text-ink" : "text-ink-hint"}`}>
+                      {worldDisplayName(lastWorld, presetTitle)}
                     </p>
-                    {/* 显示名与备注都有时，备注降为次行（分叉说明这类信息不该被显示名吃掉） */}
-                    {entry.label?.trim() && entry.note?.trim() && (
-                      <p data-testid={`world-note-${entry.worldId}`} className="mt-1 truncate text-[11.5px] text-ink-hint">
-                        {entry.note}
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="flex flex-none items-center gap-2">
+                    <p className="mt-1 text-meta text-ink-hint">
+                      第 {lastWorld.chapterNo} 章 · {relativeTime(lastWorld.lastPlayed)}
+                      {!lastWorld.exists && <span className="ml-2 text-red-400/90">目录缺失</span>}
+                    </p>
                     <button
                       type="button"
-                      data-testid={`world-continue-${entry.worldId}`}
-                      aria-label={`继续世界线 ${name}`}
-                      disabled={missing || engineBusy}
-                      title={missing ? "目录缺失" : engineBusy ? "引擎忙" : undefined}
-                      onClick={() => continueWorld(entry)}
-                      className={`rounded-lg border px-3.5 py-1.5 text-[12.5px] tracking-[.1em] transition-colors ${
-                        missing || engineBusy
+                      data-testid="worlds-resume-continue"
+                      aria-label={`继续上次的世界线 ${worldDisplayName(lastWorld, presetTitle)}`}
+                      disabled={!lastWorld.exists || engineBusy}
+                      title={!lastWorld.exists ? "目录缺失" : engineBusy ? "引擎忙" : undefined}
+                      onClick={() => continueWorld(lastWorld)}
+                      className={`mt-3 w-full rounded-lg border px-4 py-2 text-ui tracking-[.1em] transition-colors ${
+                        !lastWorld.exists || engineBusy
                           ? "cursor-not-allowed border-white/10 text-ink-hint"
                           : "border-gold/35 bg-gold/15 text-gold hover:bg-gold/30"
                       }`}
                     >
                       {engineBusy ? "引擎忙" : "继续"}
                     </button>
-
-                    <button
-                      type="button"
-                      data-testid={`world-edit-${entry.worldId}`}
-                      aria-label={`编辑世界线 ${name}`}
-                      aria-expanded={editing}
-                      onClick={() => (editing ? setEditId(null) : openEdit(entry))}
-                      className="rounded-lg border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
-                    >
-                      {editing ? "收起" : "编辑"}
-                    </button>
-
-                    {/* 导出走浏览器下载：href 指向 /api/worlds/export（服务端带 Content-Disposition），
-                        download 属性给本地落盘兜一个 <worldId>.world.json 的名字 */}
-                    <a
-                      href={worldExportUrl(entry.worldId)}
-                      download={`${entry.worldId}.world.json`}
-                      data-testid={`world-export-${entry.worldId}`}
-                      aria-label={`导出世界线 ${name}`}
-                      className="rounded-lg border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
-                    >
-                      导出
-                    </a>
-
-                    {/* 两段式确认：首点变「确认删除/取消」，二点才发删除 */}
-                    {confirming ? (
-                      <>
-                        <button
-                          type="button"
-                          data-testid={`world-confirm-${entry.worldId}`}
-                          aria-label={`确认删除世界线 ${name}`}
-                          disabled={busy}
-                          onClick={() => removeWorld(entry)}
-                          className="rounded-lg border border-red-400/40 bg-red-500/15 px-3.5 py-1.5 text-[12.5px] tracking-[.1em] text-red-300 transition-colors hover:bg-red-500/25 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink-faint"
-                        >
-                          {busy ? "删除中…" : "确认删除"}
-                        </button>
-                        <button
-                          type="button"
-                          aria-label={`取消删除世界线 ${name}`}
-                          disabled={busy}
-                          onClick={() => setConfirmId(null)}
-                          className="rounded-lg border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink-hint transition-colors hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint"
-                        >
-                          取消
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        type="button"
-                        data-testid={`world-delete-${entry.worldId}`}
-                        aria-label={`删除世界线 ${name}`}
-                        onClick={() => {
-                          setActionError("");
-                          setActionNotice("");
-                          setConfirmId(entry.worldId);
-                        }}
-                        className="rounded-lg border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink-hint transition-colors hover:border-red-400/40 hover:text-red-300"
-                      >
-                        删除
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {/* 行内改名：显示名（≤60）+ 备注（≤200），Enter 保存 / Esc 取消，留空即清除该字段 */}
-                {editing && (
-                  <div
-                    data-testid={`world-editor-${entry.worldId}`}
-                    className="mt-3 grid gap-2 border-t border-white/[.06] pt-3"
-                  >
-                    <label className="flex items-center gap-2">
-                      <span className="w-14 flex-none text-[11.5px] tracking-[.2em] text-ink-hint">显示名</span>
-                      <input
-                        ref={labelRef}
-                        data-testid={`world-edit-label-${entry.worldId}`}
-                        aria-label={`显示名（${name}）`}
-                        maxLength={LABEL_MAX}
-                        value={editLabel}
-                        onChange={(e) => setEditLabel(e.target.value)}
-                        onKeyDown={(e) => onEditKey(e, entry)}
-                        placeholder="留空则回退备注 / 世界 id"
-                        autoComplete="off"
-                        className="min-w-0 flex-1 rounded-lg border border-white/10 bg-[rgba(12,14,20,.8)] px-3 py-1.5 text-[13.5px] transition-colors focus:border-gold/35"
-                      />
-                    </label>
-                    <label className="flex items-center gap-2">
-                      <span className="w-14 flex-none text-[11.5px] tracking-[.2em] text-ink-hint">备注</span>
-                      <input
-                        data-testid={`world-edit-note-${entry.worldId}`}
-                        aria-label={`备注（${name}）`}
-                        maxLength={NOTE_MAX}
-                        value={editNote}
-                        onChange={(e) => setEditNote(e.target.value)}
-                        onKeyDown={(e) => onEditKey(e, entry)}
-                        placeholder="留空则清除备注"
-                        autoComplete="off"
-                        className="min-w-0 flex-1 rounded-lg border border-white/10 bg-[rgba(12,14,20,.8)] px-3 py-1.5 text-[13.5px] transition-colors focus:border-gold/35"
-                      />
-                    </label>
-                    <div className="flex items-center gap-3">
-                      <button
-                        type="button"
-                        data-testid={`world-edit-save-${entry.worldId}`}
-                        disabled={saving || worldBusy}
-                        onClick={() => saveEdit(entry)}
-                        className="rounded-lg border border-gold/35 bg-gold/15 px-4 py-1.5 text-[12.5px] tracking-[.1em] text-gold transition-colors hover:bg-gold/30 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink-faint"
-                      >
-                        {saving ? "保存中…" : "保存"}
-                      </button>
-                      <button
-                        type="button"
-                        data-testid={`world-edit-cancel-${entry.worldId}`}
-                        disabled={saving}
-                        onClick={() => setEditId(null)}
-                        className="rounded-lg border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink-hint transition-colors hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint"
-                      >
-                        取消
-                      </button>
-                      <span className="text-[11px] tracking-[.08em] text-ink-hint">Enter 保存 · Esc 取消 · 留空即清除</span>
-                    </div>
-                  </div>
+                  </>
+                ) : (
+                  <p className="mt-3 text-meta leading-relaxed text-ink-hint">
+                    开一条新世界线后，最近游玩的那条会出现在这里。
+                  </p>
                 )}
-              </motion.div>
-            );
-          })}
-        </div>
+              </section>
 
-        )}
-
-        {/* 家谱视图（v1.7）：SVG 森林 + 选中节点的快捷信息条（继续复用 continueWorld，不另起一份逻辑） */}
-        {view === "genealogy" && list.length > 0 && (
-          <div className="mt-4">
-            <GenealogyCanvas layout={genealogy} focusId={genFocus} onFocus={setGenFocus} />
-            {(() => {
-              const entry = list.find((w) => w.worldId === genFocus);
-              if (!entry) return null;
-              const name = worldDisplayName(entry);
-              const missing = !entry.exists;
-              return (
-                <div
-                  data-testid="genealogy-detail"
-                  className="mt-3 rounded-xl border border-white/10 bg-[rgba(12,14,20,.72)] px-4 py-3 backdrop-blur-md"
+              {/* 键盘卡：屏级快捷键的速查（行内 ⋯ 菜单是行上的入口，不占列表宽度） */}
+              <section data-testid="worlds-keys-card" className="shell-panel rounded-2xl p-4">
+                <h2 className="text-ui tracking-[.25em] text-gold/80">键 盘</h2>
+                <dl className="mt-3 grid gap-1.5">
+                  {keyHints.map(([key, hint]) => (
+                    <div key={key} className="flex gap-3 text-meta">
+                      <dt className="w-16 flex-none text-ink-body">{key}</dt>
+                      <dd className="min-w-0 text-ink-hint">{hint}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </section>
+            </div>
+          }
+          actions={
+            <>
+              {/* 视图切换（v1.7）：平铺列表 ↔ forkedFrom 家谱森林（分段按钮） */}
+              <div role="group" aria-label="世界线视图" className="flex items-center rounded-lg border border-white/10 p-0.5">
+                <button
+                  type="button"
+                  data-testid="worlds-view-list"
+                  aria-pressed={view === "list"}
+                  onClick={() => setView("list")}
+                  className={`rounded-md px-3 py-1 text-ui tracking-[.15em] transition-colors ${
+                    view === "list" ? "bg-gold/15 text-gold" : "text-ink-hint hover:text-ink"
+                  }`}
                 >
-                  <div className="flex flex-wrap items-center gap-3">
-                    <span className={`text-[15px] ${missing ? "text-ink-hint" : "text-ink"}`}>{name}</span>
-                    <span className="text-[11.5px] tracking-[.12em] text-ink-hint">
-                      第 {entry.chapterNo} 章 · {relativeTime(entry.lastPlayed)}
-                      {missing && <span className="ml-2 text-red-400/90">目录缺失</span>}
-                    </span>
-                    {entry.forkedFrom && !genealogy.nodes.find((n) => n.worldId === entry.worldId)?.missingParent && (
-                      <span className="rounded-sm border border-white/10 bg-white/[.03] px-1.5 py-0.5 text-[10px] tracking-[.12em] text-ink-hint">
-                        分叉自 {entry.forkedFrom.worldId} @ {entry.forkedFrom.nodeId}
-                      </span>
-                    )}
-                    {genealogy.nodes.find((n) => n.worldId === entry.worldId)?.missingParent && (
-                      <span className="rounded-sm border border-red-400/30 px-1.5 py-0.5 text-[10px] tracking-[.12em] text-red-300/90">
-                        ⌫ 父线已删
-                      </span>
-                    )}
-                    <div className="ml-auto flex items-center gap-2">
-                      <button
-                        type="button"
-                        data-testid={`genealogy-continue-${entry.worldId}`}
-                        aria-label={`继续世界线 ${name}`}
-                        disabled={missing || engineBusy}
-                        onClick={() => continueWorld(entry)}
-                        className={`rounded-lg border px-3.5 py-1.5 text-[12.5px] tracking-[.1em] transition-colors ${
-                          missing || engineBusy
-                            ? "cursor-not-allowed border-white/10 text-ink-hint"
-                            : "border-gold/35 bg-gold/15 text-gold hover:bg-gold/30"
-                        }`}
+                  列表
+                </button>
+                <button
+                  type="button"
+                  data-testid="worlds-view-genealogy"
+                  aria-pressed={view === "genealogy"}
+                  onClick={() => setView("genealogy")}
+                  className={`rounded-md px-3 py-1 text-ui tracking-[.15em] transition-colors ${
+                    view === "genealogy" ? "bg-gold/15 text-gold" : "text-ink-hint hover:text-ink"
+                  }`}
+                >
+                  家谱
+                </button>
+              </div>
+              <button
+                type="button"
+                data-testid="worlds-import"
+                disabled={importing || worldBusy}
+                onClick={() => fileRef.current?.click()}
+                className="rounded-lg border border-white/10 px-4 py-2 text-ui tracking-[.1em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint"
+              >
+                {importing ? "导入中…" : "导入"}
+              </button>
+              <input
+                ref={fileRef}
+                type="file"
+                accept=".json,application/json"
+                data-testid="worlds-import-input"
+                className="hidden"
+                onChange={onImportPick}
+              />
+              <button
+                type="button"
+                data-testid="worlds-new"
+                disabled={!presetId || creating}
+                onClick={createWorld}
+                className="rounded-lg border border-gold/35 bg-gold/15 px-5 py-2 text-ui tracking-[.1em] text-gold transition-colors hover:bg-gold/30 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink-faint"
+              >
+                {creating ? "创建中…" : "新世界线"}
+              </button>
+              <button
+                type="button"
+                onClick={toTitle}
+                className="rounded-lg border border-white/10 px-4 py-2 text-ui tracking-[.1em] text-ink-hint transition-colors hover:border-gold/40 hover:text-[color:var(--accent)]"
+              >
+                返回
+              </button>
+            </>
+          }
+          // 家谱视图不铺页脚：画布会把页脚顶到折叠线以下，那里的提示改挂在画布工具条上（始终可见）
+          footer={view === "list" ? "↑ ↓ 选择 · Enter 继续" : undefined}
+        >
+          {selected?.tagline && (
+            <p className="mb-5 max-w-3xl text-ui leading-relaxed text-ink-body">{selected.tagline}</p>
+          )}
+
+          {/* 提示位：导入/改名的成功与失败（删除/新建的行内提示在下面） */}
+          {worldNotice && (
+            <p
+              data-testid="worlds-notice"
+              data-kind={worldNotice.kind}
+              className={`mb-3 rounded-xl border px-4 py-2.5 text-ui leading-relaxed backdrop-blur-md ${
+                worldNotice.kind === "error"
+                  ? "border-red-400/25 bg-panel text-red-400"
+                  : "border-gold/25 bg-gold/10 text-gold/90"
+              }`}
+            >
+              {worldNotice.text}
+            </p>
+          )}
+
+          {/* 行内动作提示：错误（红）与删除成功的回收站去向（金）各一行 */}
+          {actionError && <p className="mb-3 text-ui text-red-400">{actionError}</p>}
+          {actionNotice && <p className="mb-3 text-ui text-gold/80">{actionNotice}</p>}
+
+          {/* 加载 / 失败态 */}
+          {loading && worlds === null && !error && (
+            <p className="mb-3 animate-pulse text-ui text-ink-hint">清点世界线…</p>
+          )}
+          {error && (
+            <div
+              data-testid="worlds-error"
+              className="mb-3 flex items-center gap-3 rounded-xl border border-red-400/25 bg-panel px-4 py-3 backdrop-blur-md"
+            >
+              <p className="text-ui text-red-400">世界线加载失败：{error}</p>
+              <button
+                type="button"
+                data-testid="worlds-retry"
+                onClick={() => setStamp((v) => v + 1)}
+                className="ml-auto flex-none rounded-md border border-gold/35 px-3 py-1.5 text-ui tracking-[.1em] text-gold transition-colors hover:bg-gold/20"
+              >
+                重试
+              </button>
+            </div>
+          )}
+
+          {/* 空态 */}
+          {!error && worlds !== null && list.length === 0 && (
+            <div
+              data-testid="worlds-empty"
+              className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-white/15 bg-panel px-6 py-10 backdrop-blur-md"
+            >
+              <p className="text-body tracking-[.12em] text-ink-hint">还没有世界线——开始新的吧</p>
+              <p className="text-meta tracking-[.2em] text-ink-hint">新世界线从捏人开始</p>
+            </div>
+          )}
+
+          {/* 世界列表（列表视图）：listbox + option，光标行独占 tabIndex 0（roving tabIndex）。
+              行上一个主行动（继续）+ 一个 ⋯ 菜单（改名/导出/删除）；菜单按钮恒在自己的 Tab 位
+              （tabIndex 0），行的 roving 只管行本身。
+              家谱视图下整块卸载：行的存在与否就是视图状态本身（测试与读屏都以此为准） */}
+          {view === "list" && (
+            <div role="listbox" aria-label="世界线" className="space-y-2.5">
+              {list.map((entry, i) => {
+                const missing = !entry.exists;
+                const confirming = confirmId === entry.worldId;
+                const busy = deleting === entry.worldId;
+                const editing = editId === entry.worldId;
+                const name = worldDisplayName(entry, presetTitle);
+                const openMenu = menuId === entry.worldId;
+                return (
+                  <motion.div
+                    key={entry.worldId}
+                    {...ROW}
+                    transition={{ duration: 0.3, ease: "easeOut" }}
+                    role="option"
+                    aria-selected={i === focus}
+                    tabIndex={i === focus ? 0 : -1}
+                    ref={(el) => {
+                      // 取消挂载/换行时清掉引用，别把脱管元素留在 Map 里
+                      if (el) rowRefs.current.set(entry.worldId, el);
+                      else rowRefs.current.delete(entry.worldId);
+                    }}
+                    data-testid={`world-row-${entry.worldId}`}
+                    onMouseEnter={() => setFocus(i)}
+                    onFocus={() => setFocus(i)}
+                    onClick={() => setFocus(i)}
+                    // relative + z-20（仅菜单开着的那行）：framer-motion 留在行上的 transform 会让行自建层叠上下文，
+                    // 弹出层因此逃不出自己的行——不抬行的话后面的行会盖在菜单上（真的盖住，点不到）
+                    className={`relative rounded-xl border bg-panel px-4 py-3 backdrop-blur-md transition-colors ${
+                      openMenu ? "z-20" : ""
+                    } ${i === focus ? "border-gold/40" : "border-white/10 hover:border-gold/25"}`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className={`truncate text-body ${missing ? "text-ink-hint" : "text-ink"}`}>{name}</span>
+                          {entry.forkedFrom && (
+                            <span className="flex-none rounded-sm border border-white/10 bg-white/[.03] px-1.5 py-0.5 text-meta tracking-[.12em] text-ink-hint">
+                              {forkPhrase(entry.forkedFrom, list, presetTitle)}
+                            </span>
+                          )}
+                          {pendingResync?.worldId === entry.worldId && (
+                            <span
+                              data-testid={`world-resync-${entry.worldId}`}
+                              className="flex-none rounded-sm border border-gold/40 px-1.5 py-0.5 text-meta tracking-[.12em] text-gold/90"
+                            >
+                              待重同步
+                            </span>
+                          )}
+                        </div>
+                        <p className="mt-1 text-meta tracking-[.12em] text-ink-hint">
+                          第 {entry.chapterNo} 章 · {relativeTime(entry.lastPlayed)}
+                          {missing && <span className="ml-2 text-red-400/90">目录缺失</span>}
+                        </p>
+                        {/* 显示名与备注都有时，备注降为次行（分叉说明这类信息不该被显示名吃掉）。
+                            旧版 server 自动写的分叉备注是裸 id 串，不算备注——次行不铺（分叉关系看徽标） */}
+                        {entry.label?.trim() && entry.note?.trim() && !isLegacyForkNote(entry.note) && (
+                          <p data-testid={`world-note-${entry.worldId}`} className="mt-1 truncate text-meta text-ink-hint">
+                            {entry.note}
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="flex flex-none items-center gap-2">
+                        <button
+                          type="button"
+                          data-testid={`world-continue-${entry.worldId}`}
+                          aria-label={`继续世界线 ${name}`}
+                          disabled={missing || engineBusy}
+                          title={missing ? "目录缺失" : engineBusy ? "引擎忙" : undefined}
+                          onClick={() => continueWorld(entry)}
+                          className={`rounded-lg border px-3.5 py-1.5 text-ui tracking-[.1em] transition-colors ${
+                            missing || engineBusy
+                              ? "cursor-not-allowed border-white/10 text-ink-hint"
+                              : "border-gold/35 bg-gold/15 text-gold hover:bg-gold/30"
+                          }`}
+                        >
+                          {engineBusy ? "引擎忙" : "继续"}
+                        </button>
+
+                        {/* ⋯ 菜单：触发器 + 弹层同在一个容器里（点外面就以此为准）。Esc 与「焦点离开本行」
+                            的收尾都在 document 级监听里（见上面那两条 effect）——不挂在行上，因为 Tab 走出
+                            菜单后行上的处理器再也收不到键。菜单按钮不是 roving 的一部分——
+                            每行都有自己的 Tab 位，读屏/键盘随时够得着 */}
+                        <div className="relative" ref={openMenu ? menuWrapRef : undefined}>
+                          <button
+                            type="button"
+                            ref={openMenu ? menuTriggerRef : undefined}
+                            data-testid={`world-menu-${entry.worldId}`}
+                            tabIndex={0}
+                            aria-haspopup="menu"
+                            aria-expanded={openMenu}
+                            aria-label={`世界线 ${name} 的更多操作`}
+                            onClick={() => toggleMenu(entry)}
+                            className={`rounded-lg border px-3 py-1.5 text-ui tracking-[.1em] transition-colors ${
+                              openMenu
+                                ? "border-gold/40 text-ink"
+                                : "border-white/10 text-ink-hint hover:border-gold/40 hover:text-ink"
+                            }`}
+                          >
+                            ⋯
+                          </button>
+
+                          {openMenu && (
+                            <div
+                              ref={menuPopupRef}
+                              role="menu"
+                              data-testid={`world-menu-popup-${entry.worldId}`}
+                              aria-label={`世界线 ${name} 的操作`}
+                              className={`absolute right-0 z-20 grid w-44 gap-0.5 shell-panel rounded-xl p-1 ${menuUp ? "bottom-full mb-1" : "top-full mt-1"}`}
+                            >
+                              {/* 两段式确认收在菜单里：首点「删除」变「确认删除/取消」，二点才发删除 */}
+                              {confirming ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    role="menuitem"
+                                    data-testid={`world-confirm-${entry.worldId}`}
+                                    aria-label={`确认删除世界线 ${name}`}
+                                    disabled={busy}
+                                    onClick={() => removeWorld(entry)}
+                                    className={`${MENU_ITEM_CLS} text-red-300 hover:bg-red-500/20 hover:text-red-200 disabled:cursor-not-allowed disabled:text-ink-faint`}
+                                  >
+                                    {busy ? "删除中…" : "确认删除"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    role="menuitem"
+                                    aria-label={`取消删除世界线 ${name}`}
+                                    disabled={busy}
+                                    onClick={() => setConfirmId(null)}
+                                    className={`${MENU_ITEM_CLS} disabled:cursor-not-allowed disabled:text-ink-faint`}
+                                  >
+                                    取消
+                                  </button>
+                                </>
+                              ) : (
+                                <>
+                                  <button
+                                    type="button"
+                                    role="menuitem"
+                                    data-testid={`world-edit-${entry.worldId}`}
+                                    aria-label={`改名世界线 ${name}`}
+                                    onClick={() => {
+                                      closeMenu();
+                                      // 该行已经在改名：只把光标送回输入框，别用服务端现值盖掉玩家还没保存的改动
+                                      if (editing) labelRef.current?.focus();
+                                      else openEdit(entry);
+                                    }}
+                                    className={MENU_ITEM_CLS}
+                                  >
+                                    改名
+                                  </button>
+                                  {/* 导出走浏览器下载：href 指向 /api/worlds/export（服务端带 Content-Disposition），
+                                      download 属性给本地落盘兜一个 <worldId>.world.json 的名字。
+                                      关菜单推迟一拍：浏览器要等事件派发走完才执行 <a download> 的默认动作，
+                                      在这一拍里把它卸载掉会把下载掐掉 */}
+                                  <a
+                                    role="menuitem"
+                                    href={worldExportUrl(entry.worldId)}
+                                    download={`${entry.worldId}.world.json`}
+                                    data-testid={`world-export-${entry.worldId}`}
+                                    aria-label={`导出世界线 ${name}`}
+                                    onClick={() => window.setTimeout(closeMenu, 0)}
+                                    className={`${MENU_ITEM_CLS} block`}
+                                  >
+                                    导出
+                                  </a>
+                                  <button
+                                    type="button"
+                                    role="menuitem"
+                                    data-testid={`world-delete-${entry.worldId}`}
+                                    aria-label={`删除世界线 ${name}`}
+                                    onClick={() => {
+                                      setActionError("");
+                                      setActionNotice("");
+                                      setConfirmId(entry.worldId);
+                                    }}
+                                    className={`${MENU_ITEM_CLS} hover:bg-red-500/15 hover:text-red-300`}
+                                  >
+                                    删除
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 行内改名：显示名（≤60）+ 备注（≤200），Enter 保存 / Esc 取消，留空即清除该字段 */}
+                    {editing && (
+                      <div
+                        data-testid={`world-editor-${entry.worldId}`}
+                        className="mt-3 grid gap-2 border-t border-white/[.06] pt-3"
                       >
-                        {engineBusy ? "引擎忙" : "继续"}
-                      </button>
-                      <button
-                        type="button"
-                        data-testid={`genealogy-view-${entry.worldId}`}
-                        aria-label={`在列表中查看世界线 ${name}`}
-                        onClick={() => {
-                          const idx = list.findIndex((w) => w.worldId === entry.worldId);
-                          setView("list");
-                          if (idx >= 0) {
-                            setFocus(idx);
-                            setListJumpId(entry.worldId);
-                          }
-                        }}
-                        className="rounded-lg border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
-                      >
-                        查看
-                      </button>
+                        <label className="flex items-center gap-2">
+                          <span className="w-14 flex-none text-meta tracking-[.2em] text-ink-hint">显示名</span>
+                          <input
+                            ref={labelRef}
+                            data-testid={`world-edit-label-${entry.worldId}`}
+                            aria-label={`显示名（${name}）`}
+                            maxLength={LABEL_MAX}
+                            value={editLabel}
+                            onChange={(e) => setEditLabel(e.target.value)}
+                            onKeyDown={(e) => onEditKey(e, entry)}
+                            placeholder="留空则回退为剧本名"
+                            autoComplete="off"
+                            className="min-w-0 flex-1 rounded-lg border border-white/10 bg-panel-strong px-3 py-1.5 text-ui transition-colors focus:border-gold/35"
+                          />
+                        </label>
+                        <label className="flex items-center gap-2">
+                          <span className="w-14 flex-none text-meta tracking-[.2em] text-ink-hint">备注</span>
+                          <input
+                            data-testid={`world-edit-note-${entry.worldId}`}
+                            aria-label={`备注（${name}）`}
+                            maxLength={NOTE_MAX}
+                            value={editNote}
+                            onChange={(e) => setEditNote(e.target.value)}
+                            onKeyDown={(e) => onEditKey(e, entry)}
+                            placeholder="留空则清除备注"
+                            autoComplete="off"
+                            className="min-w-0 flex-1 rounded-lg border border-white/10 bg-panel-strong px-3 py-1.5 text-ui transition-colors focus:border-gold/35"
+                          />
+                        </label>
+                        <div className="flex items-center gap-3">
+                          <button
+                            type="button"
+                            data-testid={`world-edit-save-${entry.worldId}`}
+                            disabled={saving || worldBusy}
+                            onClick={() => saveEdit(entry)}
+                            className="rounded-lg border border-gold/35 bg-gold/15 px-4 py-1.5 text-ui tracking-[.1em] text-gold transition-colors hover:bg-gold/30 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink-faint"
+                          >
+                            {saving ? "保存中…" : "保存"}
+                          </button>
+                          <button
+                            type="button"
+                            data-testid={`world-edit-cancel-${entry.worldId}`}
+                            disabled={saving}
+                            onClick={() => setEditId(null)}
+                            className="rounded-lg border border-white/10 px-3 py-1.5 text-ui tracking-[.1em] text-ink-hint transition-colors hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint"
+                          >
+                            取消
+                          </button>
+                          <span className="text-meta tracking-[.08em] text-ink-hint">Enter 保存 · Esc 取消 · 留空即清除</span>
+                        </div>
+                      </div>
+                    )}
+                  </motion.div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* 家谱视图（v1.7 / v1.8 缩放平移）：SVG 森林 + 选中节点的快捷信息条
+              （继续复用 continueWorld，不另起一份逻辑）。
+              详情条 sticky bottom-0：画布高时「继续/查看」也钉在视口底边 —— 不吸底就得先滚到底才够得着 */}
+          {view === "genealogy" && list.length > 0 && (
+            <div className="pb-1">
+              <GenealogyCanvas
+                layout={genealogy}
+                worlds={list}
+                presetTitle={presetTitle}
+                focusId={genFocus}
+                onFocus={setGenFocus}
+              />
+              {(() => {
+                const entry = list.find((w) => w.worldId === genFocus);
+                if (!entry) return null;
+                const name = worldDisplayName(entry, presetTitle);
+                const missing = !entry.exists;
+                const node = genealogy.nodes.find((n) => n.worldId === entry.worldId);
+                return (
+                  <div
+                    data-testid="genealogy-detail"
+                    // 吸底时要压在画布上，故底色取近实底（半透面板会让按钮与边线糊在一起）
+                    className="sticky bottom-0 z-10 mt-3 rounded-xl border border-white/10 bg-panel-strong px-4 py-3 backdrop-blur-md"
+                  >
+                    <div className="flex flex-wrap items-center gap-3">
+                      <span className={`text-body ${missing ? "text-ink-hint" : "text-ink"}`}>{name}</span>
+                      <span className="text-meta tracking-[.12em] text-ink-hint">
+                        第 {entry.chapterNo} 章 · {relativeTime(entry.lastPlayed)}
+                        {missing && <span className="ml-2 text-red-400/90">目录缺失</span>}
+                      </span>
+                      {entry.forkedFrom && !node?.missingParent && (
+                        <span className="rounded-sm border border-white/10 bg-white/[.03] px-1.5 py-0.5 text-meta tracking-[.12em] text-ink-hint">
+                          {forkPhrase(entry.forkedFrom, list, presetTitle)}
+                        </span>
+                      )}
+                      {node?.missingParent && (
+                        <span className="rounded-sm border border-red-400/30 px-1.5 py-0.5 text-meta tracking-[.12em] text-red-300/90">
+                          ⌫ 父线已删
+                        </span>
+                      )}
+                      <div className="ml-auto flex items-center gap-2">
+                        <button
+                          type="button"
+                          data-testid={`genealogy-continue-${entry.worldId}`}
+                          aria-label={`继续世界线 ${name}`}
+                          disabled={missing || engineBusy}
+                          onClick={() => continueWorld(entry)}
+                          className={`rounded-lg border px-3.5 py-1.5 text-ui tracking-[.1em] transition-colors ${
+                            missing || engineBusy
+                              ? "cursor-not-allowed border-white/10 text-ink-hint"
+                              : "border-gold/35 bg-gold/15 text-gold hover:bg-gold/30"
+                          }`}
+                        >
+                          {engineBusy ? "引擎忙" : "继续"}
+                        </button>
+                        <button
+                          type="button"
+                          data-testid={`genealogy-view-${entry.worldId}`}
+                          aria-label={`在列表中查看世界线 ${name}`}
+                          onClick={() => {
+                            const idx = list.findIndex((w) => w.worldId === entry.worldId);
+                            setView("list");
+                            if (idx >= 0) {
+                              setFocus(idx);
+                              setListJumpId(entry.worldId);
+                            }
+                          }}
+                          className="rounded-lg border border-white/10 px-3 py-1.5 text-ui tracking-[.1em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
+                        >
+                          查看
+                        </button>
+                      </div>
                     </div>
                   </div>
-                </div>
-              );
-            })()}
-          </div>
-        )}
-
-        <p className="mt-8 text-center text-[12px] tracking-[.35em] text-ink-hint">
-          {view === "list" ? "↑ ↓ 选择 · Enter 继续" : "方向键走节点 · Enter 选中 · 继续读档续演"}
-        </p>
+                );
+              })()}
+            </div>
+          )}
+        </ShellPage>
       </div>
     </ScreenShell>
   );

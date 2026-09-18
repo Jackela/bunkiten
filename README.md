@@ -11,14 +11,14 @@
 ## 一屏看懂
 
 ```
-启动 → 检查 grok 登录 → 标题屏卡带轮播（← → 切换 · Enter 装载；当前卡带右上「导出」可把剧本打包分享，右下角 素材画廊 / 导入剧本 / 创作新剧本）
-     → 世界线屏（继续一条世界线读档续演 / 新世界线 / 行内重命名与备注 / 导出导入 .world.json / 两段确认删除；「家谱」视图把分叉血缘画成森林——谁从哪条线哪个节点分出来一目了然，⌫ = 父线已删）→ 新世界线才去捏主角（或快速开局）→ [制作中：第 1 章大纲 → 按清单逐张生成本章美术（含表情差分，可跳过） | 跳过直接开演] → 开演
-每轮：正文（打字机，点对话框或按空格立即显示全文；角色立绘随情绪切换差分）→ 【行动】选项按钮（点按钮或按 1-9）/ 自由输入（含输入选项编号）→ 下一轮；不满意这一掷？右侧「重掷」撤销刚走完的这一轮并自动重发同一句输入重新演绎（本世界第一轮除外，可连掷；历史里只留一条分割线，旧幕不删）
+启动 → 检查 grok 登录 → 标题屏卡带轮播（← → 切换 · Enter 装载；左下「继续上次」直通最近玩的那条世界线，右下角落簇 导出（把当前这部剧本打包分享）/ 导入剧本 / 素材 / 创作新剧本）
+     → 世界线屏（每行一个「继续」+ 一个 ⋯ 菜单（改名 / 导出 .world.json / 两段确认删除），右上「新世界线」与「导入」；「家谱」视图把分叉血缘画成森林——谁从哪条线哪个节点分出来一目了然，⌫ = 父线已删，可滚轮缩放 / 拖拽平移）→ 新世界线才去捏主角（或快速开局）→ [制作中：第 1 章大纲 → 按清单逐张生成本章美术（含表情差分，可跳过） | 跳过直接开演] → 开演
+每轮：正文（打字机，点对话框或按空格立即显示全文；角色立绘随情绪切换差分）→ 【行动】选项按钮（点按钮或按 1-9）/ 自由输入（含输入选项编号）→ 下一轮；对话框右上角另有两个小控件——「自动」（开自动前进）与「快进」（立即显示全文）；不满意这一掷？右侧「重演」撤销刚走完的这一轮并自动重发同一句输入重新演绎（本世界第一轮除外，可连掷；回想里只留一条分割线，旧幕不删）
 声音：引擎每轮可发【曲】/【环境】/【音效】三行——BGM 与环境音各一条通道交叉淡入、音效一次性；文件由作者放在 presets/<id>/audio/，没放就静默
 动效：跟随系统「减少动态效果」（prefers-reduced-motion，不新增设置开关——OS 级偏好是用户已做的选择）——位移类动效瞬时化、脉冲光标静止、打字机直接整段显示（淡入淡出保留，属无障碍推荐替代）
-章间：本章收束 → 自动进下一章制作（大纲 → 本章全部分支美术）→ 开演，直至终局
-画面：封面卡带 + 背景层 + 角色立绘（差分两级回退）+ 对话框 + 主题化配色/氛围层；顶栏左上角是 状态点/状态文字/章号/世界名，右侧竖排按钮轨从上到下 历史/角色（面板：好感度/表情/秘密（默认折叠防剧透）/导演手记，回合后自动刷新）/素材（画廊）/剧情图/重掷（有上一轮输入时）/重开/前情/换剧本/设置（齿轮：主音量与静音/BGM·环境·音效/文本速度/自动前进）/帮助
-剧情图：节点带快照标注（#seq · 第 N 轮），可「回退到此节点」（覆盖该世界线三文件并让引擎重新读档续演），详情里还能「与上一快照对比」（剧情状态/前情摘要/剧情树三个 tab 逐行 diff）；本章节点 > 40 默认降级为列表（可切回图形）；图形模式滚轮缩放 · 拖拽平移 · 双击复位
+章间：本章收束 → 自动进下一章制作（大纲 → 本章全部分支美术）→ 开演，直至终局；跨章时画面正中亮一次「第 N 章」过场（约 2 秒，不拦点击、不抢焦点）
+画面：封面卡带 + 背景层 + 角色立绘（差分两级回退）+ 对话框（宽屏时右侧留出立绘宽度，对话框整体左移、不压在立绘上）+ 主题化配色/氛围层；各屏共用一套版式——满幅主题底 + 宽栏 + 统一的面板底与字号档位，不再各屏自写居中小窄栏（外框见 src/components/ShellPage.tsx）；顶栏左上角只在「忙 / 出错 / 待重同步」时现身（状态点 + 玩家口吻的状态文字（忙时带已耗时秒数）+ 世界名 + 重同步徽章），一切正常时整簇收起、把画面还给立绘；章号不在顶栏——它只出现在过场卡与回想抽屉标题上；右侧竖排按钮轨从上到下 设置（齿轮：主音量与静音/BGM·环境/音效/文本速度/自动前进）/历史（回想）/角色（面板：好感度/表情/秘密（默认折叠防剧透）/导演手记，回合后自动刷新）/画廊/剧情图/重演（有上一轮输入时）/重开/前情/换剧本/帮助
+剧情图：节点带存档点标注（存档点 · 第 N 幕），可「回退到此节点（原地）」（覆盖该世界线三文件并让引擎重新读档续演），详情里还能「与上一个存档点对比（第 N 幕 → 第 M 幕）」（当前状态/前情提要/剧情图三个 tab 逐行 diff）；顶部章节切换器列出解析出的每一章，点谁画谁（归档章只剩目录信息，点了会直说）；宽屏时节点详情住在右侧栏，窄屏回到画布下方；本章节点 > 40 默认降级为列表（可切回图形）；图形模式滚轮缩放 · 拖拽平移 · 双击复位
 画廊：进「选择模式」勾选多张 → 批量重绘（顺序队列）/ 批量删除（两段确认）；封面不参与删除
 ```
 
@@ -61,16 +61,19 @@ bunkiten/
 │  │  ├─ portrait.ts        # 立绘差分解析（两级回退）
 │  │  └─ slices/            # nav / world / crafting / gameplay / tree / assets / creation / characters 八个动作切片
 │  ├─ lib/parser.ts         # 文本协议纯函数（契约字符串；协议头/音频类型 re-export 自 shared/protocol.mjs 唯一真源，含【曲】【环境】【音效】）
-│  ├─ lib/treeLayout.ts     # 剧情树分层布局纯函数（最长路径分层/抗环/贝塞尔边 + 缩放平移视口，零依赖）
+│  ├─ lib/treeLayout.ts     # 剧情树分层布局纯函数（最长路径分层/抗环/贝塞尔边 + 缩放平移视口，剧情图与家谱两块画布共用，零依赖）
 │  ├─ lib/genealogy.ts      # 世界线家谱布局纯函数（forkedFrom 森林分层/孤儿与环容错 + 键盘步进，零依赖）
 │  ├─ lib/diff.ts           # 快照对比纯函数（行级 LCS diffLines + +N −M 摘要 diffStats，零依赖）
 │  ├─ lib/audio.ts          # 音频管理器单例：BGM/环境音双通道交叉淡入、音效一次性、缺文件静默
 │  ├─ lib/settings.ts       # 玩家设置纯逻辑（音量/静音/文本速度/自动前进）+ localStorage 逐键校验
+│  ├─ lib/status.ts         # 引擎状态文案 → 玩家说法（「引擎演绎中…」→「故事展开中…」，表外原样透传）
+│  ├─ lib/worlds.ts         # 显示名兜底：识别旧版写进世界线备注的裸 id 串，按「没有备注」处理（裸 worldId 不上玩家的屏）
 │  ├─ lib/acp.ts            # HTTP/SSE 客户端 + 世界线/剧情树/快照/音频/角色面板（state.md 视图）接口
 │  ├─ theme.ts              # 剧本主题（accent/accent2/motif）解析与 CSS 变量注入
-│  └─ components/           # boot/title/worlds/protagonist/crafting/game 各屏 + assets 画廊 / creation 创作 / story-tree 剧情图 / settings 设置四个 overlay 屏、motifs/ 氛围层与 HUD
-│     ├─ WorldsScreen.tsx   # 世界线屏：继续 / 新世界线 / 行内重命名与备注 / 导出导入 .world.json / 两段确认删除 / 列表·家谱视图（forkedFrom 森林）
-│     ├─ StoryTreeScreen.tsx # 剧情图屏：SVG 节点图（缩放平移）/> 40 节点降级列表 / 节点详情 / 精确分叉 / 快照回退与对比 / 一句话改树
+│  ├─ components/ShellPage.tsx # 壳层页框（满幅主题底 + 宽栏 + 统一表头 + 可选宽屏右栏，各屏不再自写居中小窄栏）
+│  └─ components/           # boot/title/worlds/protagonist/crafting/game 各屏 + assets 画廊 / creation 创作 / story-tree 剧情图 / settings 设置四个 overlay 屏、motifs/ 氛围层与 HUD（game/ 里 TopBar / DialogueBox / ChapterCard 等）
+│     ├─ WorldsScreen.tsx   # 世界线屏：继续 / 新世界线 / 导入 .world.json / 每行 ⋯ 菜单（改名与备注 / 导出 / 两段确认删除）/ 列表·家谱视图（forkedFrom 森林，可缩放平移）
+│     ├─ StoryTreeScreen.tsx # 剧情图屏：SVG 节点图（缩放平移）/ 顶部章节切换器 /> 40 节点降级列表 / 节点详情（宽屏右栏）/ 精确分叉 / 存档点回退与对比 / 一句话改树
 │     └─ SettingsScreen.tsx # 设置屏：主音量/静音/BGM/环境/音效 + 文本速度/自动前进
 ├─ .grok/
 │  ├─ skills/bunkiten/SKILL.md  # 引擎全部真相：每轮协议/章节与剧情树/世界线/美术/音频/预载/导演层/状态纪律
@@ -93,8 +96,8 @@ bunkiten/
 │  ├─ genealogy.test.ts     # 世界线家谱布局与键盘步进纯函数单测（8 例）
 │  ├─ diff.test.ts          # 快照对比行级 LCS 纯函数单测（8 例）
 │  ├─ doctor.test.ts        # 剧本体检查纯函数单测（tmp 根造 preset，12 例）
-│  ├─ ui.test.tsx           # 组件测试（TopBar/世界线（含家谱视图）/剧情图（含快照对比）/设置/Creation/Assets/主题/重掷/角色面板/标题屏剧本导出导入，114 例）
-│  ├─ contract.test.ts      # 契约 lint（防漂移门禁：协议头/音频白名单/指令前缀真源断言（shared/protocol.mjs）/RULES 逐字副本/指令字符串/主题白名单/用例数/设置键；自身不计入 399 口径）
+│  ├─ ui.test.tsx           # 组件测试（TopBar/世界线（含家谱视图）/剧情图（含快照对比）/设置/Creation/Assets/主题/重掷/角色面板/标题屏剧本导出导入，130 例）
+│  ├─ contract.test.ts      # 契约 lint（防漂移门禁：协议头/音频白名单/指令前缀真源断言（shared/protocol.mjs）/RULES 逐字副本/指令字符串/主题白名单/用例数/设置键；自身不计入 415 口径）
 │  ├─ integration/          # 假引擎集成层（假 ACP 引擎 + 真 acp-server 子进程，27 例、秒级）
 │  │  ├─ harness.mjs        # 起全栈：临时 game root/HOME/PORT + path 垫片，收 SSE 事件与断言辅助
 │  │  ├─ fake-engine.mjs    # 最小 ACP 假引擎（按脚本队列回 session/update，可制造段切换）
@@ -138,7 +141,7 @@ bunkiten/
 | `npm run dev:electron` | vite + Electron 并行开发 |
 | `npm run build` | `tsc -b && vite build`（类型检查 + 前端构建） |
 | `npm run typecheck:server` | server/shared/scripts 的 checkJs 门禁（`tsconfig.server.json` 对 `server/**/*.mjs` + `shared/protocol.mjs` + `scripts/doctor.mjs` 开 strict 检查，类型全靠 JSDoc；CI 也会跑） |
-| `npm test` | 单测 + 集成全量 399 例：parser 65 + server 106 + crafting 52 + treeLayout 7 + genealogy 8 + diff 8 + doctor 12 + ui 114 + integration 27（含假引擎集成层，整体秒级；改协议字符串必须同步快照）；另跑契约 lint `tests/contract.test.ts`（防漂移门禁：协议常量真源断言 + 双侧逐字比对，**不计入这 399**） |
+| `npm test` | 单测 + 集成全量 415 例：parser 65 + server 106 + crafting 52 + treeLayout 7 + genealogy 8 + diff 8 + doctor 12 + ui 130 + integration 27（含假引擎集成层，整体秒级；改协议字符串必须同步快照）；另跑契约 lint `tests/contract.test.ts`（防漂移门禁：协议常量真源断言 + 双侧逐字比对，**不计入这 415**） |
 | `npm run test:coverage` | 同一批测试 + 覆盖率仪表（`@vitest/coverage-v8`，量 `src`/`server`/`shared`/`scripts` 四棵树，配置在 `vitest.config.ts`）：thresholds 是**防下滑线**（2026-09 基线 - 2pp：lines 74 / branches 64 / functions 77 / statements 72）——实际余量 1.56-1.87pp（基线未取整），不是硬指标；CI 用它替代 `npm test` 步骤（同一套测试避免双跑）并上传 HTML 报告 artifact |
 | `npm run doctor` | 剧本体检查（作者侧工具，按需跑、不进 CI）：`node scripts/doctor.mjs` 校验 `presets/` 每个剧本的结构健康度——frontmatter 必填键与 id=目录名、theme 逐键回退预警、`# 主要角色` 与角色建议字段、封面、assets/audio 文件名契约、孤儿素材；输出 `[ok]`/`[warn]`/`[error]` 明细报告，**退出码非 0 当且仅当有 error**（warning 不影响——孤儿素材这类可解释项不拦你发布） |
 | `npm run test:e2e` | 真引擎 E2E 冒烟（2 回合；约 6–12 分钟，视模型与网络。前提：本机登录 grok CLI 且能出网到 x.ai——代理环境开 TUN 或给命令带 `https_proxy`，直连被墙的表现是回合 600s 超时） |
@@ -176,7 +179,7 @@ npm run dev:electron
 
 复制 `presets/` 下任意子目录改 `preset.md`，无需改代码。frontmatter 必填 `id` / `title`；`# 主要角色` 每人一节（含 `art_prompt`）；`# protagonist_card` 每行 `- 问题: 选项A / 选项B`。这个目录就是这个故事的全部：封面 `cover.jpg` 与运行时生成的立绘/背景（`assets/<类型>-<名字>.jpg`）都落在这里，拷走整个文件夹即可分享，删掉它也就删掉了这个故事的美术。想加声音就再建一个 `presets/<id>/audio/`，文件名按 `<类型>-<名>.<ext>` 放（类型是 `曲` / `环境` / `音效`，扩展名 `mp3` / `ogg` / `m4a` / `wav` / `flac`，例：`曲-雨夜.mp3`、`环境-旅店大堂.mp3`、`音效-门响.wav`）；引擎在场景切换时会发【曲】/【环境】/【音效】行点名播放，名对不上或没放文件就静默跳过——引擎绝不生成音频、也绝不在标记里写路径。也可以不改文件——标题屏右下「创作新剧本」用自然语言和引擎聊出一份新剧本（见 [QUICKSTART.md](QUICKSTART.md)）。完整字段表与消费方说明见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#修改指引)。
 
-**分享剧本（v1.7）**：不用拷文件夹也能分享——标题屏当前卡带右上角「导出」下载一个 `<剧本 id>.preset.json`（preset.md、全部立绘/背景/封面与音频都打在里面，导入单包上限 50MB）；对方在标题屏右下角「导入剧本」选这个文件即可，剧本立刻进轮播。导入遇到重名会自动落成 `<id>-2`，不会覆盖你已有的剧本；包格式与安全规则见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 的「剧本导出包」一节。
+**分享剧本（v1.7）**：不用拷文件夹也能分享——标题屏右下角落簇里的「导出」（目标恒为当前中央那张卡）下载一个 `<剧本 id>.preset.json`（preset.md、全部立绘/背景/封面与音频都打在里面，导入单包上限 50MB）；对方点同一排的「导入剧本」选这个文件即可，剧本立刻进轮播。导入遇到重名会自动落成 `<id>-2`，不会覆盖你已有的剧本；包格式与安全规则见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 的「剧本导出包」一节。
 
 **给剧本体检（v1.7）**：手写或创作模式装配出剧本后，跑 `npm run doctor` 当场检查结构健康度——frontmatter 必填键（id/title 缺失剧本进不了轮播；tagline/genre/rating 缺失只是标题屏栏位为空）与 id=目录名、theme 坏值回退预警（server 与客户端两层判定：`#rrggbb` 6 位 hex、motif 四母题闭集都会被查）、`# 主要角色` 角色节与建议字段（`art_prompt`/`agenda`）、封面（只认 `cover.jpg`，手放成 `.jpeg` 会被点名改名）、`assets/` 与 `audio/` 的文件名契约、孤儿素材（不被任何世界 state.md 引用、也不被任何 preset.md 提及的图）。每个剧本一行小结（`<id> ✓ N 项通过 · M 警告 · K 错误`）加 `[ok]`/`[warn]`/`[error]` 明细；**进程退出码非 0 当且仅当存在 error**（文件名非法、id/title 缺键这类会让剧本进不了轮播或素材永远 404 的问题），warning 只是提示、不影响发布。
 

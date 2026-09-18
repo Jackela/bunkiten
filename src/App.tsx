@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, MotionConfig } from "framer-motion";
 import { subscribeEvents } from "./lib/acp";
+import { playerStatus } from "./lib/status";
 import { audioManager } from "./lib/audio";
 import { useGameStore } from "./store/game";
 import { getTheme, themeVars } from "./theme";
@@ -15,6 +16,7 @@ import StoryTreeScreen from "./components/StoryTreeScreen";
 import SettingsScreen from "./components/SettingsScreen";
 import GameStage from "./components/game/GameStage";
 import BgLayer from "./components/game/BgLayer";
+import ChapterCard from "./components/game/ChapterCard";
 import { Veil } from "./components/game/Veil";
 import { Atmosphere } from "./components/Atmosphere";
 import { MotifLayer } from "./components/motifs";
@@ -34,7 +36,7 @@ export function StatusAnnouncer() {
   }, [status]);
   return (
     <div aria-live="polite" aria-atomic="true" data-testid="sr-status" className="sr-only">
-      {text}
+      {playerStatus(text)}
     </div>
   );
 }
@@ -65,7 +67,7 @@ export default function App() {
     };
   }, []);
 
-  // Esc 关闭链（画廊预览 → 剧情图节点详情 → 历史抽屉 → 角色面板 → 创作退出确认 → 剧情图/设置 → 世界线屏）；
+  // Esc 关闭链（画廊预览 → 剧情图节点详情 → 历史抽屉 → 角色面板 → 创作退出确认 → 剧情图/设置 → 捏人屏/世界线屏）；
   // 只在「正在打字」的输入控件里不拦截（滑杆聚焦时 Esc 仍应能关设置屏）
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -100,6 +102,8 @@ export default function App() {
         s.closeOverlay();
         return;
       }
+      // 捏人屏（worlds 屏的「新世界线」）不是死路：Esc 回世界线屏，牌面留着（见 nav.toWorlds）
+      if (s.screen === "protagonist") s.toWorlds();
       if (s.screen === "worlds") s.toTitle();
     };
     window.addEventListener("keydown", onKey);
@@ -119,6 +123,9 @@ export default function App() {
           <MotifLayer motif={theme.motif} />
         </div>
         <Veil />
+        {/* 章节过场卡常驻在这一层（不在 GameStage 里）：屏切换会重建整棵子树，卡挂在屏内就必然
+            在「画廊/剧情图 → game」返回时同章号再亮一次；它的跨屏记忆与渲染条件见 ChapterCard 文件头 */}
+        <ChapterCard />
         <AnimatePresence mode="wait">
           {screen === "boot" && <BootScreen key="boot" />}
           {screen === "title" && <TitleScreen key="title" />}

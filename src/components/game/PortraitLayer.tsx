@@ -17,7 +17,11 @@ function PortraitFigure({ portrait }: { portrait: PortraitState }) {
       transition={{ duration: 0.9, ease: "easeOut" }}
       className="pointer-events-none fixed right-[max(2vw,8px)] bottom-[26vh] flex h-[58vh] max-w-[46vw] items-end max-sm:h-[44vh] max-sm:bottom-[30vh]"
     >
-      <div className="relative h-full">
+      {/* grid 单格堆叠：差分交叉淡化要两张图同格重叠，且**不能**用 absolute——absolute 儿里没有
+          参与布局的尺寸，外层 shrink-to-fit 宽度恒 0，img 的 max-w-full 就会解析成 max-width:0（立绘不可见）。
+          行高必须显式 1fr（=外层 h-[58vh]）：auto 行下 img 的 h-full 会退化成 auto，
+          立绘就按固有比例涨到 46vw 的宽上限（比 h-[58vh] 高一大截、顶部越出视口）。 */}
+      <div className="grid h-full grid-rows-1">
         <AnimatePresence>
           {src && (
             <motion.img
@@ -29,7 +33,7 @@ function PortraitFigure({ portrait }: { portrait: PortraitState }) {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 0.4, ease: "easeInOut" }}
-              className="absolute inset-y-0 left-0 h-full max-w-full object-contain drop-shadow-[0_18px_40px_rgba(0,0,0,.65)]"
+              className="col-start-1 row-start-1 h-full w-auto max-w-full object-contain drop-shadow-[0_18px_40px_rgba(0,0,0,.65)]"
             />
           )}
         </AnimatePresence>

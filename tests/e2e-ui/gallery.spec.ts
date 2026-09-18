@@ -54,7 +54,7 @@ test("画廊：分组清单→选择模式勾 2 项批量删除（两段确认�
   await enterProtagonist(page, "示例剧本");
   await quickStartToGame(page);
 
-  // TopBar 命令轨「素材」进画廊 overlay
+  // TopBar 命令轨「画廊」进画廊 overlay
   await page.getByTestId("assets").click();
 
   // 清单：6 项（立绘组 薇拉×2 + 阿澈×1、背景×3），按 testid 点名存在

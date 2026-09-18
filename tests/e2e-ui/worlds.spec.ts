@@ -1,4 +1,4 @@
-// 假引擎确定性 UI e2e ⑥：世界线屏管理动作——行内改名（label）、导出 .world.json（浏览器下载）、
+// 假引擎确定性 UI e2e ⑥：世界线屏管理动作——改名（label，入口在行的 ⋯ 菜单）、导出 .world.json（浏览器下载）、
 // 导入同一文件（server 重名加 -2 后缀）、两段确认删除副本；v1.7 家谱视图（forkedFrom 森林）。
 // 导出内容断言 format:"bunkiten-world" / worldId / title / label；导入文件落在 test-results-ui/ 下。
 import { mkdirSync, readFileSync, readdirSync } from "node:fs";
@@ -41,7 +41,9 @@ test("世界线管理：行内改名→导出→导入出重名副本 w2-2→两
   await expect(page.getByTestId("world-row-w1")).toBeVisible();
   await expect(page.getByTestId("world-row-w2")).toBeVisible();
 
-  // —— 行内改名：编辑器展开 → 填显示名 → 保存 → 列表以服务端落定值回显 ——
+  // —— 改名：行尾 ⋯ 菜单 →「改名」→ 行内编辑器展开 → 填显示名 → 保存 → 列表以服务端落定值回显 ——
+  // v1.7：改名/导出/删除都收进了行尾的 world-menu-* 菜单，菜单项在菜单打开前不在 DOM 里
+  await page.getByTestId("world-menu-w2").click();
   await page.getByTestId("world-edit-w2").click();
   await expect(page.getByTestId("world-editor-w2")).toBeVisible();
   await page.getByTestId("world-edit-label-w2").fill("回廊之影");
@@ -49,7 +51,8 @@ test("世界线管理：行内改名→导出→导入出重名副本 w2-2→两
   await expect(page.getByTestId("world-editor-w2")).toHaveCount(0);
   await expect(page.getByTestId("world-row-w2")).toContainText("回廊之影");
 
-  // —— 导出：anchor 触发浏览器下载（Content-Disposition attachment），存到 test-results-ui/ ——
+  // —— 导出：⋯ 菜单里的 anchor 触发浏览器下载（Content-Disposition attachment），存到 test-results-ui/ ——
+  await page.getByTestId("world-menu-w2").click();
   const [download] = await Promise.all([
     page.waitForEvent("download"),
     page.getByTestId("world-export-w2").click(),
@@ -76,7 +79,8 @@ test("世界线管理：行内改名→导出→导入出重名副本 w2-2→两
   await expect(page.getByTestId("world-row-w2-2")).toBeVisible();
   await expect(page.getByTestId("world-row-w2-2")).toContainText("回廊之影"); // label 随包迁移
 
-  // —— 两段确认删除副本：首点变确认按钮，二点才发；删除后原件仍在 ——
+  // —— 两段确认删除副本：⋯ 菜单首点「删除」变确认按钮，二点才发；删除后原件仍在 ——
+  await page.getByTestId("world-menu-w2-2").click();
   await page.getByTestId("world-delete-w2-2").click();
   await page.getByTestId("world-confirm-w2-2").click();
   await expect(page.getByTestId("world-row-w2-2")).toHaveCount(0);
@@ -86,6 +90,13 @@ test("世界线管理：行内改名→导出→导入出重名副本 w2-2→两
   // v1.7 回收站：删除的世界整体进了 state/trash/<ts>-<rand4>-w2-2/（node 侧点验临时 game root）
   const trashDir = path.join(stack.stack.root, "state", "trash");
   expect(readdirSync(trashDir).filter((f) => f.endsWith("-w2-2")).length).toBe(1);
+
+  // 捏人屏不是死路：「新世界线」进去后「返回」回世界线屏，世界牌面（列表）照旧还在
+  await page.getByTestId("worlds-new").click();
+  await expect(page.getByTestId("protagonist-screen")).toBeVisible();
+  await page.getByTestId("protagonist-back").click();
+  await expect(page.getByTestId("worlds-screen")).toBeVisible();
+  await expect(page.getByTestId("world-row-w2")).toBeVisible();
 });
 
 test("家谱视图：forkedFrom 链画成森林，点节点出快捷条，孤儿标 ⌫", async () => {
@@ -112,7 +123,11 @@ test("家谱视图：forkedFrom 链画成森林，点节点出快捷条，孤儿
   await page.getByTestId("genealogy-node-w3").click();
   const detail = page.getByTestId("genealogy-detail");
   await expect(detail).toBeVisible();
-  await expect(detail).toContainText("分叉自 w2 @ 1-1");
+  // 血缘说明换成「自《父线显示名》延伸」——父线 w2 在本文件的前一用例里已改名为「回廊之影」，
+  // 这里显示的正是那个显示名（label 优先于剧本名；单独跑本用例时父线还没改名，会是「示例剧本」）。
+  // 旧的「分叉自 w2 @ 1-1」把裸 worldId/节点号摊给玩家，现在一个字都不该出现
+  await expect(detail).toContainText("自《回廊之影》延伸");
+  await expect(detail).not.toContainText("分叉自");
   await expect(page.getByTestId("genealogy-continue-w3")).toBeVisible();
 
   // 「查看」跳回列表视图并聚焦对应行

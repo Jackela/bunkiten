@@ -203,7 +203,7 @@ describe("server 世界线索引与建 / 分叉 / 删（临时目录）", () => 
     ]);
   });
 
-  it("forkWorld：复制三文件 + fork.md + 索引 forkedFrom/note，进度回退；来源世界不受影响", () => {
+  it("forkWorld：复制三文件 + fork.md + 索引 forkedFrom（note 不再自动写），进度回退；来源世界不受影响", () => {
     const origin = createWorld(root, "campus-summer", "盛夏偏差值");
     const dir = path.join(root, origin.worldId);
     writeFileSync(path.join(dir, "state.md"), "# 剧情状态\n- preset: campus-summer\n- 场景: 天台\n");
@@ -226,7 +226,8 @@ describe("server 世界线索引与建 / 分叉 / 删（临时目录）", () => 
 
     const entry = readWorldsIndex(root).find((e) => e.worldId === f.worldId)!;
     expect(entry.forkedFrom).toEqual({ worldId: origin.worldId, nodeId: "2-2" });
-    expect(entry.note).toBe("分叉自 campus-summer-1 @ 2-2");
+    // v1.7.1：血缘只走 forkedFrom/fork.md，索引 note 不再兜底写裸 id（玩家可见处不出现 slug）
+    expect(entry.note).toBe("");
     expect(entry.chapterNo).toBe(2); // 从回退后的树读章号
 
     // 来源世界原样：进度与状态都没被分叉改动
@@ -1303,7 +1304,7 @@ describe("server restoreWorld：先备份再覆盖（CONTRACTS §2，临时 root
     expect(restoreWorld(root, "../etc", 1)).toMatchObject({ error: "参数不合法" });
   });
 
-  it("精确分叉：有快照时以快照三文件建新世界（索引标精确），无快照走兼容路径", () => {
+  it("精确分叉：有快照时以快照三文件建新世界（索引记 forkedFrom.seq），无快照走兼容路径", () => {
     const origin = createWorld(root, "demo", "示例");
     const dir = path.join(root, origin.worldId);
     const snapFiles = { state: "# 快照状态\n", summary: "# 快照摘要\n", tree: "- 当前进度: 节点 1-1（已走 0 轮）\n" };
@@ -1318,7 +1319,8 @@ describe("server restoreWorld：先备份再覆盖（CONTRACTS §2，临时 root
     expect(readFileSync(path.join(fdir, "story-tree.md"), "utf8")).toBe(snapFiles.tree);
     expect(existsSync(path.join(fdir, "fork.md"))).toBe(true);
     expect(f.entry.forkedFrom).toEqual({ worldId: origin.worldId, nodeId: "1-1", seq: 1 });
-    expect(f.entry.note).toContain("精确快照");
+    // 精确来源记在 forkedFrom.seq；note 留空（同上：血缘不进玩家可见文案）
+    expect(f.entry.note).toBe("");
 
     // 无快照的另一个世界 → 兼容路径（复制当前文件 + 本地回退）
     const plain = createWorld(root, "other", "对照");

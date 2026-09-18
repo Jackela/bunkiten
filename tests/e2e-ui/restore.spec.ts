@@ -153,15 +153,15 @@ test("回退到快照 #1：两段确认→已回退提示→补发续玩→画�
   await expect(page.getByTestId("tree-canvas")).toBeVisible();
   await page.getByTestId("tree-node-1-1").click();
   await expect(page.getByTestId("tree-detail")).toBeVisible();
-  await expect(page.getByTestId("tree-snapshot-1-1")).toContainText("#1");
+  await expect(page.getByTestId("tree-snapshot-1-1")).toContainText("存档点 · 第 1 幕");
 
   // 两段确认：首点进确认态，二点触发 restoreSnapshot（POST restore → 补发「继续世界：」）
   await page.getByTestId("tree-restore-1-1").click();
   await expect(page.getByTestId("tree-restore-confirm-1-1")).toBeVisible();
   await page.getByTestId("tree-restore-confirm-1-1").click();
 
-  // 成功路径：宽松断言「已回退」（具体文案与失败分支 UI 属下一票，不在此耦合）
-  await expect(page.getByTestId("tree-notice")).toContainText("已回退");
+  // 成功路径：宽松断言「已回到第 N 幕」（具体文案与失败分支 UI 属下一票，不在此耦合）
+  await expect(page.getByTestId("tree-notice")).toContainText("已回到第 1 幕");
 
   // 返回 game 屏：补发的续玩回合已应答——状态回就绪、正文区出现续演文本
   await page.getByTestId("tree-back").click();

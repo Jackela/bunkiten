@@ -64,8 +64,11 @@ test("打字中按空格：正文立即完整（dialogue-text 含末句）", asy
   await expect(page.getByTestId("dialogue-text")).toContainText("夜色沉进长廊");
   await expect(page.getByTestId("dialogue-hint")).toBeVisible();
 
-  // 空格同样对聚焦的输入框让路：点一下不可聚焦的状态条（真实手势）把焦点移回 body
-  await page.getByTestId("status").click();
+  // 空格同样对聚焦的输入框让路：点一下画面角落（不可聚焦的常驻底图，真实手势）把焦点移回 body——
+  // 就绪态的状态簇走 sr-only 点不到（见 TopBar 文件头）；这里绝不能点 dialogue-box：
+  // 那一击会 completeNow 补全文，打字中的证据链就没了。
+  // mouse.click 直接落到视口坐标：<body> 在 fixed 布局下没有布局盒，locator.click 过不了 actionability
+  await page.mouse.click(4, 4);
 
   // 空格 → completeNow 立即 setShown(target)。按键后单次读取 DOM：若未补全，此刻必然只有前缀
   await page.keyboard.press(" ");

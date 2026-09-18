@@ -140,9 +140,10 @@ test("章节制作冒烟：规划第 1 章后跳过并开演 @slow", async () =>
   // 立即跳过，不等清单解析与真实出图：规划回合进行中点跳过 → 回合结束后自动发「开演。」
   await page.getByRole("button", { name: "跳过剩余，立即开演" }).click();
 
-  // 跳过生效信号：规划回合终结后制作中屏 status 转「引擎演绎中…」（「开演。」已发出）。
+  // 跳过生效信号：规划回合终结后制作中屏 status 转「故事展开中…」（「开演。」已发出）。
+  // 屏上文案走 playerStatus 映射（store 里的原串仍是「引擎演绎中…」），断言按玩家真正看到的写。
   // 规划回合要写剧情树，受引擎耗时影响，给足 600s。
-  await expect(page.getByTestId("crafting-status")).toContainText("引擎演绎中…", { timeout: 600_000 });
+  await expect(page.getByTestId("crafting-status")).toContainText("故事展开中…", { timeout: 600_000 });
 
   // 开场回合演完 → 制作中屏收尾切 game 屏；status 元素只在 game 屏 TopBar，出现即回合已定稿
   await expect(page.getByTestId("status")).toHaveText("就绪", { timeout: 600_000 });

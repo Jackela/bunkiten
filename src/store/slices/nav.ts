@@ -34,7 +34,15 @@ export function createNavSlice(
   ctx: StoreContext,
 ): Pick<
   GameStore,
-  "toTitle" | "selectPreset" | "setPresets" | "importPresetText" | "clearTitleNotice" | "openSettings" | "updateSettings" | "closeOverlay"
+  | "toTitle"
+  | "toWorlds"
+  | "selectPreset"
+  | "setPresets"
+  | "importPresetText"
+  | "clearTitleNotice"
+  | "openSettings"
+  | "updateSettings"
+  | "closeOverlay"
 > {
   const { set, get } = ctx;
 
@@ -42,6 +50,13 @@ export function createNavSlice(
     toTitle() {
       ctx.clearWatchdog();
       set({ screen: "title", screenReturn: null, turnStartAt: null });
+    },
+
+    toWorlds() {
+      // 只切屏：世界已由 POST /api/worlds 建在服务端，牌面（selected/答题/worldId）必须原样留着，
+      // 所以这里不借道 selectPreset / resetRunState（它们会把选卡与答题清成初始态）
+      ctx.clearWatchdog();
+      set({ screen: "worlds", screenReturn: null });
     },
 
     selectPreset(preset) {

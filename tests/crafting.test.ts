@@ -786,7 +786,7 @@ describe("v1.5 世界线与剧情图（store 公共 API 驱动）", () => {
     const s = useGameStore.getState();
     expect(s.screen).toBe("protagonist");
     expect(s.worldId).toBe("campus-summer-2");
-    expect(s.worldLabel).toBe("campus-summer-2");
+    expect(s.worldLabel).toBe(""); // 显示名留空：裸 worldId 不上屏（顶栏/图屏都不渲染），等玩家起名
 
     useGameStore.getState().startGame(true, true);
     expect(prompts.at(-1)).toBe(
@@ -794,18 +794,25 @@ describe("v1.5 世界线与剧情图（store 公共 API 驱动）", () => {
     );
   });
 
-  it("续玩世界线：resumeWorld 直接进 game 发「继续世界：」指令；章号取索引记录、note 作为世界显示名", () => {
+  it("续玩世界线：resumeWorld 直接进 game 发「继续世界：」指令；章号取索引记录、显示名走 label → note 回退链", () => {
     useGameStore.getState().resumeWorld({
       worldId: "campus-summer-1",
       chapterNo: 3,
       note: "分叉自 campus-summer-1 @ 2-2",
+      label: "",
     });
     const s = useGameStore.getState();
     expect(s.screen).toBe("game");
     expect(s.worldId).toBe("campus-summer-1");
-    expect(s.worldLabel).toBe("分叉自 campus-summer-1 @ 2-2");
+    expect(s.worldLabel).toBe("分叉自 campus-summer-1 @ 2-2"); // 没有显示名才落到备注（裸 id 串由显示层再滤）
     expect(s.chapterNo).toBe(3);
     expect(prompts.at(-1)).toBe("继续世界：campus-summer-1。");
+
+    // 有显示名时显示名优先，且前后空白收敛；两者都空 → 空串（绝不回填裸 worldId）
+    useGameStore.getState().resumeWorld({ worldId: "campus-summer-2", chapterNo: 2, note: "第一次玩到这里", label: "  二周目  " });
+    expect(useGameStore.getState().worldLabel).toBe("二周目");
+    useGameStore.getState().resumeWorld({ worldId: "campus-summer-3", chapterNo: 1, note: "", label: "" });
+    expect(useGameStore.getState().worldLabel).toBe("");
   });
 
   it("剧情图编辑：sendTreeEdit 发「剧情：」指令；编辑回合不进历史，摘要落 treeNotice 并刷新 treeStamp", async () => {
@@ -828,7 +835,7 @@ describe("v1.5 世界线与剧情图（store 公共 API 驱动）", () => {
     expect(s.history).toEqual([]); // 编辑回合不是剧情，不进历史
   });
 
-  it("剧情图编辑：引擎忙时排队不抢发（提示已排队），回合结束自动补发", () => {
+  it("剧情图编辑：忙碌时排队不抢发（提示稍后自动发送），回合结束自动补发", () => {
     useGameStore.getState().resumeWorld({ worldId: "campus-summer-1", chapterNo: 1, note: "" });
     useGameStore.getState().openTree();
     useGameStore.getState().handleEvent({ type: "turn_start" }); // 引擎忙
@@ -836,7 +843,7 @@ describe("v1.5 世界线与剧情图（store 公共 API 驱动）", () => {
     useGameStore.getState().sendTreeEdit("删掉节点 2-3");
     expect(prompts).toEqual(["继续世界：campus-summer-1。"]); // 编辑指令未抢发（只有续玩指令）
     expect(useGameStore.getState().pendingTreeMessage).toBe("剧情：删掉节点 2-3");
-    expect(useGameStore.getState().treeNotice).toContain("已排队");
+    expect(useGameStore.getState().treeNotice).toBe("忙碌中，就绪后自动发送");
 
     useGameStore.getState().handleEvent({ type: "turn_end" });
     expect(useGameStore.getState().pendingTreeMessage).toBeNull();
@@ -859,7 +866,7 @@ describe("v1.5 世界线与剧情图（store 公共 API 驱动）", () => {
     await vi.waitUntil(() => useGameStore.getState().forkResult !== null);
     expect(worldPosts).toEqual([{ action: "fork", worldId: "campus-summer-1", nodeId: "2-2" }]);
     expect(useGameStore.getState().forkResult).toEqual({ worldId: "campus-summer-3", nodeId: "2-2" });
-    expect(useGameStore.getState().treeNotice).toContain("campus-summer-3");
+    expect(useGameStore.getState().treeNotice).toBe("已创建新的世界线 · 从这一幕继续");
 
     useGameStore.getState().switchToFork();
     const s = useGameStore.getState();
@@ -868,7 +875,7 @@ describe("v1.5 世界线与剧情图（store 公共 API 驱动）", () => {
     expect(prompts.at(-1)).toBe("继续世界：campus-summer-3。");
   });
 
-  it("分叉：引擎忙时 switchToFork 拒绝切换（提示留在当前世界）", async () => {
+  it("分叉：忙碌时 switchToFork 拒绝切换（提示留在当前世界）", async () => {
     useGameStore.getState().resumeWorld({ worldId: "campus-summer-1", chapterNo: 2, note: "" });
     useGameStore.getState().openTree();
     useGameStore.getState().forkAt("2-2");
@@ -879,7 +886,7 @@ describe("v1.5 世界线与剧情图（store 公共 API 驱动）", () => {
 
     const s = useGameStore.getState();
     expect(s.worldId).toBe("campus-summer-1"); // 未切换
-    expect(s.treeNotice).toContain("引擎忙");
+    expect(s.treeNotice).toContain("忙碌中");
   });
 });
 
@@ -1207,7 +1214,7 @@ describe("v1.6 精确回退与自动前进（store 公共 API 驱动）", () => 
     expect(prompts).toEqual([RESUME, RESUME]); // 恰好多出一条，且是回退世界的那条
     const s = useGameStore.getState();
     // v1.7 三态文案的第一态：回退落定、等重同步回合收尾才说「完成重同步」（见 ui.test.tsx 的三态用例）
-    expect(s.treeNotice).toBe("已回退到快照 #7；回退前状态已备份为快照 #12，正在让引擎重读档…");
+    expect(s.treeNotice).toBe("已回到第 7 幕；回退前的进度已备份，正在同步进度…");
     expect(s.treeStamp).toBe(stamp0 + 1);
   });
 
@@ -1224,7 +1231,7 @@ describe("v1.6 精确回退与自动前进（store 公共 API 驱动）", () => 
     expect(s.options?.map((o) => o.t)).toEqual(["推门"]);
   });
 
-  it("原地回退：引擎忙（或有排队指令）时拒绝——回退覆盖的正是引擎在写的文件；失败不改 treeStamp 也不发指令", async () => {
+  it("原地回退：忙碌（或有排队指令）时拒绝——回退覆盖的正是引擎在写的文件；失败不改 treeStamp 也不发指令", async () => {
     const stamp0 = useGameStore.getState().treeStamp;
     const sent0 = prompts.length; // 进屏时的续玩指令：此后不该再多任何一条
     useGameStore.getState().handleEvent({ type: "turn_start" }); // 引擎忙
@@ -1233,7 +1240,7 @@ describe("v1.6 精确回退与自动前进（store 公共 API 驱动）", () => 
     expect(busy.ok).toBe(false);
     expect(worldPosts).toStrictEqual([]); // 一个请求都没发
     expect(prompts).toHaveLength(sent0);
-    expect(useGameStore.getState().treeNotice).toContain("引擎忙");
+    expect(useGameStore.getState().treeNotice).toContain("忙碌中");
 
     useGameStore.getState().handleEvent({ type: "turn_end" });
     useGameStore.setState({ pendingTreeMessage: "剧情：删掉节点 2-3" });
@@ -1251,17 +1258,18 @@ describe("v1.6 精确回退与自动前进（store 公共 API 驱动）", () => 
     expect(prompts).toHaveLength(sent0); // 文件都没回退成，不许让引擎去读档
   });
 
-  it("分叉：带 seq 走精确分叉（提示点名快照），不带 seq 的载荷与 v1.5 逐字一致", async () => {
+  it("分叉：带 seq 走精确分叉（载荷带 seq），不带 seq 的载荷与 v1.5 逐字一致", async () => {
     useGameStore.getState().forkAt("2-1", 3);
     await vi.waitUntil(() => worldPosts.length === 1);
     expect(worldPosts[0]).toStrictEqual({ action: "fork", worldId: "campus-summer-1", nodeId: "2-1", seq: 3 });
-    await vi.waitUntil(() => useGameStore.getState().treeNotice.includes("精确到快照 #3"));
+    // 提示不点名快照/节点（裸编号不上屏）：精确性只体现在载荷与 forkResult 里
+    await vi.waitUntil(() => useGameStore.getState().treeNotice === "已创建新的世界线 · 从这一幕继续");
 
     useGameStore.getState().forkAt("2-4");
     await vi.waitUntil(() => worldPosts.length === 2);
     // toStrictEqual：无快照时连 seq 键都不许出现（旧世界的既有载荷不许被改写）
     expect(worldPosts[1]).toStrictEqual({ action: "fork", worldId: "campus-summer-1", nodeId: "2-4" });
-    expect(useGameStore.getState().treeNotice).not.toContain("精确到快照");
+    await vi.waitUntil(() => useGameStore.getState().treeNotice === "已创建新的世界线 · 从这一幕继续");
   });
 
   it("自动前进：到点自动选第一项；重复 arm 幂等（不重置计时）", () => {

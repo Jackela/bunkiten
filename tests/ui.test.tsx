@@ -12,6 +12,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import React from "react";
 import TopBar from "../src/components/game/TopBar";
+import ChapterCard, { CHAPTER_CARD_FADE_MS, CHAPTER_CARD_MS } from "../src/components/game/ChapterCard";
 import CharactersDrawer from "../src/components/game/CharactersDrawer";
 import DialogueBox from "../src/components/game/DialogueBox";
 import HistoryDrawer from "../src/components/game/HistoryDrawer";
@@ -25,8 +26,11 @@ import SettingsScreen from "../src/components/SettingsScreen";
 import App, { StatusAnnouncer } from "../src/App";
 import { useGameStore } from "../src/store/game";
 import { FADE_MS, MAX_SFX, SFX_TIMEOUT_MS, audioManager } from "../src/lib/audio";
-import { DEFAULT_SETTINGS, SETTINGS_STORAGE_KEY, loadSettings } from "../src/lib/settings";
+import { AUTO_ADVANCE_OPTIONS, DEFAULT_SETTINGS, SETTINGS_STORAGE_KEY, TEXT_SPEED_MS, loadSettings } from "../src/lib/settings";
+import { isLegacyForkNote } from "../src/lib/worlds";
+import { playerStatus } from "../src/lib/status";
 import { TREE_ZOOM_MAX, clampZoom, fitView, panView, viewBoxOf, zoomViewAt } from "../src/lib/treeLayout";
+import { layoutGenealogy } from "../src/lib/genealogy";
 import { FONT_STACKS, dialogClass, getTheme, themeVars } from "../src/theme";
 import type { AssetEntry, AudioItem, Preset, StateView, WorldEntry, WorldSnapshotMeta } from "../src/lib/acp";
 
@@ -56,10 +60,11 @@ describe("TopBar：章节指示与回合耗时", () => {
     useGameStore.setState({ chapterNo: 3, status: "引擎演绎中…", turnStartAt: Date.now(), worldLabel: "" });
   });
 
-  it("显示章号与状态；busy 时拼已耗时秒数", () => {
+  it("busy 时状态簇现身并拼已耗时秒数；章号已移出顶栏（只在章节卡与回想抽屉里）", () => {
     render(<TopBar />);
-    expect(screen.getByTestId("status").textContent).toMatch(/^引擎演绎中… \d+s$/);
-    expect(screen.getByText("第 3 章")).toBeTruthy();
+    // 状态走 playerStatus 的玩家口吻（store 里的原字符串一个字不动）
+    expect(screen.getByTestId("status").textContent).toMatch(/^故事展开中… \d+s$/);
+    expect(screen.queryByText("第 3 章")).toBeNull();
   });
 
   it("就绪时不拼耗时（turnStartAt=null）", () => {
@@ -68,10 +73,23 @@ describe("TopBar：章节指示与回合耗时", () => {
     expect(screen.getByTestId("status").textContent).toBe("就绪");
   });
 
-  it("有当前世界线时章号后显示世界名；无世界（main 之外的空 label）不渲染", () => {
-    useGameStore.setState({ status: "就绪", turnStartAt: null, worldLabel: "分叉自 campus-summer-1 @ 2-2" });
+  it("有玩家起的显示名时显示世界名；worldId 兜底、旧版分叉备注与空 label 都不渲染", () => {
+    useGameStore.setState({ status: "就绪", turnStartAt: null, worldId: "campus-summer-1", worldLabel: "雨夜的岔口" });
     render(<TopBar />);
-    expect(screen.getByTestId("world-label").textContent).toBe("分叉自 campus-summer-1 @ 2-2");
+    expect(screen.getByTestId("world-label").textContent).toBe("雨夜的岔口");
+
+    // 无显示名时 store 现在落空串（见 slices/world.ts），但显示层这一道仍要自己兜：手改的 store 状态、
+    // 老会话残留都可能让 worldLabel 等于裸 worldId——一条 slug 对玩家零信息量，不渲染
+    cleanup();
+    useGameStore.setState({ worldLabel: "campus-summer-1" });
+    render(<TopBar />);
+    expect(screen.queryByTestId("world-label")).toBeNull();
+
+    // 旧版 server 自动写的分叉备注同为裸 id 串（isLegacyForkNote）：顶栏只留玩家自己起的名字
+    cleanup();
+    useGameStore.setState({ worldLabel: "分叉自 campus-summer-1 @ 2-2" });
+    render(<TopBar />);
+    expect(screen.queryByTestId("world-label")).toBeNull();
 
     cleanup();
     useGameStore.setState({ worldLabel: "" });
@@ -86,6 +104,104 @@ describe("TopBar：章节指示与回合耗时", () => {
     const s = useGameStore.getState();
     expect(s.screen).toBe("tree");
     expect(s.screenReturn).toBe("game");
+  });
+});
+
+describe("ChapterCard：章节过场卡（v1.7.1）", () => {
+  beforeEach(() => {
+    useGameStore.setState({ screen: "game", worldId: "campus-summer-1", chapterNo: 1 });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    useGameStore.setState({ screen: "boot", worldId: null, chapterNo: 1 });
+  });
+
+  it("首次进 game 屏照亮，CHAPTER_CARD_MS 到点卸载；同世界同章从 overlay 返回不重亮", () => {
+    vi.useFakeTimers();
+    render(<ChapterCard />);
+    expect(screen.getByTestId("chapter-card").textContent).toContain("第 1 章");
+
+    // 两个定时器各管一段：先到 CHAPTER_CARD_MS-FADE 开始淡出（卡还挂着），到 CHAPTER_CARD_MS 才卸载
+    act(() => vi.advanceTimersByTime(CHAPTER_CARD_MS - CHAPTER_CARD_FADE_MS));
+    expect(screen.getByTestId("chapter-card")).toBeTruthy();
+    act(() => vi.advanceTimersByTime(CHAPTER_CARD_FADE_MS));
+    expect(screen.queryByTestId("chapter-card")).toBeNull();
+
+    // 从 overlay 返回 game（世界线与章号都没变）：不重亮
+    act(() => useGameStore.setState({ screen: "assets" }));
+    act(() => useGameStore.setState({ screen: "game" }));
+    expect(screen.queryByTestId("chapter-card")).toBeNull();
+  });
+
+  it("局内换章照亮；离屏（制作屏）期间的章号变化留到回到 game 屏才兑现", () => {
+    vi.useFakeTimers();
+    render(<ChapterCard />);
+    act(() => vi.advanceTimersByTime(CHAPTER_CARD_MS));
+    expect(screen.queryByTestId("chapter-card")).toBeNull();
+
+    act(() => useGameStore.setState({ chapterNo: 2 })); // 局内换章
+    expect(screen.getByTestId("chapter-card").textContent).toContain("第 2 章");
+    act(() => vi.advanceTimersByTime(CHAPTER_CARD_MS));
+    expect(screen.queryByTestId("chapter-card")).toBeNull();
+
+    act(() => useGameStore.setState({ screen: "crafting", chapterNo: 3 })); // 制作屏上章号变了
+    expect(screen.queryByTestId("chapter-card")).toBeNull(); // 卡只属于 game 屏
+    act(() => useGameStore.setState({ screen: "game" })); // 回游戏屏才兑现
+    expect(screen.getByTestId("chapter-card").textContent).toContain("第 3 章");
+  });
+
+  it("换世界线重新武装：章号相同也照亮；章号 < 1（还没进正戏）不照亮", () => {
+    vi.useFakeTimers();
+    render(<ChapterCard />);
+    act(() => vi.advanceTimersByTime(CHAPTER_CARD_MS));
+
+    act(() => useGameStore.setState({ worldId: "campus-summer-2" })); // 章号不变
+    expect(screen.getByTestId("chapter-card").textContent).toContain("第 1 章");
+    act(() => vi.advanceTimersByTime(CHAPTER_CARD_MS));
+
+    act(() => useGameStore.setState({ chapterNo: 0 }));
+    expect(screen.queryByTestId("chapter-card")).toBeNull();
+  });
+});
+
+describe("lib/status：引擎状态文案的玩家化映射（v1.6）", () => {
+  it("playerStatus 映射表：五个已知条目逐字翻译，表外状态原样透传", () => {
+    expect(playerStatus("连接引擎…")).toBe("连接中…");
+    expect(playerStatus("引擎演绎中…")).toBe("故事展开中…");
+    expect(playerStatus("撰写章节大纲…")).toBe("章节筹备中…");
+    expect(playerStatus("就绪")).toBe("就绪");
+    expect(playerStatus("出错：HTTP 500")).toBe("出错了：HTTP 500");
+    expect(playerStatus("出错：")).toBe("出错了："); // 前缀换成玩家口吻、尾巴原样保留
+
+    // 表外状态原样透传：制作屏的引擎口吻与重掷失败的提示都不许被硬翻
+    for (const s of ["清点既有美术…", "无法重掷：快照不足", "引擎演绎中"]) {
+      expect(playerStatus(s)).toBe(s);
+    }
+  });
+});
+
+describe("lib/worlds：旧版分叉备注识别（v1.7.1）", () => {
+  it("isLegacyForkNote 真值表：两种真实形态（含前后空白）为 true，空值与近似形态为 false", () => {
+    // 旧版 server 自动写的两种真实形态
+    expect(isLegacyForkNote("分叉自 campus-summer-1 @ 2-2")).toBe(true);
+    expect(isLegacyForkNote("分叉自 campus-summer-1 @ 2-2（精确快照 #7）")).toBe(true);
+    expect(isLegacyForkNote("  分叉自 w1 @ 1-1  ")).toBe(true); // 前后空白容忍
+    expect(isLegacyForkNote("分叉自 w1 @1-1")).toBe(true);
+
+    // 空值：本来就没有备注
+    expect(isLegacyForkNote(null)).toBe(false);
+    expect(isLegacyForkNote(undefined)).toBe(false);
+    expect(isLegacyForkNote("")).toBe(false);
+    expect(isLegacyForkNote("   ")).toBe(false);
+
+    // 近似形态：玩家自己写的 / 带尾巴的都不许被当成旧版自动备注吞掉
+    expect(isLegacyForkNote("分叉自 雨夜 @ 天台 之后")).toBe(false);
+    expect(isLegacyForkNote("分叉自雨夜的岔口")).toBe(false); // 只以「分叉自」开头、没有 @
+    expect(isLegacyForkNote("分叉自 w1 @ 1-1 的支线")).toBe(false);
+    expect(isLegacyForkNote("来自 campus-summer-1 @ 2-2")).toBe(false);
+    expect(isLegacyForkNote("分叉自 w1 @ 1-1（精确快照 #x）")).toBe(false);
+    expect(isLegacyForkNote("分叉自 w1 @ 1-1（精确快照 #7）后面还有字")).toBe(false);
   });
 });
 
@@ -139,15 +255,18 @@ describe("WorldsScreen：世界线列表与动作（v1.5）", () => {
     );
   });
 
-  it("渲染世界行：备注名/章号/相对时间/分叉徽标；同屏按最近游玩排序", async () => {
+  it("渲染世界行：显示名/章号/相对时间/分叉徽标；同屏按最近游玩排序", async () => {
     render(<WorldsScreen />);
     await waitFor(() => expect(screen.getByTestId("world-row-campus-summer-2")).toBeTruthy());
     const forkRow = within(screen.getByTestId("world-row-campus-summer-2"));
     expect(forkRow.getByText(/第 2 章 · 5 分钟前/)).toBeTruthy();
-    // 备注名与分叉徽标都含同一句分叉说明（行内两处）
-    expect(forkRow.getAllByText(/分叉自 campus-summer-1 @ 2-2/).length).toBe(2);
+    // 旧版分叉备注是裸 id 串（isLegacyForkNote）= 没有备注：主行回退剧本名、次行不铺，来历交给徽标
+    expect(forkRow.queryByText(/分叉自 campus-summer-1 @ 2-2/)).toBeNull();
+    expect(forkRow.getByText("自《盛夏偏差值》延伸")).toBeTruthy();
+    expect(forkRow.queryByTestId("world-note-campus-summer-2")).toBeNull();
     const plainRow = within(screen.getByTestId("world-row-campus-summer-1"));
-    expect(plainRow.getByText("campus-summer-1")).toBeTruthy(); // 无备注回退 id
+    expect(plainRow.getByText("盛夏偏差值")).toBeTruthy(); // 无 label/备注：回退剧本名，绝不露裸 worldId
+    expect(plainRow.queryByText("campus-summer-1")).toBeNull();
     expect(plainRow.getByText(/第 3 章 · 3 小时前/)).toBeTruthy();
     const rows = screen.getByTestId("worlds-screen").querySelectorAll('[data-testid^="world-row-"]');
     expect(rows[0].getAttribute("data-testid")).toBe("world-row-campus-summer-2"); // 最近游玩优先
@@ -188,16 +307,17 @@ describe("WorldsScreen：世界线列表与动作（v1.5）", () => {
     expect(useGameStore.getState().worldId).toBe("campus-summer-3");
   });
 
-  it("删除：两段式确认，第二段才发 delete 并重取清单", async () => {
+  it("删除：两段式确认收在 ⋯ 菜单里，第二段才发 delete 并重取清单", async () => {
     render(<WorldsScreen />);
-    await waitFor(() => expect(screen.getByTestId("world-delete-campus-summer-2")).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId("world-menu-campus-summer-2")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("world-menu-campus-summer-2"));
     fireEvent.click(screen.getByTestId("world-delete-campus-summer-2"));
     expect(worldPosts).toEqual([]); // 首点只进确认态
 
     fireEvent.click(screen.getByTestId("world-confirm-campus-summer-2"));
     await waitFor(() => expect(worldPosts).toEqual([{ action: "delete", worldId: "campus-summer-2" }]));
-    // v1.7：删除成功提示去向（回收站可手工找回）
-    await waitFor(() => expect(screen.getByText("已移入回收站（state/trash/ 可手工找回）")).toBeTruthy());
+    // 删除成功提示去向（回收站可手工找回）
+    await waitFor(() => expect(screen.getByText("已移入回收站，可从数据目录找回")).toBeTruthy());
   });
 
   it("空态：没有世界线时提示并可开新线", async () => {
@@ -262,7 +382,7 @@ describe("CreationScreen：选项 chip 化与排队提示", () => {
     expect(prompts).toEqual([]); // 填入不发送
 
     useGameStore.setState({ pendingCreationMessage: "我的构想" });
-    await waitFor(() => expect(screen.getByText("引擎就绪后自动发送")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("就绪后自动发送")).toBeTruthy());
   });
 });
 
@@ -380,7 +500,7 @@ describe("StoryTreeScreen：树图、详情与编辑（v1.5）", () => {
     render(<StoryTreeScreen />);
     await waitFor(() => expect(screen.getByTestId("tree-canvas")).toBeTruthy());
     expect((screen.getByTestId("tree-send") as HTMLButtonElement).disabled).toBe(true);
-    expect(within(screen.getByTestId("tree-input")).getByText("引擎忙，已排队，就绪后自动发送")).toBeTruthy();
+    expect(within(screen.getByTestId("tree-input")).getByText("忙碌中，就绪后自动发送")).toBeTruthy();
   });
 
   it("404（本章未规划）：给玩家一句人话；解析失败回退显示原文", async () => {
@@ -494,13 +614,15 @@ describe("AssetsScreen：分组、在用徽标与预览", () => {
     vi.stubGlobal("fetch", fetchMock);
   });
 
-  it("立绘按角色分组（差分显示为 名 · 变体），背景/封面各自成组，在用徽标只标当前项", async () => {
+  it("立绘按角色分组（差分显示为 名 · 变体），背景/封面各自成组，未使用徽标只标未在用的项", async () => {
     render(<AssetsScreen />);
     await waitFor(() => expect(screen.getByText("立 绘")).toBeTruthy());
     expect(screen.getByText("薇拉 · 微笑")).toBeTruthy();
     expect(screen.getByText("背 景")).toBeTruthy();
     expect(screen.getByText("封 面")).toBeTruthy();
-    expect(screen.getByText("在用")).toBeTruthy(); // 仅 基础薇拉 inUse
+    // 在用途是多数（标了等于没标）：角标只标异常——4 项里只有基础薇拉 inUse
+    expect(screen.queryByText("在用")).toBeNull();
+    expect(screen.getAllByText("未使用")).toHaveLength(3);
     // 清单请求按当前剧本过滤
     expect(fetchMock).toHaveBeenCalledWith("/api/assets?preset=campus-summer", expect.objectContaining({ signal: expect.anything() }));
   });
@@ -575,7 +697,11 @@ describe("SettingsScreen：设置项、持久化与入口（v1.6）", () => {
     expect(screen.getByTestId("settings-bgm-value").textContent).toBe("80");
     expect(screen.getByTestId("settings-ambient-value").textContent).toBe("60");
     expect(screen.getByTestId("settings-sfx-value").textContent).toBe("90");
-    expect(screen.getByTestId("settings-muted").getAttribute("aria-pressed")).toBe("false");
+    // 静音是真开关语义（role=switch + aria-checked），不再是「看着像标签的按钮」
+    const mutedSwitch = screen.getByTestId("settings-muted");
+    expect(mutedSwitch.getAttribute("role")).toBe("switch");
+    expect(mutedSwitch.getAttribute("aria-checked")).toBe("false");
+    expect(mutedSwitch.getAttribute("aria-pressed")).toBeNull();
     expect(screen.getByTestId("settings-textspeed-standard").getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByTestId("settings-auto-0").getAttribute("aria-pressed")).toBe("true");
     // 四档文本速度与三档自动前进都在（缺档 = 玩家改不了）
@@ -601,8 +727,9 @@ describe("SettingsScreen：设置项、持久化与入口（v1.6）", () => {
     const muted = screen.getByTestId("settings-muted");
     fireEvent.click(muted);
     expect(useGameStore.getState().settings.muted).toBe(true);
-    expect(screen.getByTestId("settings-muted").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("settings-muted").getAttribute("aria-checked")).toBe("true");
     fireEvent.click(screen.getByTestId("settings-muted"));
+    expect(screen.getByTestId("settings-muted").getAttribute("aria-checked")).toBe("false");
     expect(useGameStore.getState().settings.muted).toBe(false);
 
     fireEvent.click(screen.getByTestId("settings-textspeed-instant"));
@@ -904,7 +1031,7 @@ describe("App：Esc 关闭链里的设置屏（v1.6）", () => {
     });
   });
 
-  it("Esc 关设置 overlay 回进入前的屏（滑杆聚焦时同样生效——它不是「正在打字」的输入框）", () => {
+  it("Esc 关设置 overlay 回进入前的屏（滑杆聚焦时同样生效——它不是「正在打字」的输入框）；捏人屏 Esc /「返回」都回世界线屏且不清牌面", () => {
     render(<App />);
     const slider = screen.getByTestId("settings-master") as HTMLInputElement;
     slider.focus();
@@ -915,6 +1042,41 @@ describe("App：Esc 关闭链里的设置屏（v1.6）", () => {
     const s = useGameStore.getState();
     expect(s.screen).toBe("game");
     expect(s.screenReturn).toBeNull();
+
+    // 捏人屏（世界线屏 →「新世界线」）原是死路：Esc 必须回世界线屏，且把选卡/答题/世界 id 原样留着。
+    // 重挂一次 App 让捏人屏是首屏（AnimatePresence mode="wait" 下换屏要等离场动画跑完，重挂免等）
+    cleanup();
+    useGameStore.setState({
+      screen: "protagonist",
+      screenReturn: null,
+      selected: PRESET,
+      cardAnswers: { 姓名: ["顾迟"] },
+      worldId: "campus-summer-3",
+      worldLabel: "campus-summer-3",
+    });
+    render(<App />);
+    expect(screen.getByTestId("protagonist-screen")).toBeTruthy();
+    expect(screen.getByTestId("protagonist-back").getAttribute("aria-label")).toBe("返回世界线");
+
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    const p = useGameStore.getState();
+    expect(p.screen).toBe("worlds");
+    expect(p.screenReturn).toBeNull();
+    expect(p.selected).toBe(PRESET);
+    expect(p.cardAnswers).toEqual({ 姓名: ["顾迟"] });
+    expect(p.worldId).toBe("campus-summer-3");
+
+    // 头部「返回」是同一条出口（不重置运行态）
+    cleanup();
+    useGameStore.setState({ screen: "protagonist" });
+    render(<App />);
+    fireEvent.click(screen.getByTestId("protagonist-back"));
+    expect(useGameStore.getState().screen).toBe("worlds");
+    expect(useGameStore.getState().worldId).toBe("campus-summer-3");
+
+    // 本文件的 afterEach 只 toTitle，牌面字段别漏给下一个用例
+    useGameStore.setState({ selected: null, cardAnswers: {}, worldId: null, worldLabel: "" });
   });
 });
 
@@ -986,34 +1148,42 @@ describe("WorldsScreen：改名 / 导出 / 导入（v1.6）", () => {
     );
   });
 
-  it("显示名用 label；label 与 note 都在时备注降为次行；无 label 回退备注/id", async () => {
+  it("显示名用 label；label 与真实备注都在时备注降为次行；无 label 回退剧本名（旧版分叉备注不算备注）", async () => {
+    worldsResp = [
+      worldsResp[0], // label 雨夜的岔口 + 旧版分叉备注：次行不铺
+      { ...worldsResp[1], label: "二周目", note: "第一次玩到这里" },
+    ];
     render(<WorldsScreen />);
     await waitFor(() => expect(screen.getByTestId("world-row-campus-summer-2")).toBeTruthy());
 
     const labeled = within(screen.getByTestId("world-row-campus-summer-2"));
     expect(labeled.getByText("雨夜的岔口")).toBeTruthy();
-    expect(labeled.getByTestId("world-note-campus-summer-2").textContent).toBe("分叉自 campus-summer-1 @ 2-2");
-    const plain = within(screen.getByTestId("world-row-campus-summer-1"));
-    expect(plain.getByText("campus-summer-1")).toBeTruthy();
-    expect(plain.queryByTestId("world-note-campus-summer-1")).toBeNull(); // 没有 label 就不铺备注次行
+    expect(labeled.queryByTestId("world-note-campus-summer-2")).toBeNull(); // 旧版分叉备注不上屏
+    const both = within(screen.getByTestId("world-row-campus-summer-1"));
+    expect(both.getByText("二周目")).toBeTruthy();
+    expect(both.getByTestId("world-note-campus-summer-1").textContent).toBe("第一次玩到这里");
 
-    // 纯函数：label 空白串视为未设置；回退链 label → note → worldId
+    // 纯函数：label 空白串视为未设置；回退链 label → note → 剧本名 → 未命名世界线（裸 id 永不上屏）
     expect(worldDisplayName(world({ worldId: "w", label: "  ", note: " 旧备注 " }))).toBe("旧备注");
-    expect(worldDisplayName(world({ worldId: "w" }))).toBe("w");
+    expect(worldDisplayName(world({ worldId: "w" }), "盛夏偏差值")).toBe("盛夏偏差值");
+    expect(worldDisplayName(world({ worldId: "w" }))).toBe("未命名世界线");
+    expect(worldDisplayName(world({ worldId: "w", note: "分叉自 w1 @ 2-2" }), "盛夏偏差值")).toBe("盛夏偏差值");
   });
 
   it("行内改名：编辑打开即聚焦显示名输入框；保存把 label/note 提交给 update 并重取清单回显", async () => {
     render(<WorldsScreen />);
-    await waitFor(() => expect(screen.getByTestId("world-edit-campus-summer-1")).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId("world-menu-campus-summer-1")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("world-menu-campus-summer-1"));
     fireEvent.click(screen.getByTestId("world-edit-campus-summer-1"));
 
     const label = screen.getByTestId("world-edit-label-campus-summer-1") as HTMLInputElement;
     expect(screen.getByTestId("world-editor-campus-summer-1")).toBeTruthy();
+    expect(screen.queryByTestId("world-menu-popup-campus-summer-1")).toBeNull(); // 进编辑器顺手收菜单
     expect(label.value).toBe(""); // 初值取服务端现值（未设置=空串）
     expect(document.activeElement).toBe(label);
     expect(label.getAttribute("maxlength")).toBe("60");
     expect(screen.getByTestId("world-edit-note-campus-summer-1").getAttribute("maxlength")).toBe("200");
-    expect(screen.getByLabelText("显示名（campus-summer-1）")).toBe(label); // 输入框有 aria-label
+    expect(screen.getByLabelText("显示名（盛夏偏差值）")).toBe(label); // aria-label 用显示名，不露裸 id
 
     fireEvent.change(label, { target: { value: " 天台上的雨 " } });
     fireEvent.change(screen.getByTestId("world-edit-note-campus-summer-1"), { target: { value: "第一周目" } });
@@ -1034,7 +1204,8 @@ describe("WorldsScreen：改名 / 导出 / 导入（v1.6）", () => {
 
   it("编辑器键盘：Enter 保存（组字中的 Enter 不算）、Esc 取消不发请求；清空显示名=清除并回退备注", async () => {
     render(<WorldsScreen />);
-    await waitFor(() => expect(screen.getByTestId("world-edit-campus-summer-2")).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId("world-menu-campus-summer-2")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("world-menu-campus-summer-2"));
     fireEvent.click(screen.getByTestId("world-edit-campus-summer-2"));
     const label = screen.getByTestId("world-edit-label-campus-summer-2") as HTMLInputElement;
     expect(label.value).toBe("雨夜的岔口");
@@ -1050,18 +1221,21 @@ describe("WorldsScreen：改名 / 导出 / 导入（v1.6）", () => {
       }),
     );
     await waitFor(() => expect(screen.queryByTestId("world-editor-campus-summer-2")).toBeNull());
-    // 显示名清掉后备注顶上主行，次行随之收起；分叉徽标仍在（两处都含那句说明，故按次行断言）
-    await waitFor(() => expect(within(screen.getByTestId("world-row-campus-summer-2")).queryByTestId("world-note-campus-summer-2")).toBeNull());
-    expect(within(screen.getByTestId("world-row-campus-summer-2")).getAllByText(/分叉自 campus-summer-1 @ 2-2/).length).toBe(2);
+    // 显示名清掉后：主行回退剧本名（旧版分叉备注不算备注）、次行仍不铺，分叉徽标还在
+    await waitFor(() => expect(within(screen.getByTestId("world-row-campus-summer-2")).getByText("盛夏偏差值")).toBeTruthy());
+    expect(within(screen.getByTestId("world-row-campus-summer-2")).queryByTestId("world-note-campus-summer-2")).toBeNull();
+    expect(within(screen.getByTestId("world-row-campus-summer-2")).getByText("自《盛夏偏差值》延伸")).toBeTruthy();
 
-    // Esc 取消：不发请求、编辑器收起
+    // Esc 取消：不发请求、编辑器收起（从 ⋯ 菜单进）
     const before = worldPosts.length;
+    fireEvent.click(screen.getByTestId("world-menu-campus-summer-1"));
     fireEvent.click(screen.getByTestId("world-edit-campus-summer-1"));
     fireEvent.keyDown(screen.getByTestId("world-edit-note-campus-summer-1"), { key: "Escape" });
     expect(screen.queryByTestId("world-editor-campus-summer-1")).toBeNull();
     expect(worldPosts).toHaveLength(before);
 
     // 中文输入法组字中的 Enter 不算保存
+    fireEvent.click(screen.getByTestId("world-menu-campus-summer-1"));
     fireEvent.click(screen.getByTestId("world-edit-campus-summer-1"));
     fireEvent.keyDown(screen.getByTestId("world-edit-label-campus-summer-1"), { key: "Enter", isComposing: true });
     expect(screen.getByTestId("world-editor-campus-summer-1")).toBeTruthy();
@@ -1082,7 +1256,8 @@ describe("WorldsScreen：改名 / 导出 / 导入（v1.6）", () => {
       }),
     );
     render(<WorldsScreen />);
-    await waitFor(() => expect(screen.getByTestId("world-edit-campus-summer-2")).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId("world-menu-campus-summer-2")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("world-menu-campus-summer-2"));
     fireEvent.click(screen.getByTestId("world-edit-campus-summer-2"));
     fireEvent.change(screen.getByTestId("world-edit-label-campus-summer-2"), { target: { value: "太长的名字" } });
     fireEvent.click(screen.getByTestId("world-edit-save-campus-summer-2"));
@@ -1093,16 +1268,21 @@ describe("WorldsScreen：改名 / 导出 / 导入（v1.6）", () => {
     expect((screen.getByTestId("world-edit-label-campus-summer-2") as HTMLInputElement).value).toBe("太长的名字");
   });
 
-  it("导出：每行一个下载链接，指向 /api/worlds/export 并带 <worldId>.world.json 文件名", async () => {
+  it("导出：⋯ 菜单里的下载链接指向 /api/worlds/export 并带 <worldId>.world.json 文件名", async () => {
     render(<WorldsScreen />);
-    await waitFor(() => expect(screen.getByTestId("world-export-campus-summer-1")).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId("world-menu-campus-summer-1")).toBeTruthy());
 
+    fireEvent.click(screen.getByTestId("world-menu-campus-summer-1"));
     const link = screen.getByTestId("world-export-campus-summer-1") as HTMLAnchorElement;
     expect(link.getAttribute("href")).toBe("/api/worlds/export?worldId=campus-summer-1");
     expect(link.getAttribute("download")).toBe("campus-summer-1.world.json");
-    // aria-label 用显示名（label 优先），行内按钮不至于同名叫「导出」
-    expect(link.getAttribute("aria-label")).toBe("导出世界线 campus-summer-1");
+    // aria-label 用显示名（label 优先，绝不露裸 id）
+    expect(link.getAttribute("aria-label")).toBe("导出世界线 盛夏偏差值");
+
+    // 换另一行的菜单：链接随行，无障碍名跟着换（同屏只开一个菜单）
+    fireEvent.click(screen.getByTestId("world-menu-campus-summer-2"));
     expect(screen.getByTestId("world-export-campus-summer-2").getAttribute("aria-label")).toBe("导出世界线 雨夜的岔口");
+    expect(screen.queryByTestId("world-export-campus-summer-1")).toBeNull();
   });
 
   it("列表语义：listbox + option + roving tabIndex，↑↓ 只让光标行可 Tab；行内按钮 aria-label 含世界名", async () => {
@@ -1125,8 +1305,73 @@ describe("WorldsScreen：改名 / 导出 / 导入（v1.6）", () => {
     expect(document.activeElement).toBe(screen.getByTestId("world-row-campus-summer-1"));
 
     expect(screen.getByLabelText("继续世界线 雨夜的岔口")).toBeTruthy();
-    expect(screen.getByLabelText("编辑世界线 campus-summer-1")).toBeTruthy();
-    expect(screen.getByLabelText("删除世界线 campus-summer-1")).toBeTruthy();
+    // 行内动作收在 ⋯ 菜单里：触发器与菜单项的无障碍名都用显示名（不露裸 worldId）
+    fireEvent.click(screen.getByLabelText("世界线 盛夏偏差值 的更多操作"));
+    expect(screen.getByLabelText("改名世界线 盛夏偏差值")).toBeTruthy();
+    expect(screen.getByLabelText("导出世界线 盛夏偏差值")).toBeTruthy();
+    expect(screen.getByLabelText("删除世界线 盛夏偏差值")).toBeTruthy();
+  });
+
+  it("⋯ 菜单语义：打开出三项、Esc 就地关闭（不冒到 Esc 关闭链）、点外面关闭、删除确认随关闭作废", async () => {
+    render(<WorldsScreen />);
+    await waitFor(() => expect(screen.getByTestId("world-menu-campus-summer-1")).toBeTruthy());
+
+    const trigger = screen.getByTestId("world-menu-campus-summer-1");
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(trigger);
+    const popup = screen.getByTestId("world-menu-popup-campus-summer-1");
+    expect(within(popup).getByTestId("world-edit-campus-summer-1")).toBeTruthy();
+    expect(within(popup).getByTestId("world-export-campus-summer-1")).toBeTruthy();
+    expect(within(popup).getByTestId("world-delete-campus-summer-1")).toBeTruthy();
+    expect(popup.className).toContain("top-full"); // 默认向下展开（空间够时）
+
+    // Esc：就地关菜单并 stopPropagation——那一下不许冒到 App 的 Esc 关闭链（外面听不到）
+    const outer = vi.fn();
+    document.addEventListener("keydown", outer);
+    fireEvent.keyDown(popup, { key: "a" }); // 探针：没人拦的按键能冒到 document（证明下面不是空转）
+    expect(outer).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(popup, { key: "Escape" });
+    document.removeEventListener("keydown", outer);
+    expect(outer).toHaveBeenCalledTimes(1); // Esc 那一下被就地吃掉：App 的关闭链听不到
+    expect(screen.queryByTestId("world-menu-popup-campus-summer-1")).toBeNull();
+
+    // 删除 → 确认态；点菜单外面关闭：半截确认一起作废（重开回到第一屏），没发过请求
+    fireEvent.click(screen.getByTestId("world-menu-campus-summer-1"));
+    fireEvent.click(screen.getByTestId("world-delete-campus-summer-1"));
+    expect(screen.getByTestId("world-confirm-campus-summer-1")).toBeTruthy();
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByTestId("world-menu-popup-campus-summer-1")).toBeNull();
+    expect(worldPosts).toEqual([]);
+    fireEvent.click(screen.getByTestId("world-menu-campus-summer-1"));
+    expect(screen.getByTestId("world-delete-campus-summer-1")).toBeTruthy();
+    expect(screen.queryByTestId("world-confirm-campus-summer-1")).toBeNull();
+
+    // 焦点 Tab 走出这一行 → 菜单立刻收掉（document 的 focusin 兜底）：不留「开着却没人管」的孤儿菜单
+    expect(trigger.getAttribute("aria-expanded")).toBe("true"); // 上面刚重开的菜单还开着
+    act(() => (screen.getByTestId("worlds-new") as HTMLElement).focus());
+    expect(screen.queryByTestId("world-menu-popup-campus-summer-1")).toBeNull();
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+
+    // 焦点已不在行内时按 Esc（行上的 onKeyDown 收不到这一下）：document 捕获监听兜住，
+    // 且不许冒到 window —— 那正是 App 的 Esc 关闭链（会把整屏关回标题屏）
+    fireEvent.click(trigger);
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    const outer2 = vi.fn();
+    window.addEventListener("keydown", outer2);
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    window.removeEventListener("keydown", outer2);
+    expect(outer2).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("world-menu-popup-campus-summer-1")).toBeNull();
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+
+    // 末行菜单向上翻：jsdom 的布局量恒为 0，这里显式造出「触发器贴底 + 菜单有高度」的越界情形，
+    // 断言弹层换到触发器上方（bottom-full）——否则最后一行开菜单只能靠滚动才看得见（默认 top-full 上面已断言）
+    const rectSpy = vi.spyOn(trigger, "getBoundingClientRect").mockReturnValue({ bottom: 740 } as DOMRect);
+    const heightSpy = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(120);
+    fireEvent.click(trigger);
+    expect(screen.getByTestId("world-menu-popup-campus-summer-1").className).toContain("bottom-full");
+    heightSpy.mockRestore();
+    rectSpy.mockRestore();
   });
 
   it("导入：选中文件 → 校验通过后 POST import，成功刷新清单并出成功提示", async () => {
@@ -1286,7 +1531,8 @@ describe("WorldsScreen：家谱视图（v1.7）", () => {
 
     const badge = screen.getByTestId("genealogy-orphan-w9");
     expect(badge.textContent).toContain("⌫");
-    expect(badge.textContent).toContain("9-9");
+    expect(badge.textContent).toContain("⑂");
+    expect(badge.textContent).not.toContain("9-9"); // 节点 id 不上屏：孤儿信号只留 ⌫ ⑂
     expect(screen.getByTestId("genealogy-canvas").querySelectorAll(".genealogy-edge")).toHaveLength(0);
 
     fireEvent.click(screen.getByTestId("genealogy-node-w9"));
@@ -1409,7 +1655,7 @@ describe("AssetsScreen：选择模式、批量重绘与批量删除（v1.6）", 
     expect(screen.getByTestId("assets-regen-selected").textContent).toContain("重绘选中(4)");
     // 封面可重绘但不可删（服务端只受理 assets 目录下的 *.jpg）
     expect(screen.getByTestId("assets-delete-selected").textContent).toContain("删除选中(3)");
-    expect(screen.getByText(/封面不参与删除/)).toBeTruthy();
+    expect(screen.getByText(/封面不参与批量删除/)).toBeTruthy();
 
     fireEvent.click(screen.getByTestId("assets-select-none"));
     expect((screen.getByLabelText("选择 立绘-薇拉") as HTMLInputElement).checked).toBe(false);
@@ -1645,12 +1891,12 @@ describe("StoryTreeScreen：快照标注、原地回退与分叉带 seq（v1.6�
     render(<StoryTreeScreen />);
     await waitFor(() => expect(screen.getByTestId("tree-canvas")).toBeTruthy());
 
-    expect(screen.getByLabelText("节点 2-2 · 已走过 · 快照 #7 · 第 2 轮")).toBeTruthy();
-    expect(screen.getByLabelText("节点 2-1 · 已走过 · 快照 #3 · 第 1 轮")).toBeTruthy();
+    expect(screen.getByLabelText("节点 2-2 · 已走过 · 存档点 · 第 7 幕")).toBeTruthy();
+    expect(screen.getByLabelText("节点 2-1 · 已走过 · 存档点 · 第 3 幕")).toBeTruthy();
     expect(screen.getByLabelText("节点 2-4 · 已走过")).toBeTruthy(); // 没有快照：标签保持旧口径
 
     fireEvent.click(screen.getByTestId("tree-node-2-2"));
-    expect(screen.getByTestId("tree-snapshot-2-2").textContent).toBe("快照 #7 · 第 2 轮");
+    expect(screen.getByTestId("tree-snapshot-2-2").textContent).toBe("存档点 · 第 7 幕");
     expect(screen.getByTestId("tree-restore-2-2")).toBeTruthy();
 
     // 换到没有快照的节点：新按钮与标注一起消失（旧世界零打扰）
@@ -1680,8 +1926,8 @@ describe("StoryTreeScreen：快照标注、原地回退与分叉带 seq（v1.6�
     fireEvent.click(screen.getByTestId("tree-restore-confirm-2-1"));
 
     await waitFor(() => expect(worldPosts).toStrictEqual([{ action: "restore", worldId: "campus-summer-1", seq: 3 }]));
-    await waitFor(() => expect(screen.getByTestId("tree-notice").textContent).toContain("已回退到快照 #3"));
-    expect(screen.getByTestId("tree-notice").textContent).toContain("备份为快照 #12");
+    await waitFor(() => expect(screen.getByTestId("tree-notice").textContent).toContain("已回到第 3 幕"));
+    expect(screen.getByTestId("tree-notice").textContent).toContain("回退前的进度已备份");
     expect(useGameStore.getState().treeStamp).toBe(stamp0 + 1);
     await waitFor(() => expect(historyCalls).toBeGreaterThan(calls0)); // 回退后重取快照索引
   });
@@ -1833,12 +2079,12 @@ describe("StoryTreeScreen：快照对比 diff 面板（v1.7）", () => {
 
     // 2-1 的快照 #1 是全局最小：有快照标注但没有对比入口
     fireEvent.click(screen.getByTestId("tree-node-2-1"));
-    expect(screen.getByTestId("tree-snapshot-2-1").textContent).toContain("快照 #1");
+    expect(screen.getByTestId("tree-snapshot-2-1").textContent).toContain("存档点 · 第 1 幕");
     expect(screen.queryByTestId("snapshot-diff-open")).toBeNull();
 
     // 2-2 的快照 #3 有基线 #1：入口出现并写明区间
     fireEvent.click(screen.getByTestId("tree-node-2-2"));
-    expect(screen.getByTestId("snapshot-diff-open").textContent).toContain("#1 → #3");
+    expect(screen.getByTestId("snapshot-diff-open").textContent).toContain("第 1 幕 → 第 3 幕");
   });
 
   it("打开面板：三 tab（state/summary/tree）+ tab 头 +N −M / 无变化，remove/add 行按基线→当前着色", async () => {
@@ -1863,6 +2109,28 @@ describe("StoryTreeScreen：快照对比 diff 面板（v1.7）", () => {
     fireEvent.click(screen.getByTestId("snapshot-diff-tab-summary"));
     expect(screen.getByTestId("diff-row-remove").textContent).toContain("第 1 轮");
     expect(screen.getByTestId("diff-row-add").textContent).toContain("第 2 轮");
+
+    // ARIA tabs 语义与键盘走位：三个 tab 是一组（roving tabIndex），←→ 循环、Home/End 跳首尾，
+    // panel 用 aria-labelledby 指向当前 tab
+    const tablist = screen.getByRole("tablist", { name: "存档点对比" });
+    expect(screen.getByTestId("snapshot-diff-tab-summary").getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByTestId("snapshot-diff-tab-summary").getAttribute("tabindex")).toBe("0");
+    expect(screen.getByTestId("snapshot-diff-tab-state").getAttribute("tabindex")).toBe("-1");
+    expect(screen.getByRole("tabpanel").getAttribute("aria-labelledby")).toBe("snapshot-diff-tab-summary");
+
+    fireEvent.keyDown(tablist, { key: "ArrowRight" });
+    expect(screen.getByTestId("snapshot-diff-tab-tree").getAttribute("aria-selected")).toBe("true");
+    expect(document.activeElement).toBe(screen.getByTestId("snapshot-diff-tab-tree"));
+
+    fireEvent.keyDown(tablist, { key: "Home" });
+    expect(screen.getByTestId("snapshot-diff-tab-state").getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tabpanel").getAttribute("aria-labelledby")).toBe("snapshot-diff-tab-state");
+
+    fireEvent.keyDown(tablist, { key: "End" });
+    expect(screen.getByTestId("snapshot-diff-tab-tree").getAttribute("aria-selected")).toBe("true");
+
+    fireEvent.keyDown(tablist, { key: "ArrowLeft" }); // 循环：末个 ← 回到中间
+    expect(screen.getByTestId("snapshot-diff-tab-summary").getAttribute("aria-selected")).toBe("true");
   });
 
   it("equal 折叠：默认只留改动行上下 ±2 行 + 「…共 N 行未变」，点 gap 展开全部", async () => {
@@ -1892,7 +2160,7 @@ describe("StoryTreeScreen：快照对比 diff 面板（v1.7）", () => {
     fireEvent.click(screen.getByTestId("tree-node-2-2"));
     fireEvent.click(screen.getByTestId("snapshot-diff-open"));
 
-    await waitFor(() => expect(screen.getByTestId("snapshot-diff-error").textContent).toContain("快照对比加载失败"));
+    await waitFor(() => expect(screen.getByTestId("snapshot-diff-error").textContent).toContain("存档点对比加载失败"));
     expect(screen.getByTestId("snapshot-diff-error").textContent).toContain("HTTP 404");
     expect(screen.queryByTestId("diff-row-add")).toBeNull();
 
@@ -2284,15 +2552,15 @@ describe("App：状态播报区（aria-live，v1.6）", () => {
     useGameStore.setState({ status: "连接引擎…" });
   });
 
-  it("aria-live=polite 播报 store.status 变化；同一句重复写入不再动 DOM（不重复播报）", async () => {
+  it("aria-live=polite 播报玩家口吻的状态（playerStatus 映射）；同一句重复写入不再动 DOM（不重复播报）", async () => {
     render(<StatusAnnouncer />);
     const live = screen.getByTestId("sr-status");
     expect(live.getAttribute("aria-live")).toBe("polite");
     expect(live.getAttribute("aria-atomic")).toBe("true");
-    expect(live.textContent).toBe("连接引擎…");
+    expect(live.textContent).toBe("连接中…");
 
     act(() => useGameStore.setState({ status: "引擎演绎中…" }));
-    await waitFor(() => expect(screen.getByTestId("sr-status").textContent).toBe("引擎演绎中…"));
+    await waitFor(() => expect(screen.getByTestId("sr-status").textContent).toBe("故事展开中…"));
 
     // 同一句话再写一次：文本节点原样不动——屏幕阅读器不会把同一段重念一遍
     const node = screen.getByTestId("sr-status").firstChild;
@@ -2448,9 +2716,11 @@ describe("回退后的客户端语义：非破坏式分割线、待重同步与�
     });
     expect(useGameStore.getState().history).toHaveLength(4);
 
-    useGameStore.setState({ drawerOpen: true });
+    useGameStore.setState({ drawerOpen: true, chapterNo: 2 });
     render(<HistoryDrawer />);
-    expect(screen.getByTestId("history-rollback").textContent).toContain("已回退到快照 #3");
+    // 非破坏式分割线：只插一行、旧幕一条不删；标题带当前章号（顶栏已不再显示章号）
+    expect(screen.getByText("回 想 · 第 2 章")).toBeTruthy();
+    expect(screen.getByTestId("history-rollback").textContent).toBe("—— 已回溯到第 3 幕 ——");
     const acts = screen.getAllByTestId("history-act");
     expect(acts).toHaveLength(3); // 两幕旧 + 一幕新，一条没删
     // 抽屉倒序渲染：新幕在分割线之后（正常），两幕旧幕在分割线之前（置灰）
@@ -2506,20 +2776,20 @@ describe("回退后的客户端语义：非破坏式分割线、待重同步与�
     expect(screen.queryByTestId("resync-badge")).toBeNull();
   });
 
-  it("treeNotice 三态：回退成功→「正在让引擎重读档」；回合收尾→「完成重同步」；引擎 error→「失败可重试」", async () => {
+  it("treeNotice 三态：回退成功→「正在同步进度」；回合收尾→「进度已同步」；引擎 error→「失败可重试」", async () => {
     // 态一：回退成功、续玩指令已发出（等回合）
     await act(async () => {
       await useGameStore.getState().restoreSnapshot(5);
     });
     const pending = useGameStore.getState().treeNotice ?? "";
-    expect(pending).toContain("已回退到快照 #5");
-    expect(pending).toContain("正在让引擎重读档");
+    expect(pending).toContain("已回到第 5 幕");
+    expect(pending).toContain("正在同步进度");
 
     // 态二：重同步回合 turn_end → 完成重同步（徽章同回合清除）
     act(() => {
       useGameStore.getState().handleEvent({ type: "turn_end" });
     });
-    expect(useGameStore.getState().treeNotice).toBe("已回退到快照 #5 并完成重同步");
+    expect(useGameStore.getState().treeNotice).toBe("已回到第 5 幕，进度已同步");
     expect(useGameStore.getState().pendingResync).toBeNull();
 
     // 态三：再次回退，这次引擎在回合里回 error（SSE error 事件路径）
@@ -2798,7 +3068,7 @@ describe("重掷本回合：次新 turn 快照 restore + 重同步收尾后重�
   it("重掷全链：restore 取次新 turn 快照（backup 不算）、分割线标 reroll、重同步回合收尾后自动重发同一输入", async () => {
     render(<TopBar />);
     const btn = screen.getByTestId("reroll");
-    expect(btn.getAttribute("aria-label")).toBe("重掷本回合");
+    expect(btn.getAttribute("aria-label")).toBe("重演这一幕");
 
     await act(async () => {
       fireEvent.click(btn);
@@ -2833,7 +3103,7 @@ describe("重掷本回合：次新 turn 快照 restore + 重同步收尾后重�
     // 分割线文案走 reroll 措辞；旧幕（回合甲）在分割线之前置灰、新幕正常
     useGameStore.setState({ drawerOpen: true });
     render(<HistoryDrawer />);
-    expect(screen.getByTestId("history-rollback").textContent).toContain("重掷本回合（回到快照 #2）");
+    expect(screen.getByTestId("history-rollback").textContent).toBe("—— 第 2 幕已重演 ——");
     const acts = screen.getAllByTestId("history-act");
     expect(acts[0].textContent).toContain("回合乙"); // 抽屉倒序：最新在上
     expect(acts[0].className).not.toContain("opacity-50");
@@ -3346,5 +3616,536 @@ describe("store handleEvent：未知事件类型兜底（v1.7 表驱动分发的
     } finally {
       console.warn = orig;
     }
+  });
+});
+
+// ————————————— v1.8：对话面板自动/快进 · 标题屏「继续上次」 · 章节切换器 · 家谱缩放 —————————————
+
+describe("DialogueBox：面板上的自动 / 快进控件（v1.8）", () => {
+  /** 已显示的正文（去掉打字中的金色光标 ▌）：断言「显示到哪儿」用 */
+  const shownText = () => (screen.getByTestId("dialogue-text").textContent ?? "").replace("▌", "");
+  /** 「自动」开启时落到哪个档：与组件的 AUTO_ON 同源——档位表里第一个非零项 */
+  const AUTO_ON = AUTO_ADVANCE_OPTIONS.filter((v) => v > 0)[0];
+
+  afterEach(() => {
+    vi.useRealTimers();
+    useGameStore.getState().cancelAutoAdvance(); // 倒计时是模块级定时器单例：先撤掉再回默认
+    useGameStore.setState({
+      settings: { ...DEFAULT_SETTINGS },
+      options: null,
+      typingDone: false,
+      received: "",
+      finalText: "",
+      turnKey: 0,
+      autoAdvanceDeadline: null,
+      autoAdvanceMuted: false,
+      engineBusy: false,
+      pendingCreationMessage: null,
+      pendingTreeMessage: null,
+    });
+    window.localStorage.clear();
+  });
+
+  it("点「自动」：落到首个非零档并武装倒计时（选项上屏即出倒计时标记），再点一次关掉并撤掉倒计时", () => {
+    vi.useFakeTimers();
+    // 武装的前置一次给全：游戏屏 / 引擎空闲 / 打字完成 / 选项非空 / 无排队指令
+    useGameStore.setState({
+      screen: "game",
+      engineBusy: false,
+      typingDone: true,
+      options: [
+        { n: "1", t: "溜进座位" },
+        { n: "2", t: "转身去天台" },
+      ],
+      pendingCreationMessage: null,
+      pendingTreeMessage: null,
+      settings: { ...DEFAULT_SETTINGS, autoAdvance: 0 },
+      autoAdvanceDeadline: null,
+      autoAdvanceMuted: false,
+    });
+    render(
+      <>
+        <DialogueBox />
+        <OptionList />
+      </>,
+    );
+    expect(screen.getByTestId("dialogue-auto").getAttribute("aria-pressed")).toBe("false");
+    expect(useGameStore.getState().autoAdvanceDeadline).toBeNull(); // 设置关着：选项上屏也不起计时
+    expect(screen.queryByTestId("auto-advance")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("dialogue-auto"));
+    const on = useGameStore.getState();
+    expect(on.settings.autoAdvance).toBe(AUTO_ON); // 首个非零档
+    expect(on.settings.autoAdvance).toBe(3000); // 就是 3 秒档
+    expect(screen.getByTestId("dialogue-auto").getAttribute("aria-pressed")).toBe("true");
+    expect(on.autoAdvanceDeadline).not.toBeNull(); // 前置齐了：立刻武装，不必等下一回合
+    expect(screen.getByTestId("auto-advance").textContent).toBe("自动前进 · 3s");
+
+    fireEvent.click(screen.getByTestId("dialogue-auto"));
+    const off = useGameStore.getState();
+    expect(off.settings.autoAdvance).toBe(0);
+    expect(off.autoAdvanceDeadline).toBeNull(); // 关掉必须连已排好的定时器一起撤，否则到点照样替玩家选
+    expect(screen.getByTestId("dialogue-auto").getAttribute("aria-pressed")).toBe("false");
+    expect(screen.queryByTestId("auto-advance")).toBeNull();
+
+    // 前置不满足（引擎忙）：只落设置、不武装——「点了自动」不等于「现在就会自动前进」
+    useGameStore.setState({ engineBusy: true });
+    fireEvent.click(screen.getByTestId("dialogue-auto"));
+    const busy = useGameStore.getState();
+    expect(busy.settings.autoAdvance).toBe(AUTO_ON);
+    expect(busy.autoAdvanceDeadline).toBeNull();
+    expect(screen.queryByTestId("auto-advance")).toBeNull();
+  });
+
+  it("点「自动」不补全正文（stopPropagation）：打字机停在原处；对照点面板本体才到全文", () => {
+    vi.useFakeTimers();
+    const full = "蝉鸣把旧教学楼叫成一锅白粥，她抱着书包站在教室后门，听见里面有人压低嗓子念她的名字。";
+    useGameStore.setState({
+      screen: "game",
+      engineBusy: false,
+      received: full,
+      finalText: full,
+      turnKey: 61,
+      options: null,
+      typingDone: false,
+      status: "引擎演绎中…",
+      settings: { ...DEFAULT_SETTINGS, textSpeed: "standard", autoAdvance: 0 },
+      autoAdvanceDeadline: null,
+      autoAdvanceMuted: false,
+    });
+    render(<DialogueBox />);
+    expect(screen.getByTestId("dialogue-hint").textContent).toBe("空格补全");
+    act(() => vi.advanceTimersByTime(TEXT_SPEED_MS.standard)); // 打字机才追了一个字
+    expect(shownText()).toBe(full.slice(0, 1));
+    expect(useGameStore.getState().typingDone).toBe(false);
+
+    fireEvent.click(screen.getByTestId("dialogue-auto"));
+    expect(shownText()).toBe(full.slice(0, 1)); // 这一下没走「补全全文」那条路
+    expect(useGameStore.getState().typingDone).toBe(false);
+    expect(useGameStore.getState().settings.autoAdvance).toBe(AUTO_ON); // 开关语义本身照旧生效
+
+    // 对照：点面板本体才是补全路径——上面的「没补全」不是补全坏了，而是自动那一下被拦在了控件里
+    fireEvent.click(screen.getByTestId("dialogue-box"));
+    expect(shownText()).toBe(full);
+    expect(useGameStore.getState().typingDone).toBe(true);
+    expect(screen.queryByTestId("dialogue-hint")).toBeNull();
+  });
+
+  it("点「快进」与空格/点面板同一条路：正文一次到全文，打字完成后按钮禁用（不谎称点了有用）", () => {
+    vi.useFakeTimers();
+    const full = "雨声漫过教堂的尖顶，薇拉抱着账册站在门口，没有看你。";
+    useGameStore.setState({
+      screen: "game",
+      engineBusy: false,
+      received: full,
+      finalText: full,
+      turnKey: 62,
+      options: null,
+      typingDone: false,
+      status: "引擎演绎中…",
+      settings: { ...DEFAULT_SETTINGS, textSpeed: "standard", autoAdvance: 0 },
+    });
+    render(<DialogueBox />);
+    act(() => vi.advanceTimersByTime(TEXT_SPEED_MS.standard));
+    expect(shownText()).toBe(full.slice(0, 1));
+
+    const skip = screen.getByTestId("dialogue-skip") as HTMLButtonElement;
+    expect(skip.disabled).toBe(false);
+    expect(skip.getAttribute("aria-label")).toBe("立即显示全文");
+    fireEvent.click(skip);
+    expect(shownText()).toBe(full); // 一次到全文
+    expect(useGameStore.getState().typingDone).toBe(true);
+    expect((screen.getByTestId("dialogue-skip") as HTMLButtonElement).disabled).toBe(true); // 打完了：没有可补的
+
+    fireEvent.click(screen.getByTestId("dialogue-skip")); // 再点不会改变已定稿的正文
+    expect(shownText()).toBe(full);
+    expect(useGameStore.getState().typingDone).toBe(true);
+
+    // 空格与「聚焦的按钮」的边界（v1.8 修复）：打字中焦点落在按钮上时空格是**按钮的激活键**，
+    // 面板不许 preventDefault 把它按灭（那一下之后浏览器会派发 click，补全归按钮自己的 onClick）。
+    // 旧行为：completeNow 成功即 preventDefault → 聚焦的自动/快进按空格毫无反应。
+    act(() => useGameStore.setState({ received: full, finalText: full, turnKey: 63, typingDone: false }));
+    act(() => vi.advanceTimersByTime(TEXT_SPEED_MS.standard));
+    const skipAgain = screen.getByTestId("dialogue-skip") as HTMLButtonElement;
+    expect(skipAgain.disabled).toBe(false);
+    act(() => skipAgain.focus());
+    expect(fireEvent.keyDown(skipAgain, { key: " " })).toBe(true); // 没被 preventDefault：按键留给按钮
+    expect(shownText()).toBe(full.slice(0, 1)); // 也没「顺手替按钮补全」：面板没动过正文
+
+    // 对照组：焦点不在按钮上（body）时空格照旧补全全文——这一段语义没被上面那道让路挪走
+    act(() => skipAgain.blur());
+    expect(fireEvent.keyDown(document.body, { key: " " })).toBe(false); // 被 preventDefault（不滚页）
+    expect(shownText()).toBe(full);
+    expect(useGameStore.getState().typingDone).toBe(true);
+  });
+});
+
+describe("TitleScreen：继续上次（v1.8）", () => {
+  const NOW = Date.now();
+  const RIFT: Preset = { ...PRESET, id: "rift-mark", title: "裂痕纹章" };
+
+  /** 世界线条目构造器（只写用例关心的字段） */
+  function world(over: Partial<WorldEntry> & { worldId: string }): WorldEntry {
+    return {
+      preset: "campus-summer",
+      title: "盛夏偏差值",
+      chapterNo: 1,
+      lastPlayed: NOW - 60_000,
+      note: "",
+      forkedFrom: null,
+      exists: true,
+      ...over,
+    };
+  }
+
+  /** GET /api/worlds 的清单（可被单个用例覆盖） */
+  let worldsResp: WorldEntry[];
+  /** POST /prompt 收到的指令 */
+  let prompts: string[];
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    worldsResp = [];
+    prompts = [];
+    useGameStore.setState({
+      presets: [],
+      titleNotice: null,
+      screen: "title",
+      screenReturn: null,
+      selected: null,
+      worldId: null,
+      worldLabel: "",
+      engineBusy: false,
+    });
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname === "/api/presets") return jsonResponse({ presets: [PRESET, RIFT], errors: [] });
+      if (url.pathname === "/api/worlds") return jsonResponse({ worlds: worldsResp });
+      if (url.pathname === "/prompt") {
+        prompts.push((JSON.parse(String(init?.body)) as { text: string }).text);
+        return jsonResponse({ ok: true });
+      }
+      return jsonResponse({}, 404);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  it("没有世界线：不给「继续上次」入口（清单已拉到才断言，避免把「还没加载」当成没有）", async () => {
+    render(<TitleScreen />);
+    await waitFor(() => expect(screen.getByTestId("title-card-center")).toBeTruthy());
+    await waitFor(() => expect(fetchMock.mock.calls.some((c) => String(c[0]) === "/api/worlds")).toBe(true));
+    expect(screen.queryByTestId("title-continue")).toBeNull();
+  });
+
+  it("有世界线：按钮写最近游玩的那条（显示名 + 第 N 章），点击选它所属剧本、落 worldId 并发续玩指令", async () => {
+    worldsResp = [
+      world({
+        worldId: "rift-mark-2",
+        preset: "rift-mark",
+        title: "裂痕纹章",
+        label: "雨夜的岔口",
+        chapterNo: 5,
+        lastPlayed: NOW - 60_000,
+      }),
+      world({ worldId: "campus-summer-1", label: "一周目", chapterNo: 2, lastPlayed: NOW - 3 * 3_600_000 }),
+    ];
+    render(<TitleScreen />);
+    const btn = await screen.findByTestId("title-continue");
+    expect(btn.textContent).toContain("雨夜的岔口"); // 最近游玩的那条（不是清单里的第一条）
+    expect(btn.textContent).toContain("第 5 章");
+    expect(btn.textContent).not.toContain("一周目");
+    expect(btn.getAttribute("aria-label")).toBe("继续上次的世界线 雨夜的岔口");
+    expect((btn as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.click(btn);
+    const s = useGameStore.getState();
+    expect(s.selected?.id).toBe("rift-mark"); // 选的是该世界所属剧本，不是轮播中央的第一张卡
+    expect(s.worldId).toBe("rift-mark-2");
+    expect(s.chapterNo).toBe(5);
+    expect(s.screen).toBe("game"); // 直通游戏屏（免去 title → worlds → 继续 三跳）
+    await waitFor(() => expect(prompts).toEqual(["继续世界：rift-mark-2。"]));
+  });
+
+  it("旧版分叉备注不上屏：回退剧本名；剧本已移除时回退「未命名世界线」（裸 id 永不出现）", async () => {
+    worldsResp = [world({ worldId: "campus-summer-2", chapterNo: 2, note: "分叉自 campus-summer-1 @ 1-1" })];
+    render(<TitleScreen />);
+    const btn = await screen.findByTestId("title-continue");
+    expect(btn.textContent).toContain("盛夏偏差值"); // 备注是裸 id 串（isLegacyForkNote）= 没有备注，回退剧本名
+    expect(btn.textContent).not.toContain("分叉自");
+    expect(btn.textContent).not.toContain("campus-summer-2");
+    expect(btn.getAttribute("aria-label")).toBe("继续上次的世界线 盛夏偏差值");
+
+    // 该世界的剧本已从数据目录移除：显示名一路回退到「未命名世界线」，按钮禁用并说明原因
+    cleanup();
+    worldsResp = [world({ worldId: "ghost-1", preset: "ghost", title: "", note: "" })];
+    render(<TitleScreen />);
+    const gone = await screen.findByTestId("title-continue");
+    expect(gone.textContent).toContain("未命名世界线");
+    expect(gone.textContent).not.toContain("ghost-1");
+    expect((gone as HTMLButtonElement).disabled).toBe(true);
+    expect(gone.getAttribute("title")).toBe("剧本已移除");
+  });
+});
+
+describe("StoryTreeScreen：章节切换器与归档药丸（v1.8）", () => {
+  /** 两章 + 一页归档：第 2 章带进度指针（默认章），第 3 章只有末节一个节点 */
+  const TREE_MD = [
+    "# 剧情树",
+    "## 归档",
+    "- 第 1 章：教室相遇；已走：1-1 → 1-2",
+    "",
+    "## 第 2 章：雨夜来客",
+    "- 当前进度: 节点 2-2（已走 3 轮）",
+    "",
+    "### 节点 2-1（来客敲门）",
+    "- 地点: 灰雀镇旅店",
+    "- 状态: 已走过",
+    "",
+    "### 节点 2-2（门外的雨声）",
+    "- 地点: 灰雀镇旅店",
+    "- 梗概: 来客淋着雨递上一封信",
+    "- 状态: 已走过",
+    "",
+    "## 第 3 章：雨夜之后",
+    "",
+    "### 节点 3-1（天亮了）",
+    "- 地点: 旅店门口",
+    "- 梗概: 雨停了，街上没人",
+    "- 状态: 可达",
+  ].join("\n");
+
+  /** 会让**章号重号**的树：`## 第 四 章` 的标题是中文数字（chapterNoOf 读不出数字），
+      章号只能取自节点 id 前缀 3-9 → 与前面的「第 3 章」同号。没有复合键时两颗药丸会撞成
+      同一个 tree-chapter-3，第二颗永远点不开 */
+  const DUP_MD = [
+    TREE_MD,
+    "",
+    "## 第 四 章：末尾的灯",
+    "",
+    "### 节点 3-9（末尾的灯）",
+    "- 地点: 旅店走廊",
+    "- 状态: 可达",
+  ].join("\n");
+
+  /** 屏内重取（刷新/编辑完成）时返回的树文；用例可换成重号树 */
+  let treeMd = "";
+
+  beforeEach(() => {
+    treeMd = TREE_MD;
+    useGameStore.setState({
+      worldId: "campus-summer-1",
+      worldLabel: "campus-summer-1",
+      screen: "tree",
+      screenReturn: "game",
+      treeStamp: 0,
+      treeNotice: null,
+      treeFocus: null,
+      forkResult: null,
+      engineBusy: false,
+      pendingTreeMessage: null,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/api/tree") return jsonResponse({ worldId: "campus-summer-1", markdown: treeMd });
+        if (url.pathname === "/api/history") return jsonResponse({ worldId: "campus-summer-1", snapshots: [] });
+        return jsonResponse({}, 404);
+      }),
+    );
+  });
+
+  it("每个解析出的章一颗药丸（归档不算章）；进度章标「当前」；点另一章重绘那一章、旧章节点卸载", async () => {
+    render(<StoryTreeScreen />);
+    await waitFor(() => expect(screen.getByTestId("tree-canvas")).toBeTruthy());
+
+    // 标题里的世界名：worldLabel 就是裸 worldId 时不上屏（显示层兜底），有真名字才写出来
+    expect(screen.getByText("剧情图 · 本世界线")).toBeTruthy();
+    act(() => useGameStore.setState({ worldLabel: "雨夜的岔口" }));
+    expect(screen.getByText("剧情图 · 雨夜的岔口")).toBeTruthy();
+    act(() => useGameStore.setState({ worldLabel: "campus-summer-1" }));
+
+    const switcher = screen.getByTestId("tree-chapters");
+    expect(within(switcher).getAllByRole("button")).toHaveLength(2); // 归档不是章：不进切换器
+    // testid 用「章号-下标」复合键（章号会重号，见下面那段）：第 2 章在 0 位、第 3 章在 1 位
+    const ch2 = screen.getByTestId("tree-chapter-2-0");
+    const ch3 = screen.getByTestId("tree-chapter-3-1");
+    expect(ch2.textContent).toContain("第 2 章 · 雨夜来客");
+    expect(ch3.textContent).toContain("第 3 章 · 雨夜之后");
+    expect(ch2.getAttribute("aria-pressed")).toBe("true"); // 默认画进度指针所在的那一章
+    expect(within(ch2).getByText("当前")).toBeTruthy();
+    expect(ch3.getAttribute("aria-pressed")).toBe("false");
+    expect(within(ch3).queryByText("当前")).toBeNull();
+
+    expect(screen.getByTestId("tree-node-2-1")).toBeTruthy();
+    expect(screen.queryByTestId("tree-node-3-1")).toBeNull();
+
+    fireEvent.click(ch3);
+    expect(screen.getByTestId("tree-node-3-1")).toBeTruthy(); // 换章真的重绘了
+    expect(screen.queryByTestId("tree-node-2-1")).toBeNull(); // 旧章节点整块卸载
+    expect(screen.getByTestId("tree-chapter-3-1").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("tree-chapter-2-0").getAttribute("aria-pressed")).toBe("false");
+    expect(within(screen.getByTestId("tree-chapter-2-0")).getByText("当前")).toBeTruthy(); // 进度指针仍在第 2 章
+
+    // 章号重号（番外章的首个节点 id 前缀同为 3）：复合键保证 testid 与选中态逐项唯一——
+    // 只按章号认的话这棵树会给两颗同名药丸，点第二颗会落回第一颗（选不中，画布也不换）
+    treeMd = DUP_MD;
+    act(() => useGameStore.getState().refreshTree());
+    await waitFor(() => expect(screen.getByTestId("tree-chapter-3-2")).toBeTruthy());
+    const pills = within(screen.getByTestId("tree-chapters"));
+    expect(pills.getAllByRole("button")).toHaveLength(3);
+    expect(pills.getByTestId("tree-chapter-3-1").textContent).toContain("第 3 章 · 雨夜之后");
+    expect(pills.getByTestId("tree-chapter-3-2").textContent).toContain("第 3 章 · 末尾的灯");
+    expect(pills.getByTestId("tree-chapter-3-1").getAttribute("aria-pressed")).toBe("true"); // 键还在：选中不漂
+
+    fireEvent.click(pills.getByTestId("tree-chapter-3-2"));
+    expect(screen.getByTestId("tree-chapter-3-2").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("tree-chapter-3-1").getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByTestId("tree-node-3-9")).toBeTruthy(); // 画的是后一颗药丸那一章
+    expect(screen.queryByTestId("tree-node-3-1")).toBeNull();
+  });
+
+  it("归档药丸不是死链：点它明说「只剩目录信息」并就地高亮，再点收起；不冒充能开那一章", async () => {
+    render(<StoryTreeScreen />);
+    await waitFor(() => expect(screen.getByTestId("tree-canvas")).toBeTruthy());
+
+    const pill = screen.getByTestId("tree-archive-0");
+    expect(pill.textContent).toContain("第 1 章");
+    expect(pill.getAttribute("aria-pressed")).toBe("false");
+    expect(screen.queryByTestId("tree-archive-notice")).toBeNull();
+
+    fireEvent.click(pill);
+    expect(screen.getByTestId("tree-archive-notice").textContent).toBe("这一章已归档，只保留了目录信息");
+    expect(screen.getByTestId("tree-archive-0").getAttribute("aria-pressed")).toBe("true");
+    // 归档只有目录信息（节点数据不在文件里）：画布照旧停在当前进度章，不会切到一个空章
+    expect(screen.getByTestId("tree-chapter-2-0").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("tree-node-2-1")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("tree-archive-0"));
+    expect(screen.queryByTestId("tree-archive-notice")).toBeNull(); // 再点收起
+  });
+});
+
+describe("WorldsScreen：家谱画布缩放与渲染宽度上界（v1.8）", () => {
+  const NOW = Date.now();
+  /** 与 WorldsScreen 传给 layoutGenealogy 的节点几何同值（上界按节点宽换算） */
+  const GEN_NODE_W = 210;
+  const GEN_NODE_H = 64;
+  const GEN_MAX_NODE_PX = 270;
+  /** 家谱画布的鼠标/键盘提示（挂在画布工具条那一行） */
+  const HINT = "滚轮缩放 · 拖拽平移 · 双击复位 · 方向键走节点";
+
+  /** 世界线条目构造器（只写用例关心的字段） */
+  function world(over: Partial<WorldEntry> & { worldId: string }): WorldEntry {
+    return {
+      preset: "campus-summer",
+      title: "盛夏偏差值",
+      chapterNo: 1,
+      lastPlayed: NOW - 60_000,
+      note: "",
+      forkedFrom: null,
+      exists: true,
+      ...over,
+    };
+  }
+
+  /** GET /api/worlds 的清单（可被单个用例覆盖） */
+  let worldsResp: WorldEntry[];
+
+  beforeEach(() => {
+    worldsResp = [];
+    useGameStore.setState({
+      selected: PRESET,
+      screen: "worlds",
+      screenReturn: null,
+      engineBusy: false,
+      worldId: null,
+      worldBusy: false,
+      worldNotice: null,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/api/worlds") return jsonResponse({ worlds: worldsResp });
+        return jsonResponse({}, 404);
+      }),
+    );
+  });
+
+  it("单节点森林：放大 125%（viewBox 缩小）、适应与双击回 100%；渲染宽度按 layout.width×(270/210) 封上界", async () => {
+    worldsResp = [world({ worldId: "w1", label: "一周目" })];
+    render(<WorldsScreen />);
+    await waitFor(() => expect(screen.getByTestId("worlds-view-genealogy")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("worlds-view-genealogy"));
+
+    const canvas = screen.getByTestId("genealogy-canvas");
+    const fit = canvas.getAttribute("viewBox");
+    expect(screen.getByTestId("genealogy-node-w1")).toBeTruthy();
+    expect(screen.getByTestId("genealogy-zoom-level").textContent).toBe("100%");
+
+    // 渲染宽度上界 = Math.round(layout.width × 270/210)：单节点布局宽 258 → 332（小森林不再被撑到 ~490px/节点）
+    const layout = layoutGenealogy(worldsResp, { nodeW: GEN_NODE_W, nodeH: GEN_NODE_H });
+    expect(layout.nodes).toHaveLength(1);
+    expect(layout.width).toBe(258);
+    const expectedCap = Math.round(layout.width * (GEN_MAX_NODE_PX / GEN_NODE_W));
+    expect(expectedCap).toBe(332);
+    expect(screen.getByTestId("genealogy-canvas-cap").style.maxWidth).toBe(`${expectedCap}px`);
+
+    fireEvent.click(screen.getByTestId("genealogy-zoom-in"));
+    expect(screen.getByTestId("genealogy-zoom-level").textContent).toBe("125%");
+    expect(canvas.getAttribute("viewBox")).not.toBe(fit);
+    expect(box(canvas.getAttribute("viewBox"))[2]).toBeLessThan(box(fit)[2]); // 放大 = 视野变小
+
+    fireEvent.click(screen.getByTestId("genealogy-zoom-fit"));
+    expect(screen.getByTestId("genealogy-zoom-level").textContent).toBe("100%");
+    expect(canvas.getAttribute("viewBox")).toBe(fit); // 适应态 viewBox 逐字回到初始
+
+    fireEvent.click(screen.getByTestId("genealogy-zoom-in"));
+    expect(canvas.getAttribute("viewBox")).not.toBe(fit);
+    fireEvent.doubleClick(canvas);
+    expect(canvas.getAttribute("viewBox")).toBe(fit); // 双击画布复位
+    expect(screen.getByTestId("genealogy-zoom-level").textContent).toBe("100%");
+  });
+
+  it("键盘 + / 0 与按钮同一条路：缩放不打扰节点焦点与选中；操作提示挂在画布工具条（家谱视图无页脚）", async () => {
+    worldsResp = [
+      world({ worldId: "w3", label: "三周目", forkedFrom: { worldId: "w2", nodeId: "3-1" }, lastPlayed: NOW - 60_000 }),
+      world({ worldId: "w2", label: "二周目", forkedFrom: { worldId: "w1", nodeId: "2-2" }, lastPlayed: NOW - 3_600_000 }),
+      world({ worldId: "w1", label: "一周目", lastPlayed: NOW - 2 * 86_400_000 }),
+    ];
+    render(<WorldsScreen />);
+    await waitFor(() => expect(screen.getByTestId("worlds-view-genealogy")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("worlds-view-genealogy"));
+
+    const canvas = screen.getByTestId("genealogy-canvas");
+    const fit = canvas.getAttribute("viewBox");
+
+    // 选中一个节点（走位键的既有路径）：详情条出现、DOM 焦点也在该节点上
+    fireEvent.keyDown(screen.getByTestId("genealogy-node-w3"), { key: "ArrowUp" });
+    await waitFor(() => expect(within(screen.getByTestId("genealogy-detail")).getByText("二周目")).toBeTruthy());
+    const focused = screen.getByTestId("genealogy-node-w2");
+    expect(document.activeElement).toBe(focused);
+
+    fireEvent.keyDown(focused, { key: "+" }); // 节点没消费的键冒泡到画布容器
+    expect(screen.getByTestId("genealogy-zoom-level").textContent).toBe("125%");
+    expect(canvas.getAttribute("viewBox")).not.toBe(fit);
+    expect(document.activeElement).toBe(focused); // 缩放没有把焦点搬走
+    expect(within(screen.getByTestId("genealogy-detail")).getByText("二周目")).toBeTruthy(); // 选中也没被清掉
+
+    fireEvent.keyDown(focused, { key: "0" });
+    expect(screen.getByTestId("genealogy-zoom-level").textContent).toBe("100%");
+    expect(canvas.getAttribute("viewBox")).toBe(fit);
+
+    // 提示行住在画布工具条里（画布之上）：家谱视图整屏不铺页脚，所以它不可能挂在页脚
+    const hint = screen.getByText(HINT);
+    expect(screen.getByTestId("genealogy-canvas-wrap").contains(hint)).toBe(true);
+    expect(hint.compareDocumentPosition(screen.getByTestId("genealogy-canvas-cap")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByText("↑ ↓ 选择 · Enter 继续")).toBeNull(); // 家谱视图没有页脚那一行
+
+    // 对照：列表视图的页脚是另一处，且那里的提示与本提示各行其是
+    fireEvent.click(screen.getByTestId("worlds-view-list"));
+    await waitFor(() => expect(screen.getByText("↑ ↓ 选择 · Enter 继续")).toBeTruthy());
+    expect(screen.queryByText(HINT)).toBeNull();
   });
 });

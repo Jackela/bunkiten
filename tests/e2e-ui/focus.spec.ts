@@ -90,9 +90,12 @@ test("game 屏 Tab：首个焦点是命令轨「设置」，按钮出 :focus-vis
   await openWorlds(page);
   await continueWorld(page);
 
-  // 就绪时 FreeInput 自动聚焦：点一下不可聚焦的状态条把焦点还给 body（与 keyboard.spec 同一手法），
-  // 再 Tab——命令轨「设置」是 game 屏 DOM 里第一个可聚焦元素
-  await page.getByTestId("status").click();
+  // 就绪时 FreeInput 自动聚焦：点一下画面角落（不可聚焦的常驻底图）把焦点还给 body，再 Tab——
+  // 命令轨「设置」是 game 屏 DOM 里第一个可聚焦元素。v1.7 就绪态的状态簇走 sr-only，它已收不到
+  // 指针事件（见 TopBar 文件头），点它会一直超时；与 keyboard.spec 同一手法。
+  // 走 mouse.click 发原始指针事件而不是 locator.click：全屏都是 fixed 定位，<body> 自身没有布局盒，
+  // 后者会卡在 actionability 检查（element is not visible）超时
+  await page.mouse.click(4, 4);
   await page.keyboard.press("Tab");
   await expectFocusRing(page.getByTestId("settings"));
 });

@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { RefreshCw, X } from "lucide-react";
 import { assetFileUrl, fetchAssets, type AssetEntry } from "../lib/acp";
 import { useGameStore, type RegenJob } from "../store/game";
 import { ScreenShell } from "./ScreenShell";
+import { ShellPage } from "./ShellPage";
 
 /** 卡片显示名：差分拆开为「薇拉 · 微笑」，基础/背景/封面原样 */
 function assetLabel(a: AssetEntry): string {
@@ -26,15 +27,30 @@ function assetTestId(a: AssetEntry): string {
   return `asset-card-${a.type === "立绘" && a.variant ? `${a.name}-${a.variant}` : a.name}`;
 }
 
-/** 选择模式下 checkbox 的 id（label htmlFor 指向它，整张卡都是点击热区） */
+/** 管理模式下 checkbox 的 id（label htmlFor 指向它，整张卡都是点击热区） */
 function pickId(a: AssetEntry): string {
   return `asset-pick-${assetTestId(a)}`;
 }
 
 /**
+ * 标题带（v1.8）：组标题与角色名原先直接压在游戏底图上——亮底图上那点灰字基本读不出来。
+ * 现在每个标题行都包一层 .shell-panel 带（面板底色 + 毛玻璃 + 发丝描边，见 global.css），
+ * 带内文字的对比度由面板基线保证，与底图亮暗无关。
+ * variant="group" 组标题（金、宽字距、h3）；variant="sub" 角色名这类次级标题（text-meta ink-body）。
+ */
+function HeadingBand({ variant, children }: { variant: "group" | "sub"; children: ReactNode }) {
+  const text = variant === "group" ? "text-ui tracking-[.35em] text-gold/85" : "text-meta tracking-[.2em] text-ink-body";
+  return (
+    <div className="shell-panel rounded-xl px-3 py-2">
+      {variant === "group" ? <h3 className={text}>{children}</h3> : <p className={text}>{children}</p>}
+    </div>
+  );
+}
+
+/**
  * 一张素材卡。画廊两种模式共用同一份外观，只有外层容器不同：
- * - 浏览模式：整卡是一个 button，点击开大图预览；
- * - 选择模式：整卡是一个 label（htmlFor 指到左上角 checkbox），点卡片任意处即勾选，不误开预览。
+ * - 浏览模式：整卡是一个 button，点击开大图预览（画廊的默认语义：只看不改）；
+ * - 管理模式：整卡是一个 label（htmlFor 指到左上角 checkbox），点卡片任意处即勾选，不误开预览。
  */
 function AssetCard({
   a,
@@ -61,13 +77,14 @@ function AssetCard({
           loading="lazy"
           className="absolute inset-0 h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
         />
+        {/* 角标标的是异常不是常态：「在用」是多数（标了等于没标），只有未使用的项才配一枚 */}
+        {!a.inUse && (
+          <span className="absolute right-1.5 top-1.5 rounded-sm border border-white/20 bg-black/45 px-1.5 py-0.5 text-micro text-ink-hint">
+            未使用
+          </span>
+        )}
       </div>
-      {a.inUse && (
-        <span className="absolute right-1.5 top-1.5 rounded-sm bg-[rgba(10,12,18,.75)] px-1.5 py-0.5 text-[10px] tracking-[.15em] text-gold">
-          在用
-        </span>
-      )}
-      <div className="truncate px-2 py-1.5 text-[12px] text-ink-body">{label}</div>
+      <div className="truncate px-2 py-1.5 text-meta text-ink-body">{label}</div>
     </>
   );
 
@@ -106,7 +123,12 @@ function AssetCard({
   );
 }
 
-/** 画廊：全资产分组网格（立绘按角色分组、背景、封面）+ 单项/批量重绘 + 批量删除 */
+/**
+ * 画廊：全资产分组网格（立绘按角色分组、背景、封面）+ 单项/批量重绘 + 批量删除。
+ * v1.8 版式：外框换成 ShellPage 的 84rem 满幅框架（眉标=当前剧本、标题=画 廊、页脚=操作提示），
+ * 栅格按屏宽铺开（立绘 6 / 背景 3 / 封面 4 列）而不是挤在中间一条窄栏；
+ * 组标题与角色名包进标题带；角标只标异常（未使用）；重绘是作者工具，在预览模态里退为次级按钮。
+ */
 export default function AssetsScreen() {
   const closeOverlay = useGameStore((s) => s.closeOverlay);
   const startRegen = useGameStore((s) => s.startRegen);
@@ -127,10 +149,12 @@ export default function AssetsScreen() {
   const setAssetsPreview = useGameStore((s) => s.setAssetsPreview);
   // 画廊按剧本过滤（v1.5.1 资产随故事走）：清单与重绘都作用于当前剧本
   const preset = useGameStore((s) => s.selected?.id ?? "");
+  /** 眉标用的剧本标题（未选剧本时给一句状态，别留空行） */
+  const presetTitle = useGameStore((s) => s.selected?.title);
 
   const [assets, setAssets] = useState<AssetEntry[] | null>(null);
   const [error, setError] = useState("");
-  /** 选择模式开关（批量操作的入口） */
+  /** 管理素材模式开关（批量操作的入口；浏览模式只有预览） */
   const [selectMode, setSelectMode] = useState(false);
   /** 勾选的素材（有序数组：按落盘路径记，批量动作按勾选顺序执行，改名/重绘都不影响） */
   const [picked, setPicked] = useState<string[]>([]);
@@ -220,7 +244,7 @@ export default function AssetsScreen() {
   const selectedRegenerating =
     selectedTarget !== null && regenPending === `${selectedTarget.type}|${selectedTarget.matchName}`;
 
-  /** 退出选择模式：勾选与确认态一起收掉（换模式不带走上一批的记账） */
+  /** 退出管理素材模式：勾选与确认态一起收掉（换模式不带走上一批的记账） */
   const exitSelect = () => {
     setSelectMode(false);
     setPicked([]);
@@ -257,49 +281,47 @@ export default function AssetsScreen() {
   });
 
   return (
-    <ScreenShell className="overflow-y-auto bg-bg/70">
-      <div className="mx-auto w-full max-w-4xl px-6 py-10">
-        <header className="flex items-center">
-          <h2 className="text-xl tracking-[.6em] [text-indent:.6em]">画 廊</h2>
-          <button
-            type="button"
-            data-testid="assets-select-toggle"
-            aria-pressed={selectMode}
-            onClick={() => (selectMode ? exitSelect() : setSelectMode(true))}
-            className={`ml-auto rounded-md border px-3 py-1.5 text-[12px] tracking-[.2em] transition-colors ${
-              selectMode
-                ? "border-gold/40 bg-gold/15 text-gold"
-                : "border-white/10 text-ink-hint hover:border-gold/40 hover:text-ink"
-            }`}
-          >
-            选择模式
-          </button>
-          <button
-            type="button"
-            data-testid="assets-back"
-            onClick={closeOverlay}
-            className="ml-2 rounded-md border border-white/10 px-3 py-1.5 text-[12px] tracking-[.2em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
-          >
-            返回
-          </button>
-        </header>
-        <p className="mt-2 text-[11px] tracking-[.2em] text-ink-hint">
-          点击素材可预览大图并重新生成；选择模式下可批量重绘与删除
-        </p>
-
-        {/* 批量工具栏：只在选择模式出现（全选/清空/重绘选中/删除选中/退出） */}
+    <ScreenShell className="overflow-y-auto shell-backdrop">
+      <ShellPage
+        eyebrow={presetTitle ?? "未选择剧本"}
+        title="画 廊"
+        actions={
+          <>
+            <button
+              type="button"
+              data-testid="assets-select-toggle"
+              aria-pressed={selectMode}
+              onClick={() => (selectMode ? exitSelect() : setSelectMode(true))}
+              className={`rounded-md border px-3.5 py-1.5 text-ui tracking-[.2em] transition-colors ${
+                selectMode
+                  ? "border-gold/40 bg-gold/15 text-gold"
+                  : "border-white/10 text-ink-hint hover:border-gold/40 hover:text-ink"
+              }`}
+            >
+              管理素材
+            </button>
+            <button
+              type="button"
+              data-testid="assets-back"
+              onClick={closeOverlay}
+              className="rounded-md border border-white/10 px-3.5 py-1.5 text-ui tracking-[.2em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
+            >
+              返回
+            </button>
+          </>
+        }
+        footer={<span className="tracking-[.08em]">点击素材查看大图；在「管理素材」里可以批量重绘或清理</span>}
+      >
+        {/* 批量工具栏：只在管理素材模式出现（全选/清空/重绘选中/删除选中/退出） */}
         {selectMode && (
-          <div
-            data-testid="assets-toolbar"
-            className="mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-white/10 bg-[rgba(10,12,18,.5)] px-3 py-2 backdrop-blur-md"
-          >
-            <span className="text-[12px] tracking-[.12em] text-ink-hint">已选 {picked.length}</span>
+          <div data-testid="assets-toolbar" className="shell-panel flex flex-wrap items-center gap-2 rounded-xl px-3 py-2">
+            <span className="text-ui tracking-[.12em] text-ink-hint">已选 {picked.length}</span>
             <button
               type="button"
               data-testid="assets-select-all"
               disabled={(assets ?? []).length === 0}
               onClick={() => setPicked((assets ?? []).map((a) => a.file))}
-              className="rounded-md border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint"
+              className="rounded-md border border-white/10 px-3 py-1.5 text-ui tracking-[.1em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint"
             >
               全选
             </button>
@@ -308,7 +330,7 @@ export default function AssetsScreen() {
               data-testid="assets-select-none"
               disabled={picked.length === 0}
               onClick={() => setPicked([])}
-              className="rounded-md border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint"
+              className="rounded-md border border-white/10 px-3 py-1.5 text-ui tracking-[.1em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint"
             >
               清空
             </button>
@@ -317,7 +339,7 @@ export default function AssetsScreen() {
               data-testid="assets-regen-selected"
               disabled={regenJobs.length === 0 || selectedBusy}
               onClick={regenPicked}
-              className="flex items-center gap-1.5 rounded-md border border-gold/35 bg-gold/15 px-3.5 py-1.5 text-[12.5px] tracking-[.1em] text-gold transition-colors hover:bg-gold/30 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink-faint"
+              className="flex items-center gap-1.5 rounded-md border border-gold/35 bg-gold/15 px-3.5 py-1.5 text-ui tracking-[.1em] text-gold transition-colors hover:bg-gold/30 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink-faint"
             >
               <RefreshCw size={12} /> 重绘选中({regenJobs.length})
             </button>
@@ -329,7 +351,7 @@ export default function AssetsScreen() {
                   data-testid="assets-delete-confirm"
                   disabled={assetsBusy || deletable.length === 0}
                   onClick={removePicked}
-                  className="rounded-md border border-red-400/40 bg-red-500/15 px-3.5 py-1.5 text-[12.5px] tracking-[.1em] text-red-300 transition-colors hover:bg-red-500/25 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink-faint"
+                  className="rounded-md border border-red-400/40 bg-red-500/15 px-3.5 py-1.5 text-ui tracking-[.1em] text-red-300 transition-colors hover:bg-red-500/25 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink-faint"
                 >
                   确认删除({deletable.length})
                 </button>
@@ -338,7 +360,7 @@ export default function AssetsScreen() {
                   data-testid="assets-delete-cancel"
                   disabled={assetsBusy}
                   onClick={() => setConfirmDelete(false)}
-                  className="rounded-md border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.1em] text-ink-hint transition-colors hover:text-ink"
+                  className="rounded-md border border-white/10 px-3 py-1.5 text-ui tracking-[.1em] text-ink-hint transition-colors hover:text-ink"
                 >
                   取消
                 </button>
@@ -349,19 +371,19 @@ export default function AssetsScreen() {
                 data-testid="assets-delete-selected"
                 disabled={deletable.length === 0 || assetsBusy}
                 onClick={() => setConfirmDelete(true)}
-                className="rounded-md border border-white/10 px-3.5 py-1.5 text-[12.5px] tracking-[.1em] text-ink-hint transition-colors hover:border-red-400/40 hover:text-red-300 disabled:cursor-not-allowed disabled:text-ink-faint"
+                className="rounded-md border border-white/10 px-3.5 py-1.5 text-ui tracking-[.1em] text-ink-hint transition-colors hover:border-red-400/40 hover:text-red-300 disabled:cursor-not-allowed disabled:text-ink-faint"
               >
                 删除选中({deletable.length})
               </button>
             )}
 
-            {coverPicked > 0 && <span className="text-[11px] text-ink-hint">封面不参与删除（服务端只受理 assets 目录下的图）</span>}
+            {coverPicked > 0 && <span className="text-meta text-ink-hint">封面不参与批量删除</span>}
 
             <button
               type="button"
               data-testid="assets-exit-select"
               onClick={exitSelect}
-              className="ml-auto rounded-md border border-white/10 px-3 py-1.5 text-[12.5px] tracking-[.2em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
+              className="ml-auto rounded-md border border-white/10 px-3 py-1.5 text-ui tracking-[.2em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
             >
               退出选择
             </button>
@@ -372,17 +394,17 @@ export default function AssetsScreen() {
         {regenActive && regenTotal > 0 && (
           <p
             data-testid="assets-regen-progress"
-            className="mt-3 rounded-xl border border-gold/25 bg-gold/10 px-4 py-2 text-[12.5px] tracking-[.05em] text-gold/90"
+            className="mt-3 rounded-xl border border-gold/25 bg-gold/10 px-4 py-2 text-ui tracking-[.05em] text-gold/90"
           >
             重绘中 {Math.min(regenDone + 1, regenTotal)}/{regenTotal}
-            {engineBusy ? "（等本轮引擎回复）" : ""}
+            {engineBusy ? "（等待本轮完成）" : ""}
           </p>
         )}
         {regenNotice && (
           <p
             data-testid="assets-regen-notice"
             data-kind={regenNotice.kind}
-            className={`mt-3 rounded-xl border px-4 py-2 text-[12.5px] leading-relaxed ${
+            className={`mt-3 rounded-xl border px-4 py-2 text-ui leading-relaxed ${
               regenNotice.kind === "error"
                 ? "border-red-400/25 bg-[rgba(10,12,18,.5)] text-red-400"
                 : "border-gold/25 bg-gold/10 text-gold/90"
@@ -392,7 +414,10 @@ export default function AssetsScreen() {
           </p>
         )}
         {assetsBusy && (
-          <p data-testid="assets-busy" className="mt-3 animate-pulse text-[12.5px] tracking-[.1em] text-ink-hint">
+          <p
+            data-testid="assets-busy"
+            className="shell-panel mt-3 animate-pulse rounded-xl px-4 py-2 text-ui tracking-[.1em] text-ink-hint"
+          >
             删除中…
           </p>
         )}
@@ -400,7 +425,7 @@ export default function AssetsScreen() {
           <p
             data-testid="assets-notice"
             data-kind={assetsNotice.kind}
-            className={`mt-3 rounded-xl border px-4 py-2 text-[12.5px] leading-relaxed ${
+            className={`mt-3 rounded-xl border px-4 py-2 text-ui leading-relaxed ${
               assetsNotice.kind === "error"
                 ? "border-red-400/25 bg-[rgba(10,12,18,.5)] text-red-400"
                 : "border-gold/25 bg-gold/10 text-gold/90"
@@ -411,26 +436,33 @@ export default function AssetsScreen() {
         )}
 
         {error && (
-          <p data-testid="assets-error" className="mt-3 text-sm text-red-400">
+          <p
+            data-testid="assets-error"
+            className="mt-3 rounded-xl border border-red-400/25 bg-scrim px-4 py-2 text-ui text-red-400 backdrop-blur-md"
+          >
             素材加载失败：{error}
           </p>
         )}
         {!preset && (
-          <p data-testid="assets-nopreset" className="mt-6 text-sm text-ink-hint">
-            先在剧本库选一个剧本，再看它的素材
+          <p data-testid="assets-nopreset" className="shell-panel mt-6 rounded-xl px-4 py-2 text-ui text-ink-hint">
+            先选择一个剧本，再看它的素材
           </p>
         )}
-        {preset && !assets && !error && <p className="mt-6 animate-pulse text-sm text-ink-hint">清点素材…</p>}
+        {preset && !assets && !error && (
+          <p className="shell-panel mt-6 animate-pulse rounded-xl px-4 py-2 text-ui text-ink-hint">清点素材…</p>
+        )}
 
-        {assets && assets.length === 0 && <p className="mt-6 text-sm text-ink-hint">这个剧本还没有已生成的素材</p>}
+        {assets && assets.length === 0 && (
+          <p className="shell-panel mt-6 rounded-xl px-4 py-2 text-ui text-ink-hint">这个剧本还没有已生成的素材</p>
+        )}
 
         {portraitGroups.length > 0 && (
           <section className="mt-8">
-            <h3 className="text-[13px] tracking-[.35em] text-gold/80">立 绘</h3>
+            <HeadingBand variant="group">立 绘</HeadingBand>
             {portraitGroups.map(([who, list]) => (
               <div key={who} className="mt-4">
-                <p className="mb-2 text-[12px] tracking-[.2em] text-ink-hint">{who}</p>
-                <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 md:grid-cols-5">
+                <HeadingBand variant="sub">{who}</HeadingBand>
+                <div className="mt-3 grid grid-cols-2 gap-4 sm:grid-cols-4 lg:grid-cols-6">
                   {list.map((a) => (
                     <AssetCard key={a.file} {...cardProps(a)} />
                   ))}
@@ -442,8 +474,8 @@ export default function AssetsScreen() {
 
         {backgrounds.length > 0 && (
           <section className="mt-8">
-            <h3 className="text-[13px] tracking-[.35em] text-gold/80">背 景</h3>
-            <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <HeadingBand variant="group">背 景</HeadingBand>
+            <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {backgrounds.map((a) => (
                 <AssetCard key={a.file} {...cardProps(a)} />
               ))}
@@ -453,15 +485,15 @@ export default function AssetsScreen() {
 
         {covers.length > 0 && (
           <section className="mt-8">
-            <h3 className="text-[13px] tracking-[.35em] text-gold/80">封 面</h3>
-            <div className="mt-4 grid grid-cols-3 gap-3 sm:grid-cols-4 md:grid-cols-5">
+            <HeadingBand variant="group">封 面</HeadingBand>
+            <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
               {covers.map((a) => (
                 <AssetCard key={a.file} {...cardProps(a)} />
               ))}
             </div>
           </section>
         )}
-      </div>
+      </ShellPage>
 
       {/* 大图预览 + 重绘（模态语义：打开时焦点落在关闭按钮，Esc 由 App 关闭链兜） */}
       <AnimatePresence>
@@ -503,20 +535,21 @@ export default function AssetsScreen() {
                   className="max-h-[62vh] w-full object-contain"
                 />
               </div>
-              <div className="flex items-end gap-3 px-1">
-                <div className="min-w-0">
-                  <p className="text-[15px] text-ink">{assetLabel(selected)}</p>
-                  <p className="mt-0.5 truncate text-[11px] text-ink-hint">{selected.file}</p>
-                </div>
+              {/* 看图与改图分开：上面是观赏信息，发丝线之下才是作者工具（重绘退为次级按钮） */}
+              <div className="px-1">
+                <p className="text-body text-ink">{assetLabel(selected)}</p>
+                <p className="mt-0.5 truncate text-meta text-ink-hint">{selected.file}</p>
+              </div>
+              <div className="flex justify-end border-t border-white/[.06] px-1 pt-3">
                 <button
                   type="button"
                   data-testid="assets-preview-regen"
                   disabled={!selectedTarget || selectedBusy}
                   onClick={() => selectedTarget && startRegen(selectedTarget.type, selectedTarget.key, selectedTarget.matchName)}
-                  className={`ml-auto flex items-center gap-1.5 rounded-lg border px-4 py-2 text-[13px] tracking-[.1em] transition-colors ${
+                  className={`flex items-center gap-1.5 rounded-lg border px-4 py-2 text-ui tracking-[.1em] transition-colors ${
                     !selectedTarget || selectedBusy
                       ? "cursor-not-allowed border-white/10 text-ink-hint"
-                      : "border-gold/35 bg-gold/15 text-gold hover:bg-gold/30"
+                      : "border-white/15 text-ink-body hover:border-gold/40"
                   }`}
                 >
                   {selectedRegenerating ? (

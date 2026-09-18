@@ -27,15 +27,15 @@ function viewIsEmpty(v: StateView | null): boolean {
 
 /** 小节标题：与画廊/剧情图详情同款的字距小标 */
 function SectionTitle({ children }: { children: React.ReactNode }) {
-  return <h3 className="mt-5 mb-2 text-[11px] tracking-[.25em] text-ink-hint first:mt-0">{children}</h3>;
+  return <h3 className="mt-5 mb-2 text-meta tracking-[.25em] text-ink-hint first:mt-0">{children}</h3>;
 }
 
-/** 键值两列：键淡、值亮（主角卡与导演手记共用；引擎可自由加字段，按出现顺序铺） */
+/** 键值两列：键淡、值亮（主角卡与幕后手记共用；引擎可自由加字段，按出现顺序铺） */
 function KeyValueRows({ entries }: { entries: [string, string][] }) {
   return (
     <dl className="space-y-1.5">
       {entries.map(([k, v]) => (
-        <div key={k} className="flex gap-2 text-[13px] leading-relaxed">
+        <div key={k} className="flex gap-2 text-ui leading-relaxed">
           <dt className="w-[7.5em] flex-none text-ink-hint">{k}</dt>
           <dd className="min-w-0 flex-1 whitespace-pre-wrap text-ink-body">{v || "—"}</dd>
         </div>
@@ -48,8 +48,8 @@ function KeyValueRows({ entries }: { entries: [string, string][] }) {
 function FavorMeter({ favor }: { favor: number | null }) {
   return (
     <div className="flex items-center gap-2.5">
-      <span className="text-[11px] tracking-[.15em] text-ink-hint">好感度</span>
-      <span className="text-[15px] font-medium tabular-nums text-[color:var(--accent)]">{favor === null ? "—" : favor}</span>
+      <span className="text-meta tracking-[.15em] text-ink-hint">好感度</span>
+      <span className="text-body font-medium tabular-nums text-[color:var(--accent)]">{favor === null ? "—" : favor}</span>
       <div className="h-[3px] min-w-0 flex-1 rounded-full bg-white/10">
         {favor !== null && <div className="h-full rounded-full bg-[color:var(--accent)]" style={{ width: `${favor}%` }} />}
       </div>
@@ -74,9 +74,9 @@ function CharacterCard({ c }: { c: StateCharacter }) {
       className="rounded-lg border border-white/10 bg-white/[.03] px-3.5 py-3"
     >
       <div className="mb-2 flex items-center gap-2">
-        <h4 className="text-[14px] tracking-[.1em] text-ink">{c.name}</h4>
+        <h4 className="text-ui tracking-[.1em] text-ink">{c.name}</h4>
         {c.expression && (
-          <span data-testid={`character-expression-${c.name}`} className="rounded-sm border border-white/15 px-1.5 py-0.5 text-[10px] tracking-[.12em] text-ink-body">
+          <span data-testid={`character-expression-${c.name}`} className="rounded-sm border border-white/15 px-1.5 py-0.5 text-micro tracking-[.12em] text-ink-body">
             {c.expression}
           </span>
         )}
@@ -94,13 +94,13 @@ function CharacterCard({ c }: { c: StateCharacter }) {
             data-testid={`character-secret-${c.name}`}
             aria-expanded={secretOpen}
             onClick={() => setSecretOpen(!secretOpen)}
-            className="flex items-center gap-1 text-[11px] tracking-[.15em] text-ink-hint transition-colors hover:text-ink-body"
+            className="flex items-center gap-1 text-meta tracking-[.15em] text-ink-hint transition-colors hover:text-ink-body"
           >
             <ChevronDown size={12} className={`transition-transform duration-200 ${secretOpen ? "rotate-180" : ""}`} />
             秘密（剧透）
           </button>
           {secretOpen && (
-            <p data-testid={`character-secret-text-${c.name}`} className="mt-1.5 text-[12.5px] leading-relaxed text-ink-body">
+            <p data-testid={`character-secret-text-${c.name}`} className="mt-1.5 text-meta leading-relaxed text-ink-body">
               {c.secret}
             </p>
           )}
@@ -112,7 +112,7 @@ function CharacterCard({ c }: { c: StateCharacter }) {
 
 /**
  * 角色面板抽屉（v1.7）：右滑入，展示引擎维护的世界状态（`GET /api/state` 读 state.md）。
- * 分块：剧情状态（时间/场景/周目）、主角、角色卡（好感度/表情徽章/秘密折叠/最近互动）、导演手记、Flags/伏笔。
+ * 分块：剧情状态（时间/场景/周目）、主角、角色卡（好感度/表情徽章/秘密折叠/最近互动）、幕后手记、线索/伏笔。
  * 刷新时机在 store（打开拉一次 + turn_end 面板开着重拉）；换世界清空——这里只渲染 {@link stateView}。
  * stateView 为 null 或解析全空时显示占位说明（还没写过 state.md）。
  */
@@ -137,9 +137,9 @@ export default function CharactersDrawer() {
           exit={{ x: "105%" }}
           transition={{ duration: 0.35, ease: "easeOut" }}
           data-testid="characters-panel"
-          className="fixed inset-y-0 right-0 z-50 flex w-[min(420px,92vw)] flex-col border-l border-white/10 bg-[rgba(9,11,16,.96)]"
+          className="fixed inset-y-0 right-0 z-50 flex w-[min(420px,92vw)] flex-col border-l border-white/10 bg-panel-strong"
         >
-          <header className="flex items-center border-b border-white/10 px-4 py-3.5 text-[13px] tracking-[.2em] text-ink-hint">
+          <header className="flex items-center border-b border-white/10 px-4 py-3.5 text-meta tracking-[.2em] text-ink-hint">
             角 色 面 板
             <button
               type="button"
@@ -152,10 +152,10 @@ export default function CharactersDrawer() {
           </header>
           <div className="flex-1 overflow-y-auto px-4 py-3.5">
             {viewIsEmpty(view) ? (
-              <p data-testid="characters-empty" className="py-5 text-center text-[13px] leading-relaxed text-ink-hint">
+              <p data-testid="characters-empty" className="py-5 text-center text-meta leading-relaxed text-ink-hint">
                 还没有可展示的角色状态
                 <br />
-                开局推进几轮后，引擎会在这里维护好感度、秘密与导演手记
+                故事推进后，这里会记下好感度、秘密与幕后手记
               </p>
             ) : (
               <>
@@ -186,7 +186,7 @@ export default function CharactersDrawer() {
 
                 {view && Object.keys(view.director).length > 0 && (
                   <section data-testid="characters-director">
-                    <SectionTitle>导演手记</SectionTitle>
+                    <SectionTitle>幕后手记</SectionTitle>
                     <KeyValueRows entries={Object.entries(view.director)} />
                   </section>
                 )}
@@ -195,8 +195,8 @@ export default function CharactersDrawer() {
                   <section data-testid="characters-notes">
                     {view.flags.length > 0 && (
                       <>
-                        <SectionTitle>Flags · {view.flags.length}</SectionTitle>
-                        <ul className="space-y-1 text-[12.5px] leading-relaxed text-ink-body">
+                        <SectionTitle>线索 · {view.flags.length}</SectionTitle>
+                        <ul className="space-y-1 text-meta leading-relaxed text-ink-body">
                           {view.flags.map((f) => (
                             <li key={f.name} className="flex gap-2">
                               <span className="text-ink-hint">{f.name}</span>
@@ -208,12 +208,12 @@ export default function CharactersDrawer() {
                     )}
                     {view.foreshadowing.length > 0 && (
                       <>
-                        <SectionTitle>未回收伏笔 · {view.foreshadowing.length}</SectionTitle>
-                        <ul className="space-y-1 text-[12.5px] leading-relaxed text-ink-body">
+                        <SectionTitle>未了伏笔 · {view.foreshadowing.length}</SectionTitle>
+                        <ul className="space-y-1 text-meta leading-relaxed text-ink-body">
                           {view.foreshadowing.map((f, i) => (
                             <li key={`${i}-${f.text}`} className="flex gap-2">
                               <span className="min-w-0 flex-1">{f.text}</span>
-                              {f.turn !== null && <span className="flex-none text-[11px] text-ink-hint">第 {f.turn} 轮</span>}
+                              {f.turn !== null && <span className="flex-none text-meta text-ink-hint">第 {f.turn} 幕</span>}
                             </li>
                           ))}
                         </ul>

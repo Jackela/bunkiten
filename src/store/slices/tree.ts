@@ -1,6 +1,8 @@
 // tree slice（v1.6 拆分）：剧情图 overlay（剧情：编辑）——取树/编辑指令（含排队）、快照回退、分叉与切换世界线。
 // v1.7 起「重掷本回合」（rerollTurn）也住这里：与剧情图原地回退共享同一套「restore + 分割线 + 重同步」时序。
 // 分叉与回退都是 server 侧文件操作，不占引擎回合；只有编辑指令与回退后的续档指令走 prompt 通路。
+// v1.8：玩家可见文案去引擎口吻（「快照 #N」→「第 N 幕」、排队/忙碌走「忙碌中」、回退成功说「已备份」）；
+//       分叉不再往世界线备注里塞「分叉自 <裸 id> @ <节点>」（note 留空，血缘由徽标交代）。
 import { fetchHistory, postWorld, postWorldRestore, type WorldAction, type WorldPostResult, type WorldSnapshotMeta } from "../../lib/acp";
 import { buildResumeCommand, buildTreeEditCommand } from "../../lib/parser";
 import type { StoreContext } from "../context";
@@ -58,13 +60,13 @@ export function createTreeSlice(
         opts.notify(`${opts.failPrefix}：${r.error ?? "未知错误"}`);
         return r;
       }
-      const backup = r.backupSeq === undefined ? "" : `；回退前状态已备份为快照 #${r.backupSeq}`;
+      const backup = r.backupSeq === undefined ? "" : "；回退前的进度已备份";
       const mark: HistoryRollbackMark =
         opts.reason === "reroll" ? { kind: "rollback", seq, at: Date.now(), reason: "reroll" } : { kind: "rollback", seq, at: Date.now() };
       // treeStamp 自增 = 图屏重取树与快照索引（回退后节点状态与「最早快照」映射都会变；重掷同理会变）
       set({
         // 三态之一「重同步中」：成功/失败的后两态由 gameplay slice 在 turn_end / error 里改写
-        treeNotice: `已回退到快照 #${seq}${backup}，正在让引擎重读档…`,
+        treeNotice: `已回到第 ${seq} 幕${backup}，正在同步进度…`,
         treeStamp: get().treeStamp + 1,
         // 非破坏式分割线：旧幕一条不删，渲染层把标记之前的幕置灰——玩家侧历史与档不再各说各话
         history: [...get().history, mark],
@@ -113,7 +115,7 @@ export function createTreeSlice(
       const cmd = buildTreeEditCommand(t);
       if (get().engineBusy) {
         // 同创作屏排队模式：回合结束自动补发（见 handleEvent turn_end）
-        set({ pendingTreeMessage: cmd, treeNotice: "引擎忙，已排队，就绪后自动发送" });
+        set({ pendingTreeMessage: cmd, treeNotice: "忙碌中，就绪后自动发送" });
         return;
       }
       set({ treeAsk: true, treeNotice: null });
@@ -134,10 +136,10 @@ export function createTreeSlice(
             set({ treeNotice: `分叉失败：${r.error ?? "未知错误"}` });
             return;
           }
-          const precise = seq === undefined ? "" : `（精确到快照 #${seq}）`;
           set({
             forkResult: { worldId: r.worldId, nodeId },
-            treeNotice: `已创建世界线 ${r.worldId}（分叉自 ${s.worldId} @ ${nodeId}${precise}）· 分叉不推演，切换后从该节点续演`,
+            // 新世界线的 id 与节点号都不上屏（裸 id 只活在目录名与索引里）：血缘看徽标，位置看树本身
+            treeNotice: "已创建新的世界线 · 从这一幕继续",
             treeStamp: get().treeStamp + 1,
           });
         })
@@ -148,8 +150,8 @@ export function createTreeSlice(
       // 图屏原地回退：提示走 treeNotice（三态文案见 gameplay turn_end / error）
       return restoreAndResync(seq, {
         reason: "restore",
-        busyError: "引擎忙，等这一轮回完再回退",
-        startText: `正在回退到快照 #${seq}…`,
+        busyError: "忙碌中，等这一幕结束再回退",
+        startText: `正在回到第 ${seq} 幕…`,
         failPrefix: "回退失败",
         notify: (t) => set({ treeNotice: t }),
       });
@@ -190,9 +192,9 @@ export function createTreeSlice(
       await restoreAndResync(turns[turns.length - 2].seq, {
         reason: "reroll",
         rerollPrompt,
-        busyError: "引擎忙，等这一轮回完再重掷",
-        startText: "正在重掷本回合…",
-        failPrefix: "重掷失败",
+        busyError: "忙碌中，等这一幕结束再重演",
+        startText: "正在重演这一幕…",
+        failPrefix: "重演失败",
         notify,
       });
     },
@@ -202,7 +204,7 @@ export function createTreeSlice(
       if (!s.pendingResync || !s.resyncFailed) return;
       if (s.engineBusy) return; // 上一轮还没收尾：等它落定（失败路径会把 resyncFailed 置回）
       // 走正常 send 流程：成功由 turn_end 清徽章，失败由错误路径回到本入口；resyncing 同 restoreSnapshot 置位
-      set({ resyncFailed: false, resyncing: true, treeNotice: "正在让引擎重读档…" });
+      set({ resyncFailed: false, resyncing: true, treeNotice: "正在同步进度…" });
       get().send(buildResumeCommand(s.pendingResync.worldId));
     },
 
@@ -211,11 +213,14 @@ export function createTreeSlice(
       const f = s.forkResult;
       if (!f) return;
       if (s.engineBusy) {
-        set({ treeNotice: "引擎忙，等这一轮结束再切换" });
+        set({ treeNotice: "忙碌中，等这一幕结束再切换" });
         return;
       }
       s.closeOverlay();
-      get().resumeWorld({ worldId: f.worldId, chapterNo: s.chapterNo, note: `分叉自 ${s.worldId} @ ${f.nodeId}` });
+      // note 留空：分叉血缘由世界线屏的徽标（forkedFrom）交代，绝不把「分叉自 <裸 id> @ <节点>」写进备注。
+      // label 同样留空：新世界刚由 forkWorld 建出（索引里没有显示名），父线的显示名不是它的名字，
+      // 前端不替玩家猜——玩家在世界线屏行内改名，或此时屏上退化显示「本世界线」。
+      get().resumeWorld({ worldId: f.worldId, chapterNo: s.chapterNo, note: "", label: "" });
     },
   };
 }

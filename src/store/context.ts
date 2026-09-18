@@ -113,6 +113,7 @@ export interface StoreContext {
   advancePreload(): Promise<void>;
   onEngineError(message: string): void;
   armAutoAdvance(): void;
+  resumeAutoAdvance(): void;
   cancelAutoAdvance(): void;
 }
 
@@ -514,6 +515,16 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
     set({ autoAdvanceDeadline: Date.now() + ms });
   }
 
+  /**
+   * 玩家在面板上显式打开自动前进：先解掉本回合的「交互即取消」标记，再立刻尝试武装。
+   * 与 armAutoAdvance 的分工：那个是引擎回合收尾时的自动尝试（必须尊重 muted），
+   * 这个只由玩家的明确动作触发——点「自动」本身就是「请替我继续」，与 muted 的「别自作主张」不冲突。
+   */
+  function resumeAutoAdvance() {
+    set({ autoAdvanceMuted: false });
+    armAutoAdvance();
+  }
+
   /** 取消本次自动前进（动作在 gameplay slice 暴露） */
   function cancelAutoAdvance() {
     const s = get();
@@ -540,6 +551,7 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
     advancePreload,
     onEngineError,
     armAutoAdvance,
+    resumeAutoAdvance,
     cancelAutoAdvance,
   };
 }

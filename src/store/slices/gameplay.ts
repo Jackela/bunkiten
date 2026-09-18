@@ -42,7 +42,7 @@ function dispatchEvent<K extends AcpEvent["type"]>(
 
 export function createGameplaySlice(
   ctx: StoreContext,
-): Pick<GameStore, "send" | "sendPlayerTurn" | "toggleDrawer" | "setTypingDone" | "armAutoAdvance" | "cancelAutoAdvance" | "handleEvent"> {
+): Pick<GameStore, "send" | "sendPlayerTurn" | "toggleDrawer" | "setTypingDone" | "armAutoAdvance" | "resumeAutoAdvance" | "cancelAutoAdvance" | "handleEvent"> {
   const { set, get } = ctx;
 
   /**
@@ -158,7 +158,7 @@ export function createGameplaySlice(
                 ? {
                     pendingResync: null,
                     resyncFailed: false,
-                    treeNotice: `已回退到快照 #${s.pendingResync.seq} 并完成重同步`,
+                    treeNotice: `已回到第 ${s.pendingResync.seq} 幕，进度已同步`,
                   }
                 : {}),
             }
@@ -315,6 +315,10 @@ export function createGameplaySlice(
 
     armAutoAdvance() {
       ctx.armAutoAdvance();
+    },
+
+    resumeAutoAdvance() {
+      ctx.resumeAutoAdvance();
     },
 
     cancelAutoAdvance() {

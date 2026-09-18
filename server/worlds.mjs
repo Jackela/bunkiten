@@ -320,12 +320,10 @@ export function forkWorld(root, originId, nodeId, seq = null) {
   const dstDir = path.join(root, entry.worldId);
 
   let chapterNo = entry.chapterNo;
-  let note;
   let forkedFrom;
   if (snap) {
     writeWorldFiles(dstDir, snap.files); // 精确：快照三文件原样落地，不本地改树（引擎按 fork.md 校准）
     chapterNo = snap.chapterNo != null ? snap.chapterNo : snap.files.tree != null ? worldChapterNo(snap.files.tree) : entry.chapterNo;
-    note = `分叉自 ${originId} @ ${nodeId}（精确快照 #${snap.seq}）`;
     forkedFrom = { worldId: originId, nodeId, seq: snap.seq };
   } else {
     for (const f of WORLD_FILES) {
@@ -336,9 +334,11 @@ export function forkWorld(root, originId, nodeId, seq = null) {
     const treeText = fs.existsSync(treeFile) ? fs.readFileSync(treeFile, "utf8") : "";
     if (treeText) fs.writeFileSync(treeFile, forkTreeMarkdown(treeText, nodeId));
     chapterNo = treeText ? worldChapterNo(forkTreeMarkdown(treeText, nodeId)) : entry.chapterNo;
-    note = `分叉自 ${originId} @ ${nodeId}`;
     forkedFrom = { worldId: originId, nodeId };
   }
+  // 分叉关系由 forkedFrom（与 fork.md）完整记录，索引 note 保持空串——旧版在这里写「分叉自 <id> @ <节点>」，
+  // 而 note 会被显示层当成世界名，等于把裸 id 端到玩家眼前（v1.7.1 起交还给玩家自己命名）
+  const note = "";
   fs.writeFileSync(path.join(dstDir, "fork.md"), forkNote(originId, nodeId));
   const list = readWorldsIndex(root).map((e) =>
     e.worldId === entry.worldId ? { ...e, chapterNo, note, forkedFrom, lastPlayed: Date.now() } : e,

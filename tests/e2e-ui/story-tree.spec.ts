@@ -173,7 +173,7 @@ test("快照对比：节点详情与上一快照 diff，remove/add 行可见（w
   await expect(page.getByTestId("tree-snapshot-1-2")).toBeVisible();
   const open = page.getByTestId("snapshot-diff-open");
   await expect(open).toBeVisible();
-  await expect(open).toContainText("#1 → #2");
+  await expect(open).toContainText("第 1 幕 → 第 2 幕");
 
   // 打开面板：默认「剧情状态」tab，好感度一行被替换——remove（上一份独有）与 add（这一份新增）各一行
   await open.click();
