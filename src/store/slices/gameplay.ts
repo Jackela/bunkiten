@@ -17,7 +17,7 @@ import {
   scanMarkers,
   segStatusLabel,
 } from "../../lib/parser";
-import { nextPortraitOnExpression } from "../portrait";
+import { applyExpression, castMember, nextPortraitOnExpression } from "../portrait";
 import type { StoreContext } from "../context";
 import type { GameStore } from "../types";
 
@@ -86,10 +86,19 @@ export function createGameplaySlice(
       ctx.applyMarkers(scanMarkers(segs[event.seg]), true);
     },
 
-    /** SSE `expression`（【立绘】行）：差分表情切换；差分素材未生成（404）时由 PortraitLayer 回退基础图 */
+    /**
+     * SSE `expression`（【立绘】行）：差分表情切换；差分素材未生成（404）时由 PortraitLayer 回退基础图。
+     * 同屏多立绘：同一角色在场上就复用她的槽位（保住 baseUrl）并移到队尾成为发言者，
+     * 新角色追加、超上限从队首淘汰（见 portrait.applyExpression）。
+     */
     expression(event) {
       const s = get();
-      set({ portrait: nextPortraitOnExpression(s.portrait, event.character, event.variant, s.selected?.id ?? "") });
+      set({
+        portraits: applyExpression(
+          s.portraits,
+          nextPortraitOnExpression(castMember(s.portraits, event.character), event.character, event.variant, s.selected?.id ?? ""),
+        ),
+      });
     },
 
     /** SSE `presetAdded`（【新剧本】行）：新剧本入轮播（TitleScreen 读 store.presets），创作屏转成功态 */

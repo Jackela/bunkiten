@@ -4,7 +4,7 @@ v1.8.0 之后待办与**决策清单**（不是愿望清单）：每项写清「
 
 口径：代码引用一律到文件级（函数名/组件名可 `grep` 定位）；写「**需要先确认**」的句子是尚未核实的推断，不要当结论用；文中的数字都是可复跑的（`npm test` / `npm run doctor` / `grep`），不写会随改动漂移的用例计数。
 
-**进展（最近一轮）**：§1 的骨架（`readWorldsIndex` 宽读 + `migrateWorldsSchema` + 四条断言）与 §4 的浏览器级覆盖（e2e 19 → 24 条）已落地；§3 的 a11y 缺口（焦点陷阱、模态语义、焦点归还）已用手写共用件 `src/lib/focusTrap.ts` + `useFocusTrap.ts` 补齐，**原语选型仍待决**；§2 与 §5 的决策问题未答，相关代码未动。
+**进展（最近一轮）**：§1 的骨架（`readWorldsIndex` 宽读 + `migrateWorldsSchema` + 四条断言）、§4 的浏览器级覆盖（e2e 19 → 25 条）与 **§2 的同屏多立绘（上限 2，按 VN 通行做法：发言者高亮 + 名牌、非发言者压暗）** 已落地；§3 的 a11y 缺口（焦点陷阱、模态语义、焦点归还）已用手写共用件 `src/lib/focusTrap.ts` + `useFocusTrap.ts` 补齐，**原语选型仍待决**；§5 的 id 问题已定（维持 `<preset>-N`，理由见该节），只剩缩略图与导出包 v2 可开工。
 
 ## 1. 数据版本化与迁移 —— **最高优先 · 骨架已落地（未接线）· 需设计**
 
@@ -17,7 +17,7 @@ v1.8.0 之后待办与**决策清单**（不是愿望清单）：每项写清「
 - **谁来钉（测试面）**：状态形状现在**没有**契约门禁——`tests/contract.test.ts` 钉的是协议常量、指令字符串与用例数，不覆盖 state 与索引形状；现有守面只有 `tests/server.test.ts`（索引/迁移/导出导入组）与 `tests/integration/audio-history.test.ts`（导出导入往返）。新增 schema 契约要另开一组断言，并**同批看 `scripts/doctor.mjs`**——它的「孤儿素材」组直接读全库 `state.md` 全文做引用判定，state 形状一变它跟着变。注意加/改用例会动 `npm test` 的分组计数，README / AGENTS / ARCHITECTURE 三处声明与契约 lint ④ 组要同批更新。
 - **第一个具体动作（可开工）**：先写 `migrateWorldsSchema` 的骨架 + 三条断言（空目录 no-op / 旧裸数组升成带 schema / 已升过的幂等），**先不接启动路径**；接启动路径与改 `readWorldsIndex` 必须同一批做，否则会出现「读到一半的世界」。
 
-## 2. 多角色同屏立绘 —— **需决策（产品）**
+## 2. 多角色同屏立绘 —— **已实现（上限 2）**
 
 - **现状**：协议只按角色名**切一张**——`【立绘】<角色名>|<变体名>`（SKILL 每轮协议第 2 条，明确写「每轮至多切换 2 次」）；server `parseExpressionLine` 只广播 `expression{character, variant}`；客户端 `src/store/portrait.ts` 的 `nextPortraitOnExpression` 语义就是「当前立绘是该角色 → 只换 variant / url；否则**新建槽位**」= 全局单槽；store 里 `portrait: PortraitState | null`（`src/store/types.ts`），`src/components/game/PortraitLayer.tsx` 只渲染这一个。
 - **状态形状改动面**：`portrait` → 按角色键控的 `portraits`（外加一份**顺序**——同屏排位必须确定，Map 或数组插入序）。连带要改：`src/store/slices/gameplay.ts` 的 `expression` 分支、`resetRunState` 的清理、`GameStage.tsx` 里挂 `.portrait-reserve` 的那个 `portrait ? … : ""` 判据、`PortraitLayer` 的渲染、以及纯函数 `nextPortraitOnExpression` 的签名——它被 `tests/crafting.test.ts` / `tests/ui.test.tsx` 直接调用（改签名会动一批用例，先 `grep` 再定）。
@@ -25,7 +25,8 @@ v1.8.0 之后待办与**决策清单**（不是愿望清单）：每项写清「
 - **硬耦合（改这个必须同批改 e2e）**：`tests/e2e-ui/opening.spec.ts` 已断言「对话面板宽 > 700px」与「对话区右缘 < 立绘左缘」。`min(40vw,420px)` 与对话区 `max-w-[800px]` 是**一对**：预留一旦超过 40vw，1440 宽下可用宽度就会把面板压到 800px 以下，这两条断言直接红。
 - **退出 / 入场语义（要定）**：协议里**没有退场指令**。三个候选：① 缺省 TTL（某角色连续 N 回合没被点名就淡出）；② 协议层加语义（最贵——动 SKILL + `shared/protocol.mjs` 的 9 头 `PROTOCOL_HEADS` + 契约 lint + 一批快照）；③ 按**当前节点的 `在场` 字段**重建舞台：数据现成（`src/lib/parser.ts` 的 `parseStoryTree` 已解析出每节点 `present`），但树现在只在剧情图屏取（`fetchTree` 仅 `StoryTreeScreen` 调用，`src/lib/acp.ts`），游戏屏要新增取数。建议优先评估 ③——它把「谁在台上」交还给引擎已经在维护的那份真相，而不是让客户端猜。
 - **OPEN QUESTION（要产品/引擎回答，先别动代码）**：SKILL 导演层第 3 条「聚光灯轮换」与剧情树节点格式里的 `在场:` 字段都说明叙事里**多人同时在场**是常态，但协议与 SKILL **没有任何一处**写「两个角色同时可见」，第 2 条的「每轮至多切换 2 次」是按**换一张**的口径写的。所以先答：本作的叙事呈现是「一次一人」还是「允许两人同框」？若答案是前者，本项直接关闭，省掉全部改动。
-- **结论**：**需决策**。决策前不要动 `src/store/types.ts` 的 `portrait` 字段——那是所有世界线渲染路径的地基。
+- **结论（已实现，2026-09）**：按 VN 通行做法**允许同屏**——Ren'Py 的 sprite 系统本身就是「多立绘 + 位置/层级」，社区常态是「发言者高亮、其余压暗」（`focus=True/False` 的 dim 约定）。落地口径：**上限 2 人**（`src/store/portrait.ts` 的 `MAX_STAGE`），队尾 = 发言者（全亮 + 名牌），其余压暗（`opacity-55 saturate-[.7]`，挂在**内层**——framer 会写内联 opacity，压暗档落外层会被覆盖），第三人出场按队首淘汰（最近发言的两位留场，正好对上 SKILL 导演层的「聚光灯轮换」）。让位分两档：`.portrait-reserve`（1 人）与 `.portrait-reserve-duo`（2 人，配额 `min(44vw,520px)`）；1280×720 实测对话面板 732px（守住 >700 硬约束）、两人最左缘 765px > 面板右缘 746px，`tests/e2e-ui/duo.spec.ts` 把这两个数与亮/暗、名牌归属一起钉住。**退出语义**仍无协议信号（没有退场指令），当前靠「上限 + 队首淘汰」自管；路线图里评估过的候选 ③（按剧情树节点的 `在场` 重建舞台）**未采用**——游戏屏取树要新增取数路径，而 `在场` 可能落后于叙事，等#1 的 schema/迁移稳定后再回头看。
+- **未做（有意）**：`src/store/types.ts` 的 `portraits` 是数组而非按角色键控的 Map（同屏上限 2，数组的插入序就是位序，够用）；三星以上同屏、立绘重叠排布、非发言者的名牌都不在本次范围。
 
 ## 3. 手写交互 → headless 原语 —— **需设计（a11y 缺口已手写补齐；选型待决）**
 
@@ -52,9 +53,9 @@ v1.8.0 之后待办与**决策清单**（不是愿望清单）：每项写清「
 - **立绘差分预载**（今天只有 node 环境的 `tests/preload.test.ts`）→ 浏览器级只能断言可观测面：同一会话内第二次显示同一角色时**没有第二次 `/api/assets` 请求**。收益与稳定性一般，标**可开工但优先级最低**。
 - **真引擎冒烟（`tests/e2e/smoke.spec.ts`）的 nightly / 手动触发需要什么**（只列清单，不实现）：① 有引擎凭据的 runner（`~/.grok` 的登录态必须以 secret 注入，不能进仓库）；② 出网到 x.ai 的能力（CI 直连或自托管 runner + 代理；被墙时表现为回合 600s 超时）；③ 预算护栏（两个 test 合计约 5 个真回合、本机 6–12 分钟，spec 内已设 900s/test）；④ 失败可诊断（除 Playwright trace 外，把 `state/worlds/*/logs/NNNN.json` 也 artifact 化——日志刻意不进导出包，但它在仓库根，CI 里必须显式收）；⑤ 沙箱隔离（该 spec 会直接改仓库根的 `state/worlds/index.json` 与 `.shell-session.json`，CI 必须跑在 checkout 的副本上）。
 
-## 5. 世界线体验 —— **需决策（id）· 可开工（缩略图 / 导出包 v2）**
+## 5. 世界线体验 —— **id 维持现状（已定）· 缩略图 / 导出包 v2 可开工**
 
-- **友好世界 id（需决策）**：今天是 `createWorld` 分配 `<preset>-N`（`worlds.mjs`：base 取 preset 过非白名单字符替换后递增 N）。要动它先答一个问题：id 是**机器面**（目录名 / 导出文件名 / `继续世界：<worldId>。` 指令 / `WORLD_ID_RE` 白名单 `/^[A-Za-z0-9_-]+$/`——`grep -rn WORLD_ID_RE` 共 17 处 `.test()` 判定，分布在 routes 6 / worlds 5 / snapshots 5 / acp-server 1），而玩家面**已经有**回退链 `label → note → 剧本标题 →「未命名世界线」`（`WorldsScreen.tsx` 的 `worldDisplayName`）。所以：要「友好」的是 **id 本身**（那要放宽白名单，并回答中文/空格 id 对路径安全与引擎指令解析的影响），还是只要**默认 label**（`createWorld` 顺手写一条「盛夏偏差值 · 第一条」）与**下载文件名**（现在是 `Content-Disposition: attachment; filename="<worldId>.world.json"`，`server/routes.mjs`；中文名要走 RFC 5987 的 `filename*`）？后者的改动面小一个数量级。
+- **友好世界 id（已定：不改）**：`<preset>-N` 是**机器面**（目录名、导出文件名、`继续世界：<worldId>。` 指令、`WORLD_ID_RE` 白名单——`grep -rn WORLD_ID_RE` 共 17 处判定），而玩家面已经有回退链 `label → note → 剧本标题 →「未命名世界线」`。**决定：id 保持 `<preset>-N`，也不给新世界线自动起 label**——理由是行上已经有「显示名 + 第 N 章 + 相对时间 + 血缘徽标」四件信息，自动 label 会变成第二个命名来源、还会跟行内改名编辑器打架（玩家改了名、系统又按规则覆写，是最糟的体验）。若将来仍嫌目录名难看，改**下载文件名**（RFC 5987 的 `filename*`）比动 id 便宜一个数量级。
 - **若真要改 id 形态，blast radius 先数清（都是硬断言）**：`tests/parser.test.ts` 5 处 `campus-summer-1`、`tests/crafting.test.ts` 约 20 处（含 `继续世界：campus-summer-1。` 的逐字断言）、`tests/server.test.ts` 的 `createWorld` 组（断言「`<preset>-N` 递增 id」）、e2e 夹具用 `w1`/`w2`（`tests/integration/harness.mjs` 的 `seedWorld`，`worlds.spec.ts` 还断言重名副本 `w2-2`）。另需先定：**旧世界线 id 是否原样保留**（id 是目录名，没有重命名通道，保留是唯一省事的选择）。
 - **行缩略图（可开工）**：`/api/worlds` 的 `WorldEntry` 不带任何图（无 cover 字段），而世界线屏本来就按剧本过滤（`fetchWorlds(preset)`）——所以最小实现是复用 `coverUrl(entry.preset)`（`src/lib/acp.ts`，走 `/img` 白名单直服 `presets/<id>/cover.jpg`），**零服务端改动**。进阶版是「该世界当前场景背景」，那要新字段 + 从 `state.md` 的「场景美术」清单反查路径（**需要先确认**该清单是否总能查到路径）。行数多时每行一张图，`AssetsScreen.tsx` 已有 `loading="lazy"` 的先例，照抄即可。
 - **导出包 v2 带 `forkedFrom` + `fork.md`（可开工，也是第 1 项的第一个真实用例）**：`exportWorld` 只写 `worldId/preset/title/label/note/chapterNo/files/snapshots`，**既不带索引里的 `forkedFrom`，也不收 `fork.md`**；`importWorld` 反向固定写 `forkedFrom: null` 且不落 `fork.md`——结果是**导入回来的分叉线在家谱里变成根**（家谱只认 `forkedFrom`），正好抵消 v1.8 把血缘从 `note` 挪到 `forkedFrom` 的那次收拾。

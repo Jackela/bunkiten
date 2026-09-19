@@ -125,14 +125,23 @@ body {
 
 /* 立绘让位：≥lg 且屏上有立绘时，GameStage 的满宽对话外层右侧留出立绘宽度（立绘层 fixed 在右下、
    最多 46vw 宽，不预留就会被居中的对话区压住）。padding 加在满宽外层、内层再 mx-auto——
-   预留吃掉的是居中可用宽度，对话面板自身（上限 800px）随可用宽度收缩，不再从预留区里溢出去压住立绘；
+   预留吃掉的是居中可用宽度，对话面板自身（上限 800px）随可用宽度收缩，不再从预留区里溢出压住立绘；
    <lg 无预留（窄屏优先保证对话区可读宽度）。
-   配额 min(40vw,420px) 覆盖常见 ≥lg 视口下的立绘实宽（1280×720：58vh×0.75 ≈ 313px）。
+   两档由 GameStage 按同屏人数挂（.portrait-reserve=1 人 / .portrait-reserve-duo=2 人）：
+   - 1 人：配额 min(40vw,420px) 覆盖常见 ≥lg 视口下的立绘实宽（1280×720：58vh×0.75 ≈ 313px）。
+   - 2 人：并排两张（46vh/42vh，各 ≤250px 宽）+ 14px 间距 ≈ 489px，配额 min(44vw,520px)。
+     上限刻意用 px 而不是更大比例的 vw：并排宽度不随视口线性增长（立绘高度由 vh 定、宽度上限按人卡），
+     再宽的屏幕上多留的宽度只会白挤对话区。1280×720 实测：对话面板 732px（> 700 硬约束）、
+     同屏两人最左缘 765px > 面板右缘 746px（e2e tests/e2e-ui/duo.spec.ts 钉住这两个数）。
    刻意写在 unlayered 区（同下面的焦点环）：级联层外的规则优先于 Tailwind utilities 层，
    px-3.5 的 padding-right（utilities 层）才会被这一条覆盖。 */
 @media (min-width: 1024px) {
   .portrait-reserve {
     padding-right: min(40vw, 420px);
+  }
+
+  .portrait-reserve-duo {
+    padding-right: min(44vw, 520px);
   }
 }
 

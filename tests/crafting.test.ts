@@ -5,10 +5,14 @@
 // 与实现共享的真源只有行为规格本身（改实现不许改这里，除非契约变更）。
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  MAX_STAGE,
+  applyExpression,
+  castMember,
   fallbackPortraitUrl,
   isTypingTarget,
   nextPortraitOnExpression,
   parseWorldBundle,
+  speakerOf,
   useGameStore,
 } from "../src/store/game";
 import { DEFAULT_SETTINGS } from "../src/lib/settings";
@@ -57,6 +61,11 @@ let assets: AssetEntry[] = [];
 
 function jsonResponse(body: unknown, status = 200): Response {
   return { ok: status < 400, status, json: async () => body } as unknown as Response;
+}
+
+/** 当前发言者 = 立绘队列末位（v1.9 同屏多立绘的读法；队列为空时 undefined） */
+function speaker() {
+  return speakerOf(useGameStore.getState().portraits);
 }
 
 /** 模拟引擎跑完一个回合（可选带一段 chunk 正文） */
@@ -407,7 +416,7 @@ describe("章节制作流水线（store 公共 API 驱动）", () => {
     s.handleEvent({ type: "turn_start" });
     s.handleEvent({ type: "chunk", seg: 0, text: "【图】立绘|沈屿|images/7.jpg\n" });
     const st = useGameStore.getState();
-    expect(st.portrait?.name).toBe("沈屿");
+    expect(st.portraits.map((x) => x.name)).toEqual(["沈屿"]);
     const u = new URL(st.artReady["沈屿"] ?? "", "http://localhost");
     expect(u.pathname).toBe("/img");
     expect(u.searchParams.get("p")).toBe("images/7.jpg"); // 新生成的会话路径原样透传
@@ -482,13 +491,13 @@ describe("表情切换与创作/画廊编排（v1.3 store 公共 API 驱动）",
     const s = useGameStore.getState();
     s.handleEvent({ type: "turn_start" });
     s.handleEvent({ type: "chunk", seg: 0, text: "【图】立绘|薇拉|images/3.jpg\n" });
-    let p = useGameStore.getState().portrait!;
+    let p = speaker()!;
     expect(p.name).toBe("薇拉");
     expect(p.variant).toBe("");
     expect(p.baseUrl).toBe(p.url);
 
     useGameStore.getState().handleEvent({ type: "expression", character: "薇拉", variant: "微笑" });
-    p = useGameStore.getState().portrait!;
+    p = speaker()!;
     expect(p.variant).toBe("微笑");
     const u = new URL(p.url, "http://localhost");
     expect(u.pathname).toBe("/img");
@@ -497,7 +506,7 @@ describe("表情切换与创作/画廊编排（v1.3 store 公共 API 驱动）",
 
     // 回基础（variant 空）
     useGameStore.getState().handleEvent({ type: "expression", character: "薇拉", variant: "" });
-    const back = useGameStore.getState().portrait!;
+    const back = speaker()!;
     expect(back.url).toBe(back.baseUrl);
     expect(fallbackPortraitUrl(back)).toBe(back.baseUrl); // 回退纯函数：目标恒为基础图
   });
@@ -522,6 +531,104 @@ describe("表情切换与创作/画廊编排（v1.3 store 公共 API 驱动）",
     expect(nextPortraitOnExpression(c, "沈屿", "微笑", "").url).toBe(c.baseUrl);
   });
 
+  it("applyExpression / speakerOf / castMember 纯函数：同名原地更新并移到队尾、新角色追加、第三人淘汰队首", () => {
+    const vera = { name: "薇拉", variant: "", url: "u-vera", baseUrl: "b-vera" };
+    const shen = { name: "沈屿", variant: "", url: "u-shen", baseUrl: "b-shen" };
+
+    // 空队列起步：直接进队，末位即发言者
+    let cast = applyExpression([], vera);
+    expect(cast).toEqual([vera]);
+    expect(speakerOf(cast)).toBe(vera);
+    expect(speakerOf([])).toBeNull();
+
+    // 新角色追加到队尾
+    cast = applyExpression(cast, shen);
+    expect(cast.map((p) => p.name)).toEqual(["薇拉", "沈屿"]);
+    expect(speakerOf(cast)?.name).toBe("沈屿");
+
+    // 同名（带「」包夹也认）只更新那一个并移到队尾：队里不出现第二个薇拉，baseUrl 随既有槽位保留
+    const veraSmile = { ...vera, variant: "微笑", url: "u-vera-smile" };
+    cast = applyExpression(cast, veraSmile);
+    expect(cast.map((p) => p.name)).toEqual(["沈屿", "薇拉"]);
+    expect(cast).toHaveLength(MAX_STAGE);
+    expect(speakerOf(cast)?.variant).toBe("微笑");
+    expect(castMember(cast, "「薇拉」")?.url).toBe("u-vera-smile"); // 归一化比对
+    expect(castMember(cast, "程野")).toBeNull();
+
+    // 第三人（程野）上场：从**队首**淘汰最早出场的那位（沈屿），最近发言者留场
+    const cheng = { name: "程野", variant: "", url: "u-cheng", baseUrl: "b-cheng" };
+    cast = applyExpression(cast, cheng);
+    expect(cast.map((p) => p.name)).toEqual(["薇拉", "程野"]);
+    expect(speakerOf(cast)?.name).toBe("程野");
+
+    // 连切同一角色的差分：队列长度不动（不重复占位）
+    cast = applyExpression(cast, { ...cheng, variant: "冷脸", url: "u-cheng-cold" });
+    expect(cast.map((p) => p.name)).toEqual(["薇拉", "程野"]);
+    expect(speakerOf(cast)?.variant).toBe("冷脸");
+  });
+
+  it("expression 事件：同屏 2 人——第二位角色上屏并列，切回原角色时她移到队尾成为发言者", () => {
+    useGameStore.getState().selectPreset(PRESET);
+    const s = useGameStore.getState();
+    s.handleEvent({ type: "turn_start" });
+    s.handleEvent({ type: "chunk", seg: 0, text: "【图】立绘|薇拉|images/1.jpg\n【图】立绘|沈屿|images/2.jpg\n" });
+
+    // 两张【图】接着来：都上屏，末位（后出场）即发言者
+    let cast = useGameStore.getState().portraits;
+    expect(cast.map((p) => p.name)).toEqual(["薇拉", "沈屿"]);
+    expect(cast[0].baseUrl).toBe(cast[0].url);
+
+    // 薇拉切差分：她移到队尾（发言者），沈屿留场且槽位原样（名字不移位、不重复进队）
+    useGameStore.getState().handleEvent({ type: "expression", character: "薇拉", variant: "微笑" });
+    cast = useGameStore.getState().portraits;
+    expect(cast.map((p) => p.name)).toEqual(["沈屿", "薇拉"]);
+    expect(speaker()?.variant).toBe("微笑");
+    expect(cast[0].variant).toBe(""); // 非发言者不动
+    expect(cast[1].baseUrl).toContain("images%2F1.jpg"); // 同角色保留既有基础图（不按名字重拼兜底路径）
+
+    // 沈屿回基础（variant 空）：她也移到队尾，薇拉的差分留在队首
+    useGameStore.getState().handleEvent({ type: "expression", character: "沈屿", variant: "" });
+    cast = useGameStore.getState().portraits;
+    expect(cast.map((p) => p.name)).toEqual(["薇拉", "沈屿"]);
+    expect(speaker()?.url).toBe(speaker()?.baseUrl);
+    expect(cast).toHaveLength(MAX_STAGE); // 反复切换不涨人数
+  });
+
+  it("expression 事件：第三位角色上屏 → 淘汰最早出场者（队列恒 ≤ MAX_STAGE），发言者恒为队尾", () => {
+    useGameStore.getState().selectPreset(PRESET);
+    const s = useGameStore.getState();
+    s.handleEvent({ type: "turn_start" });
+    s.handleEvent({ type: "chunk", seg: 0, text: "【图】立绘|薇拉|images/1.jpg\n" });
+    s.handleEvent({ type: "expression", character: "沈屿", variant: "" });
+    expect(useGameStore.getState().portraits.map((p) => p.name)).toEqual(["薇拉", "沈屿"]);
+
+    s.handleEvent({ type: "expression", character: "程野", variant: "严肃" });
+    const cast = useGameStore.getState().portraits;
+    expect(cast.map((p) => p.name)).toEqual(["沈屿", "程野"]); // 最早出场的薇拉被淘汰
+    expect(cast).toHaveLength(MAX_STAGE);
+    expect(speakerOf(cast)?.variant).toBe("严肃");
+    expect(castMember(cast, "薇拉")).toBeNull();
+  });
+
+  it("resetRunState：选剧本/开新世界线后立绘队列归空（下一条世界线不许留上一条的立绘）", () => {
+    useGameStore.getState().selectPreset(PRESET);
+    const s = useGameStore.getState();
+    s.handleEvent({ type: "turn_start" });
+    s.handleEvent({ type: "chunk", seg: 0, text: "【图】立绘|薇拉|images/1.jpg\n【图】立绘|沈屿|images/2.jpg\n" });
+    expect(useGameStore.getState().portraits).toHaveLength(2);
+
+    useGameStore.getState().beginNewWorld("campus-summer-9");
+    expect(useGameStore.getState().portraits).toEqual([]);
+    expect(speakerOf(useGameStore.getState().portraits)).toBeNull();
+
+    // 重新选剧本（同一 resetRunState 路径）同样清空
+    s.handleEvent({ type: "turn_start" });
+    s.handleEvent({ type: "chunk", seg: 0, text: "【图】立绘|程野|images/3.jpg\n" });
+    expect(useGameStore.getState().portraits).toHaveLength(1);
+    useGameStore.getState().selectPreset(PRESET);
+    expect(useGameStore.getState().portraits).toEqual([]);
+  });
+
   it("manifest 差分项：槽位 label 拆「薇拉 · 微笑」、队列发差分指令、差分【图】标记只填槽位不换主立绘", async () => {
     useGameStore.getState().selectPreset(PRESET);
     useGameStore.getState().startGame(true, true);
@@ -541,12 +648,12 @@ describe("表情切换与创作/画廊编排（v1.3 store 公共 API 驱动）",
     const s = useGameStore.getState();
     s.handleEvent({ type: "turn_start" });
     s.handleEvent({ type: "chunk", seg: 0, text: "【图】立绘|薇拉|images/1.jpg\n" });
-    expect(useGameStore.getState().portrait?.name).toBe("薇拉");
+    expect(speaker()?.name).toBe("薇拉");
     const t = useGameStore.getState();
     t.handleEvent({ type: "turn_start" });
     t.handleEvent({ type: "chunk", seg: 0, text: "【图】立绘|薇拉-微笑|presets/campus-summer/assets/立绘-薇拉-微笑.jpg\n" });
     const st = useGameStore.getState();
-    expect(st.portrait?.url).toContain("images%2F1.jpg"); // 主立绘未被差分替换
+    expect(speaker()?.url).toContain("images%2F1.jpg"); // 主立绘未被差分替换
     expect(st.artReady["薇拉-微笑"]).toBeTruthy();
     // 缓存命中的标记路径原样透传（服务端据此直服 presets/<id>/assets/…）
     expect(new URL(st.artReady["薇拉-微笑"], "http://localhost").searchParams.get("p")).toBe(
@@ -600,7 +707,7 @@ describe("表情切换与创作/画廊编排（v1.3 store 公共 API 驱动）",
     s.handleEvent({ type: "turn_start" });
     s.handleEvent({ type: "chunk", seg: 0, text: "【图】立绘|守夜人|images/9.jpg\n" });
 
-    const before = new URL(useGameStore.getState().portrait!.url, "http://localhost");
+    const before = new URL(speaker()!.url, "http://localhost");
     expect(before.searchParams.get("n")).toBe("守夜人");
     expect(before.searchParams.get("preset")).toBeNull(); // 新剧本 id 未知：宁可不落盘也不串味
 
@@ -608,7 +715,7 @@ describe("表情切换与创作/画廊编排（v1.3 store 公共 API 驱动）",
     const t = useGameStore.getState();
     t.handleEvent({ type: "chunk", seg: 0, text: "【图】立绘|守夜人|presets/midnight-library/assets/立绘-守夜人.jpg\n" });
 
-    const after = new URL(useGameStore.getState().portrait!.url, "http://localhost");
+    const after = new URL(speaker()!.url, "http://localhost");
     expect(after.searchParams.get("preset")).toBe("midnight-library");
     useGameStore.getState().handleEvent({ type: "turn_end" }); // 收尾，不留 engineBusy
   });
@@ -1219,14 +1326,14 @@ describe("v1.6 精确回退与自动前进（store 公共 API 驱动）", () => 
   });
 
   it("原地回退后的续档回合：引擎重发【图】标记 → 画面按回退后的档重建（回退不是「只换文件」）", async () => {
-    useGameStore.setState({ bgUrl: null, portrait: null }); // 清掉回退前的画面：下面看到的一切都得是引擎重发的
+    useGameStore.setState({ bgUrl: null, portraits: [] }); // 清掉回退前的画面：下面看到的一切都得是引擎重发的
     await useGameStore.getState().restoreSnapshot(7);
 
     engineTurn("雨还在下。你回到了走廊尽头。\n【图】背景|旧教学楼|images/40.jpg\n【图】立绘|沈屿|images/41.jpg\n**行动**\n1. 推门");
 
     const s = useGameStore.getState();
     expect(new URL(s.bgUrl ?? "", "http://localhost").searchParams.get("p")).toBe("images/40.jpg");
-    expect(s.portrait?.name).toBe("沈屿");
+    expect(s.portraits.map((x) => x.name)).toEqual(["沈屿"]);
     expect(s.history.at(-1)?.t).toBe("雨还在下。你回到了走廊尽头。"); // 续档回合是正常回合（选项段照旧不进历史）
     expect(s.options?.map((o) => o.t)).toEqual(["推门"]);
   });

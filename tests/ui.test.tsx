@@ -18,6 +18,7 @@ import ChapterCard, { CHAPTER_CARD_FADE_MS, CHAPTER_CARD_MS } from "../src/compo
 import CharactersDrawer from "../src/components/game/CharactersDrawer";
 import DialogueBox from "../src/components/game/DialogueBox";
 import FreeInput from "../src/components/game/FreeInput";
+import GameStage from "../src/components/game/GameStage";
 import HistoryDrawer from "../src/components/game/HistoryDrawer";
 import OptionList from "../src/components/game/OptionList";
 import TitleScreen from "../src/components/TitleScreen";
@@ -3215,6 +3216,75 @@ describe("DialogueBox：动效降级（prefers-reduced-motion，v1.7）", () => 
     render(<DialogueBox />);
     expect(screen.getByTestId("dialogue-text").textContent).not.toContain(full); // 才起了个头：降级没发生
     expect(screen.getByTestId("dialogue-hint").textContent).toBe("空格补全");
+  });
+});
+
+// ————————————————————— 同屏多立绘（v1.9）：队列渲染与对话区让位档 —————————————————————
+
+describe("同屏多立绘：发言者高亮带名牌、非发言者压暗，让位档随人数切换（v1.9）", () => {
+  /** 一个立绘槽位（jsdom 不加载图片，这里只关心结构与类名） */
+  const figure = (name: string, variant = "") => ({
+    name,
+    variant,
+    url: `/img?p=x%2F${name}.jpg&n=${name}`,
+    baseUrl: `/img?p=x%2F${name}.jpg&n=${name}`,
+  });
+
+  beforeEach(() => {
+    useGameStore.setState({ portraits: [] });
+  });
+
+  it("0/1/2 人：让位档依次是「无 / portrait-reserve / portrait-reserve-duo」，队列左到右 = 出场到发言", () => {
+    render(<GameStage />);
+    // 无人：没有立绘层内容，也没有让位（对话面板吃满宽度）
+    expect(screen.queryAllByTestId("portrait-figure")).toHaveLength(0);
+    expect(screen.queryByTestId("portrait-nameplate")).toBeNull();
+    expect(screen.getByTestId("dialogue-dock").className).not.toContain("portrait-reserve");
+
+    // 单人：沿用 v1.8 的单人档 + 名牌
+    act(() => useGameStore.setState({ portraits: [figure("薇拉")] }));
+    expect(screen.getAllByTestId("portrait-figure")).toHaveLength(1);
+    expect(screen.getByTestId("portrait-figure").getAttribute("data-speaker")).toBe("true");
+    expect(screen.getByTestId("portrait-nameplate").textContent).toBe("薇拉");
+    const dock = screen.getByTestId("dialogue-dock");
+    expect(dock.className).toContain("portrait-reserve");
+    expect(dock.className).not.toContain("portrait-reserve-duo");
+
+    // 同屏 2 人：两个人形都在，末位（沈屿）是发言者 → 带名牌；队首（薇拉）压暗且**没有**名牌
+    act(() => useGameStore.setState({ portraits: [figure("薇拉"), figure("沈屿", "微笑")] }));
+    const figs = screen.getAllByTestId("portrait-figure");
+    expect(figs).toHaveLength(2);
+    expect(figs.map((f) => f.getAttribute("data-speaker"))).toEqual(["false", "true"]);
+    expect(screen.getAllByTestId("portrait-nameplate")).toHaveLength(1);
+    expect(screen.getByTestId("portrait-nameplate").textContent).toBe("沈屿");
+    // 压暗档必须落在内层（framer 会把内联 opacity 写在外层，类挂外层等于没挂）
+    expect(figs[0].innerHTML).toContain("opacity-55");
+    expect(figs[1].innerHTML).not.toContain("opacity-55");
+    // 两张图各挂各的（各自的差分/基础 URL，不互相顶掉）
+    expect(screen.getByAltText("薇拉")).toBeTruthy();
+    expect(screen.getByAltText("沈屿")).toBeTruthy();
+    expect(screen.getByTestId("dialogue-dock").className).toContain("portrait-reserve-duo");
+  });
+
+  it("发言者切换（队列重排）：名牌跟着末位走，压暗随之易主——同一套元素不新增人形", () => {
+    act(() =>
+      useGameStore.setState({
+        portraits: [
+          { ...figure("薇拉"), url: "/img?p=x%2F%5Fvera-smile.jpg&n=薇拉", variant: "微笑" },
+          figure("沈屿"),
+        ],
+      }),
+    );
+    render(<GameStage />);
+    expect(screen.getByTestId("portrait-nameplate").textContent).toBe("沈屿");
+
+    // 薇拉切差分：store 侧（applyExpression）把她移到队尾，渲染层只是跟着队列画
+    act(() => useGameStore.setState({ portraits: [figure("沈屿"), { ...figure("薇拉"), variant: "微笑" }] }));
+    const figs = screen.getAllByTestId("portrait-figure");
+    expect(figs).toHaveLength(2); // 仍是两个人形（不重复占位）
+    expect(figs.map((f) => f.getAttribute("data-speaker"))).toEqual(["false", "true"]);
+    expect(screen.getByTestId("portrait-nameplate").textContent).toBe("薇拉");
+    expect(figs[0].innerHTML).toContain("opacity-55"); // 队首（沈屿）转为暗角
   });
 });
 

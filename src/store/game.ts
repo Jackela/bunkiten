@@ -46,6 +46,7 @@ export type {
   RegenJob,
 } from "./types";
 export { fallbackPortraitUrl, nextPortraitOnExpression } from "./portrait";
+export { MAX_STAGE, applyExpression, castMember, speakerOf } from "./portrait";
 export { parseWorldBundle } from "./slices/world";
 export { parsePresetBundle } from "./slices/nav";
 
@@ -84,7 +85,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
     options: null,
     typingDone: false,
     bgUrl: null,
-    portrait: null,
+    portraits: [],
     artReady: {},
     preload: [],
     preloadPhase: "finished",

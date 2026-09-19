@@ -36,7 +36,10 @@ export interface PreloadItem {
   url: string | null;
 }
 
-/** 立绘画面状态：url 指向当前显示图（基础或差分），baseUrl 恒为基础立绘（差分 404 时回退） */
+/**
+ * 立绘画面状态：url 指向当前显示图（基础或差分），baseUrl 恒为基础立绘（差分 404 时回退）。
+ * 同一角色在画面里最多一个槽位（{@link GameStore.portraits} 里按名字归一化去重）。
+ */
 export interface PortraitState {
   name: string;
   /** 当前差分变体名（基础立绘为空串） */
@@ -120,7 +123,12 @@ export interface GameStore {
   typingDone: boolean;
 
   bgUrl: string | null;
-  portrait: PortraitState | null;
+  /**
+   * 同屏立绘队列（v1.9）：数组顺序 = 出场/发言新旧顺序（渲染左→右），**末位 = 当前发言者**
+   * （名牌归它、全亮；其余压暗缩小）。上限 {@link MAX_STAGE}，入队与淘汰只经 applyExpression。
+   * 空数组 = 屏上无立绘（GameStage 据此决定是否给对话区让位）。
+   */
+  portraits: PortraitState[];
   /** 预载阶段的名字槽位 -> 图片 URL；空串 = 未就绪。非预载开局为空对象 */
   artReady: Record<string, string>;
 

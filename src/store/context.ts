@@ -26,7 +26,7 @@ import {
   type Marker,
 } from "../lib/parser";
 import { fetchAssets, fetchHistory, imageUrl, assetFileUrl, assetPath, type Preset } from "../lib/acp";
-import { normName } from "./portrait";
+import { applyExpression, normName } from "./portrait";
 import type { GameStore, PortraitState, Screen } from "./types";
 
 /** store 的 setState 类型（slice 里与原来逐字一致地调用 `set({...})`） */
@@ -187,7 +187,11 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
     // 槽位名（来自 preset，可能带「」）与引擎标记名（常不带）做归一化对齐
     const norm = normName;
     const slotByNorm = new Map(Object.keys(artReady).map((k) => [norm(k), k]));
-    const patch: { bgUrl?: string; portrait?: PortraitState } = {};
+    const patch: { bgUrl?: string; portraits?: PortraitState[] } = {};
+    // 立绘队列逐标记累积（同一 chunk 里可能连着来两张【图】立绘）：只在真有入队时才写回 patch，
+    // 免得「没有立绘标记」的回合把队列换成新数组、白白让订阅者重渲染
+    let cast = s.portraits;
+    let castTouched = false;
     let changed = false;
     for (const m of markers) {
       // 重绘覆盖标记：命中挂起中的画廊重绘即解除（放在去重之前——重复出现的重绘标记也要触发刷新）
@@ -213,7 +217,12 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
         const isVariantSlot = s.preload.some(
           (i) => i.kind === "portrait" && i.variant && (i.name === m.name || norm(i.name) === norm(m.name)),
         );
-        if (!isVariantSlot) patch.portrait = { name: m.name, variant: "", url, baseUrl: url };
+        if (!isVariantSlot) {
+          // 基础立绘标记 = 该角色上场（与【立绘】同一条入队规则：同名原地更新并移到队尾，
+          // 超上限淘汰最早出场者）——【图】先上屏、【立绘】再点表情是引擎的常见顺序
+          cast = applyExpression(cast, { name: m.name, variant: "", url, baseUrl: url });
+          castTouched = true;
+        }
         // 装配阶段的基础立绘标记：点亮创作屏清单（去重）
         if (get().screen === "creation" && !get().creationPortraits.includes(m.name)) {
           set({ creationPortraits: [...get().creationPortraits, m.name] });
@@ -221,7 +230,7 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
       }
     }
     if (!changed) return;
-    set({ ...patch, artReady, seenMarkerKeys: seen });
+    set({ ...patch, ...(castTouched ? { portraits: cast } : {}), artReady, seenMarkerKeys: seen });
   }
 
   /** 清空当前回合显示状态（turn_start 与段切换共用；旁白段被新段覆盖） */
@@ -429,7 +438,7 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
     set({
       cardAnswers: {},
       bgUrl: null,
-      portrait: null,
+      portraits: [],
       history: [],
       artReady: {},
       preload: [],
