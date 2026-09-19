@@ -8,7 +8,7 @@
 //   正戏回合落盘 history/NNNN.json 且 nodeId 正确、规划回合不落盘、内容相同去重
 //   fork 带 seq → 新世界三文件与快照逐字一致
 //   restore → 生成 backup 条目
-//   export → import 往返一致（含重名后缀）
+//   export → import 往返一致（含重名后缀；v2 包带 forkedFrom/fork.md、v1 包照收）
 //   素材 delete 后 /api/assets 不再列出
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -221,14 +221,17 @@ describe("集成：逐轮快照 + 世界线精确回退/导出导入（CONTRACTS
     expect((await stack.postJSON("/api/worlds", { action: "restore", worldId: "w1", seq: 99 })).status).toBe(400);
   }, 15000);
 
-  it("⑦ export → import 往返一致（含重名后缀）", async () => {
+  it("⑦ export → import 往返一致（含重名后缀；v2 包带血缘与 fork.md，v1 包照收）", async () => {
     const exp = await stack.getJSON("/api/worlds/export?worldId=w1");
     expect(exp.status).toBe(200);
     expect(exp.headers.get("content-disposition")).toBe('attachment; filename="w1.world.json"');
     const bundle = exp.body;
     expect(bundle.format).toBe("bunkiten-world");
-    expect(bundle.version).toBe(1);
+    expect(bundle.version).toBe(2); // v2（v1.8）：world 多两个血缘键，其余键序不变
     expect(bundle.world.worldId).toBe("w1");
+    // w1 是根世界：两个键都在、值都是 null（缺键与 null 是两种意思，v1 包才是「缺键」）
+    expect(bundle.world.forkedFrom).toBe(null);
+    expect(bundle.world.forkMd).toBe(null);
     expect(bundle.world.snapshots.map((s: any) => s.seq)).toEqual([1, 2]); // 含 ⑥ 的 backup
 
     const imp = await stack.postJSON("/api/worlds", { action: "import", bundle });
@@ -238,6 +241,7 @@ describe("集成：逐轮快照 + 世界线精确回退/导出导入（CONTRACTS
     expect(readWorldFile(idir, "state.md")).toBe(bundle.world.files.state);
     expect(readWorldFile(idir, "story-tree.md")).toBe(bundle.world.files.tree);
     expect(readdirSync(path.join(idir, "history")).sort()).toEqual(["0001.json", "0002.json"]);
+    expect(existsSync(path.join(idir, "fork.md"))).toBe(false); // 根世界没有分叉说明
     // 索引：note 追加「（导入）」
     const worlds = await stack.getJSON("/api/worlds");
     const entry = worlds.body.worlds.find((w: any) => w.worldId === "w1-2");
@@ -246,9 +250,39 @@ describe("集成：逐轮快照 + 世界线精确回退/导出导入（CONTRACTS
     // 二次导入 → w1-3
     expect((await stack.postJSON("/api/worlds", { action: "import", bundle })).body.worldId).toBe("w1-3");
 
+    // —— ⑤ 建出的分叉世界（w1@1-1 的精确快照）：血缘与 fork.md 必须活过往返 ——
+    const forked = (worlds.body.worlds as any[]).find((w) => w.forkedFrom);
+    expect(forked, "⑤ 的分叉世界不在索引里（本用例依赖 ⑤ 先跑）").toBeTruthy();
+    const forkMd = readWorldFile(path.join(stack.root, "state", "worlds", forked.worldId), "fork.md");
+    const fexp = await stack.getJSON(`/api/worlds/export?worldId=${forked.worldId}`);
+    expect(fexp.status).toBe(200);
+    // 下载文件名行为不变（还是 <worldId>.world.json）
+    expect(fexp.headers.get("content-disposition")).toBe(`attachment; filename="${forked.worldId}.world.json"`);
+    expect(fexp.body.version).toBe(2);
+    expect(fexp.body.world.forkedFrom).toEqual({ worldId: "w1", nodeId: "1-1", seq: 1 });
+    expect(fexp.body.world.forkMd).toBe(forkMd); // 逐字（含分叉时间戳）
+
+    const fimp = await stack.postJSON("/api/worlds", { action: "import", bundle: fexp.body });
+    expect(fimp.status).toBe(200);
+    const fdir = path.join(stack.root, "state", "worlds", fimp.body.worldId);
+    expect(readWorldFile(fdir, "fork.md")).toBe(forkMd);
+    const after = (await stack.getJSON("/api/worlds")).body.worlds as any[];
+    // 家谱只读 forkedFrom：seq 一起回来，导入回来的分叉线才不会变成根
+    expect(after.find((w) => w.worldId === fimp.body.worldId).forkedFrom).toEqual({ worldId: "w1", nodeId: "1-1", seq: 1 });
+
+    // v1 包（没有这两个键）照收：forkedFrom null、不落 fork.md——「接受旧版本」不许在下一次重构里被顺手收紧
+    const v1 = { ...fexp.body, version: 1, world: { ...fexp.body.world } };
+    delete v1.world.forkedFrom;
+    delete v1.world.forkMd;
+    const v1imp = await stack.postJSON("/api/worlds", { action: "import", bundle: v1 });
+    expect(v1imp.status).toBe(200);
+    expect(existsSync(path.join(stack.root, "state", "worlds", v1imp.body.worldId, "fork.md"))).toBe(false);
+    expect((await stack.getJSON("/api/worlds")).body.worlds.find((w: any) => w.worldId === v1imp.body.worldId).forkedFrom).toBe(null);
+
     // 非法 bundle → 400
     expect((await stack.postJSON("/api/worlds", { action: "import", bundle: { format: "x", version: 1, world: { worldId: "w1" } } })).status).toBe(400);
     expect((await stack.postJSON("/api/worlds", { action: "import", bundle: { format: "bunkiten-world", version: 1, world: { worldId: "../etc" } } })).status).toBe(400);
+    expect((await stack.postJSON("/api/worlds", { action: "import", bundle: { format: "bunkiten-world", version: 3, world: { worldId: "w1" } } })).status).toBe(400);
   }, 15000);
 
   it("⑧ update（label/note 校验）与素材 delete（/api/assets 不再列出）", async () => {

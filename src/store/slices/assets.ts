@@ -14,9 +14,11 @@ export function createAssetsSlice(
   const { set, get } = ctx;
 
   return {
-    openAssets() {
-      // 画廊与游戏态共存：只切屏不动回合/画面状态，引擎忙时画廊内禁用重绘
-      set({ screen: "assets", screenReturn: get().screen });
+    openAssets(preset = null) {
+      // 画廊与游戏态共存：只切屏不动回合/画面状态，引擎忙时画廊内禁用重绘。
+      // 传了 preset（标题屏的「素材」）就顺手落 selected：标题屏还没插卡时 store 里的 selected 可能是空
+      // 或上一局的剧本，不落就会打开一个空画廊（与 openCheck 同一口径）。
+      set({ ...(preset ? { selected: preset } : {}), screen: "assets", screenReturn: get().screen });
     },
 
     setAssetsPreview(a) {

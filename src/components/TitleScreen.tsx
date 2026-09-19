@@ -289,7 +289,7 @@ export default function TitleScreen() {
         />
         <button
           type="button"
-          onClick={openAssets}
+          onClick={() => openAssets(current)}
           onKeyDown={(e) => e.stopPropagation()}
           className="transition-colors hover:text-[color:var(--accent)]"
         >

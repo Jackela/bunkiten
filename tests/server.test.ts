@@ -59,7 +59,8 @@ import {
 } from "../server/acp-server.mjs";
 // 索引 schema 迁移骨架刻意**还没进**入口的 re-export 面（先落骨架、后接启动路径，见 ROADMAP §1）：
 // 只有这一条测试直连模块，接线那个 commit 再从入口 import 并改这一行。
-import { migrateWorldsSchema } from "../server/worlds.mjs";
+// WORLD_BUNDLE_VERSION 同理（v1.8 导出包 v2 新增）：入口的 re-export 面不归本次改动，测试直连模块。
+import { WORLD_BUNDLE_VERSION, migrateWorldsSchema } from "../server/worlds.mjs";
 // 剧本体检的判定真源（server 只做 id 校验/目录存在性/归组，检查逻辑一份都不重写）：测试直接用真函数
 import { checkPreset } from "../scripts/doctor.mjs";
 
@@ -1123,7 +1124,9 @@ describe("server importWorld：bundle 校验 / 重名后缀 / 快照与文件落
     expect(importWorld(root, null)).toMatchObject({ error: expect.any(String) });
     expect(importWorld(root, {})).toMatchObject({ error: expect.any(String) });
     expect(importWorld(root, { format: "x", version: 1, world: { worldId: "w1" } })).toMatchObject({ error: expect.any(String) });
-    expect(importWorld(root, { format: "bunkiten-world", version: 2, world: { worldId: "w1" } })).toMatchObject({ error: expect.any(String) });
+    // 版本闸是区间不是等值（接受 1..WORLD_BUNDLE_VERSION）：区间外的、以及「1」这种字符串形态都拒
+    expect(importWorld(root, { format: "bunkiten-world", version: WORLD_BUNDLE_VERSION + 1, world: { worldId: "w1" } })).toMatchObject({ error: expect.any(String) });
+    expect(importWorld(root, { format: "bunkiten-world", version: "1", world: { worldId: "w1" } })).toMatchObject({ error: expect.any(String) });
     expect(importWorld(root, { format: "bunkiten-world", version: 1, world: { worldId: "../etc" } })).toMatchObject({ error: expect.any(String) });
     expect(readWorldsIndex(root)).toEqual([]); // 拒绝后不产生半个世界
   });
@@ -1176,12 +1179,95 @@ describe("server importWorld：bundle 校验 / 重名后缀 / 快照与文件落
     writeFileSync(path.join(root, w.worldId, "state.md"), "# 状态\n- preset: demo\n");
     const out = exportWorld(root, w.worldId) as any;
     expect(out.bundle.format).toBe("bunkiten-world");
-    expect(out.bundle.version).toBe(1);
+    expect(out.bundle.version).toBe(WORLD_BUNDLE_VERSION);
     expect(out.bundle.world.worldId).toBe(w.worldId);
     expect(out.bundle.world.files.state).toBe("# 状态\n- preset: demo\n");
     expect(out.bundle.world.snapshots).toEqual([]);
+    // v2 的两个血缘键对根世界也在（都是 null）：缺键与 null 是两种意思，导入侧只认后者
+    expect(out.bundle.world.forkedFrom).toBe(null);
+    expect(out.bundle.world.forkMd).toBe(null);
     expect(exportWorld(root, "../etc")).toMatchObject({ error: expect.any(String) });
     expect(exportWorld(root, "nope-1")).toMatchObject({ error: expect.any(String) });
+  });
+
+  it("exportWorld v2：分叉世界带 forkedFrom（含 seq）与 fork.md 全文，键序只追加两处", () => {
+    const origin = createWorld(root, "demo", "示例");
+    const dir = path.join(root, origin.worldId);
+    const snapFiles = { state: "# 状态\n", summary: "# 摘要\n", tree: "## 第 1 章：起点\n- 当前进度: 节点 1-1（已走 0 轮）\n" };
+    writeFileSync(path.join(dir, "state.md"), "# 状态\n");
+    writeSnapshot(root, origin.worldId, { kind: "turn", nodeId: "1-1", chapterNo: 1, files: snapFiles });
+    const f = forkWorld(root, origin.worldId, "1-1", 1) as any;
+    const forkMd = readFileSync(path.join(root, f.worldId, "fork.md"), "utf8");
+
+    expect(WORLD_BUNDLE_VERSION).toBe(2); // 版本号本身是契约：v2 才保证下面两个键在
+    const bundle = (exportWorld(root, f.worldId) as any).bundle;
+    expect(bundle.version).toBe(WORLD_BUNDLE_VERSION);
+    expect(bundle.world.forkedFrom).toEqual({ worldId: origin.worldId, nodeId: "1-1", seq: 1 });
+    expect(bundle.world.forkMd).toBe(forkMd); // 逐字（含「分叉时间」那一行的时间戳）
+    // 键序：v1 的九个键一个不动、两个新键插在血缘该在的位置（forkedFrom 归元数据、forkMd 归文件全文）
+    expect(
+      Object.keys(bundle.world),
+      `v2 的 world 键序变了：现在是 ${Object.keys(bundle.world).join(",")}——导出包体是跨机格式，键序与形状要稳住（老包只认 v1 那九个键）`,
+    ).toEqual(["worldId", "preset", "title", "label", "note", "chapterNo", "forkedFrom", "files", "snapshots", "forkMd"]);
+  });
+
+  it("export↔import v2 往返：血缘（含 seq）与 fork.md 逐字回到索引与磁盘", () => {
+    const origin = createWorld(root, "demo", "示例");
+    const snapFiles = { state: "# 状态\n", summary: "# 摘要\n", tree: "## 第 1 章：起点\n- 当前进度: 节点 1-1（已走 0 轮）\n" };
+    writeFileSync(path.join(root, origin.worldId, "state.md"), "# 状态\n");
+    writeSnapshot(root, origin.worldId, { kind: "turn", nodeId: "1-1", chapterNo: 1, files: snapFiles });
+    const forked = forkWorld(root, origin.worldId, "1-1", 1) as any;
+    const forkMd = readFileSync(path.join(root, forked.worldId, "fork.md"), "utf8");
+    const bundle = (exportWorld(root, forked.worldId) as any).bundle;
+
+    const imp = importWorld(root, bundle) as any;
+    expect(imp.worldId).toBe(`${forked.worldId}-2`); // 重名后缀：来源世界还在
+    expect(readFileSync(path.join(root, imp.worldId, "fork.md"), "utf8")).toBe(forkMd); // 逐字落盘
+    expect(readFileSync(path.join(root, imp.worldId, "state.md"), "utf8")).toBe("# 状态\n");
+    const entry = readWorldsIndex(root).find((e: any) => e.worldId === imp.worldId) as any;
+    // 家谱只读 forkedFrom：seq 一起回来才算「血缘活过了往返」
+    expect(entry.forkedFrom).toEqual({ worldId: origin.worldId, nodeId: "1-1", seq: 1 });
+    expect(entry.note).toBe("（导入）"); // 分叉世界 note 本就为空 → 追加来源标注
+
+    // forkMd 空串 = 「没有这个文件」：不落 0 字节 fork.md（否则引擎首个回合会读到一份空指令）
+    const empty = importWorld(root, { ...bundle, world: { ...bundle.world, forkMd: "" } }) as any;
+    expect(existsSync(path.join(root, empty.worldId, "fork.md"))).toBe(false);
+    expect(readWorldsIndex(root).find((e: any) => e.worldId === empty.worldId)?.forkedFrom).toEqual({ worldId: origin.worldId, nodeId: "1-1", seq: 1 });
+  });
+
+  it("import v1：老包照收（forkedFrom null、不落 fork.md）——「接受旧版本」单独钉住", () => {
+    const v1 = bundleFor(); // 老包形状：没有 forkedFrom / forkMd 这两个键
+    expect(v1.version).toBe(1);
+    expect("forkedFrom" in v1.world).toBe(false);
+    const imp = importWorld(root, v1) as any;
+    expect(imp.worldId).toBe("w1");
+    expect(existsSync(path.join(root, "w1", "fork.md"))).toBe(false);
+    expect(readWorldsIndex(root).find((e: any) => e.worldId === "w1")?.forkedFrom).toBe(null); // = 家谱里的根（v1 包的语义）
+  });
+
+  it("import v2：forkedFrom 形态不合法 → 降级成 null（不整包拒绝、不半留）", () => {
+    const bad: unknown[] = [
+      { worldId: "../etc", nodeId: "1-1" }, // 白名单不过
+      { worldId: 7, nodeId: "1-1" }, // worldId 非字符串
+      { worldId: "w1" }, // 缺 nodeId
+      { worldId: "w1", nodeId: "" },
+      { worldId: "w1", nodeId: "   " },
+      { worldId: "w1", nodeId: 11 }, // nodeId 非字符串
+      { worldId: "w1", nodeId: "1-1", seq: "1" }, // seq 必须是数字（「精确分叉自第 1 条」不许靠猜）
+      { worldId: "w1", nodeId: "1-1", seq: 0 },
+      { worldId: "w1", nodeId: "1-1", seq: 1.5 },
+      "w1@1-1", // 整条不是对象
+      {},
+    ];
+    for (const forkedFrom of bad) {
+      const imp = importWorld(root, { ...bundleFor({ forkedFrom }), version: 2 }) as any;
+      expect(imp.error, `forkedFrom=${JSON.stringify(forkedFrom)} 不该整包拒绝（血缘是展示面信息，坏了也只该降级）`).toBeUndefined();
+      const entry = readWorldsIndex(root).find((e: any) => e.worldId === imp.worldId) as any;
+      expect(entry.forkedFrom, `forkedFrom=${JSON.stringify(forkedFrom)} 应整条降级为 null`).toBe(null);
+    }
+    // 合法的最小形态（只有 worldId/nodeId）照收
+    const ok = importWorld(root, { ...bundleFor({ forkedFrom: { worldId: "w1", nodeId: "1-1" } }), version: 2 }) as any;
+    expect(readWorldsIndex(root).find((e: any) => e.worldId === ok.worldId)?.forkedFrom).toEqual({ worldId: "w1", nodeId: "1-1" });
   });
 });
 

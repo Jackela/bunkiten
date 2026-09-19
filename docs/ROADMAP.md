@@ -62,12 +62,36 @@ v1.8.0 之后待办与**决策清单**（不是愿望清单）：每项写清「
 - **v2 的做法**：`version: 2` + `world.forkedFrom`（老包缺失即 null）+ `world.forkMd`（可选字符串，落地时原样写 `fork.md`）；导入侧把现在的 `version === 1` 硬等值改成「接受 1 或 2，老包按当前形状补齐」——这就是第 1 项「旧包 accept + upgrade」策略的落地样板，建议**它先于通用迁移钩子做**（改动局部、收益立刻可见）。
 - **测试面**：`tests/integration/audio-history.test.ts` 的导出导入往返、`tests/server.test.ts` 的 `importWorld` 校验组、`tests/e2e-ui/worlds.spec.ts` 的家谱断言；`v1 包仍能被导入` 要单独一条用例钉住（否则「接受旧版本」很容易在下一次重构里被顺手收紧回去）。
 
-## 6. 性能与虚拟化 —— **可开工（先测量）**
+## 6. 性能与虚拟化 —— **已测量（2026-09）：当前规模不需要虚拟化**
 
-- **先定「什么会先坏」，每一项都配一个现在就能跑的测点**，不要先引虚拟化库。首屏与请求级清单如下（都读过实现）：
-- **`GET /api/assets?preset=`**：每次请求都 (a) 逐条 `mtimeOf` 一次 stat、(b) 为了 `inUse` 把该剧本**每个世界的整份 `state.md` 读进内存**做 `includes`、(c) 为了封面标题再调一次 `scanPresets()`（全 presets 目录重扫）——见 `server/acp-server.mjs` 的 `listAssets`。几百个素材 × 若干条世界线 = 一次请求几百次 stat + N 份 state 全文。测点：造 10 条世界线 + 500 个素材文件，量耗时与读盘字节（`tests/integration/harness.mjs` 的临时 root 加两个 seed 项即可）。
-- **画廊首屏**：`AssetsScreen.tsx` 一次渲染全部分组（栅格 + `loading="lazy"`）。测点不是「有几张图」，而是 mount → 首帧可用时间与 DOM 节点数，判定口径取「滚动是否掉帧」。
-- **剧情图**：`StoryTreeScreen.tsx` 已有降级闸——当前章节点 > `BIG_GRAPH_NODES = 40` 默认列表形态（组件内常量）。要量的是 `parseStoryTree` + `src/lib/treeLayout.ts` 的 `layoutTree` 在 200 / 1000 节点下的耗时（都是纯函数，node 里直调，不需要浏览器）。
-- **快照与索引**：`readSnapshots` 已有逐文件 mtime 复用缓存、`GET /api/history` 列表只回元信息（都不必重做）。要量的是上千条快照下**首次**打开剧情图的冷启动（缓存建表那一次全量 parse）与内存驻留——缓存里每条都留着 `files` 三份全文（长世界 MB 级），`invalidateSnapshots` 只在删世界时释放。
-- **世界线列表**：`listWorlds` 每条世界读一次 `story-tree.md` 全文 + 3 次 `mtimeOf`（`worlds.mjs`）；几条到几十条无感，上千条就是每次开屏上千次 IO。
-- **顺序与纪律**：先补测量（都能用 `tests/integration/harness.mjs` 的临时 root 或 node 直调纯函数，零新依赖），拿到数字再决定要不要虚拟化。**虚拟化落地前先确认不破坏这四条已成立的契约**：`loading="lazy"` + `/img` 白名单直服的 URL 形态（`lib/acp.ts` 的 `assetFileUrl`）、世界线列表的 listbox/option + roving tabIndex 语义、`data-testid` 一族（jsdom 与 e2e 都按它定位）、剧情图节点 `<g tabindex>` 的键盘走位。
+**已测（本机 macOS / Apple Silicon，真 Chromium 1440×900；假引擎 + 真 acp-server + vite dev，dev 模式；
+脚本一次性、跑完即删）**。口径：`visibleMs` = 点击到首屏可交互（含假栈首次导航的地板 ~820ms，dev 模式
+React 无产物优化；因此「无差异」只能证明边际代价低于该地板，不是精确值）。图片两种：1×1 JPEG（量 DOM/布局）
+与真实素材 320KB（量解码）。
+
+| 面 | 规模 | 结果 |
+|---|---|---|
+| 画廊首屏 | 60 / 300 / 1000 张（1×1） | visible 均 ~820ms；DOM 578 / 2738 / 9038 节点（≈9 节点/卡） |
+| 画廊首屏 | 60 / 120 / 300 张（**真实 320KB/张**） | visible 819 / 822 / 820ms —— 解码在 `loading="lazy"` 下没有可测代价 |
+| 剧情图 | 45 / 200 / 600 节点 | visible 816 / 819 / 822ms；DOM 235 / 855 / 2455 节点（**>40 自动走列表**，SVG 画布根本不渲染） |
+| 纯函数 | `parseStoryTree` + `layoutTree`，2000 节点 | parse 1.3ms、layout 1.5ms（node 直调，非瓶颈） |
+| `GET /api/assets?preset=` | 300 素材 + 10 世界 / 500 素材 + 30 世界 | 8.0ms / 8.1ms（响应 46KB / 77KB） |
+| `GET /api/worlds?preset=` | 10 / 30 条世界线 | 3.2ms / 3.9ms |
+
+**结论**：三条候选路径里**没有一条现在需要虚拟化**——画廊 300 张真实素材与剧情图 600 节点都在同一时间地板上，
+服务端两条列表端点在两位数世界线 + 500 素材下仍是毫秒级。真正的成本排序是
+**图片解码/IO ≫ 布局与 DOM ≫ 纯函数**：画廊若真到千张量级，第一根杠杆是缩略图/更小的直服图，
+而**不是**把 DOM 虚拟化；剧情图 >40 已自动降级为列表，画布的千节点场景在现有设计里不存在。
+
+**何时回头看**：单剧本素材 **>1000 张**、或单章节点 **>2000** 且用户确实要图形画布、或世界线 **>100 条**
+（`listWorlds` 每条读一次 `story-tree.md` + 3 次 `mtimeOf`）——到那时先补测 `readSnapshots` 冷启动（缓存里
+每条留 `files` 三份全文）与 `listWorlds` 的 IO，再谈虚拟化。
+
+**虚拟化落地前必须先确认不破坏的四条既有契约**（都在上面测过、且都有测试钉着）：
+`loading="lazy"` + `/img` 白名单直服的 URL 形态（`lib/acp.ts` 的 `assetFileUrl`）、世界线列表的
+listbox/option + roving tabIndex 语义、`data-testid` 一族（jsdom 与 e2e 都按它定位）、剧情图节点
+`<g tabindex>` 的键盘走位。
+
+**背景（上一轮列的候选测点，未测部分留作参考）**：`GET /api/assets` 每条素材 `mtimeOf` 一次 +
+为 `inUse` 读该剧本**每个世界的整份 `state.md`** + 为封面标题再 `scanPresets()` 一次
+（`server/acp-server.mjs` 的 `listAssets`）——10~30 条世界线时是毫秒级（上表实测），上百条世界线时值得再量。

@@ -399,7 +399,7 @@ export function forkWorld(root, originId, nodeId, seq = null) {
   // 分叉关系由 forkedFrom（与 fork.md）完整记录，索引 note 保持空串——旧版在这里写「分叉自 <id> @ <节点>」，
   // 而 note 会被显示层当成世界名，等于把裸 id 端到玩家眼前（v1.7.1 起交还给玩家自己命名）
   const note = "";
-  fs.writeFileSync(path.join(dstDir, "fork.md"), forkNote(originId, nodeId));
+  fs.writeFileSync(path.join(dstDir, FORK_FILE), forkNote(originId, nodeId));
   const list = readWorldsIndex(root).map((e) =>
     e.worldId === entry.worldId ? { ...e, chapterNo, note, forkedFrom, lastPlayed: Date.now() } : e,
   );
@@ -463,6 +463,32 @@ export function updateWorld(root, worldId, patch = {}) {
   return { entry };
 }
 
+// ---------- 世界线导出包（v1.6 起，format:"bunkiten-world"；v2 起带血缘） ----------
+// 与剧本导出包（presets.mjs 的 buildPresetBundle/importPresetBundle）对称：导出 JSON + attachment 下载、
+// 导入先整体校验再重名加 -2/-3。v2 只加两个键，其余键序与形状一个字节不动：
+//   world.forkedFrom —— 索引里的血缘原值（老索引没有该字段 → null）。家谱连线只认它，v1 包丢了它就等于
+//                       把导入回来的分叉线变回根（v1.8 把血缘从 note 挪到 forkedFrom 之后的反向抵消）
+//   world.forkMd     —— 世界目录 fork.md 全文（引擎处理完首个回合会自行删除该文件，此时 → null）
+// 导入侧接受 1..WORLD_BUNDLE_VERSION（老包照收、按当前形状补齐）——ROADMAP §1「旧包 accept + upgrade」的落地样板。
+const WORLD_BUNDLE_FORMAT = "bunkiten-world";
+/** 当前世界线导出包的版本（v2 起带 forkedFrom/forkMd）：导出写它，导入接受 1..它（见 importWorld 的版本闸） */
+export const WORLD_BUNDLE_VERSION = 2;
+/** 分叉说明文件名：forkWorld 写它、exportWorld 收它、importWorld 落它——三处必须同一个名字 */
+const FORK_FILE = "fork.md";
+
+/**
+ * 世界的 fork.md 全文（该文件由 forkWorld 写、引擎首个回合处理后删除）。
+ * @param {string} dir 世界目录绝对路径
+ * @returns {string|null} 文件内容；不存在/读不动时 null（与「没有这个文件」同义，导出侧据此写 null）
+ */
+function readForkMd(dir) {
+  try {
+    return fs.readFileSync(path.join(dir, FORK_FILE), "utf8");
+  } catch {
+    return null;
+  }
+}
+
 /**
  * 打包一个世界（含全部快照）为可迁移 bundle（CONTRACTS §2）。
  * 刻意**不含 logs/**（v1.7 回合原文日志）：那是本机的排障面（引擎到底说了什么），不是可迁移的档——
@@ -482,8 +508,8 @@ export function exportWorld(root, worldId) {
   }));
   return {
     bundle: {
-      format: "bunkiten-world",
-      version: 1,
+      format: WORLD_BUNDLE_FORMAT,
+      version: WORLD_BUNDLE_VERSION,
       exportedAt: new Date().toISOString(),
       world: {
         worldId,
@@ -492,26 +518,57 @@ export function exportWorld(root, worldId) {
         label: entry?.label || "",
         note: entry?.note || "",
         chapterNo: files.tree != null ? worldChapterNo(files.tree) : entry?.chapterNo || 1,
+        // 血缘取索引原值（手建世界/老索引没有该字段 → null）；forkMd 与 files/snapshots 同族（都是文件全文），
+        // 排在它们之后，免得插进元数据段里打乱既有键序
+        forkedFrom: entry?.forkedFrom ?? null,
         files,
         snapshots,
+        forkMd: readForkMd(dir),
       },
     },
   };
 }
 
 /**
+ * 导出包里的血缘（v2 起 `world.forkedFrom`）逐字段校验：worldId 过白名单、nodeId 非空字符串、seq 可选正整数
+ * （JSON 里必须是数字——`"1"` 这种字符串形态一律按坏值处理，免得一个错误的精确分叉点被当真）。
+ * **任何一处不合形态 → 整条降级为 null**，既不做半留（`seq` 坏掉时不留 `{worldId, nodeId}`：半留会让
+ * 「精确分叉自第 N 条快照」的说法对不上真快照，宁可退回「父线已知、分叉点不明」），也不整包 400——
+ * 血缘只作家谱连线用，为它把玩家的整份档挡在门外不划算（与 files.state 的硬校验口径刻意相反）。
+ * v1 包没有该字段（`undefined`）同样落到 null。
+ * @param {unknown} raw bundle 里的 forkedFrom 原值
+ * @returns {{worldId: string, nodeId: string, seq?: number}|null} 合法血缘；否则 null（= 根节点）
+ */
+function bundleForkedFrom(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const { worldId, nodeId, seq } = /** @type {{worldId?: unknown, nodeId?: unknown, seq?: unknown}} */ (raw);
+  if (typeof worldId !== "string" || !WORLD_ID_RE.test(worldId)) return null;
+  if (typeof nodeId !== "string" || nodeId.trim() === "") return null;
+  if (seq == null) return { worldId, nodeId };
+  if (typeof seq !== "number" || !Number.isInteger(seq) || seq < 1) return null;
+  return { worldId, nodeId, seq };
+}
+
+/**
  * 导入一个 bundle：校验 format/version/worldId → 重名时加 `-2/-3…` 后缀 → 写文件 + 快照 + 索引（note 追加「（导入）」）。
  * 校验口径与导出对称，任何字段不合法一律拒绝（不写半个世界）。
+ * 版本闸**不是硬等值**：接受 1..WORLD_BUNDLE_VERSION——v1 包照收、按当前形状补齐（forkedFrom null、不落
+ * fork.md），v2 包才带血缘（见 bundleForkedFrom 的降级口径）。
  * @param {string} root 世界根目录
  * @param {{format?: unknown, version?: unknown, world?: {
  *   worldId?: unknown, preset?: unknown, title?: unknown, label?: unknown, note?: unknown, chapterNo?: unknown,
+ *   forkedFrom?: unknown, forkMd?: unknown,
  *   files?: {state?: unknown, summary?: unknown, tree?: unknown},
  *   snapshots?: unknown[]|null}}} bundle 导出体（JSON 直入，函数内逐字段校验）
  * @returns {{worldId?: string, error?: string}}
  */
 export function importWorld(root, bundle) {
   const w = bundle && typeof bundle === "object" ? bundle.world : null;
-  if (!bundle || bundle.format !== "bunkiten-world" || bundle.version !== 1 || !w || !WORLD_ID_RE.test(String(w.worldId || ""))) {
+  if (!bundle || bundle.format !== WORLD_BUNDLE_FORMAT || !w || !WORLD_ID_RE.test(String(w.worldId || ""))) {
+    return { error: "bundle 校验失败" };
+  }
+  const version = bundle.version;
+  if (typeof version !== "number" || !Number.isInteger(version) || version < 1 || version > WORLD_BUNDLE_VERSION) {
     return { error: "bundle 校验失败" };
   }
   // files.state 必须是非空字符串：空/缺失的 state 快照会导入出一个不可玩的世界，一律拒绝（不写半个世界）
@@ -537,6 +594,12 @@ export function importWorld(root, bundle) {
   const dir = path.join(root, id);
   fs.mkdirSync(dir, { recursive: true });
   writeWorldFiles(dir, filesIn); // 三键：字符串写入；null/undefined 删除（新目录下即无操作）
+  // 血缘（v2）：只做展示面用途（家谱连线），坏值降级成 null 而不整包拒绝（见 bundleForkedFrom）
+  const forkedFrom = bundleForkedFrom(w.forkedFrom);
+  // fork.md（v2）：只有非空字符串才落盘，且逐字节原样写——空串等同「没有这个文件」（与导出侧的 null 对齐），
+  // 免得落一个 0 字节 fork.md 让引擎的首个回合读到一份空指令
+  const forkMd = typeof w.forkMd === "string" && w.forkMd !== "" ? w.forkMd : null;
+  if (forkMd !== null) fs.writeFileSync(path.join(dir, FORK_FILE), forkMd);
   const files = readWorldFiles(dir);
   const snaps = Array.isArray(w.snapshots) ? w.snapshots.filter(isSnapshotEntry) : [];
   if (snaps.length) {
@@ -554,7 +617,7 @@ export function importWorld(root, bundle) {
     note: `${note}（导入）`, // 标注来源：一眼看出是导入的世界（note 已过 ≤200 校验）
     chapterNo: files.tree != null ? worldChapterNo(files.tree) : Number(w.chapterNo) || 1,
     lastPlayed: Date.now(),
-    forkedFrom: null,
+    forkedFrom, // v2 带血缘、v1 包与坏值都是 null（= 家谱里的根）
   };
   writeWorldsIndex(root, [...list, entry]);
   console.log(`[acp] world imported: ${w.worldId} → ${id}`);

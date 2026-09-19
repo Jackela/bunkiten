@@ -387,22 +387,28 @@ ADR-0007 许诺的「看两份存档差在哪」：剧情图节点详情在快�
 
 ### 世界线导出包（World Bundle）
 
-`GET /api/worlds/export?worldId=<id>` 回 `Content-Disposition: attachment; filename="<worldId>.world.json"`，体：
+`GET /api/worlds/export?worldId=<id>` 回 `Content-Disposition: attachment; filename="<worldId>.world.json"`，体（**v2**，v1.8 起）：
 
 ```json
-{ "format": "bunkiten-world", "version": 1, "exportedAt": "<ISO>",
+{ "format": "bunkiten-world", "version": 2, "exportedAt": "<ISO>",
   "world": { "worldId": "…", "preset": "…", "title": "…", "label": "…", "note": "…", "chapterNo": 3,
+             "forkedFrom": { "worldId": "…", "nodeId": "…", "seq": 1 },
              "files": { "state": "…", "summary": "…", "tree": "…" },
-             "snapshots": [ { "seq": 1, "at": "…", "kind": "turn", "nodeId": "…", "chapterNo": 1, "files": { … } } ] } }
+             "snapshots": [ { "seq": 1, "at": "…", "kind": "turn", "nodeId": "…", "chapterNo": 1, "files": { … } } ],
+             "forkMd": "# 分叉说明\n…" } }
 ```
+
+- **血缘（v2 新增的两个键）**：`world.forkedFrom` 是索引条目里的原值（根世界 / 老索引 → `null`），`world.forkMd` 是 `fork.md` 全文（引擎处理完首个回合会自行删除该文件，没有它就是 `null`）。v1 包没有这两个键——少了它们，**导入回来的分叉线在家谱里会变成根**（家谱只认 `forkedFrom`），正好把 v1.8「血缘从 `note` 挪进 `forkedFrom`」那次收拾抵消掉。除这两个键外键序与形状与 v1 一致（`forkedFrom` 排在元数据段末、`forkMd` 跟在 `files`/`snapshots` 之后），**下载文件名不变**。
+- 版本常量 `WORLD_BUNDLE_VERSION`（`server/worlds.mjs`，命名与 `presets.mjs` 的 `PRESET_BUNDLE_VERSION` 同款）：**导出写它、导入接受 `1..它`**（下一条）。
 
 `POST /api/worlds {action:"import", bundle}` 的校验与落盘纪律：
 
-- `format === "bunkiten-world" && version === 1 && WORLD_ID_RE.test(world.worldId)`；`files.state` 必须是**非空字符串**（空 state 会导入出一个不可玩的世界，一律拒绝）；`label ≤ 60` / `note ≤ 200`（超限 400，绝不静默截断）。
+- `format === "bunkiten-world" && 1 ≤ version ≤ WORLD_BUNDLE_VERSION && WORLD_ID_RE.test(world.worldId)`——**版本闸是区间不是等值**：v1 包照收、按当前形状补齐（`forkedFrom` 为 `null`、不落 `fork.md`），这就是 ROADMAP §1「旧包 accept + upgrade」策略的落地样板（刻意先于通用迁移钩子做：改动局部、收益立刻可见）。`files.state` 必须是**非空字符串**（空 state 会导入出一个不可玩的世界，一律拒绝）；`label ≤ 60` / `note ≤ 200`（超限 400，绝不静默截断）。
+- **血缘坏值降级，不整包拒绝**：`forkedFrom` 逐字段校验（`worldId` 过白名单、`nodeId` 非空字符串、`seq` 可选正整数），**任何一处不合形态整条降级为 `null`**——血缘只作家谱连线用，为它把玩家的整份档挡在门外不划算（与 `files.state` 的硬口径刻意相反）。`forkMd` 是非空字符串才逐字节原样落 `fork.md`（空串 = 「没有这个文件」，不落 0 字节文件）。
 - 快照逐条过 `isSnapshotEntry`（seq 1–9999 整数、at 非空字符串、kind ∈ turn|backup、nodeId/chapterNo 可空、files 三键为 string|null），不合法的条目被丢弃而非整包拒绝。
 - 重名（索引里有，**或磁盘上有目录但索引缺失**）→ `<id>-2`、`-3`…，绝不覆盖既有世界。
-- 落盘：三文件 + 快照目录 + 索引条目（`note` 追加「（导入）」，`forkedFrom: null`，`lastPlayed: now`）。
-- 客户端侧 `parseWorldBundle` 只做最小校验（能 JSON.parse、format/version 对、`world.worldId` 非空）——重名改名与文件写入一律由服务端裁决，前端不替服务端预判。
+- 落盘：三文件 + `fork.md`（包里有才写）+ 快照目录 + 索引条目（`note` 追加「（导入）」，`forkedFrom` = 包内血缘（v1 包与坏值都是 `null`），`lastPlayed: now`）。
+- 客户端侧 `parseWorldBundle` 只做最小校验（能 JSON.parse、format/version 对、`world.worldId` 非空）——重名改名与文件写入一律由服务端裁决，前端不替服务端预判。**它的版本闸当前仍只认 v1**（`src/store/slices/world.ts`）：放宽到 `1..2` 是服务端已就绪、客户端待同批落地的一步，在那之前应用内「导入」会本地挡下 v2 包（服务端 `POST /api/worlds` 已收）。
 
 ### 剧本导出包（Preset Bundle，v1.7）
 
@@ -608,7 +614,7 @@ presets/<剧本 id>/audio/音效-门响.wav       # 一次性音效
 | `/api/history?worldId=<id>[&seq=<n>]` | GET | 逐轮快照索引：`worldId` 不合法 400；不带 `seq` 回 `{ worldId, snapshots: [{ seq, at, kind, nodeId, chapterNo }] }`（**只回元信息、不带 `files`**）；带 `seq` 只读那一个文件、只回那一条（含 `files`；不存在则 `snapshots: []`） |
 | `/api/worlds` | GET | 世界线列表（可选 `?preset=<id>` 过滤）→ `{ worlds: [{ worldId, preset, title, label, note, chapterNo, lastPlayed, forkedFrom, exists }] }`；`label` 老索引补空串，`chapterNo` 读 story-tree.md、`lastPlayed` 取三文件最新 mtime（磁盘自愈），按最近游玩倒序 |
 | `/api/worlds` | POST | 世界线管理 `{ action }`：`create`（分配 id、写索引）/ `fork`（`{worldId,nodeId,seq?}` 复制三文件+回退+写 fork.md，不推演；带 `seq` 或该节点有快照时走精确快照）/ `restore`（`{worldId,seq}` 先写一条 backup 再覆盖三文件，回 `{ ok:true, backupSeq }`）/ `update`（`{worldId,label?,note?}` 显示名与备注，≤60/≤200，空串=清除）/ `import`（`{bundle}` 导入世界线包）/ `delete`（移索引 + 目录整体挪进 `state/trash/`，回 `{ ok:true, trashed:true }`，rename 失败回退直删标 `fallback:"purged"`）；未知动作或参数不合法 400 `{ ok:false, error }`，成功 200 `{ ok:true, … }` |
-| `/api/worlds/export?worldId=<id>` | GET | 导出世界线包：`Content-Disposition: attachment; filename="<worldId>.world.json"`，体为 `{ format:"bunkiten-world", version:1, exportedAt, world:{ …, files, snapshots } }`；worldId 非法或不存在 400 `{ ok:false, error }` |
+| `/api/worlds/export?worldId=<id>` | GET | 导出世界线包（**v2**，v1.8 起）：`Content-Disposition: attachment; filename="<worldId>.world.json"`，体为 `{ format:"bunkiten-world", version:2, exportedAt, world:{ …, forkedFrom, files, snapshots, forkMd } }`（血缘随包走，导入回来仍是父线的子节点；v1 的两个血缘键是 `null`）；worldId 非法或不存在 400 `{ ok:false, error }` |
 | `/api/tree` | GET | 剧情树原文 `?worldId=`（缺省 `main`）→ `{ worldId, markdown }`；无树 404（剧情图屏 `parseStoryTree` 解析用） |
 | `/api/state?worldId=<id>` | GET | 角色面板数据（v1.7）：读该世界 `state.md` 容错解析 → `{ worldId, status, protagonist, director, characters, flags, foreshadowing }`；`worldId` 缺失或非法 400、世界没有 `state.md` 404（`stateViewFor` 纯函数，root 可注入单测）。解析原则见「角色面板」 |
 | `/img?p=&t=&n=&preset=` | GET | 图片服务（解析顺序见上：当前剧本永久命中 → 会话兜底 → 旧档 `assets/` 兼容 → 白名单直服） |
@@ -799,7 +805,7 @@ theme:
 | `server/routes.mjs` | `createRequestHandler(ctx)` HTTP 路由链（闭包能力由入口注入）：`/api/presets`(GET,POST:import)/`/api/presets/export`、`/api/auth`、`/api/assets`(GET,POST:删除)、`/api/audio`/`/audio`、`/api/worlds`(GET,POST 全 action)/`/api/worlds/export`、`/api/history`、`/api/tree`、`/api/state`、`/img`、`/events`、`/prompt`、`/app` 静态托管（端点语义见「HTTP / SSE API 一览」） |
 | `server/config.mjs` | 路径与端口常量：`GAME_ROOT`/`BASE_PORT`/`PORT_MAX_RETRY`/`SESSION_FILE`/`WORLDS_ROOT` |
 | `shared/protocol.mjs` | 协议常量唯一真源（v1.7，见 `docs/adr/0012`）：`PROTOCOL_HEADS`（9 头）、`AUDIO_KINDS`/`AUDIO_EXTS`/`AUDIO_MIME`/`AUDIO_FILE_RE`/`AUDIO_REL_RE`（音频白名单与直服正则，后两者由前两者构造）、`ART_KINDS`/`ASSET_KINDS`/`ASSET_FILE_RE`（美术类型字面与资产文件名正则，v1.7 收尾收编；`ASSET_FILE_RE` 由 `ASSET_KINDS` 构造）、`DIRECTIVE_PREFIX_RE`（指令前缀正则，`pickEffort` 推理分档与 `isMainTurn` 正戏回合判定共用）。`src/lib/parser.ts` re-export（公共 API 不变）并从真源构造 `ART_LINE_BODY`/制作清单正则、`server/acp-server.mjs` import（并 re-export `AUDIO_KINDS`/`AUDIO_EXTS`/`ASSET_FILE_RE`/`ASSET_KINDS` 给 `scripts/doctor.mjs`）；`shared/protocol.d.mts` 是手写类型声明（tsc -b 按 `.mjs`→`.d.mts` 解析；vite/vitest/electron 运行时直接吃 `.mjs`）。`RULES` 刻意不收编：引擎只读 `.grok/` 提示词、不会 import 代码，server↔SKILL.md 双份 + lint 逐字比对仍是正确机制 |
-| `tests/parser.test.ts`、`tests/crafting.test.ts`、`tests/server.test.ts`、`tests/treeLayout.test.ts`、`tests/genealogy.test.ts`、`tests/diff.test.ts`、`tests/doctor.test.ts`、`tests/preload.test.ts`、`tests/ui.test.tsx`、`tests/integration/*` | 契约字符串快照与单测：开局指令四变体（含世界段）/续玩/剧情编辑、分项美术/重绘/章节规划/创作模式指令、`开演。`、清单（含差分项）/章标记与选项解析期望值（parser 65 例）、章节制作流水线指令序列（crafting 56 例，stub fetch）、世界线/资产落盘判定/协议解析/快照与导出导入/剧本导出包（往返/重名/文件名安全/扩展名与 base64 校验）/state.md 容错解析与 `/api/state` 路由判定、回合日志 `writeTurnLog` 与追问指令常量（server 112 例，含剧本体检端点与 `/api/state` 路由判定）、布局纯函数（treeLayout 7 例 + genealogy 8 例：家谱森林分层、孤儿 missingParent、fork 环终止、层内排序确定性与键盘步进）、快照对比纯函数（diff 8 例：全等/全增/全删/替换块相对顺序/空输入/空行/典型 state.md 好感度一行）、剧本体检查纯函数（doctor 12 例：tmp 根造 preset 覆盖七组判定、theme 双层回退与 checkAllPresets 汇总，见「剧本体检查」节）、组件含设置屏、自动前进与回退后分割线/待重同步（含在途中止）、动效降级打字机、主题字体族与对话框质感、重掷本回合全链（含快照数不足时入口不渲染）、角色面板渲染/秘密折叠/turn_end 重拉/空态、世界线家谱视图、快照对比面板、标题屏剧本导出/导入、同屏多立绘的队列渲染与让位档（ui 136 例）；立绘差分预热纯函数（preload 8 例：清单每剧本只拉一次、命中角色的基础与全部差分都进预载、失败静默）；另有真 server 子进程的集成测试 27 例（`integration/pipeline` 15、`integration/audio-history` 9、`integration/http-guard` 3——音频事件、快照落盘与精确回退、世界线与剧本的导出/导入往返、来源校验 403 与 body 上限 413、引擎 error response 的 409 传播、回合原文日志与缺选项段的质量守卫追问） |
+| `tests/parser.test.ts`、`tests/crafting.test.ts`、`tests/server.test.ts`、`tests/treeLayout.test.ts`、`tests/genealogy.test.ts`、`tests/diff.test.ts`、`tests/doctor.test.ts`、`tests/preload.test.ts`、`tests/ui.test.tsx`、`tests/integration/*` | 契约字符串快照与单测：开局指令四变体（含世界段）/续玩/剧情编辑、分项美术/重绘/章节规划/创作模式指令、`开演。`、清单（含差分项）/章标记与选项解析期望值（parser 65 例）、章节制作流水线指令序列（crafting 56 例，stub fetch）、世界线/资产落盘判定/协议解析/快照与导出导入/剧本导出包（往返/重名/文件名安全/扩展名与 base64 校验）/state.md 容错解析与 `/api/state` 路由判定、回合日志 `writeTurnLog` 与追问指令常量（server 116 例，含剧本体检端点与 `/api/state` 路由判定）、布局纯函数（treeLayout 7 例 + genealogy 8 例：家谱森林分层、孤儿 missingParent、fork 环终止、层内排序确定性与键盘步进）、快照对比纯函数（diff 8 例：全等/全增/全删/替换块相对顺序/空输入/空行/典型 state.md 好感度一行）、剧本体检查纯函数（doctor 12 例：tmp 根造 preset 覆盖七组判定、theme 双层回退与 checkAllPresets 汇总，见「剧本体检查」节）、组件含设置屏、自动前进与回退后分割线/待重同步（含在途中止）、动效降级打字机、主题字体族与对话框质感、重掷本回合全链（含快照数不足时入口不渲染）、角色面板渲染/秘密折叠/turn_end 重拉/空态、世界线家谱视图、快照对比面板、标题屏剧本导出/导入、同屏多立绘的队列渲染与让位档（ui 136 例）；立绘差分预热纯函数（preload 8 例：清单每剧本只拉一次、命中角色的基础与全部差分都进预载、失败静默）；另有真 server 子进程的集成测试 27 例（`integration/pipeline` 15、`integration/audio-history` 9、`integration/http-guard` 3——音频事件、快照落盘与精确回退、世界线与剧本的导出/导入往返、来源校验 403 与 body 上限 413、引擎 error response 的 409 传播、回合原文日志与缺选项段的质量守卫追问） |
 | `tests/contract.test.ts` | v1.6 起契约 lint（防漂移门禁，读源码与文档、不起子进程）：`PROTOCOL_HEADS` 唯一真源（`shared/protocol.mjs` 源码字面 + import 值 + parser re-export 链三方钉住）↔ server/parser 解析出口 ↔ `SKILL.md`「标记格式备忘」/本文档、`RULES` 逐字副本（server 常量 ↔ 本节代码块）、指令字符串双处存在（`parser.ts` ↔ `SKILL.md`）、`DIRECTIVE_PREFIX_RE` 单一真源（`pickEffort`/`isMainTurn` 函数体都引用它、server 无第二份前缀字面）、主题白名单与兜底主题（server ↔ `src/theme.ts` 同集同值）、各测试文件的 `it(`/`test(` 用例数与上面那行声明的分组数字逐一比对、设置键 `bunkiten.settings.v1` 与音频扩展名三处一致（音频常量断言指向 `shared/protocol.mjs` 真源）、美术类型集合与资产文件名正则真源（`ART_KINDS`/`ASSET_KINDS`/`ASSET_FILE_RE`：双侧构造 + server/scripts 无第二份字面）。**它自己的用例不计入上面那组合计口径**（`tests/e2e/**` 同样不在口径内） |
 
 v1.3 三组新契约的同步点速查（同一改动五处联动的具体落点）：

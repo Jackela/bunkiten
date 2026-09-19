@@ -106,7 +106,9 @@ export default function TopBar() {
         <RailButton label="设置" testId="settings" onClick={openSettings} />
         <RailButton label="历史" testId="history" onClick={toggleDrawer} />
         <RailButton label="角色" aria="角色面板" testId="characters" onClick={toggleCharacters} />
-        <RailButton label="画廊" testId="assets" onClick={openAssets} />
+        {/* 不给 openAssets 传事件对象：它的首参是「顺手落的 selected」（标题屏用），传 MouseEvent 会把
+            store 的 selected 写坏——画廊 rail 用的是当前已选的剧本 */}
+        <RailButton label="画廊" testId="assets" onClick={() => openAssets()} />
         <RailButton label="剧情图" testId="tree" onClick={openTree} />
         {canReroll && <RailButton label="重演" aria="重演这一幕" testId="reroll" onClick={() => void rerollTurn()} />}
         <RailButton label="重开" onClick={() => send("/new-game")} />

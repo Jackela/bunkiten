@@ -1,7 +1,6 @@
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -10,8 +9,10 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { motion } from "framer-motion";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Maximize2, ZoomIn, ZoomOut } from "lucide-react";
 import { fetchWorlds, postWorld, worldExportUrl, type WorldEntry } from "../lib/acp";
+import { focusableElements } from "../lib/focusTrap";
 import { genealogyStep, layoutGenealogy, type GenealogyLayout } from "../lib/genealogy";
 import { truncate } from "../lib/text";
 import { fitView, panView, viewBoxOf, zoomViewAt, type TreeView } from "../lib/treeLayout";
@@ -34,6 +35,17 @@ const NOTE_MAX = 200;
 /** ⋯ 菜单项基类（三项共用；删除/确认项在其后追加红色 hover 类） */
 const MENU_ITEM_CLS =
   "w-full rounded-lg px-3 py-2 text-left text-ui text-ink-hint transition-colors hover:bg-white/[.06] hover:text-ink";
+
+/** 菜单项里「选中即关」的例外：两段确认要留在菜单里、导出要等下载派发完再关，都自己收尾 */
+const KEEP_MENU_OPEN = (event: Event) => event.preventDefault();
+
+/**
+ * Esc 就地关菜单、且**不许**冒到 App 的 Esc 关闭链（那一下会把整屏关回标题屏）。
+ * Radix 的 DismissableLayer 在 document 的**捕获阶段**监听 Esc，这里在它那一拍上 stopPropagation：
+ * 事件到此为止，既到不了 target 冒泡，也到不了挂在 window 上的关闭链；关菜单由 Radix 的 onDismiss
+ * 继续（它看的是 defaultPrevented，我们没 preventDefault，所以不会被跳过）。
+ */
+const swallowEscape = (event: KeyboardEvent) => event.stopPropagation();
 
 /**
  * 相对时间中文文案（世界线行的「最近游玩」；时钟回拨/时间戳缺失都算「更早」兜底）。
@@ -432,6 +444,14 @@ function GenealogyCanvas({
  * v1.8 家谱画布：缩放平移（滚轮锚点 / 拖拽 / 双击 / ± 与适应 / `+ - 0`，复用 `lib/treeLayout` 的
  * TreeView 纯函数）、渲染宽度只封上界（小森林不再把节点撑到 ~490px）、详情条吸底 +
  * 提示挂在画布工具条（1440×900 不滚动即可见）。
+ * v1.9：行 ⋯ 菜单迁到 **Radix DropdownMenu**（`@radix-ui/react-dropdown-menu`，ROADMAP 第 3 项的第一面）。
+ * 原语接走了手写的那几样：↑↓/Home/End 走位、typeahead、`role="menu"/menuitem` 与 `aria-haspopup/expanded/controls`、
+ * Esc 与点外面关闭、开时焦点进第一项、关时焦点归还触发器、贴边自动翻面。因此**删掉**了手写的三处 document 级
+ * 监听（mousedown 判点外 / 捕获阶段 Esc / focusin 出走）与 `menuUp` 的 offsetHeight 量高。
+ * 两件本屏仍自己管：① Esc 靠 `onEscapeKeyDown` 就地 stopPropagation（Radix 在 document 捕获阶段监听，
+ * 不拦就会继续冒到 App 挂在 window 上的 Esc 关闭链，那一下连整屏一起关回标题屏）；② Tab 走项
+ * （Radix 的菜单项 tabIndex=-1 且内容会吞掉 Tab，见 `onMenuKeyDown`）。
+ * 弹层**不 portal**：主题变量注入在 App 根容器而非 `:root`，portal 到 body 会掉回初始 accent。
  */
 export default function WorldsScreen() {
   const selected = useGameStore((s) => s.selected);
@@ -480,8 +500,6 @@ export default function WorldsScreen() {
   const [listJumpId, setListJumpId] = useState<string | null>(null);
   /** 打开着 ⋯ 菜单的世界 id（同屏只开一个；null=全关） */
   const [menuId, setMenuId] = useState<string | null>(null);
-  /** 菜单向上翻：默认向下展开，靠近视口底边（末行）时翻到触发器上方，别被折叠线裁掉 */
-  const [menuUp, setMenuUp] = useState(false);
 
   /** 行元素引用：↑↓ 把 DOM 焦点一起搬到光标行（roving tabIndex 的完整语义，不是只换个描边） */
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
@@ -489,21 +507,25 @@ export default function WorldsScreen() {
   const fileRef = useRef<HTMLInputElement | null>(null);
   /** 打开编辑器时把光标送进「显示名」输入框 */
   const labelRef = useRef<HTMLInputElement | null>(null);
-  /** 打开着的那行 ⋯ 菜单：外层（触发器 + 弹层）用来判点外面，触发器用来接回 Esc 后的焦点 */
-  const menuWrapRef = useRef<HTMLDivElement | null>(null);
-  const menuTriggerRef = useRef<HTMLButtonElement | null>(null);
-  /** 弹层本体：开着时量一次底边，决定向下还是向上展开 */
-  const menuPopupRef = useRef<HTMLDivElement | null>(null);
+  /** 打开着的那行 ⋯ 菜单的弹层本体（把焦点送进第一项、Tab 走项都按它查菜单项） */
+  const [menuPopup, setMenuPopup] = useState<HTMLDivElement | null>(null);
+  /** 弹层节点的挂载回调：用 state 而不是 ref —— Radix 的 Presence 比本屏的状态晚一拍才把弹层挂上来，
+   *  ref 在本屏那次 effect 里还是 null（拿不到节点就没法把焦点送进第一项），state 变更能再触发一轮 effect */
+  const attachMenuPopup = useCallback((node: HTMLDivElement | null) => setMenuPopup(node), []);
+  /**
+   * 关菜单时**不要**把焦点归还触发器：焦点已经由我们自己安置（进改名编辑器 / Tab 走出菜单）。
+   * Radix 在弹层卸载时默认把焦点送回触发器（DropdownMenuContent 的 onCloseAutoFocus），
+   * 那一下会把玩家刚点开的输入框焦点甩掉（编辑器里打字打到一半光标就飞了）。
+   */
+  const keepFocusOnCloseRef = useRef(false);
 
   /**
    * 关菜单：同时撤销半截删除确认（重开菜单回到「改名/导出/删除」第一屏）。
-   * 刻意定义在下面那两条 document 级 effect **之前**：effect 的依赖数组在渲染期就地求值，
-   * 声明在后会踩 TDZ（整屏渲染直接抛错）。useCallback 只为身份稳定——两个监听把它当依赖。
+   * 三条关法都汇到这里：Radix 的 onOpenChange(false)（Esc / 点外面 / 焦点出走 / 选中即关）。
    */
   const closeMenu = useCallback(() => {
     setMenuId(null);
     setConfirmId(null);
-    setMenuUp(false);
   }, []);
 
   const list = useMemo(() => worlds ?? [], [worlds]);
@@ -562,72 +584,22 @@ export default function WorldsScreen() {
     if (editId) labelRef.current?.focus();
   }, [editId]);
 
-  // 菜单开着时把焦点送进第一项（键盘路径：⋯ 上 Enter → 菜单第一项已聚焦 → ↓ 走位/Tab 前进）。
+  // 菜单开着时把焦点送进第一项（键盘路径：⋯ 上 Enter → 菜单第一项已聚焦 → ↓ 走位/Tab 前进；
+  // 鼠标路径 Radix 默认只把焦点落在弹层上，这里一并收齐，两种打开方式结果一致）。
   // confirmId 也进依赖：删除→确认这一拍里「第一项」变成了确认按钮，焦点要跟着换过去
   // （否则被替换掉的「删除」按钮会把焦点丢回 body）。
   useEffect(() => {
-    if (!menuId) return;
-    menuWrapRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
-  }, [menuId, confirmId]);
+    if (!menuId || !menuPopup) return;
+    menuPopup.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+  }, [menuId, confirmId, menuPopup]);
 
-  // 点菜单外面关掉：用 mousedown（在 click 之前）判定，别的行的 ⋯ 因此能「先关这行、再开自己」。
-  // 关菜单顺手撤销半截删除确认——菜单一关，那条确认就不该还挂着。
-  useEffect(() => {
-    if (!menuId) return;
-    const onDown = (e: MouseEvent) => {
-      if (menuWrapRef.current?.contains(e.target as Node)) return;
-      closeMenu();
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [menuId, closeMenu]);
-
-  // 菜单开着时的两条 document 级兜底（不能只靠行上的 onKeyDown：它只在焦点还在菜单里时收得到键）：
-  // ① Esc 在**捕获阶段**就地关菜单并 stopPropagation——Tab 一旦走出菜单，按键就冒到 App 挂在 window 上的
-  //    Esc 关闭链（那一下会连整屏一起关回标题屏，而 aria-expanded 还留着 true）。捕获阶段先于 React 根容器，
-  //    也先于 window 的冒泡监听，拦在这里最靠前；非 Esc 的按键照旧放行（探针/别处监听都不受影响）。
-  // ② 焦点离开这一行（focusin 落到行外）就关菜单：菜单的存活跟着焦点走，不留「开着却没人管」的孤儿菜单。
-  useEffect(() => {
-    if (!menuId) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape" || e.isComposing) return;
-      e.preventDefault();
-      e.stopPropagation();
-      closeMenu();
-      menuTriggerRef.current?.focus(); // Esc 收菜单是「回到触发器」：卸载时焦点会丢回 body，键盘用户会断线
-    };
-    const onFocusIn = (e: FocusEvent) => {
-      if (rowRefs.current.get(menuId)?.contains(e.target as Node)) return;
-      closeMenu();
-    };
-    document.addEventListener("keydown", onKey, true);
-    document.addEventListener("focusin", onFocusIn);
-    return () => {
-      document.removeEventListener("keydown", onKey, true);
-      document.removeEventListener("focusin", onFocusIn);
-    };
-  }, [menuId, closeMenu]);
-
-  // ⋯ 菜单默认向下展开，末行的菜单会被视口折叠线裁掉。开菜单后量一次：触发器底边 + 菜单高 + 间隔
-  // 越过视口下沿就翻到上方。刻意量「触发器底边 + offsetHeight」而不是弹层自己的 bottom——
-  // 后者会读回已经翻上去的位置，第二次量就把结论推翻（两段确认换高时尤其明显）；本式与放置方向无关，
-  // 所以不会自激。layout effect：在绘制前定好位，玩家看不到「先向下再跳上去」。confirmId 进依赖
-  // 因为「删除 → 确认删除/取消」会换高。
-  useLayoutEffect(() => {
-    if (!menuId) return;
-    const el = menuPopupRef.current;
-    if (!el) return;
-    const anchorBottom = menuTriggerRef.current?.getBoundingClientRect().bottom ?? el.getBoundingClientRect().bottom;
-    setMenuUp(anchorBottom + el.offsetHeight + 12 > window.innerHeight);
-  }, [menuId, confirmId]);
-
-  // 键盘：↑↓ 移动高亮，Enter 继续高亮的世界线；确认态/编辑态下全部让位给按钮与输入框。
-  // 家谱视图下让位（方向键由家谱节点自己接，Enter 只选中不清档续演）
+  /** 键盘：↑↓ 移动高亮，Enter 继续高亮的世界线；确认态/编辑态/菜单开着时全部让位。
+   *  家谱视图下让位（方向键由家谱节点自己接，Enter 只选中不清档续演） */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.isComposing) return; // 中文输入法组字中的按键不算导航
       if (view !== "list") return; // 家谱视图：节点级键盘，不做屏级列表导航
-      if (confirmId || editId) return; // 确认删除/行内改名中：不拦截
+      if (confirmId || editId || menuId) return; // 确认删除/行内改名/菜单开着：不拦截
       const el = e.target instanceof HTMLElement ? e.target : null;
       // 焦点在按钮/输入框上时不做屏级导航，避免 Enter 被激活两次（⋯ 菜单项也在这条里）
       if (el && (el.tagName === "BUTTON" || el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
@@ -644,7 +616,7 @@ export default function WorldsScreen() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [confirmId, editId, engineBusy, focus, list, resumeWorld, view]);
+  }, [confirmId, editId, menuId, engineBusy, focus, list, resumeWorld, view]);
 
   /** 继续：目录缺失或引擎忙时不可用（resumeWorld 会立刻发续演指令） */
   const continueWorld = (entry: WorldEntry) => {
@@ -652,16 +624,60 @@ export default function WorldsScreen() {
     resumeWorld(entry);
   };
 
-  /** ⋯ 开/关：换行打开时先收掉上一行的菜单与半截确认 */
-  const toggleMenu = (entry: WorldEntry) => {
-    if (menuId === entry.worldId) {
-      closeMenu();
-      return;
-    }
+  /**
+   * ⋯ 开菜单：清掉上一次的行内提示，半截删除确认归零。
+   * 开/关的切换交给 Radix 的触发器（pointerdown 与 Enter/Space/↓），屏内只接 onOpenChange。
+   */
+  const openMenuFor = (entry: WorldEntry) => {
     setActionError("");
     setActionNotice("");
     setConfirmId(null);
     setMenuId(entry.worldId);
+  };
+
+  /**
+   * 菜单内容区的键盘：Tab 在菜单项之间走位（本仓既有约定：Tab 走项、Esc 收菜单，见
+   * tests/e2e-ui/worlds.spec.ts 的键盘用例；键位速查卡里也写着「Tab 行内按钮与 ⋯ 菜单」）。
+   * 为什么必须自己搬：Radix 的菜单项是 `tabIndex=-1`（焦点由 roving 组程序化驱动），而菜单内容
+   * 又会无条件 `preventDefault` 掉 Tab——不接手的话，Tab 在菜单里等于按了没反应。
+   * 走到两头就把 Tab 交还页面：把焦点搬到文档序里弹层之后（Tab）/ 之前（Shift+Tab）的第一个可聚焦元素上，
+   * 菜单随之由 DismissableLayer 的 focusOutside 收掉——与手写版同形（那时菜单项是普通 button/a，
+   * Tab 天然走到行外并把菜单带走）。刻意**不**回绕：菜单不该是键盘陷阱（WCAG 2.1.2）。
+   */
+  const onMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.nativeEvent.isComposing) {
+      event.preventDefault(); // 中文输入法组字中的按键不算导航/typeahead（本仓惯例）
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const popup = menuPopup;
+    const items = [...(popup?.querySelectorAll<HTMLElement>('[role="menuitem"]:not([aria-disabled="true"])') ?? [])];
+    // 焦点不在任何菜单项上（鼠标打开时 Radix 只聚焦弹层本身）：Tab 进首项、Shift+Tab 进末项
+    const at = items.indexOf(document.activeElement as HTMLElement);
+    const next = items[at < 0 ? (event.shiftKey ? items.length - 1 : 0) : at + (event.shiftKey ? -1 : 1)];
+    event.preventDefault(); // 焦点由下面两行决定；顺带让 Radix 的 Tab 处理让位（它只吞键、不搬焦点）
+    if (next) {
+      next.focus();
+      return;
+    }
+    // 「之后/之前的第一个可聚焦元素」要排除弹层自己的后代：菜单项是 button，compareDocumentPosition
+    // 对后代同样带 FOLLOWING 位，不过滤就会把自己再聚焦一遍
+    const outside = popup
+      ? focusableElements(document.body).filter(
+          (el) =>
+            !popup.contains(el) &&
+            popup.compareDocumentPosition(el) &
+              (event.shiftKey ? Node.DOCUMENT_POSITION_PRECEDING : Node.DOCUMENT_POSITION_FOLLOWING),
+        )
+      : [];
+    (event.shiftKey ? outside[outside.length - 1] : outside[0])?.focus();
+  };
+
+  /** 弹层卸载时 Radix 默认把焦点送回触发器；玩家进的是行内编辑器时别抢（见 keepFocusOnCloseRef） */
+  const onMenuCloseAutoFocus = (event: Event) => {
+    if (!keepFocusOnCloseRef.current) return;
+    keepFocusOnCloseRef.current = false;
+    event.preventDefault();
   };
 
   /** 新建世界线：id 由 server 分配，成功才带着 id 去捏人；失败留在本屏展示错误 */
@@ -1054,112 +1070,134 @@ export default function WorldsScreen() {
                           {engineBusy ? "忙碌中" : "继续"}
                         </button>
 
-                        {/* ⋯ 菜单：触发器 + 弹层同在一个容器里（点外面就以此为准）。Esc 与「焦点离开本行」
-                            的收尾都在 document 级监听里（见上面那两条 effect）——不挂在行上，因为 Tab 走出
-                            菜单后行上的处理器再也收不到键。菜单按钮不是 roving 的一部分——
-                            每行都有自己的 Tab 位，读屏/键盘随时够得着 */}
-                        <div className="relative" ref={openMenu ? menuWrapRef : undefined}>
-                          <button
-                            type="button"
-                            ref={openMenu ? menuTriggerRef : undefined}
-                            data-testid={`world-menu-${entry.worldId}`}
-                            tabIndex={0}
-                            aria-haspopup="menu"
-                            aria-expanded={openMenu}
-                            aria-label={`世界线 ${name} 的更多操作`}
-                            onClick={() => toggleMenu(entry)}
-                            className={`rounded-lg border px-3 py-1.5 text-ui tracking-[.1em] transition-colors ${
-                              openMenu
-                                ? "border-gold/40 text-ink"
-                                : "border-white/10 text-ink-hint hover:border-gold/40 hover:text-ink"
-                            }`}
+                        {/* ⋯ 菜单（v1.9：迁到 Radix DropdownMenu，非 portal）。原语负责：↑↓/Home/End 的
+                            roving 走位、typeahead（按菜单项文案前缀匹配，默认 1s 内连击拼接）、
+                            role=menu/menuitem 与 aria-haspopup/aria-expanded/aria-controls、Esc 与点外面关闭
+                            （DismissableLayer：Esc 走 document 捕获阶段，我们在它那一拍 stopPropagation，
+                            见 swallowEscape）、开时焦点进第一项、关时焦点归还触发器、擦边时翻到触发器上方（flip）。
+                            本屏自己留的：删除的两段确认（收在菜单里）、导出下载的延后关、Tab 走位（见 onMenuKeyDown）。
+                            刻意**不** portal 到 body：主题 CSS 变量注入在 App 根容器而不是 :root，portal 出去
+                            会掉回 global.css 的初始 accent（见 docs/ROADMAP.md 第 3 项）。modal=false：
+                            菜单不是模态——不 aria-hidden 背景、不锁滚动、Tab 可以走出菜单。
+                            菜单按钮不是 roving 的一部分——每行都有自己的 Tab 位，读屏/键盘随时够得着 */}
+                        <div className="relative">
+                          <DropdownMenu.Root
+                            modal={false}
+                            open={openMenu}
+                            onOpenChange={(next) => (next ? openMenuFor(entry) : closeMenu())}
                           >
-                            ⋯
-                          </button>
-
-                          {openMenu && (
-                            <div
-                              ref={menuPopupRef}
-                              role="menu"
-                              data-testid={`world-menu-popup-${entry.worldId}`}
-                              aria-label={`世界线 ${name} 的操作`}
-                              className={`absolute right-0 z-20 grid w-44 gap-0.5 shell-panel rounded-xl p-1 ${menuUp ? "bottom-full mb-1" : "top-full mt-1"}`}
+                            <DropdownMenu.Trigger
+                              data-testid={`world-menu-${entry.worldId}`}
+                              aria-label={`世界线 ${name} 的更多操作`}
+                              className={`rounded-lg border px-3 py-1.5 text-ui tracking-[.1em] transition-colors ${
+                                openMenu
+                                  ? "border-gold/40 text-ink"
+                                  : "border-white/10 text-ink-hint hover:border-gold/40 hover:text-ink"
+                              }`}
                             >
-                              {/* 两段式确认收在菜单里：首点「删除」变「确认删除/取消」，二点才发删除 */}
+                              ⋯
+                            </DropdownMenu.Trigger>
+
+                            <DropdownMenu.Content
+                              ref={attachMenuPopup}
+                              data-testid={`world-menu-popup-${entry.worldId}`}
+                              // 向下展开、右对齐、留 6px 缝（等价于原来的 right-0 mt-1）；贴到视口底边时 Radix 自动翻上去
+                              side="bottom"
+                              align="end"
+                              sideOffset={6}
+                              onEscapeKeyDown={swallowEscape}
+                              onCloseAutoFocus={onMenuCloseAutoFocus}
+                              onKeyDown={onMenuKeyDown}
+                              className="z-20 grid w-44 gap-0.5 shell-panel rounded-xl p-1"
+                            >
+                              {/* 两段式确认收在菜单里：首点「删除」变「确认删除/取消」，二点才发删除。
+                                  三项都 preventDefault 掉「选中即关」：确认态要留在菜单里，导出要等下载派发完 */}
                               {confirming ? (
                                 <>
-                                  <button
-                                    type="button"
-                                    role="menuitem"
-                                    data-testid={`world-confirm-${entry.worldId}`}
-                                    aria-label={`确认删除世界线 ${name}`}
-                                    disabled={busy}
-                                    onClick={() => removeWorld(entry)}
-                                    className={`${MENU_ITEM_CLS} text-red-300 hover:bg-red-500/20 hover:text-red-200 disabled:cursor-not-allowed disabled:text-ink-faint`}
-                                  >
-                                    {busy ? "删除中…" : "确认删除"}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    role="menuitem"
-                                    aria-label={`取消删除世界线 ${name}`}
-                                    disabled={busy}
-                                    onClick={() => setConfirmId(null)}
-                                    className={`${MENU_ITEM_CLS} disabled:cursor-not-allowed disabled:text-ink-faint`}
-                                  >
-                                    取消
-                                  </button>
+                                  <DropdownMenu.Item asChild disabled={busy} onSelect={KEEP_MENU_OPEN} onClick={() => removeWorld(entry)}>
+                                    <button
+                                      type="button"
+                                      data-testid={`world-confirm-${entry.worldId}`}
+                                      aria-label={`确认删除世界线 ${name}`}
+                                      disabled={busy}
+                                      className={`${MENU_ITEM_CLS} text-red-300 hover:bg-red-500/20 hover:text-red-200 disabled:cursor-not-allowed disabled:text-ink-faint`}
+                                    >
+                                      {busy ? "删除中…" : "确认删除"}
+                                    </button>
+                                  </DropdownMenu.Item>
+                                  <DropdownMenu.Item asChild disabled={busy} onSelect={KEEP_MENU_OPEN} onClick={() => setConfirmId(null)}>
+                                    <button
+                                      type="button"
+                                      data-testid={`world-cancel-${entry.worldId}`}
+                                      aria-label={`取消删除世界线 ${name}`}
+                                      disabled={busy}
+                                      className={`${MENU_ITEM_CLS} disabled:cursor-not-allowed disabled:text-ink-faint`}
+                                    >
+                                      取消
+                                    </button>
+                                  </DropdownMenu.Item>
                                 </>
                               ) : (
                                 <>
-                                  <button
-                                    type="button"
-                                    role="menuitem"
-                                    data-testid={`world-edit-${entry.worldId}`}
-                                    aria-label={`改名世界线 ${name}`}
+                                  <DropdownMenu.Item
+                                    asChild
                                     onClick={() => {
+                                      // 关菜单后焦点归输入框（不是触发器）——Radix 的关闭自动对焦要因此让开
+                                      keepFocusOnCloseRef.current = true;
                                       closeMenu();
                                       // 该行已经在改名：只把光标送回输入框，别用服务端现值盖掉玩家还没保存的改动
                                       if (editing) labelRef.current?.focus();
                                       else openEdit(entry);
                                     }}
-                                    className={MENU_ITEM_CLS}
                                   >
-                                    改名
-                                  </button>
+                                    <button
+                                      type="button"
+                                      data-testid={`world-edit-${entry.worldId}`}
+                                      aria-label={`改名世界线 ${name}`}
+                                      className={MENU_ITEM_CLS}
+                                    >
+                                      改名
+                                    </button>
+                                  </DropdownMenu.Item>
                                   {/* 导出走浏览器下载：href 指向 /api/worlds/export（服务端带 Content-Disposition），
                                       download 属性给本地落盘兜一个 <worldId>.world.json 的名字。
                                       关菜单推迟一拍：浏览器要等事件派发走完才执行 <a download> 的默认动作，
-                                      在这一拍里把它卸载掉会把下载掐掉 */}
-                                  <a
-                                    role="menuitem"
-                                    href={worldExportUrl(entry.worldId)}
-                                    download={`${entry.worldId}.world.json`}
-                                    data-testid={`world-export-${entry.worldId}`}
-                                    aria-label={`导出世界线 ${name}`}
-                                    onClick={() => window.setTimeout(closeMenu, 0)}
-                                    className={`${MENU_ITEM_CLS} block`}
-                                  >
-                                    导出
-                                  </a>
-                                  <button
-                                    type="button"
-                                    role="menuitem"
-                                    data-testid={`world-delete-${entry.worldId}`}
-                                    aria-label={`删除世界线 ${name}`}
+                                      在这一拍里把它卸载掉会把下载掐掉；`onSelect` 的 preventDefault 是同一件事的另一半——
+                                      Radix 默认「选中即关」，不拦的话菜单在 click 那一拍就没了。 */}
+                                  <DropdownMenu.Item asChild onSelect={KEEP_MENU_OPEN}>
+                                    <a
+                                      href={worldExportUrl(entry.worldId)}
+                                      download={`${entry.worldId}.world.json`}
+                                      data-testid={`world-export-${entry.worldId}`}
+                                      aria-label={`导出世界线 ${name}`}
+                                      onClick={() => window.setTimeout(closeMenu, 0)}
+                                      className={`${MENU_ITEM_CLS} block`}
+                                    >
+                                      导出
+                                    </a>
+                                  </DropdownMenu.Item>
+                                  <DropdownMenu.Item
+                                    asChild
+                                    onSelect={KEEP_MENU_OPEN}
                                     onClick={() => {
                                       setActionError("");
                                       setActionNotice("");
                                       setConfirmId(entry.worldId);
                                     }}
-                                    className={`${MENU_ITEM_CLS} hover:bg-red-500/15 hover:text-red-300`}
                                   >
-                                    删除
-                                  </button>
+                                    <button
+                                      type="button"
+                                      data-testid={`world-delete-${entry.worldId}`}
+                                      aria-label={`删除世界线 ${name}`}
+                                      className={`${MENU_ITEM_CLS} hover:bg-red-500/15 hover:text-red-300`}
+                                    >
+                                      删除
+                                    </button>
+                                  </DropdownMenu.Item>
                                 </>
                               )}
-                            </div>
-                          )}
+                            </DropdownMenu.Content>
+                          </DropdownMenu.Root>
                         </div>
                       </div>
                     </div>

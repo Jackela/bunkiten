@@ -389,7 +389,12 @@ export interface GameStore {
   toggleDrawer(): void;
   setTypingDone(done: boolean): void;
   handleEvent(event: AcpEvent): void;
-  openAssets(): void;
+  /**
+   * 打开画廊（overlay；只切屏，不动回合与画面状态）。
+   * 传 `preset` 时顺手把 `selected` 落到它——标题屏的「素材」用当前中央卡，避免标题屏还没插卡时
+   * 用到一个空或上一局的 `selected`（与 `openCheck` 同一口径：只落 selected，不进世界线屏、不重置运行态）。
+   */
+  openAssets(preset?: Preset | null): void;
   openCreation(): void;
   /** 从 overlay 屏返回进入前的原屏 */
   closeOverlay(): void;
