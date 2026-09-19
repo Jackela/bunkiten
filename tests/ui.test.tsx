@@ -30,6 +30,7 @@ import PresetCheckScreen from "../src/components/PresetCheckScreen";
 import App, { StatusAnnouncer } from "../src/App";
 import { useGameStore, type PreloadItem } from "../src/store/game";
 import { FADE_MS, MAX_SFX, SFX_TIMEOUT_MS, audioManager } from "../src/lib/audio";
+import { focusableElements } from "../src/lib/focusTrap";
 import { AUTO_ADVANCE_OPTIONS, DEFAULT_SETTINGS, SETTINGS_STORAGE_KEY, TEXT_SPEED_MS, loadSettings } from "../src/lib/settings";
 import { isLegacyForkNote } from "../src/lib/worlds";
 import { playerStatus } from "../src/lib/status";
@@ -51,6 +52,28 @@ const PRESET: Preset = {
 
 function jsonResponse(body: unknown, status = 200): Response {
   return { ok: status < 400, status, json: async () => body } as unknown as Response;
+}
+
+/**
+ * 焦点归还用例的「触发器」探针：开层前拿着焦点的那个元素（现实里是命令轨上的「回想」/「角色」/「返回」按钮）。
+ * 单独挂一个同形按钮而不是把整屏搬进用例——断言的是「焦点回到开层前的那个元素」，与它长什么样无关。
+ * 用完自己 `remove()`：afterEach 的 cleanup 只管 RTL 容器，管不到这个手挂在 body 上的节点。
+ */
+function focusProbe(): HTMLButtonElement {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.textContent = "焦点探针";
+  document.body.appendChild(btn);
+  btn.focus();
+  return btn;
+}
+
+/**
+ * 派发一次 Tab / Shift+Tab。jsdom 不实现 Tab 的默认行为，「谁搬焦点」完全由 src/lib/focusTrap 的
+ * keydown 决定——所以这里断言的正是陷阱自己的回绕判定（不依赖真实浏览器的 Tab 顺序）。
+ */
+function pressTab(shift = false): void {
+  fireEvent.keyDown(document.activeElement ?? document.body, { key: "Tab", shiftKey: shift });
 }
 
 /**
@@ -448,7 +471,7 @@ describe("CreationScreen：选项 chip 化与排队提示", () => {
     expect(screen.getByRole("button", { name: "深海观测站" })).toBeTruthy();
   });
 
-  it("chip 点击只填输入框不发送；排队消息显示提示行", async () => {
+  it("chip 点击只填输入框不发送；排队消息显示提示行；返回确认层带模态语义与焦点陷阱", async () => {
     const prompts: string[] = [];
     vi.stubGlobal(
       "fetch",
@@ -464,6 +487,33 @@ describe("CreationScreen：选项 chip 化与排队提示", () => {
 
     useGameStore.setState({ pendingCreationMessage: "我的构想" });
     await waitFor(() => expect(screen.getByText("就绪后自动发送")).toBeTruthy());
+
+    // —— v1.8 a11y：返回确认层（Esc 链第三环）的模态语义 + 焦点陷阱 + 关闭归还 ——
+    const headerBack = screen.getByRole("button", { name: "返回" });
+    headerBack.focus(); // 现实里点「返回」就会聚焦它，它也是开层前的「上一个元素」
+    act(() => {
+      useGameStore.getState().requestCreationExit(); // 有对话 → 开确认层（不是直接返回）
+    });
+    const exit = screen.getByTestId("creation-exit-prompt");
+    expect(exit.getAttribute("role")).toBe("dialog");
+    expect(exit.getAttribute("aria-modal")).toBe("true");
+    expect(exit.getAttribute("aria-label")).toBe("返回确认"); // 名字与正文的可见问句分开，读屏不重复念
+    const back = within(exit).getByRole("button", { name: "返回" });
+    const cancel = within(exit).getByRole("button", { name: "取消" });
+    // 开层把焦点从输入框送进层内第一个可聚焦元素：App 的 Esc 关闭链在「正在打字」时不拦键，
+    // 焦点不在输入框里，确认层才能被 Esc 关掉（焦点陷阱顺手补上这条路径）
+    expect(document.activeElement).toBe(back);
+    expect(focusableElements(exit)).toEqual([back, cancel]);
+    cancel.focus();
+    pressTab(); // 末 → 首
+    expect(document.activeElement).toBe(back);
+    pressTab(true); // 首 → 末
+    expect(document.activeElement).toBe(cancel);
+
+    act(() => {
+      useGameStore.getState().closeCreationExitPrompt();
+    });
+    expect(document.activeElement).toBe(headerBack); // 关闭归还：回到开层前的「返回」按钮
   });
 });
 
@@ -1974,7 +2024,9 @@ describe("AssetsScreen：选择模式、批量重绘与批量删除（v1.6）", 
   it("预览模态：role=dialog + aria-modal + 关闭按钮聚焦；单项重绘仍是同一条流水线（N=1）", async () => {
     render(<AssetsScreen />);
     await waitFor(() => expect(screen.getByTestId("asset-card-薇拉-微笑")).toBeTruthy());
-    fireEvent.click(screen.getByTestId("asset-card-薇拉-微笑"));
+    const card = screen.getByTestId("asset-card-薇拉-微笑");
+    card.focus(); // 真实浏览器里点按钮就会聚焦它；jsdom 的 click 不搬焦点，这里显式落一次（关闭归还的断言要用）
+    fireEvent.click(card);
 
     const dialog = screen.getByRole("dialog");
     expect(dialog.getAttribute("aria-modal")).toBe("true");
@@ -1982,6 +2034,15 @@ describe("AssetsScreen：选择模式、批量重绘与批量删除（v1.6）", 
     const close = screen.getByTestId("assets-preview-close");
     expect(close.getAttribute("aria-label")).toBe("关闭预览");
     await waitFor(() => expect(document.activeElement).toBe(close));
+
+    // 焦点陷阱（v1.8）：面板里可 Tab 到的是「关闭 + 重新生成」两枚；两端回绕，Tab 走不到画廊
+    const regen = screen.getByTestId("assets-preview-regen");
+    expect(focusableElements(dialog)).toEqual([close, regen]);
+    regen.focus();
+    pressTab(); // 末 → 首
+    expect(document.activeElement).toBe(close);
+    pressTab(true); // 首 → 末（Shift+Tab 同一条回绕规则，方向相反）
+    expect(document.activeElement).toBe(regen);
 
     fireEvent.click(screen.getByRole("button", { name: "重新生成" }));
     expect(prompts).toEqual(["美术：重绘 立绘 薇拉-微笑"]);
@@ -1993,6 +2054,8 @@ describe("AssetsScreen：选择模式、批量重绘与批量删除（v1.6）", 
     // 关闭走 store（App 的 Esc 链与点遮罩同一条路）；退场动画期间节点还在，只断言状态
     fireEvent.click(close);
     expect(useGameStore.getState().assetsPreview).toBeNull();
+    // 关闭归还焦点：回到开启预览前拿焦点的那张卡片（层没了，焦点不该掉回 body）
+    expect(document.activeElement).toBe(card);
   });
 
   it("引擎忙：批量重绘按钮禁用且不起跑（不抢发指令）", async () => {
@@ -2992,6 +3055,7 @@ describe("回退后的客户端语义：非破坏式分割线、待重同步与�
     });
     expect(useGameStore.getState().history).toHaveLength(4);
 
+    const trigger = focusProbe(); // 命令轨「回想」按钮的替身：它拿着焦点时开抽屉（焦点归还的断言要用）
     useGameStore.setState({ drawerOpen: true, chapterNo: 2 });
     render(<HistoryDrawer />);
     // 非破坏式分割线：只插一行、旧幕一条不删；标题带当前章号（顶栏已不再显示章号）
@@ -3004,6 +3068,26 @@ describe("回退后的客户端语义：非破坏式分割线、待重同步与�
     expect(acts[0].className).not.toContain("opacity-50");
     expect(acts[1].className).toContain("opacity-50");
     expect(acts[2].className).toContain("opacity-50");
+
+    // —— v1.8 a11y：抽屉语义 + 焦点陷阱 + 关闭归还 ——
+    const panel = screen.getByTestId("history-panel");
+    expect(panel.getAttribute("role")).toBe("dialog");
+    expect(panel.getAttribute("aria-modal")).toBe("true");
+    // 名字是读得出来的形态（屏上标题靠空格撑字距，读屏不该逐个念空格）
+    expect(panel.getAttribute("aria-label")).toBe("回想 · 第 2 章");
+    const close = within(panel).getByRole("button", { name: "关闭回想" });
+    expect(document.activeElement).toBe(close); // 开抽屉把焦点送进来（它是抽屉里唯一可聚焦的元素）
+    pressTab(); // 单元素容器上的回绕形态：Tab 原地不动，不跑到抽屉外面（TopBar / 命令轨）去
+    expect(document.activeElement).toBe(close);
+    pressTab(true);
+    expect(document.activeElement).toBe(close);
+
+    // 关闭归还焦点：回到开抽屉前拿着焦点的那个元素
+    act(() => {
+      useGameStore.getState().toggleDrawer();
+    });
+    expect(document.activeElement).toBe(trigger);
+    trigger.remove();
   });
 
   it("重同步失败：TopBar 亮徽章与「再同步」，点击重发续玩指令；成功回合后徽章消失，世界线屏行内也有小标", async () => {
@@ -3696,6 +3780,7 @@ describe("角色面板：渲染 / 秘密折叠 / turn_end 重拉 / 空态（v1.7
     render(<CharactersDrawer />);
     expect(screen.queryByTestId("characters-panel")).toBeNull(); // 关着不渲染
 
+    const trigger = focusProbe(); // 命令轨「角色」按钮的替身：它拿着焦点时开面板（焦点归还的断言要用）
     await act(async () => {
       useGameStore.getState().toggleCharacters();
     });
@@ -3713,6 +3798,29 @@ describe("角色面板：渲染 / 秘密折叠 / turn_end 重拉 / 空态（v1.7
     expect(screen.getByTestId("characters-director").textContent).toContain("旅店停电");
     expect(screen.getByTestId("characters-notes").textContent).toContain("已读旧信");
     expect(screen.getByTestId("characters-notes").textContent).toContain("码头工人提到的白船");
+
+    // —— v1.8 a11y：抽屉语义 + 焦点陷阱 + 关闭归还 ——
+    const panel = screen.getByTestId("characters-panel");
+    expect(panel.getAttribute("role")).toBe("dialog");
+    expect(panel.getAttribute("aria-modal")).toBe("true");
+    expect(panel.getAttribute("aria-label")).toBe("角色面板");
+    const close = within(panel).getByRole("button", { name: "关闭角色面板" });
+    expect(document.activeElement).toBe(close); // 开面板把焦点送进抽屉（第一个可聚焦元素）
+    // 陷阱认到的那份清单：关闭按钮 + 薇拉那张卡的「秘密」折叠（沈屿的秘密是「无」，没有折叠位）
+    const secret = screen.getByTestId("character-secret-薇拉");
+    expect(focusableElements(panel)).toEqual([close, secret]);
+    secret.focus();
+    pressTab(); // 末 → 首：不跑出抽屉去逛 TopBar / 命令轨
+    expect(document.activeElement).toBe(close);
+    pressTab(true); // 首 → 末（Shift+Tab 反向回绕到同一个末项）
+    expect(document.activeElement).toBe(secret);
+
+    // 关闭归还焦点：回到开面板前拿着焦点的那个元素
+    act(() => {
+      useGameStore.getState().toggleCharacters();
+    });
+    expect(document.activeElement).toBe(trigger);
+    trigger.remove();
   });
 
   it("秘密折叠：默认收起（aria-expanded=false），点击展开可见原文；「无」与空串不留折叠位", async () => {

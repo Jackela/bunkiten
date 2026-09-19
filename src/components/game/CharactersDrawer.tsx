@@ -1,6 +1,7 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { ChevronDown, X } from "lucide-react";
+import { useFocusTrap } from "../../lib/useFocusTrap";
 import { useGameStore } from "../../store/game";
 import type { StateCharacter, StateView } from "../../lib/acp";
 
@@ -115,11 +116,15 @@ function CharacterCard({ c }: { c: StateCharacter }) {
  * 分块：剧情状态（时间/场景/周目）、主角、角色卡（好感度/表情徽章/秘密折叠/最近互动）、幕后手记、线索/伏笔。
  * 刷新时机在 store（打开拉一次 + turn_end 面板开着重拉）；换世界清空——这里只渲染 {@link stateView}。
  * stateView 为 null 或解析全空时显示占位说明（还没写过 state.md）。
+ * 抽屉语义（v1.8）：role=dialog + aria-modal + 标题作名字，焦点进抽屉、Tab 在抽屉里循环、关时归还；
+ * Esc 仍归 App 的关闭链（这里刻意不碰键盘的 Esc）。
  */
 export default function CharactersDrawer() {
   const open = useGameStore((s) => s.charactersOpen);
   const view = useGameStore((s) => s.stateView);
   const toggle = useGameStore((s) => s.toggleCharacters);
+  const panelRef = useRef<HTMLElement | null>(null);
+  useFocusTrap(open, panelRef);
 
   const statusRows: [string, string][] = [];
   if (view) {
@@ -132,10 +137,14 @@ export default function CharactersDrawer() {
     <AnimatePresence>
       {open && (
         <motion.aside
+          ref={panelRef}
           initial={{ x: "105%" }}
           animate={{ x: 0 }}
           exit={{ x: "105%" }}
           transition={{ duration: 0.35, ease: "easeOut" }}
+          role="dialog"
+          aria-modal="true"
+          aria-label="角色面板"
           data-testid="characters-panel"
           className="fixed inset-y-0 right-0 z-50 flex w-[min(420px,92vw)] flex-col border-l border-white/10 bg-panel-strong"
         >

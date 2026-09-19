@@ -4,7 +4,9 @@ v1.8.0 之后待办与**决策清单**（不是愿望清单）：每项写清「
 
 口径：代码引用一律到文件级（函数名/组件名可 `grep` 定位）；写「**需要先确认**」的句子是尚未核实的推断，不要当结论用；文中的数字都是可复跑的（`npm test` / `npm run doctor` / `grep`），不写会随改动漂移的用例计数。
 
-## 1. 数据版本化与迁移 —— **最高优先 · 需设计**
+**进展（最近一轮）**：§1 的骨架（`readWorldsIndex` 宽读 + `migrateWorldsSchema` + 四条断言）与 §4 的浏览器级覆盖（e2e 19 → 24 条）已落地；§3 的 a11y 缺口（焦点陷阱、模态语义、焦点归还）已用手写共用件 `src/lib/focusTrap.ts` + `useFocusTrap.ts` 补齐，**原语选型仍待决**；§2 与 §5 的决策问题未答，相关代码未动。
+
+## 1. 数据版本化与迁移 —— **最高优先 · 骨架已落地（未接线）· 需设计**
 
 - **现状（读代码得到的事实）**：`state/worlds/<worldId>/` 的三份 md（state / summary / story-tree）**没有任何版本头**——`SKILL.md`「状态文件格式」只规定形状，文件由引擎每轮整份重写；`state/worlds/index.json` 是**裸数组**（`worlds.mjs` 的 `readWorldsIndex` 直接 `JSON.parse` 后按数组消费，坏 JSON / 非数组回空数组）；`history/NNNN.json` 与 `logs/NNNN.json` 的条目形状只由 `snapshots.mjs` 的 `normalizeSnapshot` 在读写两侧隐式定义，条目里没有版本键。
 - **前提更正（别照抄旧结论）**：`.world.json` / `.preset.json` **已经有** `format` + `version: 1`（`worlds.mjs` `exportWorld`、`presets.mjs` `buildPresetBundle`）。缺的不是这两个标记，缺的是**两侧的策略**：导入侧现在都是硬等值（`importWorld` 要求 `version === 1`、`importPresetBundle` 要求 `=== PRESET_BUNDLE_VERSION`），于是未来的 v2 包在新代码里没有升级通道、在老代码里只能整包 400，而玩家侧只看到一句「bundle 校验失败」。
@@ -25,7 +27,7 @@ v1.8.0 之后待办与**决策清单**（不是愿望清单）：每项写清「
 - **OPEN QUESTION（要产品/引擎回答，先别动代码）**：SKILL 导演层第 3 条「聚光灯轮换」与剧情树节点格式里的 `在场:` 字段都说明叙事里**多人同时在场**是常态，但协议与 SKILL **没有任何一处**写「两个角色同时可见」，第 2 条的「每轮至多切换 2 次」是按**换一张**的口径写的。所以先答：本作的叙事呈现是「一次一人」还是「允许两人同框」？若答案是前者，本项直接关闭，省掉全部改动。
 - **结论**：**需决策**。决策前不要动 `src/store/types.ts` 的 `portrait` 字段——那是所有世界线渲染路径的地基。
 
-## 3. 手写交互 → headless 原语 —— **需设计（首面可开工）**
+## 3. 手写交互 → headless 原语 —— **需设计（a11y 缺口已手写补齐；选型待决）**
 
 - **四处手写面（现状都读过）**：
   - ① 抽屉 `src/components/game/{HistoryDrawer,CharactersDrawer}.tsx`——`motion.aside` + `fixed inset-y-0 right-0 z-50`，**没有** `role="dialog"` / `aria-modal`，开时不抢焦、不锁滚动，Esc 靠 App 的关闭链兜；
@@ -39,7 +41,7 @@ v1.8.0 之后待办与**决策清单**（不是愿望清单）：每项写清「
 - **另一个约束（主题变量）**：主题 CSS 变量注入在 `App` 根容器（`src/theme.ts` 的 `themeVars`），而 headless 原语通常把浮层 portal 到 `document.body`——那样浮层会掉回 `global.css` 的初始 `--accent`。用 Radix 就必须显式指定 portal 容器为根容器内节点。
 - **建议的第一面（可开工）**：**世界线行的 `⋯` 菜单**——最小、缺口明确（roving + typeahead）、已有 e2e（`tests/e2e-ui/worlds.spec.ts`）与 jsdom 断言（`tests/ui.test.tsx` 菜单组），且它是三个 `⋯` 式菜单里的第一个（选它等于把模式钉下来）。抽屉放最后（焦点陷阱 + 背景 inert，风险最大）。typeahead 对中文名按什么匹配（名字前缀 / 拼音首字母）**需决策**。
 
-## 4. e2e 覆盖补面 —— **可开工**
+## 4. e2e 覆盖补面 —— **已补（19 → 24 条）；仍可加**
 
 - **前提更正**：清单里的**背景交叉淡入已经有浏览器级覆盖**——`tests/e2e-ui/opening.spec.ts` 在页面里挂 MutationObserver 抓「两层并存」帧、断言淡入时长等于 `BG_FADE_MS`、并断言过渡后收敛成一层（随 v1.8 功能同批落地）。真正的缺口是**reduce 下的背景换图**：`global.css` 在 `prefers-reduced-motion: reduce` 把 `.stage-bg-fade` 设为 `animation: none` = 瞬时硬切，而 `tests/e2e-ui/reduced-motion.spec.ts` 只断言了正文整段立现与屏切换，**没断言换背景不出现两层并存**。夹具够用：`tests/e2e-ui/stack.ts` 的 `turns` / `trees` / `worlds` / `snapshots` / `stateFiles` seed 项覆盖下面多数新用例，不必先扩 `tests/integration/harness.mjs`。
 - **对话面板 自动 / 快进**（今天只有 `tests/ui.test.tsx` 的 DialogueBox 组）→ 归 **`tests/e2e-ui/keyboard.spec.ts`**（对话交互的家：数字键与空格都在那）：断言点「自动」后倒计时标记出现且**正文没有被补全**（`stopPropagation` 的浏览器级证据）、点「快进」正文一次到全文且按钮随即禁用。

@@ -1,15 +1,21 @@
+import { useRef } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { X } from "lucide-react";
+import { useFocusTrap } from "../../lib/useFocusTrap";
 import { useGameStore } from "../../store/game";
 
 /** 回想抽屉：右滑入，最新一幕在最上（对齐旧版 #drawer）。标题带上当前章号（顶栏已不再显示章号）。
  * 回溯是非破坏式的：分割线（—— 已回溯到第 N 幕 ——／重演时「—— 第 N 幕已重演 ——」）
- * 之前的幕原样保留、只降不透明度。 */
+ * 之前的幕原样保留、只降不透明度。
+ * 抽屉语义（v1.8）：role=dialog + aria-modal + 标题作名字，焦点进抽屉、Tab 在抽屉里循环、关时归还；
+ * Esc 仍归 App 的关闭链（这里刻意不碰键盘的 Esc）。 */
 export default function HistoryDrawer() {
   const open = useGameStore((s) => s.drawerOpen);
   const history = useGameStore((s) => s.history);
   const chapterNo = useGameStore((s) => s.chapterNo);
   const toggleDrawer = useGameStore((s) => s.toggleDrawer);
+  const panelRef = useRef<HTMLElement | null>(null);
+  useFocusTrap(open, panelRef);
 
   // 倒序条目 + 逐条置灰标记：倒序遍历时先见过分割线 = 该幕在分割线之前 = 已被回溯覆盖（现行时间线之外）
   let seenRollback = false;
@@ -49,10 +55,16 @@ export default function HistoryDrawer() {
     <AnimatePresence>
       {open && (
         <motion.aside
+          ref={panelRef}
           initial={{ x: "105%" }}
           animate={{ x: 0 }}
           exit={{ x: "105%" }}
           transition={{ duration: 0.35, ease: "easeOut" }}
+          role="dialog"
+          aria-modal="true"
+          // 名字用读得出来的形态：标题在屏上是「回 想 · 第 2 章」（字距靠空格撑），读屏不该逐个念空格
+          aria-label={`回想 · 第 ${chapterNo} 章`}
+          data-testid="history-panel"
           className="fixed inset-y-0 right-0 z-50 flex w-[min(420px,92vw)] flex-col border-l border-white/10 bg-panel-strong"
         >
           <header className="flex items-center border-b border-white/10 px-4 py-3.5 text-meta tracking-[.2em] text-ink-hint">
@@ -60,6 +72,7 @@ export default function HistoryDrawer() {
             <button
               type="button"
               onClick={toggleDrawer}
+              aria-label="关闭回想"
               className="ml-auto rounded-md p-1 text-ink-hint transition-colors hover:text-ink"
             >
               <X size={16} />

@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Sparkles } from "lucide-react";
 import { BUILD_ASSEMBLE, parseOptions, stripOptionsBlock } from "../lib/parser";
 import { playerStatus } from "../lib/status";
+import { useFocusTrap } from "../lib/useFocusTrap";
 import { useGameStore } from "../store/game";
 import { ScreenShell } from "./ScreenShell";
 
@@ -35,6 +36,9 @@ export default function CreationScreen() {
 
   const [value, setValue] = useState("");
   const flowRef = useRef<HTMLDivElement>(null);
+  /** 返回确认层本体（焦点陷阱容器：开层时焦点从输入框进到「返回」按钮——Esc 关闭链也因此在组字/打字态下仍收得到键） */
+  const exitPromptRef = useRef<HTMLDivElement | null>(null);
+  useFocusTrap(creationExitPrompt, exitPromptRef);
 
   useEffect(() => {
     const el = flowRef.current;
@@ -207,7 +211,9 @@ export default function CreationScreen() {
         </div>
       </div>
 
-      {/* 返回确认（Esc 链第三环；对话已开始时不慎点返回不丢创作进度） */}
+      {/* 返回确认（Esc 链第三环；对话已开始时不慎点返回不丢创作进度）。
+          模态语义：role=dialog + aria-modal（名字用「返回确认」，可见的问句留在正文里——
+          免得读屏把同一句念两遍）；焦点进「返回」、Tab 在层内循环、关层归还给开启前的那个按钮 */}
       <AnimatePresence>
         {creationExitPrompt && (
           <motion.div
@@ -218,6 +224,11 @@ export default function CreationScreen() {
             onClick={closeCreationExitPrompt}
           >
             <div
+              ref={exitPromptRef}
+              role="dialog"
+              aria-modal="true"
+              aria-label="返回确认"
+              data-testid="creation-exit-prompt"
               onClick={(e) => e.stopPropagation()}
               className="flex items-center gap-4 rounded-xl border border-white/10 bg-panel-strong px-6 py-5"
             >

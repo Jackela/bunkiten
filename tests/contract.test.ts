@@ -284,10 +284,10 @@ describe("③ 指令字符串双处存在：src/lib/parser.ts 源码 ↔ SKILL.m
 
 // ——————————————————————— ④ 用例数 ———————————————————————
 
-/** 文档口径的分组（README / AGENTS / ARCHITECTURE 三处声明），合计 431 例；不含 e2e 与本文件 */
+/** 文档口径的分组（README / AGENTS / ARCHITECTURE 三处声明），合计 433 例；不含 e2e 与本文件 */
 const CASE_GROUPS = [
   { name: "parser", files: ["tests/parser.test.ts"], declared: 65 },
-  { name: "server", files: ["tests/server.test.ts"], declared: 110 },
+  { name: "server", files: ["tests/server.test.ts"], declared: 112 },
   { name: "crafting", files: ["tests/crafting.test.ts"], declared: 52 },
   { name: "treeLayout", files: ["tests/treeLayout.test.ts"], declared: 7 },
   { name: "genealogy", files: ["tests/genealogy.test.ts"], declared: 8 },
@@ -309,11 +309,11 @@ const CASE_SUB_GROUPS = [
   { name: "http-guard", file: "tests/integration/http-guard.test.ts", declared: 3 },
 ];
 
-/** 契约 lint 自己（也被 npm test 收录，但按文档口径**不计入** 431） */
+/** 契约 lint 自己（也被 npm test 收录，但按文档口径**不计入** 433） */
 const CONTRACT_FILE = "tests/contract.test.ts";
 
 /** 文档声明的合计口径 */
-const CASE_TOTAL = 431;
+const CASE_TOTAL = 433;
 
 /** 三份声明口径的文档 */
 const DOCS = ["README.md", "AGENTS.md", "docs/ARCHITECTURE.md"];
@@ -329,7 +329,7 @@ function countCases(rel: string): number {
 
 /**
  * 文档里「分组 → 数字」的宽松抓取（允许「例」字、允许加号列、允许目录树形态）：
- * ① 加号列与括号注：`parser 65 + server 110`、`（server 110 例）`
+ * ① 加号列与括号注：`parser 65 + server 112`、`（server 112 例）`
  * ② 目录树形态：`parser.test.ts        # …（65 例）`、`integration/  # … 27 例`
  * ③ ARCHITECTURE 的「另有真 server 子进程的集成测试 27 例」——这句里没有 integration 字面
  */
@@ -341,18 +341,18 @@ const DOC_GROUP_RES: { re: RegExp; group: (m: RegExpExecArray) => string }[] = [
 
 /** 子分组声明（`pipeline 15`、`` `integration/pipeline` 15 ``） */
 const DOC_SUB_RE = /(pipeline|audio-history|http-guard)`?\s*(\d+)/g;
-/** 合计声明（README「单测 + 集成全量 431 例」、AGENTS「**共 431 例**」） */
+/** 合计声明（README「单测 + 集成全量 433 例」、AGENTS「**共 433 例**」） */
 const DOC_TOTAL_RE = /(?:共|全量)\s*(?:\*\*)?(\d+)(?:\*\*)?\s*例/g;
 
 /**
- * 「合计口径」的其它既有写法：这些数字同样必须等于 CASE_TOTAL（现在 431）。
- * 由来：AGENTS 的「自身不计入 431 口径」这类措辞在历次计数同步里都漏网过——数字换了、措辞没跟上，
+ * 「合计口径」的其它既有写法：这些数字同样必须等于 CASE_TOTAL（现在 433）。
+ * 由来：AGENTS 的「自身不计入 433 口径」这类措辞在历次计数同步里都漏网过——数字换了、措辞没跟上，
  * 只能靠人眼才发现——这几条模式专门兜住这种漂移；文档换新措辞时把新模式补进来。
  */
 const DOC_TOTAL_ALT_RES = [
-  /不计入(?:这)?\s*(?:\*\*)?(\d+)/g, // 「不计入 431 口径」「不计入这 431**」
-  /与\s*(\d+)\s*\/\s*contract lint/g, // 「与 431/contract lint 计数无关」
-  /上述\s*(\d+)\s*例/g, // 「即上述 431 例 + 契约 lint」
+  /不计入(?:这)?\s*(?:\*\*)?(\d+)/g, // 「不计入 433 口径」「不计入这 433**」
+  /与\s*(\d+)\s*\/\s*contract lint/g, // 「与 433/contract lint 计数无关」
+  /上述\s*(\d+)\s*例/g, // 「即上述 433 例 + 契约 lint」
 ];
 
 describe("④ 用例数：文档声明的分组数字 ↔ 各文件实际用例数", () => {
@@ -376,7 +376,7 @@ describe("④ 用例数：文档声明的分组数字 ↔ 各文件实际用例�
     expect(sum, `integration 的分组口径自相矛盾：三个子文件相加 ${sum} 例，文档写 integration ${integration?.declared} 例`).toBe(integration?.declared);
   });
 
-  it("十个分组合计等于文档口径 431，且本文件不计入其中", () => {
+  it("十个分组合计等于文档口径 433，且本文件不计入其中", () => {
     const sum = CASE_GROUPS.reduce((n, g) => n + g.declared, 0);
     expect(sum, `文档的分组口径自相矛盾：十个分组相加 ${sum} 例，文档合计写的是 ${CASE_TOTAL} 例`).toBe(CASE_TOTAL);
     const self = countCases(CONTRACT_FILE);

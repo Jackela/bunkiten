@@ -5,7 +5,8 @@
 // 音频链路（【曲】→ /api/audio → /audio 直服 → AudioManager 播放）无 DOM 挂点，此处只保证协议行
 // 真实流经全栈不破坏回合（seed 了对应 wav 让索引命中、代理通路被真实走到）。
 // v1.8 追加第二回合（点第一个选项触发）：换一张【图】背景，端到端验证背景**交叉淡化**——
-// 过渡期 DOM 里新旧两图并存两层、BG_FADE_MS 后新图晋级、旧图退出（只剩一层）。这一条只能在这里验：
+// 过渡期 DOM 里新旧两图并存两层、BG_FADE_MS 后新图晋级、旧图退出（只剩一层）；第一回合那张背景也顺带
+// 钉住收敛态——可见底图有且只有一层 bg-current（不是留着淡入层一起堆着）。这一条只能在这里验：
 // jsdom 里 CSS 动画/过渡不推进，「两层并存 → 晋级」的状态机在浏览器里才跑得出来。
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -156,6 +157,21 @@ test("开局全链路：捏人填卡→跳过美术开演→正文/选项/立绘
     bg.layers.filter((l) => l.url.includes("背景") && l.url.includes("教堂")).length,
     `没有任何背景层带上新图（现有层：${JSON.stringify(bg.layers.map((l) => l.url))}）`,
   ).toBe(1);
+
+  // 稳态：**可见的底图有且只有一层**。新图先作为 incoming 盖在底图上淡入，BG_FADE_MS 后晋级成
+  // bg-current 并卸载上层——所以这里轮询到「incoming 已卸载」的收敛态再判形状：收敛时刻由
+  // setTimeout(BG_FADE_MS) 钉死，与机器快慢无关（不需要 sleep）。「两层都留着」「只剩淡入层」
+  // 「底图 URL 不是新图」三种回归都会红。
+  await expect(page.getByTestId("bg-incoming")).toHaveCount(0);
+  const settled = await page.evaluate(() =>
+    Array.from(document.querySelectorAll('div[class*="bg-cover"]')).map((el) => ({
+      url: decodeURIComponent((el as HTMLElement).style.backgroundImage),
+      current: el.getAttribute("data-testid") === "bg-current",
+    })),
+  );
+  expect(settled.length, `过渡收敛后应有且只有一层背景，实际 ${JSON.stringify(settled)}`).toBe(1);
+  expect(settled[0].current, "剩下的那一层不是底图（bg-current）：淡入的上层没被卸载/晋级").toBe(true);
+  expect(settled[0].url, "底图上不是【图】背景 marker 指定的那张新图").toContain("教堂");
 
   // 主题深化（v1.7）：demo 剧本没配 theme → 兜底 serif 栈注入 --font-preset 且根容器实际消费，
   // 对话框质感落到 dialog-plain 类（CSS 里 plain 无规则=现状）

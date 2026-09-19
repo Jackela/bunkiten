@@ -57,6 +57,9 @@ import {
   __snapshotCacheStats,
   WORLD_FILES,
 } from "../server/acp-server.mjs";
+// 索引 schema 迁移骨架刻意**还没进**入口的 re-export 面（先落骨架、后接启动路径，见 ROADMAP §1）：
+// 只有这一条测试直连模块，接线那个 commit 再从入口 import 并改这一行。
+import { migrateWorldsSchema } from "../server/worlds.mjs";
 // 剧本体检的判定真源（server 只做 id 校验/目录存在性/归组，检查逻辑一份都不重写）：测试直接用真函数
 import { checkPreset } from "../scripts/doctor.mjs";
 
@@ -306,6 +309,67 @@ describe("server 世界线索引与建 / 分叉 / 删（临时目录）", () => 
     writeFileSync(path.join(stateDir, "README.md"), "# state/\n");
     expect(migrateLegacyState(stateDir, worldsRoot)).toBe(false);
     expect(existsSync(path.join(worldsRoot, "index.json"))).toBe(false);
+  });
+
+  // 索引 schema 迁移的骨架（ROADMAP §1）：此刻**还没接启动路径**，写路径也仍是旧裸数组——
+  // 这两条用例就是「接线必须与翻转写形态同一批做」的证据链。
+  it("migrateWorldsSchema：旧裸数组升成 {schema:1, worlds}（条目原样）；缺文件 / 已升级都不动笔", () => {
+    const file = path.join(root, "index.json");
+
+    // (a) 缺索引：既不迁、也不创建文件（全新安装不该被迁移顺手造出一个空索引）
+    expect(migrateWorldsSchema(root)).toBe(false);
+    expect(existsSync(file)).toBe(false);
+
+    // (b) 旧裸数组 → {schema: 1, worlds}：只包一层，条目逐条原样（不补字段、不过滤，第二个条目故意少 note）
+    const legacy = [
+      { worldId: "campus-summer-1", preset: "campus-summer", title: "盛夏偏差值", chapterNo: 2, lastPlayed: 1, note: "", forkedFrom: null },
+      { worldId: "rift-mark-1", preset: "rift-mark", title: "裂痕标记", chapterNo: 1, lastPlayed: 2 },
+    ];
+    writeFileSync(file, JSON.stringify(legacy, null, 2) + "\n");
+    expect(migrateWorldsSchema(root)).toBe(true);
+    const after = JSON.parse(readFileSync(file, "utf8"));
+    expect(after.schema).toBe(1);
+    // 条目原样：键序与值逐个一致（第二个条目故意少 note，迁移**不补**字段——补字段是读路径的事）
+    expect(JSON.stringify(after.worlds)).toBe(JSON.stringify(legacy));
+    expect(readWorldsIndex(root).map((e) => e.worldId)).toEqual(["campus-summer-1", "rift-mark-1"]);
+
+    // (c) 再调一次：已是版本化对象 → false，且文件一个字节都没被碰
+    const bytes = readFileSync(file, "utf8");
+    expect(migrateWorldsSchema(root)).toBe(false);
+    expect(readFileSync(file, "utf8")).toBe(bytes);
+  });
+
+  it("migrateWorldsSchema 与宽读：坏 JSON 不覆写；版本化对象（多出顶层键）读得到 worlds；写路径仍是裸数组", () => {
+    const file = path.join(root, "index.json");
+
+    // 坏 JSON：不抛错、也不覆写（覆写等于把玩家的世界线列表写没了），文件留给下次启动再试
+    writeFileSync(file, "{ 这不是 JSON");
+    expect(migrateWorldsSchema(root)).toBe(false);
+    expect(readFileSync(file, "utf8")).toBe("{ 这不是 JSON");
+    expect(readWorldsIndex(root)).toEqual([]);
+
+    // (d) 版本化对象 + 多出来的顶层键（updatedAt）：迁移 no-op，读路径照读 worlds、忽略多余的键
+    const versioned = {
+      schema: 1,
+      worlds: [{ worldId: "w1", preset: "campus-summer", title: "盛夏偏差值", chapterNo: 1, lastPlayed: 0 }],
+      updatedAt: "2026-09-01T00:00:00.000Z",
+    };
+    writeFileSync(file, JSON.stringify(versioned, null, 2) + "\n");
+    expect(migrateWorldsSchema(root)).toBe(false);
+    expect(readWorldsIndex(root).map((e) => e.worldId)).toEqual(["w1"]);
+
+    // 结构不认识的形态仍是 fail-soft 成空数组（不是「读到一半」）：worlds 非数组 / 根本没有 worlds
+    writeFileSync(file, JSON.stringify({ schema: 1, worlds: "w1" }));
+    expect(readWorldsIndex(root)).toEqual([]);
+    writeFileSync(file, JSON.stringify({ schema: 1 }));
+    expect(readWorldsIndex(root)).toEqual([]);
+
+    // 写路径此刻仍是旧裸数组（翻转写形态与接启动路径同一批做）：createWorld 写出来的仍是数组 →
+    // 迁移对「今天真实产生的索引」仍然是一步真的升级。谁只改一半（接了迁移或先翻了写形态），这条就红。
+    createWorld(root, "campus-summer");
+    expect(Array.isArray(JSON.parse(readFileSync(file, "utf8")))).toBe(true);
+    expect(migrateWorldsSchema(root)).toBe(true);
+    expect(readWorldsIndex(root).map((e) => e.worldId)).toEqual(["campus-summer-1"]);
   });
 });
 

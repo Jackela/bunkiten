@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { RefreshCw, X } from "lucide-react";
 import { assetFileUrl, fetchAssets, type AssetEntry } from "../lib/acp";
 import { variantLabel } from "../lib/parser";
+import { useFocusTrap } from "../lib/useFocusTrap";
 import { useGameStore, type RegenJob } from "../store/game";
 import { ScreenShell } from "./ScreenShell";
 import { ShellPage } from "./ShellPage";
@@ -163,6 +164,9 @@ export default function AssetsScreen() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   /** 预览面板的关闭按钮（打开时聚焦它，键盘用户第一站就是「关掉」） */
   const closeRef = useRef<HTMLButtonElement | null>(null);
+  /** 预览面板本体（焦点陷阱的容器：Tab 在面板里循环、关面板时把焦点还给开启前那张卡片） */
+  const previewRef = useRef<HTMLDivElement | null>(null);
+  useFocusTrap(!!selected, previewRef);
 
   // 挂载、换剧本与每次重绘完成（stamp 自增）时刷新；URL 带 v=stamp 破缓存换新图
   useEffect(() => {
@@ -194,7 +198,9 @@ export default function AssetsScreen() {
     clearAssetsNotice();
   }, [preset, clearAssetsNotice]);
 
-  // 打开预览时把焦点放到关闭按钮（role=dialog 的初始焦点；Esc 链仍由 App 兜）
+  // 打开预览时把焦点放到关闭按钮（role=dialog 的初始焦点；Esc 链仍由 App 兜）。
+  // 陷阱（useFocusTrap）的初始焦点本来就是它——面板里第一个可聚焦元素——这条显式聚焦是 v1.6 就有的行为，
+  // 保留着不动既有断言，同时兜住 trapFocus 在「容器刚挂上还没量到子元素」时的极端情况
   useEffect(() => {
     if (selected) closeRef.current?.focus();
   }, [selected]);
@@ -496,7 +502,8 @@ export default function AssetsScreen() {
         )}
       </ShellPage>
 
-      {/* 大图预览 + 重绘（模态语义：打开时焦点落在关闭按钮，Esc 由 App 关闭链兜） */}
+      {/* 大图预览 + 重绘（模态语义：role=dialog + aria-modal + aria-label，打开时焦点落在关闭按钮、
+          Tab 在面板里循环、关闭时归还给开启预览的那张卡片；Esc 由 App 关闭链兜） */}
       <AnimatePresence>
         {selected && (
           <motion.div
@@ -508,6 +515,7 @@ export default function AssetsScreen() {
             className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-6 backdrop-blur-sm"
           >
             <motion.div
+              ref={previewRef}
               data-testid="assets-preview"
               role="dialog"
               aria-modal="true"

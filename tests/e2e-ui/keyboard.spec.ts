@@ -1,10 +1,22 @@
-// 假引擎确定性 UI e2e ③：game 屏键盘交互——数字键选选项、空格补全打字机。
+// 假引擎确定性 UI e2e ③：game 屏键盘/面板交互——数字键选选项、空格补全打字机、面板「自动 / 快进」。
 // 数字键：OptionList 的 window keydown（1-9/Numpad，焦点在输入框时让路）→ send(选项文本) →
 // fake-engine 用 match 命中该文本回下一回合正文。空格：DialogueBox 的 completeNow 走点击同一条路，
 // 打字未完成时立即补全文——断言用「按键后单次读取即含末句」证明瞬时补全（不打轮询硬等）。
+// v1.8 追加第三条（面板控件）：右上「快进」= 同一个 completeNow（补全后自报 disabled），
+// 「自动」= 切换设置里的 autoAdvance 并立刻武装/撤销倒计时——断言只取 store 在屏上的可视效果
+// （aria-pressed + OptionList 的 auto-advance 行），不碰内部状态：点击与倒计时都是浏览器里真的在跑。
 import { expect, test, type Page } from "@playwright/test";
 import { startUiStack, stopUiStack, type StartedStack } from "./stack";
 import { enterProtagonist, quickStartToGame } from "./flow";
+
+/** 第三条用例的开局正文（≈190 字）：标准档打字机（24ms/字、落后较多时按追赶步长补齐）要走 2s 以上，
+ *  留出「打字中手点快进」的确定窗口；末句当「是否补全」的探针（打字路径下它最后才轮到）。 */
+const LONG_BODY =
+  "长廊尽头的灯又灭了一盏，你数着墙上的裂纹往前走，第三十七块砖下面压着一封没有署名的信，" +
+  "信封上的火漆碎了一半，碎掉的那一半刚好缺了写信人的姓氏。" +
+  "你把信纸抽出来的时候，风从门缝里钻进来，纸页忽然变得很轻，像随时会从指缝里溜走。" +
+  "读完最后一行，身后的门无声地合上了。";
+const LONG_LAST = "读完最后一行，身后的门无声地合上了。";
 
 let stack: StartedStack;
 let page: Page;
@@ -25,6 +37,12 @@ test.beforeAll(async ({ browser }) => {
             "你数着自己的脚步往前走，到第三十七步的时候，风从尽头的门缝里挤进来，带着旧纸和灰尘的气味。" +
             "没有人告诉过你门后是什么，你只知道，回廊尽头的灯已经灭了三次，而每一次熄灭，都恰好落在你心跳的间隙上。\n\n**行动**\n1. 推门\n2. 转身\n",
         ],
+      },
+      // 测试 3 的开局回合：正文同样够长（打字中够手点「快进」），末尾带选项——选项要打完才浮出，
+      // 「自动」的倒计时行也只在选项上屏后才起（armAutoAdvance 的判据）
+      {
+        match: "开局：",
+        ops: [`${LONG_BODY}\n\n**行动**\n1. 拆开火漆\n2. 把信塞回去\n`],
       },
     ],
   }));
@@ -74,4 +92,44 @@ test("打字中按空格：正文立即完整（dialogue-text 含末句）", asy
   expect(text).toContain("都恰好落在你心跳的间隙上");
   // 补全即打完：提示条随 typingDone 消失
   await expect(page.getByTestId("dialogue-hint")).toHaveCount(0);
+});
+
+test("面板控件：快进一次补全文并随即禁用，自动切 aria-pressed 并起倒计时行", async () => {
+  // 再开一条世界线消费第三条开局回合（match 命中不重复消费）
+  await page.goto(stack.pageUrl);
+  await enterProtagonist(page, "示例剧本");
+  await quickStartToGame(page); // status 就绪 = 回合定稿，打字机开始追赶长正文
+
+  // 打字中的证据链（同空格那条）：首句已上屏 + 「空格补全」提示还在（提示只在不打完时渲染）
+  await expect(page.getByTestId("dialogue-text")).toContainText("长廊尽头的灯又灭了一盏");
+  await expect(page.getByTestId("dialogue-hint")).toBeVisible();
+  // 「快进」此刻自报可用（canComplete = 未打完且还有没追上的字）
+  await expect(page.getByTestId("dialogue-skip")).toBeEnabled();
+
+  // 快进 = 面板上的那一击，走与空格/点对话框同一个 completeNow。点击后**单次读取** DOM：
+  // 若没补全，此刻必然只有前缀（打字路径离末句还差 2s 以上）
+  await page.getByTestId("dialogue-skip").click();
+  const text = (await page.getByTestId("dialogue-text").textContent()) ?? "";
+  expect(text).toContain(LONG_LAST);
+  // 补全即打完：按钮的可用性判据与 completeNow 第一道判断同源，随即变成 disabled（不再谎称点了有用）
+  await expect(page.getByTestId("dialogue-skip")).toBeDisabled();
+
+  // 打完 → 选项浮入；这时才谈「自动前进」（倒计时只在选项可见时武装）
+  await expect
+    .poll(async () => page.getByTestId("options").locator("button").count())
+    .toBeGreaterThanOrEqual(2);
+  const auto = page.getByTestId("dialogue-auto");
+  await expect(auto).toHaveAttribute("aria-pressed", "false");
+  await expect(page.getByTestId("auto-advance")).toHaveCount(0);
+
+  // 打开：aria-pressed 翻真，且立刻起倒计时（面板上这一下是「玩家明确要求自动」，解 muted 再武装）
+  await auto.click();
+  await expect(auto).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByTestId("auto-advance")).toBeVisible();
+  await expect(page.getByTestId("auto-advance")).toContainText("自动前进");
+
+  // 关闭：设置落回 0 且当前倒计时被撤销——关掉了却还在自己往前走就是 bug
+  await auto.click();
+  await expect(auto).toHaveAttribute("aria-pressed", "false");
+  await expect(page.getByTestId("auto-advance")).toHaveCount(0);
 });

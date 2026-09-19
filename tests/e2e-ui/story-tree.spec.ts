@@ -4,6 +4,8 @@
 // 大树（w2，45 节点链）：>40 节点默认降级列表形态——tree-view-toggle 提示、tree-list 可见、SVG 画布不渲染。
 // 快照对比（w3）：seed 两条内容不同的快照（#1 挂 1-1、#2 挂 1-2）→ 节点详情「与上一快照对比」→
 // diff 面板渲染 add/remove 行（seed 的两条 files 可控，运行时回合只会追加更晚的 seq，不动基线）。
+// 多章树（w4，第 1 章带进度指针 + 第 2 章）：章节切换器每章一枚药丸、进度章标「当前」，
+// 点第 2 章把画布换成那一章的节点集合（旧章节点整个卸载，不是叠着画）。
 // 树文用 parseStoryTree 的容错格式构造（`## 第 N 章：标题` / `### 节点 N-M（拍点）` / `- 字段: 值`）。
 import { expect, test, type Page } from "@playwright/test";
 import { startUiStack, stopUiStack, type StartedStack } from "./stack";
@@ -54,14 +56,44 @@ function bigTree(nodeCount = 45): string {
   return lines.join("\n");
 }
 
+/** w4 的两章树：进度指针在第 1 章（1-2），第 2 章没有 `当前进度` 行 —— 「当前」徽章只跟进度章走 */
+function multiChapterTree(): string {
+  return [
+    "# 剧情树",
+    "## 第 1 章：雨夜教堂",
+    "- 目标: 弄清账册缺页的秘密",
+    "- 当前进度: 节点 1-2（已走 2 轮）",
+    "",
+    "### 节点 1-1（门口初遇）",
+    "- 状态: 已走过",
+    "",
+    "### 节点 1-2（中殿对话）",
+    "- 出边: 追问 → 1-3",
+    "- 状态: 可达",
+    "",
+    "### 节点 1-3（告解室）",
+    "- 状态: 已剪枝",
+    "",
+    "## 第 2 章：白昼街市",
+    "- 目标: 找到写信的人",
+    "",
+    "### 节点 2-1（街口）",
+    "- 状态: 可达",
+    "",
+    "### 节点 2-2（旧书摊）",
+    "- 状态: 可达",
+    "",
+  ].join("\n");
+}
+
 let stack: StartedStack;
 let page: Page;
 
 test.beforeAll(async ({ browser }) => {
   ({ stack, page } = await startUiStack(browser, {
     presets: [{ id: "demo", title: "示例剧本" }],
-    worlds: [{ id: "w2" }, { id: "w3" }],
-    trees: { w1: smallTree(), w2: bigTree(), w3: smallTree() },
+    worlds: [{ id: "w2" }, { id: "w3" }, { id: "w4" }],
+    trees: { w1: smallTree(), w2: bigTree(), w3: smallTree(), w4: multiChapterTree() },
     // 快照对比的 seed（w3）：#1 挂 1-1、#2 挂 1-2，state 各差一行好感度——节点 1-2 的
     // 最早匹配是 #2、基线是 #1，diff 内容完全由 seed 决定（运行时回合只会追加 seq ≥ 3）
     snapshots: {
@@ -82,11 +114,12 @@ test.beforeAll(async ({ browser }) => {
         },
       ],
     },
-    // 三个「继续世界」各配一条应答（match 按世界 id 区分，命中不重复消费）
+    // 四个「继续世界」各配一条应答（match 按世界 id 区分，命中不重复消费）
     turns: [
       { match: "继续世界：w1", ops: ["雨停了，教堂门口的石阶泛着冷光。\n\n**行动**\n1. 推门进去\n2. 原地等待\n"] },
       { match: "继续世界：w2", ops: ["又是清晨，长廊尽头的灯还亮着。\n\n**行动**\n1. 往前走\n2. 回房\n"] },
       { match: "继续世界：w3", ops: ["中殿的烛火晃了一下。\n\n**行动**\n1. 追问账册\n2. 沉默\n"] },
+      { match: "继续世界：w4", ops: ["烛火照到第二间书库的门口。\n\n**行动**\n1. 推门\n2. 退回去\n"] },
     ],
   }));
 });
@@ -184,4 +217,42 @@ test("快照对比：节点详情与上一快照 diff，remove/add 行可见（w
   // tab 头的 +N −M 摘要（state：+1 −1；tree 两份 seed 全等 → 无变化）
   await expect(page.getByTestId("snapshot-diff-tab-state")).toContainText("+1 −1");
   await expect(page.getByTestId("snapshot-diff-tab-tree")).toContainText("无变化");
+});
+
+test("章节切换器：每章一枚药丸（进度章标「当前」），切到第 2 章换掉画布上的节点", async () => {
+  await openWorlds(page);
+  await continueWorld(page, "w4");
+
+  await page.getByTestId("tree").click();
+  const bar = page.getByTestId("tree-chapters");
+  await expect(bar).toBeVisible();
+
+  // 解析出的两章各一枚药丸（章号来自节点 id 前缀，标题来自 `## 第 N 章：标题`）
+  await expect(bar.locator("button")).toHaveCount(2);
+  const first = page.getByTestId("tree-chapter-1-0");
+  const second = page.getByTestId("tree-chapter-2-1");
+  await expect(first).toContainText("第 1 章 · 雨夜教堂");
+  await expect(second).toContainText("第 2 章 · 白昼街市");
+
+  // 进度指针在第 1 章：它标「当前」且是选中态；第 2 章两者都不是
+  await expect(first).toContainText("当前");
+  await expect(first).toHaveAttribute("aria-pressed", "true");
+  await expect(second).not.toContainText("当前");
+  await expect(second).toHaveAttribute("aria-pressed", "false");
+
+  // 起手画的是进度章（默认章 = 带进度指针的那章）
+  await expect(page.getByTestId("tree-node-1-1")).toBeVisible();
+  await expect(page.getByTestId("tree-node-2-1")).toHaveCount(0);
+
+  // 点第 2 章：画布换成那一章的节点——旧章的节点**整个**卸载（不是叠着画两层）
+  await second.click();
+  await expect(page.getByTestId("tree-node-2-1")).toBeVisible();
+  await expect(page.getByTestId("tree-node-2-2")).toBeVisible();
+  await expect(page.getByTestId("tree-node-1-1")).toHaveCount(0);
+  await expect(page.getByTestId("tree-node-1-2")).toHaveCount(0);
+  await expect(second).toHaveAttribute("aria-pressed", "true");
+  await expect(first).toHaveAttribute("aria-pressed", "false");
+  // 「当前」跟的是进度指针，不跟选中：切过去后第 2 章仍不是当前章，第 1 章的徽章也还在
+  await expect(first).toContainText("当前");
+  await expect(second).not.toContainText("当前");
 });
