@@ -4,7 +4,7 @@ v1.8.0 之后待办与**决策清单**（不是愿望清单）：每项写清「
 
 口径：代码引用一律到文件级（函数名/组件名可 `grep` 定位）；写「**需要先确认**」的句子是尚未核实的推断，不要当结论用；文中的数字都是可复跑的（`npm test` / `npm run doctor` / `grep`），不写会随改动漂移的用例计数。
 
-**进展（最近一轮）**：§1 已**接线**（写路径翻成 `{schema:1, worlds}`、启动期 `migrateLegacyState` → `migrateWorldsSchema`、高版本保留不覆写，决策记在 `docs/adr/0018`）、§4 的浏览器级覆盖（e2e 19 → 27 条）、§5 的导出包 v2 与 §3 的第一面（世界线行 ⋯ 菜单迁 Radix DropdownMenu）、§6 的性能实测（结论：当前规模不需要虚拟化）、§2 的同屏多立绘（上限 2，按 VN 通行做法：发言者高亮 + 名牌、非发言者压暗）均已落地；§5 的 id 问题已定（维持 `<preset>-N`，理由见该节）。剩下的是 §3 的其余三面（抽屉/滑杆/弹窗仍用自写 `focusTrap`，背景 `inert` 与 typeahead 只在新菜单上有）与 §5 的行缩略图。
+**进展（最近一轮）**：§1 已**接线**（写路径翻成 `{schema:1, worlds}`、启动期 `migrateLegacyState` → `migrateWorldsSchema`、高版本保留不覆写，决策记在 `docs/adr/0018`）、§4 的浏览器级覆盖（e2e 19 → 28 条）、§5 的导出包 v2 与行缩略图、§3 的第一面（世界线行 ⋯ 菜单迁 Radix DropdownMenu）、§6 的性能实测（结论：当前规模不需要虚拟化）、§2 的同屏多立绘（上限 2，按 VN 通行做法：发言者高亮 + 名牌、非发言者压暗）均已落地；§5 的 id 问题已定（维持 `<preset>-N`，理由见该节）。剩下的是 §3 的其余三面（抽屉/滑杆/弹窗仍用自写 `focusTrap`，背景 `inert` 与 typeahead 只在新菜单上有）与 §5 里「当前场景背景」那一版缩略图（要新开 `WorldEntry` 字段）。
 
 ## 1. 数据版本化与迁移 —— **已接线（v1.9）**
 
@@ -28,19 +28,58 @@ v1.8.0 之后待办与**决策清单**（不是愿望清单）：每项写清「
 - **结论（已实现，2026-09）**：按 VN 通行做法**允许同屏**——Ren'Py 的 sprite 系统本身就是「多立绘 + 位置/层级」，社区常态是「发言者高亮、其余压暗」（`focus=True/False` 的 dim 约定）。落地口径：**上限 2 人**（`src/store/portrait.ts` 的 `MAX_STAGE`），队尾 = 发言者（全亮 + 名牌），其余压暗（`opacity-55 saturate-[.7]`，挂在**内层**——framer 会写内联 opacity，压暗档落外层会被覆盖），第三人出场按队首淘汰（最近发言的两位留场，正好对上 SKILL 导演层的「聚光灯轮换」）。让位分两档：`.portrait-reserve`（1 人）与 `.portrait-reserve-duo`（2 人，配额 `min(44vw,520px)`）；1280×720 实测对话面板 732px（守住 >700 硬约束）、两人最左缘 765px > 面板右缘 746px，`tests/e2e-ui/duo.spec.ts` 把这两个数与亮/暗、名牌归属一起钉住。**退出语义**仍无协议信号（没有退场指令），当前靠「上限 + 队首淘汰」自管；路线图里评估过的候选 ③（按剧情树节点的 `在场` 重建舞台）**未采用**——游戏屏取树要新增取数路径，而 `在场` 可能落后于叙事，等#1 的 schema/迁移稳定后再回头看。
 - **未做（有意）**：`src/store/types.ts` 的 `portraits` 是数组而非按角色键控的 Map（同屏上限 2，数组的插入序就是位序，够用）；三星以上同屏、立绘重叠排布、非发言者的名牌都不在本次范围。
 
-## 3. 手写交互 → headless 原语 —— **需设计（a11y 缺口已手写补齐；选型待决）**
+## 3. 手写交互 → headless 原语 —— **a11y 缺口已收口（v1.9，手写）；原语迁移不再有缺口兜着，剩「要不要为一致性而迁」这一问**
 
-- **四处手写面（现状都读过）**：
-  - ① 抽屉 `src/components/game/{HistoryDrawer,CharactersDrawer}.tsx`——`motion.aside` + `fixed inset-y-0 right-0 z-50`，**没有** `role="dialog"` / `aria-modal`，开时不抢焦、不锁滚动，Esc 靠 App 的关闭链兜；
+- **已收口（v1.9，四处浮层的「背景可达」缺口一次补完）**——两件事，四个面：
+  - **背景 `inert`**（Tab / 点击 / 程序化 `focus()` 全进不去）：
+    - **游戏屏** `src/components/game/GameStage.tsx`：立绘 + `TopBar` + 对话区收进 `data-testid="stage-background"` 一层，
+      `inert={drawerOpen || charactersOpen}`（两个抽屉各有开关、可同时开，共用这一层）；两个抽屉**刻意留在层外**。
+    - **画廊预览** `src/components/AssetsScreen.tsx`：`ShellPage` 新增 `inert` prop，预览打开时压住整个页框
+      （含表头的「返回 / 管理素材」），预览面板是页框的**兄弟**、不在这层里。
+    - **创作返回确认** `src/components/CreationScreen.tsx`：创作整列（表头 + 对话流 + 输入区，
+      `data-testid="creation-content"`）`inert={creationExitPrompt}`，确认层是这一列的兄弟。
+  - **滚动锁** `.scroll-locked`（`src/styles/global.css`，unlayered：级联层外优先于 `overflow-y-auto` 工具类），
+    挂在屏内**真正在滚的那个容器**上——画廊是壳层根（`ScreenShell` 的 `overflow-y-auto`），创作屏是对话流；
+    抽屉那两处没有滚动容器可锁（`GameStage` 自身不滚）。**不锁 `body`**：App 根是 `fixed inset-0` 满幅布局，
+    body 没有可滚的高度（原「必须提前想清的冲突」一条即此，已按该结论落地）。
+  - **三条实现约束（回归时最先踩，别反向「优化」掉）**：① inert 的边界永远是「除当前浮层之外的全部」，
+    浮层必须留在 inert 子树之外——inert 子树里的元素**连程序化 `focus()` 都是 no-op**（Chromium 实测），
+    套进去焦点陷阱就再也送不进焦点；② inert 由 React 按属性写在提交的**变更阶段**落地，早于焦点陷阱的
+    被动 effect / 清理：开启那一拍先压背景（此时焦点还在命令轨按钮上，Chromium 不会因元素变 inert 掉焦点）、
+    随后陷阱把焦点搬进抽屉；关闭那一拍先摘属性、后归还焦点，归还目标才重新可聚焦；
+    ③ 两个 store selector 分开调，`useGameStore(a) || useGameStore(b)` 会短路掉右边那次 hook 调用。
+  - **浏览器级证据**（jsdom 断不出，一次性探针在真 Chromium 跑过即弃）：抽屉开着时连按 8 次 Tab 焦点不出抽屉、
+    对命令轨与输入框 `focus()` 均无效；`Esc` 关层后命令轨立刻点得开画廊；画廊预览锁住时滚轮 500ms 内
+    `scrollTop` 恒为 0、解锁后同一位置一滚即动；确认层开着时 Tab 只在层内打转、关层后表头「返回」可点。
+    jsdom 侧把契约钉在既有的三个用例里（`tests/ui.test.tsx`：同屏多立绘组、画廊预览组、创作确认层组）。
+- **四处手写面（现状都读过；①③ 的缺口已在 v1.8/v1.9 手写补齐，④ 已迁 Radix）**：
+  - ① 抽屉 `src/components/game/{HistoryDrawer,CharactersDrawer}.tsx`——`motion.aside` + `fixed inset-y-0 right-0 z-50`，
+    v1.8 起有 `role="dialog"` + `aria-modal` + `useFocusTrap`（焦点进抽屉、Tab 层内回绕、关层归还），
+    Esc 仍由 App 的关闭链兜；v1.9 补上背景 `inert`（见上）。**仍未做的只有滚动锁**——抽屉里没有滚动容器。
   - ② 设置屏滑杆 `SettingsScreen.tsx` 的 `input type="range"` + `appearance-none`；
-  - ③ 弹层 `AssetsScreen.tsx` 大图预览（**手写**了 `role="dialog"` + `aria-modal` + 初始焦点到关闭按钮）与 `CreationScreen.tsx` 的返回确认层（**连 role 都没有**，只有 backdrop 点击关闭）；
-  - ④ 世界线行的 `⋯` 菜单 `WorldsScreen.tsx`（`role="menu"`/`menuitem`、`aria-haspopup`/`aria-expanded`、开时焦点进第一项、Esc 关闭并把焦点送回触发器、focusin 出走即关——**这些已经手写齐了**）。
-- **各自能拿到什么**：抽屉 → 焦点陷阱 + 滚动锁 + `aria-modal` + 背景 `inert`（现在 Tab 能走出抽屉逛到 TopBar 与命令轨）；弹层 → 同一套语义 + 初始焦点/焦点归还的标准化；`⋯` 菜单 → ↑↓/Home/End roving 与 typeahead（**缺的就是这两样**：组件注释写的「↓ 走位」并不存在，实际只有 Tab 可用）；滑杆 → 结构上**没有缺口**（原生 range 自带键盘与值语义），唯一实质工作是统一读数到 `aria-valuetext`。
-- **顺手要确认的一件事（需要先确认）**：滑杆用了 `appearance-none`，而 `src/styles/global.css` 里**没有任何** `::-webkit-slider-thumb` / `::-moz-range-thumb` 规则——Chromium 下拇指可能根本不显示，而 jsdom 与 Playwright 的设值路径（`tests/e2e-ui/settings.spec.ts` 用原型 setter 派发 `input`）都看不见渲染。先在浏览器里肉眼看一次，或补一条 computed style 断言。
-- **成本**：新依赖二选一（Radix = 逐原语包、DOM 与样式全交给 Tailwind；react-aria = hooks 家族、无 DOM 输出但学习面更大），**先定哪个**——它决定后面三处怎么改；每迁移一面还要一次 jsdom 用例改动（行为断言在 `tests/ui.test.tsx`）+ 一次 e2e（焦点环在 `tests/e2e-ui/focus.spec.ts`）。三种交互的既有约定别打破：`.shell-panel` / `bg-panel*` token、unlayered 的统一焦点环（组件里**不允许**再写 `outline-none`）、以及 `data-testid` 一族（e2e 与 jsdom 都按它定位）。
-- **一个必须提前想清的冲突**：滚动的常见实现是给 `body` 上 `overflow: hidden`，而本仓的屏是 `fixed inset-0` 满幅布局（`ScreenShell`）——锁 `body` 不一定有效，锁要落在真正在滚的容器上。
-- **另一个约束（主题变量）**：主题 CSS 变量注入在 `App` 根容器（`src/theme.ts` 的 `themeVars`），而 headless 原语通常把浮层 portal 到 `document.body`——那样浮层会掉回 `global.css` 的初始 `--accent`。用 Radix 就必须显式指定 portal 容器为根容器内节点。
-- **建议的第一面（可开工）**：**世界线行的 `⋯` 菜单**——最小、缺口明确（roving + typeahead）、已有 e2e（`tests/e2e-ui/worlds.spec.ts`）与 jsdom 断言（`tests/ui.test.tsx` 菜单组），且它是三个 `⋯` 式菜单里的第一个（选它等于把模式钉下来）。抽屉放最后（焦点陷阱 + 背景 inert，风险最大）。typeahead 对中文名按什么匹配（名字前缀 / 拼音首字母）**需决策**。
+  - ③ 弹层 `AssetsScreen.tsx` 大图预览（`role="dialog"` + `aria-modal` + 初始焦点到关闭按钮）与
+    `CreationScreen.tsx` 的返回确认层（v1.8 起同样有 `role="dialog"` + `aria-modal`）；
+    v1.9 两处都补上背景 `inert` + 滚动容器 `scroll-locked`。
+  - ④ 世界线行的 `⋯` 菜单 `WorldsScreen.tsx`——**已迁 Radix DropdownMenu**（上一轮），↑↓/Home/End 走位与
+    typeahead 随原语到手，这是全仓第一处「手写 → 原语」的样板。
+- **刻意不迁（已定）**：
+  - **滑杆**：`input type="range"` 是**平台自带的可用控件**（键盘语义、值语义、`aria-valuenow` 全由 UA 给），
+    换成原语只会把结构、样式与 `tests/e2e-ui/settings.spec.ts` 的设值路径（原型 setter 派发 `input`）
+    一起搅一遍，换不来任何无障碍增益——**维持原生**。真要动只动读数统一到 `aria-valuetext` 这一件小事。
+  - **抽屉 / 弹层**：继续用自写 `focusTrap` + `useFocusTrap`（`src/lib/`）与上面的 inert / 滚动锁，
+    不为了「统一」而迁原语——v1.9 之后这三处的语义（`role=dialog` / `aria-modal` / 初始焦点 / 层内回绕 /
+    关层归还 / 背景 inert / 滚动锁）已经齐了，迁移的净收益只剩「与 ④ 用同一套原语」这一条形式理由，
+    而代价是重做四处焦点与关闭时序（`tests/e2e-ui/focus.spec.ts`、`.spec.ts` 一族与 jsdom 的 a11y 断言全部要动）。
+- **若哪天仍决定迁（保留的评估结论）**：新依赖二选一——**Radix**（逐原语包、DOM 与样式全交给 Tailwind，
+  仓里已有 `@radix-ui/react-dropdown-menu`）比 **react-aria**（hooks 家族、无 DOM 输出但学习面更大）更顺手；
+  两处已点过名的坑照旧：浮层若 portal 到 `document.body` 会掉回 `global.css` 的初始 `--accent`
+  （主题变量注入在 `App` 根容器，`src/theme.ts`；用 Radix 必须显式指定 portal 容器为根容器内节点），
+  以及既有约定不能打破：`.shell-panel` / `bg-panel*` token、unlayered 的统一焦点环（组件里**不允许**再写
+  `outline-none`）、`data-testid` 一族（e2e 与 jsdom 都按它定位）。
+- **顺手要确认的一件事（需要先确认，未核实）**：滑杆用了 `appearance-none`，而 `src/styles/global.css` 里
+  **没有**任何 `::-webkit-slider-thumb` / `::-moz-range-thumb` 规则（`SettingsScreen.tsx` 也没有任意值变体）——
+  Chromium 下拇指是否可见需要肉眼看一次；jsdom 与 Playwright 的设值路径都看不见渲染。
+  **本次（v1.9）没碰**：它与 a11y 缺口无关，留给「滑杆读数统一」那一件小事同批看。
 
 ## 4. e2e 覆盖补面 —— **已补（19 → 24 条）；仍可加**
 
@@ -53,11 +92,12 @@ v1.8.0 之后待办与**决策清单**（不是愿望清单）：每项写清「
 - **立绘差分预载**（今天只有 node 环境的 `tests/preload.test.ts`）→ 浏览器级只能断言可观测面：同一会话内第二次显示同一角色时**没有第二次 `/api/assets` 请求**。收益与稳定性一般，标**可开工但优先级最低**。
 - **真引擎冒烟（`tests/e2e/smoke.spec.ts`）的 nightly / 手动触发需要什么**（只列清单，不实现）：① 有引擎凭据的 runner（`~/.grok` 的登录态必须以 secret 注入，不能进仓库）；② 出网到 x.ai 的能力（CI 直连或自托管 runner + 代理；被墙时表现为回合 600s 超时）；③ 预算护栏（两个 test 合计约 5 个真回合、本机 6–12 分钟，spec 内已设 900s/test）；④ 失败可诊断（除 Playwright trace 外，把 `state/worlds/*/logs/NNNN.json` 也 artifact 化——日志刻意不进导出包，但它在仓库根，CI 里必须显式收）；⑤ 沙箱隔离（该 spec 会直接改仓库根的 `state/worlds/index.json` 与 `.shell-session.json`，CI 必须跑在 checkout 的副本上）。
 
-## 5. 世界线体验 —— **id 维持现状（已定）· 缩略图 / 导出包 v2 可开工**
+## 5. 世界线体验 —— **id 维持现状（已定）· 缩略图与导出包 v2 已落地**
 
 - **友好世界 id（已定：不改）**：`<preset>-N` 是**机器面**（目录名、导出文件名、`继续世界：<worldId>。` 指令、`WORLD_ID_RE` 白名单——`grep -rn WORLD_ID_RE` 共 17 处判定），而玩家面已经有回退链 `label → note → 剧本标题 →「未命名世界线」`。**决定：id 保持 `<preset>-N`，也不给新世界线自动起 label**——理由是行上已经有「显示名 + 第 N 章 + 相对时间 + 血缘徽标」四件信息，自动 label 会变成第二个命名来源、还会跟行内改名编辑器打架（玩家改了名、系统又按规则覆写，是最糟的体验）。若将来仍嫌目录名难看，改**下载文件名**（RFC 5987 的 `filename*`）比动 id 便宜一个数量级。
 - **若真要改 id 形态，blast radius 先数清（都是硬断言）**：`tests/parser.test.ts` 5 处 `campus-summer-1`、`tests/crafting.test.ts` 约 20 处（含 `继续世界：campus-summer-1。` 的逐字断言）、`tests/server.test.ts` 的 `createWorld` 组（断言「`<preset>-N` 递增 id」）、e2e 夹具用 `w1`/`w2`（`tests/integration/harness.mjs` 的 `seedWorld`，`worlds.spec.ts` 还断言重名副本 `w2-2`）。另需先定：**旧世界线 id 是否原样保留**（id 是目录名，没有重命名通道，保留是唯一省事的选择）。
-- **行缩略图（可开工）**：`/api/worlds` 的 `WorldEntry` 不带任何图（无 cover 字段），而世界线屏本来就按剧本过滤（`fetchWorlds(preset)`）——所以最小实现是复用 `coverUrl(entry.preset)`（`src/lib/acp.ts`，走 `/img` 白名单直服 `presets/<id>/cover.jpg`），**零服务端改动**。进阶版是「该世界当前场景背景」，那要新字段 + 从 `state.md` 的「场景美术」清单反查路径（**需要先确认**该清单是否总能查到路径）。行数多时每行一张图，`AssetsScreen.tsx` 已有 `loading="lazy"` 的先例，照抄即可。
+- **行缩略图（已落地）**：按当初的最小实现做的——`/api/worlds` 的 `WorldEntry` 依旧不带任何图（无 cover 字段），世界线屏本来就按剧本过滤（`fetchWorlds(preset)`），所以行首那张 56×40 直接用 `coverUrl(entry.preset)`（`src/lib/acp.ts` → `/img` 白名单直服 `presets/<id>/cover.jpg`），**零服务端改动**。落地口径见 `src/components/WorldsScreen.tsx` 的 `RowCover`：盒子常驻（固定尺寸的 `span`）、图可缺席（`onError` 只摘掉 `<img>`，留中性占位块）——没有 cover.jpg 的剧本并不罕见（导入进来的剧本目录、e2e 假栈里的 preset 目录默认都没有那张图），404 不留破图、也不改行高；`alt=""`（装饰性，显示名就在同一行的文字块里）+ `pointer-events-none`（不抢行的点击/键盘/roving tabIndex）；`loading="lazy"` 照 `AssetsScreen.tsx` 的先例。e2e 用两个剧本把两态摆在一起（`tests/e2e-ui/worlds.spec.ts`：demo 手写真 jpg，`no-cover` 剧本目录里没有那张图）——断言图真的解码上屏（`naturalWidth > 0`）、`src` 是封面契约路径、图**挂上过又被 404 摘掉**（MutationObserver 记录）、占位块与有封面时逐像素同尺寸、两态行高相同。
+- **未做（有意）：缩略图取「该世界当前场景背景」那一版**。它要 `WorldEntry` 新开一个字段（server 侧从 `state.md` 的「场景美术」清单反查路径），而当初记的「**需要先确认**该清单是否总能查到路径」仍未核实——查不到时的回退又会落回今天这套「剧本封面 / 占位块」，那就等于先加字段再加一半兜底。收益（同一剧本的几条世界线长得不一样）在大盘里排不上号，故这一轮只做零改动的那一版。
 - **导出包 v2 带 `forkedFrom` + `fork.md`（可开工，也是第 1 项的第一个真实用例）**：`exportWorld` 只写 `worldId/preset/title/label/note/chapterNo/files/snapshots`，**既不带索引里的 `forkedFrom`，也不收 `fork.md`**；`importWorld` 反向固定写 `forkedFrom: null` 且不落 `fork.md`——结果是**导入回来的分叉线在家谱里变成根**（家谱只认 `forkedFrom`），正好抵消 v1.8 把血缘从 `note` 挪到 `forkedFrom` 的那次收拾。
 - **v2 的做法**：`version: 2` + `world.forkedFrom`（老包缺失即 null）+ `world.forkMd`（可选字符串，落地时原样写 `fork.md`）；导入侧把现在的 `version === 1` 硬等值改成「接受 1 或 2，老包按当前形状补齐」——这就是第 1 项「旧包 accept + upgrade」策略的落地样板，建议**它先于通用迁移钩子做**（改动局部、收益立刻可见）。
 - **测试面**：`tests/integration/audio-history.test.ts` 的导出导入往返、`tests/server.test.ts` 的 `importWorld` 校验组、`tests/e2e-ui/worlds.spec.ts` 的家谱断言；`v1 包仍能被导入` 要单独一条用例钉住（否则「接受旧版本」很容易在下一次重构里被顺手收紧回去）。

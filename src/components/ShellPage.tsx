@@ -13,6 +13,7 @@ import type { ReactNode } from "react";
  * @param {object} props eyebrow 眉标：短标记（剧本名/分类这类），text-meta 上限；
  *   title 屏标题，text-title；actions 右侧动作簇（按钮/分段控件，窄屏自动换行）；
  *   aside 右栏内容（仅 ≥xl 与正文并排）；footer 页脚提示行（快捷键提示/统计；不传则不渲染该行）；
+ *   inert 背景压制：本页框被打开在它之上的模态盖住时置真（属性落在页框根上）；
  *   children 主体
  */
 export function ShellPage({
@@ -21,6 +22,7 @@ export function ShellPage({
   actions,
   aside,
   footer,
+  inert = false,
   children,
 }: {
   eyebrow?: ReactNode;
@@ -28,11 +30,23 @@ export function ShellPage({
   actions?: ReactNode;
   aside?: ReactNode;
   footer?: ReactNode;
+  /**
+   * 背景 `inert`（v1.9）：模态/确认层打开时把**整个页框**（眉标、标题、动作簇、正文、页脚）一起压住，
+   * Tab 与点击都进不来。为什么是页框根而不是别的：
+   * - 模态是页框的**兄弟**（各屏都渲染在 `</ShellPage>` 之后、同一个 ScreenShell 里），所以压页框
+   *   不会连带压住模态自己——inert 子树里的元素连程序化 focus 都进不去（Chromium 实测），
+   *   把模态套进来焦点陷阱就送不进焦点了；
+   * - 页框根是这一屏「除模态之外的全部可交互面」的最小公共祖先，一处属性收住所有背景控件
+   *   （连表头的返回/管理素材按钮），不必逐个控件挂。
+   * 默认 false = 一个属性都不写：没开模态的屏 DOM 与 v1.8 逐字一致。
+   */
+  inert?: boolean;
   children: ReactNode;
 }) {
   return (
     <div
       data-testid="shell-page"
+      inert={inert}
       className="mx-auto flex min-h-full w-full max-w-[84rem] flex-col px-6 py-8 lg:px-10"
     >
       <header className="mb-7 flex flex-wrap items-start justify-between gap-4">

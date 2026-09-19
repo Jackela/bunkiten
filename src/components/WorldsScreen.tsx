@@ -11,7 +11,7 @@ import {
 import { motion } from "framer-motion";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Maximize2, ZoomIn, ZoomOut } from "lucide-react";
-import { fetchWorlds, postWorld, worldExportUrl, type WorldEntry } from "../lib/acp";
+import { coverUrl, fetchWorlds, postWorld, worldExportUrl, type WorldEntry } from "../lib/acp";
 import { focusableElements } from "../lib/focusTrap";
 import { genealogyStep, layoutGenealogy, type GenealogyLayout } from "../lib/genealogy";
 import { truncate } from "../lib/text";
@@ -431,6 +431,46 @@ function GenealogyCanvas({
 }
 
 /**
+ * 行缩略图（ROADMAP §5）：整屏的世界线都属同一个剧本（清单本来按 `fetchWorlds(presetId)` 过滤），
+ * 所以不必给每条世界线各存一张图——直接复用剧本封面 `coverUrl(entry.preset)`（`/img` 白名单直服
+ * `presets/<id>/cover.jpg`，零服务端改动）。尺寸 56×40（`h-10 w-14`），行高由右边的文字块决定。
+ *
+ * 三条不显然的约定：
+ * 1) **盒子常驻、图片可缺席**：外层 span 恒定 56×40，`onError` 只把 `<img>` 摘掉，留下这层中性底
+ *    （`bg-white/[.03]`，与行内徽标同底）。没有 cover.jpg 的剧本并不罕见（导入进来的剧本、假栈里的
+ *    preset 目录默认都没有那张图），404 既不能留破图、也不能让行高抖动——固定尺寸的盒子让「有无封面」
+ *    两态在布局上完全同形。与标题屏的 `CardCover` 同一种「回退 = 不渲染」的写法，
+ *    差别只是那里回退成主题渐变、这里回退成占位块。
+ * 2) `alt=""`：装饰性图像——显示名就在右边文字块里，再给一句 alt 等于让读屏把同一个名字念两遍。
+ * 3) `pointer-events-none`：缩略图不是交互元素，行的点击/键盘（选中、roving tabIndex、⋯ 菜单）全归行自己。
+ *
+ * 刻意**没做**「该世界当前场景背景」那一版：`WorldEntry` 不带任何图字段（ROADMAP §5 记了这笔账）。
+ * @param {string} preset 剧本 id（封面按剧本取，与本世界线的章数/节点无关）
+ * @param {string} worldId 世界 id（只用于 data-testid，便于 e2e 按行点名）
+ */
+function RowCover({ preset, worldId }: { preset: string; worldId: string }) {
+  const [failed, setFailed] = useState(false);
+  return (
+    <span
+      data-testid={`world-cover-${worldId}`}
+      className="pointer-events-none h-10 w-14 flex-none overflow-hidden rounded-md border border-white/[.07] bg-white/[.03]"
+    >
+      {!failed && (
+        <img
+          data-testid={`world-cover-img-${worldId}`}
+          src={coverUrl(preset)}
+          alt=""
+          loading="lazy"
+          draggable={false}
+          onError={() => setFailed(true)}
+          className="pointer-events-none h-full w-full object-cover"
+        />
+      )}
+    </span>
+  );
+}
+
+/**
  * 世界线屏：选卡之后的第二环——继续某条世界线（读档续演）或开一条全新的（去捏人）。
  * 数据自己拉（fetchWorlds/preset 过滤），删除/新建/改名/导入走 POST /api/worlds；屏内不做任何推演。
  * v1.6：行内改名（label/note，空串=清除）、单条导出（浏览器下载）、打包导入（含成功/失败提示位），
@@ -452,6 +492,9 @@ function GenealogyCanvas({
  * 不拦就会继续冒到 App 挂在 window 上的 Esc 关闭链，那一下连整屏一起关回标题屏）；② Tab 走项
  * （Radix 的菜单项 tabIndex=-1 且内容会吞掉 Tab，见 `onMenuKeyDown`）。
  * 弹层**不 portal**：主题变量注入在 App 根容器而非 `:root`，portal 到 body 会掉回初始 accent。
+ * v1.9 行缩略图（ROADMAP §5）：行首加 56×40 的剧本封面（`coverUrl(entry.preset)`，`/img` 白名单直服，
+ * 零服务端改动，见 `RowCover`）——没有 cover.jpg 的剧本靠 `onError` 缩掉图片、只留同尺寸占位块，
+ * 破图与行高抖动都不允许；`alt=""` + `pointer-events-none`（装饰性、不抢行的点击与键盘）。
  */
 export default function WorldsScreen() {
   const selected = useGameStore((s) => s.selected);
@@ -1023,6 +1066,8 @@ export default function WorldsScreen() {
                     } ${i === focus ? "border-gold/40" : "border-white/10 hover:border-gold/25"}`}
                   >
                     <div className="flex items-center gap-3">
+                      {/* 行缩略图：剧本封面（本屏的清单本来就按剧本过滤），无 cover.jpg 时只剩同尺寸占位块 */}
+                      <RowCover preset={entry.preset} worldId={entry.worldId} />
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
                           <span className={`truncate text-body ${missing ? "text-ink-hint" : "text-ink"}`}>{name}</span>

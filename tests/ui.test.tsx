@@ -10,6 +10,9 @@
 // v1.7 续：重掷本回合（reroll）——次新 turn 快照 restore、reason:"reroll" 分割线、重同步收尾后排队重发同一玩家输入。
 // v1.8 续：捏人屏主角卡摘要与两处开演入口（制作美术 / 跳过美术）、制作中屏美术槽位与剧情图入口、
 //      FreeInput 的发送与语音、世界线屏「继续上次」卡 / 键盘卡 / 加载失败重试 / 改名取消、ShellPage 页框与标题屏字标。
+// v1.9 续：四处浮层的背景收口（ROADMAP §3 最后一面）——抽屉打开时 GameStage 的舞台层整体 inert、
+//      画廊预览打开时整页框 inert + 壳层根滚动锁、创作返回确认打开时创作整列 inert + 对话流滚动锁
+//      （断言都落在既有的 a11y 块里：inert 的边界、焦点仍在层内、关闭即摘干净）。
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import React from "react";
@@ -502,6 +505,12 @@ describe("CreationScreen：选项 chip 化与排队提示", () => {
     // —— v1.8 a11y：返回确认层（Esc 链第三环）的模态语义 + 焦点陷阱 + 关闭归还 ——
     const headerBack = screen.getByRole("button", { name: "返回" });
     headerBack.focus(); // 现实里点「返回」就会聚焦它，它也是开层前的「上一个元素」
+    // 关着确认层时：创作整列没有 inert、对话流（本屏的滚动容器）没有滚动锁
+    const content = screen.getByTestId("creation-content");
+    const flow = screen.getByTestId("creation-flow");
+    expect(content.hasAttribute("inert")).toBe(false);
+    expect(flow.className).toContain("overflow-y-auto");
+    expect(flow.className).not.toContain("scroll-locked");
     act(() => {
       useGameStore.getState().requestCreationExit(); // 有对话 → 开确认层（不是直接返回）
     });
@@ -509,6 +518,13 @@ describe("CreationScreen：选项 chip 化与排队提示", () => {
     expect(exit.getAttribute("role")).toBe("dialog");
     expect(exit.getAttribute("aria-modal")).toBe("true");
     expect(exit.getAttribute("aria-label")).toBe("返回确认"); // 名字与正文的可见问句分开，读屏不重复念
+    // 背景压制（v1.9 a11y）：整列 inert，对话流就在这一列里（含表头的「返回」、输入框、选项 chip）；
+    // 确认层是这一列的兄弟，所以不在这层里——两个按钮照常可聚焦
+    expect(content.hasAttribute("inert")).toBe(true);
+    expect(flow.closest("[inert]")).toBe(content);
+    expect(headerBack.closest("[inert]")).toBe(content);
+    expect(exit.closest("[inert]")).toBeNull();
+    expect(flow.className).toContain("scroll-locked"); // 滚动锁：本屏唯一在滚的容器被停住（jsdom 不滚，断契约）
     const back = within(exit).getByRole("button", { name: "返回" });
     const cancel = within(exit).getByRole("button", { name: "取消" });
     // 开层把焦点从输入框送进层内第一个可聚焦元素：App 的 Esc 关闭链在「正在打字」时不拦键，
@@ -524,6 +540,9 @@ describe("CreationScreen：选项 chip 化与排队提示", () => {
     act(() => {
       useGameStore.getState().closeCreationExitPrompt();
     });
+    // 关闭即解锁：inert 与滚动锁一起摘掉（否则表头的「返回」再也点不动、对话流也永远滚不了）
+    expect(content.hasAttribute("inert")).toBe(false);
+    expect(flow.className).not.toContain("scroll-locked");
     expect(document.activeElement).toBe(headerBack); // 关闭归还：回到开层前的「返回」按钮
   });
 });
@@ -2092,17 +2111,30 @@ describe("AssetsScreen：选择模式、批量重绘与批量删除（v1.6）", 
   });
 
   it("预览模态：role=dialog + aria-modal + 关闭按钮聚焦；单项重绘仍是同一条流水线（N=1）", async () => {
-    render(<AssetsScreen />);
+    const { container } = render(<AssetsScreen />);
     await waitFor(() => expect(screen.getByTestId("asset-card-薇拉-微笑")).toBeTruthy());
+    // 壳层根（ScreenShell）就是本屏的滚动容器：关着预览时既没有滚动锁、背景也没被压住
+    const scrollRoot = container.firstElementChild as HTMLElement;
+    expect(scrollRoot.className).toContain("shell-backdrop");
+    expect(scrollRoot.className).not.toContain("scroll-locked");
+    expect(screen.getByTestId("shell-page").hasAttribute("inert")).toBe(false);
     const card = screen.getByTestId("asset-card-薇拉-微笑");
     card.focus(); // 真实浏览器里点按钮就会聚焦它；jsdom 的 click 不搬焦点，这里显式落一次（关闭归还的断言要用）
     fireEvent.click(card);
 
+    // —— v1.9 a11y：预览打开 → 背景整页框 inert + 壳层根滚动锁；模态自己不在 inert 子树里 ——
+    const page = screen.getByTestId("shell-page");
+    expect(page.hasAttribute("inert")).toBe(true);
+    expect(card.closest("[inert]")).toBe(page); // 打开预览的那张卡片确实被压住（本来 Tab 一转身就回到它）
+    expect(scrollRoot.className).toContain("scroll-locked"); // 滚动锁的契约就是这一个类（jsdom 不滚，断类名）
     const dialog = screen.getByRole("dialog");
+    expect(dialog.closest("[inert]")).toBeNull();
     expect(dialog.getAttribute("aria-modal")).toBe("true");
     expect(dialog.getAttribute("aria-label")).toBe("素材预览：薇拉 · 微笑");
     const close = screen.getByTestId("assets-preview-close");
     expect(close.getAttribute("aria-label")).toBe("关闭预览");
+    // 焦点进模态（而不是被背景的 inert 挡住）：inert 子树里的元素连程序化 focus 都是 no-op，
+    // 所以「焦点陷阱能把焦点送进来」与「背景已 inert」这两条必须同时成立——顺序错了这条会红
     await waitFor(() => expect(document.activeElement).toBe(close));
 
     // 焦点陷阱（v1.8）：面板里可 Tab 到的是「关闭 + 重新生成」两枚；两端回绕，Tab 走不到画廊
@@ -2124,6 +2156,10 @@ describe("AssetsScreen：选择模式、批量重绘与批量删除（v1.6）", 
     // 关闭走 store（App 的 Esc 链与点遮罩同一条路）；退场动画期间节点还在，只断言状态
     fireEvent.click(close);
     expect(useGameStore.getState().assetsPreview).toBeNull();
+    // 关闭即解锁：背景摘掉 inert、壳层根摘掉滚动锁（inert 的摘除在提交的变更阶段，
+    // 早于焦点陷阱的清理——所以下一次快照能真的把焦点还给卡片而不是被 inert 顶掉）
+    expect(screen.getByTestId("shell-page").hasAttribute("inert")).toBe(false);
+    expect(scrollRoot.className).not.toContain("scroll-locked");
     // 关闭归还焦点：回到开启预览前拿焦点的那张卡片（层没了，焦点不该掉回 body）
     expect(document.activeElement).toBe(card);
   });
@@ -3303,7 +3339,7 @@ describe("同屏多立绘：发言者高亮带名牌、非发言者压暗，让�
     useGameStore.setState({ portraits: [] });
   });
 
-  it("0/1/2 人：让位档依次是「无 / portrait-reserve / portrait-reserve-duo」，队列左到右 = 出场到发言", () => {
+  it("0/1/2 人：让位档依次是「无 / portrait-reserve / portrait-reserve-duo」，队列左到右 = 出场到发言；抽屉打开时舞台背景 inert（抽屉不在那一层里）", () => {
     render(<GameStage />);
     // 无人：没有立绘层内容，也没有让位（对话面板吃满宽度）
     expect(screen.queryAllByTestId("portrait-figure")).toHaveLength(0);
@@ -3333,6 +3369,36 @@ describe("同屏多立绘：发言者高亮带名牌、非发言者压暗，让�
     expect(screen.getByAltText("薇拉")).toBeTruthy();
     expect(screen.getByAltText("沈屿")).toBeTruthy();
     expect(screen.getByTestId("dialogue-dock").className).toContain("portrait-reserve-duo");
+
+    // —— v1.9 a11y：抽屉打开时舞台背景（立绘 + HUD + 对话区）整体 inert ——
+    // 关着的时候一个属性都不写（默认零成本）
+    const stage = screen.getByTestId("stage-background");
+    expect(stage.hasAttribute("inert")).toBe(false);
+    expect(stage.contains(screen.getByTestId("dialogue-dock"))).toBe(true); // 对话区确实在这一层里
+
+    act(() => useGameStore.getState().toggleDrawer());
+    expect(stage.hasAttribute("inert")).toBe(true);
+    expect(screen.getByTestId("dialogue-dock").closest("[inert]")).toBe(stage);
+    // 命令轨（TopBar）也在这一层里：这就是原先「Tab 逛出抽屉去点顶栏」的那个缺口
+    expect(screen.getByTestId("history").closest("[inert]")).toBe(stage);
+    // 抽屉自己**不在** inert 子树里：它是这一层的兄弟，所以焦点陷阱还能把焦点送进去
+    // （inert 子树里的元素连程序化 focus 都是 no-op——真被套进去，下面这条断言会红）
+    const panel = screen.getByTestId("history-panel");
+    expect(panel.closest("[inert]")).toBeNull();
+    expect(document.activeElement).toBe(within(panel).getByRole("button", { name: "关闭回想" }));
+
+    // 关闭即摘掉（inert 跟着开关走，不留残值——留着的话命令轨就再也点不动了）
+    act(() => useGameStore.getState().toggleDrawer());
+    expect(stage.hasAttribute("inert")).toBe(false);
+
+    // 角色面板同一条规矩：两个抽屉共用「舞台背景」这一层，任一开着都压住，各自都不在里层
+    act(() => useGameStore.setState({ charactersOpen: true }));
+    expect(stage.hasAttribute("inert")).toBe(true);
+    const cards = screen.getByTestId("characters-panel");
+    expect(cards.closest("[inert]")).toBeNull();
+    expect(document.activeElement).toBe(within(cards).getByRole("button", { name: "关闭角色面板" }));
+    act(() => useGameStore.setState({ charactersOpen: false }));
+    expect(stage.hasAttribute("inert")).toBe(false);
   });
 
   it("发言者切换（队列重排）：名牌跟着末位走，压暗随之易主——同一套元素不新增人形", () => {

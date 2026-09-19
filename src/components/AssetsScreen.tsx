@@ -288,8 +288,13 @@ export default function AssetsScreen() {
   });
 
   return (
-    <ScreenShell className="overflow-y-auto shell-backdrop">
+    // 壳层根就是本屏的滚动容器（overflow-y-auto）——预览打开时锁它、不锁 body（body 在 fixed inset-0
+    // 的满幅布局下根本不是滚动源，见 global.css 的 .scroll-locked 与 ROADMAP §3 的那条冲突）
+    <ScreenShell className={`overflow-y-auto shell-backdrop${selected ? " scroll-locked" : ""}`}>
+      {/* 预览打开时整页框（含表头的返回/管理素材）背景压制；预览面板是它的兄弟，不在这层里，
+          所以面板自己的关闭/重绘按钮照常可聚焦可点（inert 的边界见 ShellPage 的同名 prop） */}
       <ShellPage
+        inert={!!selected}
         eyebrow={presetTitle ?? "未选择剧本"}
         title="画 廊"
         actions={
@@ -503,7 +508,9 @@ export default function AssetsScreen() {
       </ShellPage>
 
       {/* 大图预览 + 重绘（模态语义：role=dialog + aria-modal + aria-label，打开时焦点落在关闭按钮、
-          Tab 在面板里循环、关闭时归还给开启预览的那张卡片；Esc 由 App 关闭链兜） */}
+          Tab 在面板里循环、关闭时归还给开启预览的那张卡片；Esc 由 App 关闭链兜）。
+          背景的两件事（v1.9 a11y 收尾）：整页框 inert（上面的 ShellPage）+ 壳层根滚动锁（上面的 className）——
+          开了预览还 Tab 得进画廊栅格、还滚得动清单，是这一屏此前最后的两个缺口 */}
       <AnimatePresence>
         {selected && (
           <motion.div

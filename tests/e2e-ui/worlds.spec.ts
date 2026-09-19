@@ -6,6 +6,9 @@
 // 不退屏 → 重开时半截删除确认已复位）；③ 导出包 v2 的血缘（forkedFrom + fork.md 随包走，导入回来的
 // 分叉线在家谱里仍是子节点）——老包（v1）那条路走应用内的「导入」按钮，v2 包那条走真服务端的 HTTP 面
 // （客户端 parseWorldBundle 的版本闸本轮冻结未动，见下面「导入」段的注释）。
+// v1.9 补一条：行缩略图（ROADMAP §5）——两个剧本把两态摆在一起：demo 有 cover.jpg（手写真 jpg）、
+// no-cover 没有（本仓多数 preset 的常态）。断言「有封面时图真的解码上屏、src 是封面契约路径」、
+// 「缩略图不吃行的点击」、「没封面时图被 404 摘掉、只剩同尺寸占位块、行高逐像素不变」。
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,18 +36,44 @@ interface Bundle {
 let stack: StartedStack;
 let page: Page;
 
+/** 封面 URL（`/img?p=<相对路径>` 的 p 参数，已解码）→ 最近一次响应状态；行缩略图用例读它钉 200/404 */
+const coverStatuses = new Map<string, number>();
+
 test.beforeAll(async ({ browser }) => {
   ({ stack, page } = await startUiStack(browser, {
-    presets: [{ id: "demo", title: "示例剧本" }],
-    // w1 默认存在；w3 分叉自 w2（父子连线），w4 指向不存在的 ghost（孤儿 ⌫）；管理动作不推演，无需 turns
+    // 两个剧本：demo 有 cover.jpg（下面手写）、no-cover 没有——行缩略图的两态就摆在这两张卡上。
+    // id 刻意排在 demo 之后：scanPresets 按目录名排序，本文件其余用例「直接点 title-card-center」的
+    // 假设仍是 demo 在中央（no-cover 的用例自己用方向键切过去）
+    presets: [
+      { id: "demo", title: "示例剧本" },
+      { id: "no-cover", title: "无封面剧本" },
+    ],
+    // w1 默认存在；w3 分叉自 w2（父子连线），w4 指向不存在的 ghost（孤儿 ⌫）；管理动作不推演，无需 turns。
+    // w5 属 no-cover 剧本（世界线屏的清单按 selected 过滤，它只在那张卡的屏上出现）
     worlds: [
       { id: "w2" },
       { id: "w3", forkedFrom: { worldId: "w2", nodeId: "1-1" } },
       { id: "w4", forkedFrom: { worldId: "ghost", nodeId: "9-9" } },
+      { id: "w5", preset: "no-cover", title: "无封面剧本", lastPlayed: 1_600_000_000_000 },
     ],
   }));
   // w3 补一份 fork.md（forkWorld 落盘的同名文件）：导出包要能把它带走、导入侧要原样落回来
   writeFileSync(path.join(stack.stack.root, "state", "worlds", "w3", "fork.md"), FORK_MD_W3);
+  // demo 的封面按契约在 preset 根（harness 的 assets 落在 assets/ 子目录），单独手放一份**真 jpg**：
+  // 行缩略图靠 onError 兜 404，而 presets.spec 那种手造字节（0xFFD8 + 文本）本身就不是能解码的图，
+  // 会被判成加载失败——本用例要断言的正是「有封面时图真的解码上屏」，故字节复用仓内现成封面
+  // （tests/e2e-ui/gallery.spec.ts 的 rift() 同法）
+  writeFileSync(
+    path.join(stack.stack.root, "presets", "demo", "cover.jpg"),
+    readFileSync(path.join(ROOT, "presets", "rift-mark", "cover.jpg")),
+  );
+  // 封面请求的状态记录：标题屏卡面与行缩略图打的是同一条 `/img?p=presets/<id>/cover.jpg`，
+  // 缩略图用例据此断言「有封面 = 200、没封面 = 404」——否则「DOM 里没有 <img>」也可能只是图从没请求过
+  page.on("response", (r) => {
+    const url = new URL(r.url());
+    const p = url.pathname === "/img" ? (url.searchParams.get("p") ?? "") : "";
+    if (p.endsWith("cover.jpg")) coverStatuses.set(p, r.status());
+  });
 });
 
 test.afterAll(async () => {
@@ -305,4 +334,125 @@ test("⋯ 菜单键盘路径：Enter 开、Tab 走项、Esc 只收菜单不退�
   await expect(page.getByTestId("world-edit-w1")).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(popup).toHaveCount(0);
+});
+
+/**
+ * 标题屏轮播切到指定剧本（`title-card-center` 只有中央那张卡有 testid，故按卡面 aria-label 认卡）。
+ * 起点是 scanPresets 的目录名排序（本文件里 demo 在 no-cover 之前），但不假定谁在中央：
+ * 两个剧本时方向键一步即到，切完断言中央卡确实是目标——认错卡当场失败，不会静默跑到别的剧本上。
+ * @param {string} title 剧本标题（卡面 aria-label 的前缀）
+ */
+async function centerOnPreset(title: string): Promise<void> {
+  const center = page.getByTestId("title-card-center");
+  await expect(center).toBeVisible();
+  if ((await center.getAttribute("aria-label"))?.startsWith(title)) return;
+  await page.keyboard.press("ArrowRight");
+  await expect(center).toHaveAttribute("aria-label", new RegExp(`^${title}`));
+}
+
+/**
+ * 在页面里挂一个 MutationObserver，记录 `[data-testid^="world-cover-img-"]` 的挂载/摘除
+ * （`tests/e2e-ui/opening.spec.ts` 用同款手法抓跨帧的中继态）。
+ * 用途：缩略图 404 用例要证明图**挂上过**又被摘掉——只看最终 DOM 会把「压根没渲染 <img>」
+ * （另一种 bug）也算通过，那是空断言。
+ */
+async function watchCoverImg(): Promise<void> {
+  await page.evaluate(() => {
+    const trace: string[] = [];
+    (window as unknown as { __coverTrace: string[] }).__coverTrace = trace;
+    const hits = (nodes: NodeList): HTMLElement[] =>
+      Array.from(nodes).flatMap((n) => {
+        if (!(n instanceof HTMLElement)) return [];
+        const self = n.matches('[data-testid^="world-cover-img-"]') ? [n] : [];
+        return [...self, ...Array.from(n.querySelectorAll<HTMLElement>('[data-testid^="world-cover-img-"]'))];
+      });
+    new MutationObserver((records) => {
+      for (const rec of records) {
+        for (const el of hits(rec.addedNodes)) trace.push(`add:${el.dataset.testid}`);
+        for (const el of hits(rec.removedNodes)) trace.push(`remove:${el.dataset.testid}`);
+      }
+    }).observe(document.body, { childList: true, subtree: true });
+  });
+}
+
+// 行缩略图（ROADMAP §5）：缩略图取的是**剧本封面** `coverUrl(entry.preset)`（`/img` 白名单直服
+// `presets/<id>/cover.jpg`），所以两个剧本刚好把两态摆在一起——demo 有 cover.jpg（beforeAll 手写真 jpg）、
+// no-cover 没有（本仓多数 preset 的常态，/img 回真 404）。四条断言各管一件事：
+// ① 有封面：图真的解码上屏（naturalWidth > 0）、src 就是封面契约路径、alt 空（装饰性）；
+// ② 缩略图不吃行的点击（点它那一片 = 点行，选中与焦点都落到该行）；
+// ③ 没封面：那一次 /img 确实回 404，且图**挂上过又被摘掉**（DOM 里不留 <img>，破图图标因此不可能出现）；
+// ④ 缺图对布局零影响：占位块与有封面时逐像素同尺寸，两态的行高逐像素相同。
+test("行缩略图：有封面的剧本上封面图，没封面的只剩同尺寸占位块（无破图、行高不变）", async () => {
+  await page.goto(stack.pageUrl);
+  await expect(page.getByTestId("title-card-center")).toBeVisible();
+  await centerOnPreset("示例剧本");
+  await page.getByTestId("title-card-center").click();
+  await expect(page.getByTestId("worlds-screen")).toBeVisible();
+  await expect(page.getByTestId("world-row-w1")).toBeVisible();
+
+  // —— ① demo 有 cover.jpg ——
+  const cover = page.getByTestId("world-cover-img-w1");
+  await expect(cover).toBeVisible();
+  // src 就是封面契约路径（coverUrl → /img?p=presets%2Fdemo%2Fcover.jpg）
+  await expect(cover).toHaveAttribute("src", "/img?p=presets%2Fdemo%2Fcover.jpg");
+  // alt=""：装饰性——显示名就在右边的文字块里，读屏不该把同一个名字念两遍
+  await expect(cover).toHaveAttribute("alt", "");
+  // 真的解码上屏（不是破图、也不是没加载的 lazy 占位）：naturalWidth > 0
+  expect(await cover.evaluate((el) => (el as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+  expect(coverStatuses.get("presets/demo/cover.jpg")).toBe(200);
+  const coverBox = (await page.getByTestId("world-cover-w1").boundingBox())!;
+  expect([coverBox.width, coverBox.height]).toEqual([56, 40]);
+
+  // —— ② 缩略图不吃行的点击（pointer-events-none）：那一片的命中目标就是行自己，点下去 = 点行 ——
+  // 命中目标与「点完焦点/选中落到哪一行」两样都断言：前者是机制（elementFromPoint 会跳过
+  // pointer-events:none 的元素），后者是玩家可见的结果（roving tabIndex 的语义不变）
+  const hitTest = (box: { x: number; y: number; width: number; height: number }): Promise<string> =>
+    page.evaluate(({ x, y }) => {
+      const el = document.elementFromPoint(x, y);
+      return el?.closest('[data-testid^="world-row-"]')?.getAttribute("data-testid") ?? "";
+    }, { x: box.x + box.width / 2, y: box.y + box.height / 2 });
+  const clickCenter = (box: { x: number; y: number; width: number; height: number }) =>
+    page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+
+  expect(await hitTest(coverBox)).toBe("world-row-w1");
+  await clickCenter(coverBox);
+  await expect(page.getByTestId("world-row-w1")).toBeFocused();
+  await expect(page.getByTestId("world-row-w1")).toHaveAttribute("aria-selected", "true");
+  // 换一行再点一次：选中确实跟着走（不是「本来就在第一行，看着对」）
+  const cover2Box = (await page.getByTestId("world-cover-w2").boundingBox())!;
+  expect(await hitTest(cover2Box)).toBe("world-row-w2");
+  await clickCenter(cover2Box);
+  await expect(page.getByTestId("world-row-w2")).toBeFocused();
+  await expect(page.getByTestId("world-row-w2")).toHaveAttribute("aria-selected", "true");
+  // 行高基准（w1 全文件不被任何用例改过：显示名/备注都为空 → 名字行 + 章节行两行）
+  const demoRowH = (await page.getByTestId("world-row-w1").boundingBox())!.height;
+
+  // —— ③④ no-cover 剧本：preset 目录里根本没有 cover.jpg ——
+  // 先挂观察器（这一步只在世界线屏里发生，故挂在切屏之前），再 Esc 回标题屏换卡
+  await watchCoverImg();
+  await page.keyboard.press("Escape"); // Esc 关闭链：世界线屏 → 标题屏
+  await expect(page.getByTestId("title-card-center")).toBeVisible();
+  await centerOnPreset("无封面剧本");
+  await page.getByTestId("title-card-center").click();
+  await expect(page.getByTestId("worlds-screen")).toBeVisible();
+  await expect(page.getByTestId("world-row-w5")).toBeVisible();
+
+  // 图挂上过（缩略图确实渲染了）→ 404 之后被摘掉：DOM 里不留 <img>，只剩中性占位块。
+  // 摘除发生在 404 回来那一拍，故用 poll 等它——断言的仍是「最终不留 <img>」，不是某一刻的快照
+  const coverTrace = (): Promise<string[]> =>
+    page.evaluate(() => (window as unknown as { __coverTrace: string[] }).__coverTrace);
+  await expect.poll(coverTrace).toContain("remove:world-cover-img-w5");
+  expect(await coverTrace()).toContain("add:world-cover-img-w5");
+  expect(coverStatuses.get("presets/no-cover/cover.jpg")).toBe(404); // 封面请求确实回的是 404
+  await expect(page.getByTestId("world-cover-img-w5")).toHaveCount(0);
+
+  // 缺图不改变布局：占位块与有封面时同尺寸，行的其余部分一字未改
+  const holder = page.getByTestId("world-cover-w5");
+  await expect(holder).toBeVisible();
+  const holderBox = (await holder.boundingBox())!;
+  expect([holderBox.width, holderBox.height]).toEqual([56, 40]);
+  await expect(page.getByTestId("world-row-w5")).toContainText("第 1 章");
+  await expect(page.getByTestId("world-continue-w5")).toBeEnabled();
+  const bareRowH = (await page.getByTestId("world-row-w5").boundingBox())!.height;
+  expect(bareRowH, `缺封面的行高 ${bareRowH} 与有封面的 ${demoRowH} 不一致（缩略图把行撑变形了）`).toBe(demoRowH);
 });

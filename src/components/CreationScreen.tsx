@@ -62,7 +62,11 @@ export default function CreationScreen() {
 
   return (
     <ScreenShell className="shell-backdrop">
-      <div className="absolute inset-0 flex flex-col">
+      {/* 创作整列（表头 + 对话流 + 输入区）一层：返回确认层打开时整块 inert——表头的「返回」、
+          输入框、对话流里的选项 chip 与「开始装配」一次性全收住，Tab/点击都进不来。
+          确认层是这一列的**兄弟**（在 </div> 之后、同一个 ScreenShell 里），所以它自己不在这层里，
+          两个按钮照常可聚焦、焦点陷阱照常把焦点送进去（inert 子树里的元素连程序化 focus 都是 no-op） */}
+      <div data-testid="creation-content" className="absolute inset-0 flex flex-col" inert={creationExitPrompt}>
         <header className={`mx-auto mt-6 flex-none shell-panel rounded-2xl px-4 py-3 ${COL_WIDTH}`}>
           <div className="flex flex-wrap items-center gap-3">
             <h2 className="text-title tracking-[.6em] [text-indent:.6em]">剧 本 创 作</h2>
@@ -81,8 +85,13 @@ export default function CreationScreen() {
           <p className="mt-1.5 text-meta tracking-[.2em] text-ink-hint">用几句话聊聊你想要的故事，聊到满意就装配成新剧本</p>
         </header>
 
-        {/* 对话流：引擎在上、玩家回话靠右 */}
-        <div ref={flowRef} className={`mx-auto mt-4 flex-1 overflow-y-auto px-1 pb-4 ${COL_WIDTH}`}>
+        {/* 对话流：引擎在上、玩家回话靠右。它同时是本屏的滚动容器——确认层开着时挂 .scroll-locked
+            把那唯一在滚的容器停住（锁容器不锁 body：本屏是 fixed inset-0 满幅布局，见 global.css） */}
+        <div
+          ref={flowRef}
+          data-testid="creation-flow"
+          className={`mx-auto mt-4 flex-1 overflow-y-auto px-1 pb-4 ${COL_WIDTH}${creationExitPrompt ? " scroll-locked" : ""}`}
+        >
           {messages.map((m, i) => {
             // 引擎气泡：选项段拆出来渲染成可点击 chip（点击填入输入框），正文去掉选项段
             const body = m.role === "engine" ? stripOptionsBlock(m.text) : m.text;
@@ -213,7 +222,8 @@ export default function CreationScreen() {
 
       {/* 返回确认（Esc 链第三环；对话已开始时不慎点返回不丢创作进度）。
           模态语义：role=dialog + aria-modal（名字用「返回确认」，可见的问句留在正文里——
-          免得读屏把同一句念两遍）；焦点进「返回」、Tab 在层内循环、关层归还给开启前的那个按钮 */}
+          免得读屏把同一句念两遍）；焦点进「返回」、Tab 在层内循环、关层归还给开启前的那个按钮。
+          背景的两件事（v1.9 a11y 收尾）：创作整列 inert（上面的属性）+ 对话流滚动锁（上面的 .scroll-locked） */}
       <AnimatePresence>
         {creationExitPrompt && (
           <motion.div

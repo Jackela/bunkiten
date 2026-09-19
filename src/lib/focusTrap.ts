@@ -5,7 +5,10 @@
 // 刻意**不**在这里做的两件事（补了会与现有属主冲突）：
 //   ① Esc：关闭链的唯一属主是 src/App.tsx 的 window keydown（回想 → 角色 → 创作确认 → …）——
 //      多一处 Esc 处理就是双触发；
-//   ② 背景 inert / 滚动锁：属于防「Tab 逛到 TopBar」的另一半，见 docs/ROADMAP.md 第 3 项。
+//   ② 背景 inert / 滚动锁：属于防「Tab 逛到 TopBar」的另一半，v1.9 已落地但不在这层——
+//      inert 是**渲染层**的属性（GameStage 的舞台层、ShellPage 的背景压制），
+//      滚动锁是滚动容器上的 .scroll-locked 类（src/styles/global.css），两者都不需要事件监听，
+//      塞进本模块只会让「Tab 关在容器里」这个单一职责变形。
 
 /**
  * 可聚焦元素的选择器（与「浏览器 Tab 能到哪」对齐的宽松集合）。

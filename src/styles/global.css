@@ -154,6 +154,18 @@ body {
   outline-offset: 2px;
 }
 
+/* 滚动锁（v1.9 a11y）：模态/确认层打开时，屏内**真正在滚的那个容器**不许再滚。
+   为什么锁容器而不是 body：本仓的屏是 fixed inset-0 满幅布局（App 根 .fixed.inset-0.overflow-hidden，
+   屏自己 absolute inset-0 overflow-y-auto），body 根本没有可滚的高度——给 body 上 overflow:hidden
+   是「看着像修好了、其实什么都没锁」（这条冲突在 docs/ROADMAP.md §3 里点过名）。
+   用法是「开层时给滚动容器加这个类、关层时摘掉」：overflow 的真源仍是容器自己的 overflow-y-auto
+   工具类，本类只在开层那一小段时间把它按成 hidden（摘掉即恢复原状，不写内联样式、不留残值）。
+   刻意写在 unlayered 区（同上面的焦点环与 .shell-panel）：级联层外的规则优先于 utilities 层，
+   overflow-y-auto 才会被这一条盖住。 */
+.scroll-locked {
+  overflow: hidden;
+}
+
 /* SVG 焦点元素（剧情图节点 <g tabindex>）鼠标点击聚焦时不画环：Chromium 对聚焦 SVG 有
    UA 级 outline:auto，键盘环交给上面 :focus-visible，两者互斥不冲突。 */
 :where(svg [tabindex]):focus:not(:focus-visible) {
