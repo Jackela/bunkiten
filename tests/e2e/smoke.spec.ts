@@ -15,12 +15,16 @@ const E2E_PRESET = "campus-summer";
 const WORLDS_INDEX = path.join(ROOT, "state", "worlds", "index.json");
 
 function dropPresetWorlds() {
-  let index: { worldId?: string; preset?: string }[] = [];
+  let raw: unknown;
   try {
-    index = JSON.parse(readFileSync(WORLDS_INDEX, "utf8"));
+    raw = JSON.parse(readFileSync(WORLDS_INDEX, "utf8"));
   } catch {
     return; // 无索引 = 无世界线
   }
+  // 索引的两种顶层形态都认（与 server 的 readWorldsIndex 同口径）：v1.8 及以前的裸数组，
+  // 或 v1.9 起的版本化对象 `{ schema, worlds }`——本机跑 e2e 用的真实 game root 两种都可能存在。
+  const envelope = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as { worlds?: unknown }) : null;
+  const index = (Array.isArray(raw) ? raw : envelope?.worlds) as { worldId?: string; preset?: string }[] | undefined;
   if (!Array.isArray(index)) return;
   const keep = index.filter((e) => e?.preset !== E2E_PRESET);
   for (const e of index) {
@@ -28,7 +32,9 @@ function dropPresetWorlds() {
       rmSync(path.join(ROOT, "state", "worlds", e.worldId), { recursive: true, force: true });
     }
   }
-  if (keep.length !== index.length) writeFileSync(WORLDS_INDEX, JSON.stringify(keep, null, 2) + "\n");
+  if (keep.length === index.length) return;
+  // 写回当前形态；磁盘上原本是版本化对象时保留它的顶层其它键（同 server writeWorldsIndex 的读改写口径）
+  writeFileSync(WORLDS_INDEX, JSON.stringify(envelope ? { ...envelope, worlds: keep } : { schema: 1, worlds: keep }, null, 2) + "\n");
 }
 
 function cleanArtifacts() {

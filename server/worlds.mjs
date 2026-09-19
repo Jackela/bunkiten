@@ -2,8 +2,9 @@
 // 每个世界三份文件：state.md / summary.md / story-tree.md；index.json 记录元数据（chapterNo/lastPlayed 由磁盘自愈）。
 // 三文件读写与快照逻辑在下层 server/snapshots.mjs，本模块只做索引与 CRUD。
 // 入口 server/acp-server.mjs 逐名 re-export 这些符号（tests/server.test.ts 与 scripts/doctor.mjs 都从入口 import）。
-// 例外：migrateWorldsSchema 是刻意**先落骨架、后接启动路径**的索引 schema 迁移（ROADMAP §1），暂不进入口的
-// re-export 面——只有 tests/server.test.ts 直连本模块；接线那个 commit 把它补进入口并翻转 writeWorldsIndex 的写形态。
+// 索引 schema 迁移（migrateWorldsSchema，ROADMAP §1 / ADR-0018）已接启动路径：与其余符号一起 re-export，
+// 由入口 startServer 在 migrateLegacyState 之后调一次；同一批改动把 writeWorldsIndex 的写形态翻成
+// `{schema: 1, worlds}`（读路径本来就两种形态都认——先翻写形态、后接迁移会造出「读到一半的世界」）。
 import fs from "fs";
 import path from "path";
 import { WORLDS_ROOT } from "./config.mjs";
@@ -65,14 +66,14 @@ export function moveToTrash(root, rel, label = "") {
 }
 
 /**
- * state/worlds/index.json 的**版本化**形态（迁移目标，见 migrateWorldsSchema）。读路径今天两种形态都认。
+ * state/worlds/index.json 的**版本化**形态（v1.9 起 writeWorldsIndex 写它，见 indexDocumentFor）。读路径两种形态都认。
  * @typedef {{schema: number, worlds: WorldIndexEntry[]}} VersionedWorldsIndex
  */
 
 /**
  * 索引文件的两种顶层形态 → 条目数组；认不出来返回 null（fail-soft 的单一判定点）。
- * ① 裸数组（v1.8 及以前、也是今天 writeWorldsIndex 写的形态）；
- * ② 版本化对象 `{ schema, worlds }`（migrateWorldsSchema 的产物）。schema 号只记录、不做闸门：
+ * ① 裸数组（v1.8 及以前写的形态；启动期由 migrateWorldsSchema 升成 ②）；
+ * ② 版本化对象 `{ schema, worlds }`（今天 writeWorldsIndex 写的形态）。schema 号只记录、不做闸门：
  *    只要 worlds 是数组就照读（条目仍逐条校验），多出来的顶层键一律忽略；未知版本对象自有校验兜底。
  * @param {unknown} data JSON.parse 的原始结果
  * @returns {WorldIndexEntry[]|null} 类型上声称是世界元数据；`worldId` 是不是字符串由 readWorldsIndex 逐条滤（旧口径的显式化）
@@ -98,22 +99,62 @@ export function readWorldsIndex(root) {
   }
 }
 
-/** @param {string} root 世界根目录 @param {WorldIndexEntry[]} list 完整索引（整体覆写） */
-export function writeWorldsIndex(root, list) {
-  // 此刻**仍写旧裸数组**（与 readWorldsIndex 的宽读配对）：写路径翻成 `{schema: 1, worlds}` 必须与
-  // 「startServer 里接上 migrateWorldsSchema」同一批做——只翻一处会出现「读到一半的世界」：
-  // 旧索引没升级、而后续每次写回已经换了形态，两个版本的世界线列表在同一个文件里来回互相覆盖。
-  fs.mkdirSync(root, { recursive: true });
-  fs.writeFileSync(path.join(root, "index.json"), JSON.stringify(list, null, 2) + "\n");
+/**
+ * 落盘对象形态的唯一判定点（纯函数，root 不参与）：**只有 `worlds` 是要写入的新值，其余一律沿用磁盘上那一份**。
+ *   ① 上一份读不出来（缺文件 / 坏 JSON）或就是裸数组 → `{schema: 1, worlds}`（v1.9 起的当前形态；
+ *      顺带让「写回」本身也能把裸数组升上来，即便启动期迁移这次没跑到）；
+ *   ② 上一份是版本化对象（非数组对象）→ 读改写：`schema` 与**所有其它顶层键原样保留**，只换 `worlds`。
+ *      其中最重要的一条是**永不降级写回**：`schema: 2` 的索引经新版本写、再被旧版本程序写时仍是 2。
+ *      玩家降级安装后旧版把它改写成 `{schema: 1}`，等于替未来版本宣布「这就是 schema 1 的结构」——
+ *      升级回来时既认不出它是新结构（标记自相矛盾），也判断不出该不该再迁移，只能靠猜。
+ *      `schema` 缺失或不是正整数时才补 1（写者自己知道写的是什么形态，不该留一个不可比的版本号）。
+ * 读改写之间不取锁：本仓既有约定（索引只有一个写者——server 在 Electron 主进程内同步写；`updateWorld`
+ * 等三个写点都是「读一次、改、整份写回」）。跨进程并发写在这里早就互相覆盖，不在这条路径上发明新机制。
+ * @param {unknown} prev 现有 index.json 的 JSON.parse 结果（缺文件/坏 JSON 时传 undefined）
+ * @param {WorldIndexEntry[]} list 要写入的完整条目列表
+ * @returns {VersionedWorldsIndex & Record<string, unknown>} 落盘对象（当前形态恒含 `schema` 与 `worlds`）
+ */
+function indexDocumentFor(prev, list) {
+  if (prev && typeof prev === "object" && !Array.isArray(prev)) {
+    const prevObj = /** @type {Record<string, unknown>} */ (prev);
+    const schema =
+      typeof prevObj.schema === "number" && Number.isInteger(prevObj.schema) && prevObj.schema >= 1
+        ? prevObj.schema
+        : 1;
+    return { ...prevObj, schema, worlds: list };
+  }
+  return { schema: 1, worlds: list };
 }
 
 /**
- * 世界线索引 schema 的一次性升级：旧裸数组重写成 `{schema: 1, worlds}`（ROADMAP §1 的骨架，**尚未接启动路径**）。
+ * 写世界线索引：顶层 `{schema: 1, worlds}`（v1.9 起；v1.8 及以前是裸数组，readWorldsIndex 两种都认）。
+ * `list` 整体覆写 `worlds`；顶层其它键见 indexDocumentFor（未来 schema 与其未知键原样保留，不降级写回）。
+ * @param {string} root 世界根目录
+ * @param {WorldIndexEntry[]} list 完整索引
+ */
+export function writeWorldsIndex(root, list) {
+  const file = path.join(root, "index.json");
+  /** @type {unknown} */
+  let prev;
+  try {
+    prev = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    prev = undefined; // 缺文件 / 读不动 / 坏 JSON：都按「没有可沿用的上一份」处理
+  }
+  fs.mkdirSync(root, { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(indexDocumentFor(prev, list), null, 2) + "\n");
+}
+
+/**
+ * 世界线索引 schema 的一次性升级：旧裸数组重写成 `{schema: 1, worlds}`（ROADMAP §1 / ADR-0018，
+ * 由入口 startServer 在 migrateLegacyState 之后调用一次）。
  * 四种输入四种结局，全部不抛错、且天然幂等：
  *   缺文件 / 读不动 → false（**不创建文件**：全新安装不该被迁移顺手造出一个空索引）；
  *   顶层是数组     → 重写成 `{schema: 1, worlds}`，worlds 就是原数组**逐条原样**（不补字段、不过滤坏条目）→ true；
- *   已是版本化对象 → false（不改一个字节，再调多少次都还是 false——幂等由「只认数组」这个判据成立，不靠记忆）；
+ *   已是版本化对象 → false（不改一个字节，再调多少次都还是 false——幂等由「只认数组」这个判据成立，不靠记忆；
+ *                    含 `schema` 比当前版本新的索引：读路径照读、写路径保留其 schema，迁移对它无事可做）；
  *   坏 JSON / 其它 → false 且**不动笔**（解析不出就别覆写：宁可下次启动再试，也不能把玩家的世界线列表写没了）。
+ * 重写走 writeWorldsIndex（落盘形态只有一处定义）：数组输入在那边正落到 `{schema: 1, worlds}`。
  * 与 migrateLegacyState 同款：函数内不打日志、只回布尔，由调用方决定要不要 console.log（时机与措辞归启动路径）。
  * @param {string} root 世界根目录
  * @returns {boolean} 是否真的改写了文件
@@ -128,10 +169,8 @@ export function migrateWorldsSchema(root) {
     return false; // 缺文件 / 读不动 / 坏 JSON：三种都按「这次不迁」处理
   }
   if (!Array.isArray(data)) return false; // 已版本化的对象（或任何别的 JSON）：no-op
-  /** @type {VersionedWorldsIndex} */
-  const next = { schema: 1, worlds: data };
   try {
-    fs.writeFileSync(file, JSON.stringify(next, null, 2) + "\n");
+    writeWorldsIndex(root, data);
   } catch {
     return false; // 写不动（权限/磁盘满）当作没迁：文件维持旧形态，下次启动再试
   }

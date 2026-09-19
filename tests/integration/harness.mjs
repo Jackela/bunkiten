@@ -87,8 +87,21 @@ function seedWorld(worldsRoot, worldId, preset, title, meta = {}) {
 //   · worlds:     [{id, title?, preset?, forkedFrom?}] → 追加世界（复用 w1 三文件逻辑）
 //   · snapshots:  { worldId: [{seq,at?,kind,nodeId,chapterNo,files}] } → 写 state/worlds/<id>/history/NNNN.json
 //                 （条目形状与 server writeSnapshot 的磁盘格式一致：files = {state,summary,tree}）
+//   · indexSchema: number        → 版本化索引的 schema 号（缺省 1 = 当前形态；2 = 未来版本，验「读到、不降级写回」）
+//   · indexExtra:  object        → 版本化索引里追加的未知顶层键（验读改写保留）
+//   · legacyIndexArray: boolean  → 写 v1.8 及以前的**裸数组**索引（验启动期 migrateWorldsSchema 真的升了它）
 function seedStack(root, presets, extra = {}) {
-  const { assets = {}, audioFiles = {}, trees = {}, stateFiles = {}, worlds = [], snapshots = {} } = extra;
+  const {
+    assets = {},
+    audioFiles = {},
+    trees = {},
+    stateFiles = {},
+    worlds = [],
+    snapshots = {},
+    indexSchema = 1,
+    indexExtra = {},
+    legacyIndexArray = false,
+  } = extra;
   mkdirSync(path.join(root, "presets"), { recursive: true });
   const worldsRoot = path.join(root, "state", "worlds");
   mkdirSync(worldsRoot, { recursive: true });
@@ -117,7 +130,12 @@ function seedStack(root, presets, extra = {}) {
       }),
     );
   }
-  writeFileSync(path.join(worldsRoot, "index.json"), JSON.stringify(index, null, 2) + "\n");
+  // 索引形态（写盘那一份 = 启动时磁盘上的既有档）：
+  //   缺省写当前形态 `{schema:1, worlds}`（v1.9 起 server 写出来的样子）；
+  //   legacyIndexArray 写 v1.8 及以前的裸数组（启动期由 migrateWorldsSchema 一次性升上来）；
+  //   indexSchema/indexExtra 造一个「未来版本」的索引（验读路径照读 + 写回不降级、未知顶层键保留）。
+  const indexDoc = legacyIndexArray ? index : { schema: indexSchema, ...indexExtra, worlds: index };
+  writeFileSync(path.join(worldsRoot, "index.json"), JSON.stringify(indexDoc, null, 2) + "\n");
   // 树覆盖（w1 或追加世界的 story-tree.md 换成调用方全文）
   for (const [worldId, text] of Object.entries(trees)) {
     writeFileSync(path.join(worldsRoot, worldId, "story-tree.md"), text);
@@ -228,6 +246,9 @@ async function httpOk(url) {
  * @param {Array<{id: string, title?: string, preset?: string, forkedFrom?: string|null}>} [opts.worlds] 追加世界（复用 w1 三文件生成逻辑）
  * @param {Record<string, Array<{seq: number, at?: string, kind: "turn"|"backup", nodeId: string|null, chapterNo: number|null, files: {state: string|null, summary: string|null, tree: string|null}}>>} [opts.snapshots]
  *   预置逐轮快照：worldId → history/NNNN.json 条目（形状与 server writeSnapshot 落盘格式一致）
+ * @param {number} [opts.indexSchema] 索引的 schema 号（缺省 1；2 = 未来版本，验不降级写回）
+ * @param {Record<string, unknown>} [opts.indexExtra] 版本化索引里的未知顶层键（验读改写保留）
+ * @param {boolean} [opts.legacyIndexArray] 写 v1.8 及以前的裸数组索引（验启动期 schema 迁移）
  * @returns {Promise<object>} stack 句柄（root/home/events/waitFor/prompt/stop 等）
  */
 export async function startStack({
@@ -240,6 +261,9 @@ export async function startStack({
   stateFiles = {},
   worlds = [],
   snapshots = {},
+  indexSchema = 1,
+  indexExtra = {},
+  legacyIndexArray = false,
 } = {}) {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "bunkiten-it-"));
   const root = path.join(tmp, "game");
@@ -252,7 +276,7 @@ export async function startStack({
   // UI e2e 的 boot 屏靠它放行进 title——占位内容无所谓，写一个空 JSON 即可
   mkdirSync(path.join(home, ".grok"), { recursive: true });
   writeFileSync(path.join(home, ".grok", "auth.json"), "{}\n");
-  seedStack(root, presets, { assets, audioFiles, trees, stateFiles, worlds, snapshots });
+  seedStack(root, presets, { assets, audioFiles, trees, stateFiles, worlds, snapshots, indexSchema, indexExtra, legacyIndexArray });
 
   // 会话图片目录：server 用 os.homedir()（=HOME）+ encodeURIComponent(GAME_ROOT) + sessionId 拼接
   const sessionImagesDir = path.join(home, ".grok", "sessions", encodeURIComponent(root), SESSION_ID, "images");

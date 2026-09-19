@@ -8,7 +8,7 @@
 //   assets.mjs 美术资产路径契约纯函数（sanitize/白名单/落盘判定/差分拆分）
 //   presets.mjs preset.md 解析 + assetTargetFile + 剧本导出包（buildPresetBundle/importPresetBundle）
 //   snapshots.mjs 世界三文件与逐轮快照的地基（WORLD_FILES/WORLD_ID_RE/读写/选择/fork 纯函数）
-//   worlds.mjs 世界线索引/CRUD/导出导入/migrateLegacyState/角色面板解析
+//   worlds.mjs 世界线索引/CRUD/导出导入/migrateLegacyState/migrateWorldsSchema/角色面板解析
 //   audio.mjs presets/<id>/audio/ 扫描（AUDIO_KINDS/AUDIO_EXTS/AUDIO_FILE_RE re-export 给 doctor）
 //   http-util.mjs 本地端点防护（跨站 403/body 413）+ /app 静态托管的 MIME 与目录解析
 //   acp.mjs ACP 子进程封装（spawn/JSON-RPC request/sessionId 存取/boot/会话图片定位）
@@ -39,7 +39,7 @@ import {
 import { scanPresets, assetTargetFile } from "./presets.mjs";
 import { RULES, SUPPLEMENT_PROMPT, parseArtLine, parseExpressionLine, parsePresetAddedLine, parseTreeLine, parseAudioLine } from "./protocol-lines.mjs";
 import { WORLD_ID_RE, parseTreePointer, readWorldFiles, writeSnapshot, writeTurnLog } from "./snapshots.mjs";
-import { readWorldsIndex, presetFromStateFile, worldChapterNo, migrateLegacyState } from "./worlds.mjs";
+import { readWorldsIndex, presetFromStateFile, worldChapterNo, migrateLegacyState, migrateWorldsSchema } from "./worlds.mjs";
 import { createAcpSession } from "./acp.mjs";
 import { createRequestHandler } from "./routes.mjs";
 
@@ -94,6 +94,7 @@ export {
   deleteWorld,
   listWorlds,
   migrateLegacyState,
+  migrateWorldsSchema,
 } from "./worlds.mjs";
 export { isCrossSiteRequest, readBodyText } from "./http-util.mjs";
 // 剧本体检（v1.8）的纯函数视图：路由链住在 routes.mjs，这里只把测试面（tests/server.test.ts 直测 tmp 根）
@@ -583,6 +584,12 @@ export function startServer() {
   // 旧版扁平 state/*.md 一次性迁入 state/worlds/main/（幂等；已是多世界布局或无旧数据时不动）
   if (migrateLegacyState(path.join(GAME_ROOT, "state"), WORLDS_ROOT)) {
     console.log("[acp] legacy state/*.md → state/worlds/main/ 已迁移");
+  }
+  // 索引 schema 升级（ROADMAP §1 / ADR-0018）必须紧跟其后：上一步可能刚用新写形态（{schema:1, worlds}）
+  // 建出索引，那时本步是 no-op；更老的裸数组索引（v1.8 及以前）在这里一次性升上来。
+  // 两种输入都在 listen 之前跑完——HTTP 一开门，索引已是当前形态（没有「读到一半的世界」的窗口）。
+  if (migrateWorldsSchema(WORLDS_ROOT)) {
+    console.log("[acp] state/worlds/index.json 已升级：裸数组 → {schema: 1, worlds}");
   }
 
   // ---------- HTTP ----------

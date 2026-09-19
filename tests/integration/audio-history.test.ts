@@ -10,6 +10,7 @@
 //   restore → 生成 backup 条目
 //   export → import 往返一致（含重名后缀；v2 包带 forkedFrom/fork.md、v1 包照收）
 //   素材 delete 后 /api/assets 不再列出
+//   索引 schema 的启动迁移（ROADMAP §1）：旧裸数组升起、未来 schema 读得到且不被降级写回
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -336,4 +337,57 @@ describe("集成：逐轮快照 + 世界线精确回退/导出导入（CONTRACTS
       expect(meta.snapshots.every((s: any) => s.files === undefined)).toBe(true);
     }
   }, 15000);
+});
+
+// 索引 schema 的**启动**迁移（ROADMAP §1 / ADR-0018）：迁移跑在 startServer 里、listen 之前，
+// 单测（tmp 根直调）证明不了「真的接上了」，只有真子进程能验。两条用例各起一套栈
+// （种子形态不同：v1.8 及以前的裸数组 / schema:2 的未来版本），所以不并进上面那套共享栈。
+describe("集成：索引 schema 的启动迁移（ROADMAP §1）", () => {
+  it("⑩ 旧裸数组索引：启动即升成 {schema:1, worlds}，条目与世界照旧", async () => {
+    const stack = await startStack({ legacyIndexArray: true });
+    try {
+      const indexFile = path.join(stack.root, "state", "worlds", "index.json");
+      const doc = JSON.parse(readFileSync(indexFile, "utf8"));
+      expect(doc.schema).toBe(1); // 裸数组已被升级（不是原地不动）
+      expect(doc.worlds.map((w: any) => w.worldId)).toEqual(["w1"]);
+      // 迁移只在真的动过文件时打一行日志（[acp] 约定）；此刻 HTTP 已开门，stdout 定稿
+      expect(stack.stdout()).toContain("[acp] state/worlds/index.json 已升级");
+
+      // 世界照旧可玩：升级没丢条目、没改字段
+      const worlds = await stack.getJSON("/api/worlds");
+      expect(worlds.status).toBe(200);
+      expect(worlds.body.worlds.map((w: any) => w.worldId)).toEqual(["w1"]);
+      expect(worlds.body.worlds[0]).toMatchObject({ preset: "demo", exists: true });
+      expect(readWorldFile(w1Dir(stack), "state.md")).toContain("教堂");
+    } finally {
+      await stack.stop();
+    }
+  }, 30000);
+
+  it("⑪ 未来 schema（schema:2）：读得到、迁移不动它，之后的索引写入也不降级、未知顶层键保留", async () => {
+    const stack = await startStack({ indexSchema: 2, indexExtra: { futureField: { someDay: ["新版本才认识的数据"] } } });
+    try {
+      const indexFile = path.join(stack.root, "state", "worlds", "index.json");
+      const doc = JSON.parse(readFileSync(indexFile, "utf8"));
+      expect(doc.schema).toBe(2); // 迁移对它 no-op：将来版本的索引不被降级成 schema:1
+      expect(doc.futureField).toEqual({ someDay: ["新版本才认识的数据"] });
+      expect(stack.stdout()).not.toContain("已升级"); // no-op → 静默（不打日志）
+
+      // 「永不拒绝」的读侧：未来 schema 的世界照样列出来
+      const worlds = await stack.getJSON("/api/worlds");
+      expect(worlds.status).toBe(200);
+      expect(worlds.body.worlds.map((w: any) => w.worldId)).toEqual(["w1"]);
+
+      // 写侧：改名（updateWorld → writeWorldsIndex 读改写）之后 schema 与未知键仍在
+      const upd = await stack.postJSON("/api/worlds", { action: "update", worldId: "w1", label: "第一周目" });
+      expect(upd.status).toBe(200);
+      const after = JSON.parse(readFileSync(indexFile, "utf8"));
+      expect(after.schema).toBe(2);
+      expect(after.futureField).toEqual({ someDay: ["新版本才认识的数据"] });
+      expect(after.worlds).toHaveLength(1);
+      expect(after.worlds[0].label).toBe("第一周目");
+    } finally {
+      await stack.stop();
+    }
+  }, 30000);
 });

@@ -23,6 +23,7 @@ import {
   legacyAssetCandidates,
   listWorlds,
   migrateLegacyState,
+  migrateWorldsSchema,
   moveToTrash,
   normalizeSnapshot,
   normalizeTheme,
@@ -57,10 +58,10 @@ import {
   __snapshotCacheStats,
   WORLD_FILES,
 } from "../server/acp-server.mjs";
-// 索引 schema 迁移骨架刻意**还没进**入口的 re-export 面（先落骨架、后接启动路径，见 ROADMAP §1）：
-// 只有这一条测试直连模块，接线那个 commit 再从入口 import 并改这一行。
-// WORLD_BUNDLE_VERSION 同理（v1.8 导出包 v2 新增）：入口的 re-export 面不归本次改动，测试直连模块。
-import { WORLD_BUNDLE_VERSION, migrateWorldsSchema } from "../server/worlds.mjs";
+// migrateWorldsSchema 与索引写形态（ROADMAP §1 / ADR-0018）：从**入口** import——迁移已接启动路径、
+// 写路径已翻成 `{schema:1, worlds}`，两者都在本批改动里落地，入口的 re-export 面就是外部对该能力的唯一门面。
+// WORLD_BUNDLE_VERSION 另起一行直连模块：入口的 re-export 面还没有它，那是导出包那一族的账。
+import { WORLD_BUNDLE_VERSION } from "../server/worlds.mjs";
 // 剧本体检的判定真源（server 只做 id 校验/目录存在性/归组，检查逻辑一份都不重写）：测试直接用真函数
 import { checkPreset } from "../scripts/doctor.mjs";
 
@@ -299,6 +300,8 @@ describe("server 世界线索引与建 / 分叉 / 删（临时目录）", () => 
     expect(entry.worldId).toBe("main");
     expect(entry.preset).toBe("campus-summer");
     expect(entry.chapterNo).toBe(2);
+    // 索引由 writeWorldsIndex 落盘 → 今天写出来就是版本化形态，启动期紧随其后的 schema 迁移对它是 no-op
+    expect(JSON.parse(readFileSync(path.join(worldsRoot, "index.json"), "utf8")).schema).toBe(1);
 
     expect(migrateLegacyState(stateDir, worldsRoot)).toBe(false); // 幂等：索引已存在即跳过
   });
@@ -312,8 +315,9 @@ describe("server 世界线索引与建 / 分叉 / 删（临时目录）", () => 
     expect(existsSync(path.join(worldsRoot, "index.json"))).toBe(false);
   });
 
-  // 索引 schema 迁移的骨架（ROADMAP §1）：此刻**还没接启动路径**，写路径也仍是旧裸数组——
-  // 这两条用例就是「接线必须与翻转写形态同一批做」的证据链。
+  // 索引 schema 迁移（ROADMAP §1 / ADR-0018）：骨架四条行为（缺文件 / 旧裸数组 / 已版本化 / 坏 JSON）
+  // 与**已翻过来的写形态**一起钉在这里——迁移的判据是「顶层是不是数组」，写路径的判据是 indexDocumentFor；
+  // 这两半必须始终配对（只改一半就会出现「读到一半的世界」）。
   it("migrateWorldsSchema：旧裸数组升成 {schema:1, worlds}（条目原样）；缺文件 / 已升级都不动笔", () => {
     const file = path.join(root, "index.json");
 
@@ -340,7 +344,7 @@ describe("server 世界线索引与建 / 分叉 / 删（临时目录）", () => 
     expect(readFileSync(file, "utf8")).toBe(bytes);
   });
 
-  it("migrateWorldsSchema 与宽读：坏 JSON 不覆写；版本化对象（多出顶层键）读得到 worlds；写路径仍是裸数组", () => {
+  it("migrateWorldsSchema 与宽读：坏 JSON 不覆写；版本化对象（多出顶层键）读得到 worlds；写路径已是版本化形态", () => {
     const file = path.join(root, "index.json");
 
     // 坏 JSON：不抛错、也不覆写（覆写等于把玩家的世界线列表写没了），文件留给下次启动再试
@@ -365,12 +369,71 @@ describe("server 世界线索引与建 / 分叉 / 删（临时目录）", () => 
     writeFileSync(file, JSON.stringify({ schema: 1 }));
     expect(readWorldsIndex(root)).toEqual([]);
 
-    // 写路径此刻仍是旧裸数组（翻转写形态与接启动路径同一批做）：createWorld 写出来的仍是数组 →
-    // 迁移对「今天真实产生的索引」仍然是一步真的升级。谁只改一半（接了迁移或先翻了写形态），这条就红。
+    // 写路径已翻成版本化形态（与接上启动路径同一批）：createWorld 写出来的就是 {schema:1, worlds}，
+    // 于是启动期迁移对「今天真实产生的索引」是 no-op——不再是「写裸数组 → 每次启动都要升一次」那种来回。
     createWorld(root, "campus-summer");
-    expect(Array.isArray(JSON.parse(readFileSync(file, "utf8")))).toBe(true);
-    expect(migrateWorldsSchema(root)).toBe(true);
-    expect(readWorldsIndex(root).map((e) => e.worldId)).toEqual(["campus-summer-1"]);
+    const fresh = JSON.parse(readFileSync(file, "utf8"));
+    expect(fresh.schema).toBe(1);
+    expect(fresh.worlds.map((e: any) => e.worldId)).toEqual(["campus-summer-1"]);
+    const bytes = readFileSync(file, "utf8");
+    expect(migrateWorldsSchema(root)).toBe(false);
+    expect(readFileSync(file, "utf8")).toBe(bytes);
+  });
+
+  it("writeWorldsIndex：落盘 {schema:1, worlds}（建/改/删共用同一形态）；裸数组在迁移前照读", () => {
+    const file = path.join(root, "index.json");
+    const a = createWorld(root, "campus-summer", "盛夏偏差值");
+
+    const doc = JSON.parse(readFileSync(file, "utf8"));
+    expect(Array.isArray(doc)).toBe(false); // 翻转的正是这一条：v1.8 及以前这里是个数组
+    expect(doc.schema).toBe(1);
+    expect(doc.worlds.map((e: any) => e.worldId)).toEqual([a.worldId]);
+    expect(readWorldsIndex(root).map((e) => e.worldId)).toEqual([a.worldId]); // 写出来的形态读得回来
+
+    // 同族的两个写点（update / delete）落盘形态一致——它们都只经 writeWorldsIndex 一处
+    updateWorld(root, a.worldId, { label: "第一周目" });
+    expect(JSON.parse(readFileSync(file, "utf8")).worlds[0].label).toBe("第一周目");
+    deleteWorld(root, a.worldId);
+    expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({ schema: 1, worlds: [] });
+
+    // 旧裸数组（v1.8 及以前的档）：读路径照认（启动迁移之外的单测环境也走同一条判定点），
+    // 谁都没调用迁移——两种形态的读等价，迁移只负责「写到盘上的那一份换形态」。
+    writeFileSync(file, JSON.stringify([{ worldId: "legacy-1", preset: "campus-summer", title: "旧档", chapterNo: 1, lastPlayed: 1 }], null, 2) + "\n");
+    expect(readWorldsIndex(root).map((e) => e.worldId)).toEqual(["legacy-1"]);
+  });
+
+  it("未来 schema（schema:2）：读得到，且任何写回都保留 schema 与未知顶层键（降级安装不丢档）", () => {
+    const file = path.join(root, "index.json");
+    const future = {
+      schema: 2,
+      worlds: [{ worldId: "w1", preset: "campus-summer", title: "盛夏偏差值", chapterNo: 4, lastPlayed: 7 }],
+      futureField: { someDay: ["新版本才认识的数据"] },
+      updatedAt: "2026-09-01T00:00:00.000Z",
+    };
+    writeFileSync(file, JSON.stringify(future, null, 2) + "\n");
+
+    // 读：宽读照旧（schema 号只记录、不做闸门——「永不拒绝」的前提是读得进来）
+    expect(readWorldsIndex(root).map((e) => e.worldId)).toEqual(["w1"]);
+    // 迁移：已是版本化对象 → no-op，schema 与未知键一个字节都不动
+    expect(migrateWorldsSchema(root)).toBe(false);
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(future);
+
+    // 写：读改写——只换 worlds，schema:2 与未知顶层键原样保留（**绝不降级成 schema:1**：
+    // 玩家降级安装后旧版本再写一次，不能替未来版本宣布「这就是 schema 1 的结构」）
+    const b = createWorld(root, "campus-summer");
+    const afterCreate = JSON.parse(readFileSync(file, "utf8"));
+    expect(afterCreate.schema).toBe(2);
+    expect(afterCreate.updatedAt).toBe(future.updatedAt);
+    expect(afterCreate.futureField).toEqual(future.futureField);
+    expect(afterCreate.worlds.map((e: any) => e.worldId)).toEqual(["w1", b.worldId]);
+
+    // 三个写点共用同一形态判定：update / delete 之后未知键与 schema 照样活着
+    updateWorld(root, b.worldId, { note: "备注" });
+    deleteWorld(root, b.worldId);
+    const last = JSON.parse(readFileSync(file, "utf8"));
+    expect(last.schema).toBe(2);
+    expect(last.futureField).toEqual(future.futureField);
+    expect(last.worlds.map((e: any) => e.worldId)).toEqual(["w1"]);
   });
 });
 

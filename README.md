@@ -82,7 +82,7 @@ bunkiten/
 │  └─ <presetId>/
 │     ├─ assets/            # 该剧本的立绘/背景：<类型>-<名字>.jpg（封面同级 cover.jpg；资产随故事走）
 │     └─ audio/             # 可选：<类型>-<名>.<ext>（曲/环境/音效 × mp3/ogg/m4a/wav/flac），没有就静默
-├─ state/                   # 运行时进度：state/worlds/<worldId>/{state,summary,story-tree}.md + index.json 索引（旧扁平布局首启由 server 迁入 main）
+├─ state/                   # 运行时进度：state/worlds/<worldId>/{state,summary,story-tree}.md + index.json 索引（顶层 { schema: 1, worlds }，旧裸数组首启升级；旧扁平布局首启由 server 迁入 main）
 │  ├─ worlds/<id>/history/  # 逐轮快照 NNNN.json（append-only，回退与精确分叉的数据源；运行时生成，不入库）
 │  ├─ worlds/<id>/logs/     # 回合原文日志 NNNN.json（v1.7，{seq,at,prompt,text}，append-only 排障面；不进世界线导出包）
 │  ├─ trash/                # 回收站（v1.7）：删除的世界线/素材先整体挪进来，不自动清理、手工可找回（见 state/README.md）
@@ -91,15 +91,15 @@ bunkiten/
 │  ├─ setup-react-act.mjs   # vitest 环境：React act() 兼容补丁
 │  ├─ parser.test.ts        # 文本协议契约快照单测（65 例）
 │  ├─ crafting.test.ts      # 章节制作与创作/画廊编排单测（56 例）
-│  ├─ server.test.ts        # server 协议行与世界线/快照/音频/剧本导出包（v2 血缘）/角色面板/回合日志/剧本体检接口单测（116 例）
+│  ├─ server.test.ts        # server 协议行与世界线/快照/音频/剧本导出包（v2 血缘）/角色面板/回合日志/剧本体检接口单测（118 例）
 │  ├─ treeLayout.test.ts    # 剧情树分层布局与缩放视口纯函数单测（7 例）
 │  ├─ genealogy.test.ts     # 世界线家谱布局与键盘步进纯函数单测（8 例）
 │  ├─ diff.test.ts          # 快照对比行级 LCS 纯函数单测（8 例）
 │  ├─ doctor.test.ts        # 剧本体检查纯函数单测（tmp 根造 preset，12 例）
 │  ├─ preload.test.ts       # 立绘差分预热（清单每剧本一次/命中角色全差分/失败静默，8 例）
 │  ├─ ui.test.tsx           # 组件测试（TopBar/世界线（含家谱视图）/剧情图（含快照对比）/设置/Creation/Assets/主题/重演/角色面板/标题屏剧本导出导入/剧本体检屏/同屏多立绘，136 例）
-│  ├─ contract.test.ts      # 契约 lint（防漂移门禁：协议头/音频白名单/指令前缀真源断言（shared/protocol.mjs）/RULES 逐字副本/指令字符串/主题白名单/用例数/设置键；自身不计入 443 口径）
-│  ├─ integration/          # 假引擎集成层（假 ACP 引擎 + 真 acp-server 子进程，27 例、秒级）
+│  ├─ contract.test.ts      # 契约 lint（防漂移门禁：协议头/音频白名单/指令前缀真源断言（shared/protocol.mjs）/RULES 逐字副本/指令字符串/主题白名单/用例数/设置键；自身不计入 447 口径）
+│  ├─ integration/          # 假引擎集成层（假 ACP 引擎 + 真 acp-server 子进程，29 例、秒级）
 │  │  ├─ harness.mjs        # 起全栈：临时 game root/HOME/PORT + path 垫片，收 SSE 事件与断言辅助
 │  │  ├─ fake-engine.mjs    # 最小 ACP 假引擎（按脚本队列回 session/update，可制造段切换）
 │  │  └─ *.test.ts          # 图片落盘与目录穿越防护 / 音频索引与逐轮快照 / 编译-落盘-事件管线
@@ -142,7 +142,7 @@ bunkiten/
 | `npm run dev:electron` | vite + Electron 并行开发 |
 | `npm run build` | `tsc -b && vite build`（类型检查 + 前端构建） |
 | `npm run typecheck:server` | server/shared/scripts 的 checkJs 门禁（`tsconfig.server.json` 对 `server/**/*.mjs` + `shared/protocol.mjs` + `scripts/doctor.mjs` 开 strict 检查，类型全靠 JSDoc；CI 也会跑） |
-| `npm test` | 单测 + 集成全量 443 例：parser 65 + server 116 + crafting 56 + treeLayout 7 + genealogy 8 + diff 8 + doctor 12 + preload 8 + ui 136 + integration 27（含假引擎集成层，整体秒级；改协议字符串必须同步快照）；另跑契约 lint `tests/contract.test.ts`（防漂移门禁：协议常量真源断言 + 双侧逐字比对，**不计入这 443**） |
+| `npm test` | 单测 + 集成全量 447 例：parser 65 + server 118 + crafting 56 + treeLayout 7 + genealogy 8 + diff 8 + doctor 12 + preload 8 + ui 136 + integration 29（含假引擎集成层，整体秒级；改协议字符串必须同步快照）；另跑契约 lint `tests/contract.test.ts`（防漂移门禁：协议常量真源断言 + 双侧逐字比对，**不计入这 447**） |
 | `npm run test:coverage` | 同一批测试 + 覆盖率仪表（`@vitest/coverage-v8`，量 `src`/`server`/`shared`/`scripts` 四棵树，配置在 `vitest.config.ts`）：thresholds 是**防下滑线**（2026-09 基线 - 2pp：lines 74 / branches 64 / functions 77 / statements 72）——实际余量 1.56-1.87pp（基线未取整），不是硬指标；CI 用它替代 `npm test` 步骤（同一套测试避免双跑）并上传 HTML 报告 artifact |
 | `npm run doctor` | 剧本体检查（作者侧工具，按需跑、不进 CI）：`node scripts/doctor.mjs` 校验 `presets/` 每个剧本的结构健康度——frontmatter 必填键与 id=目录名、theme 逐键回退预警、`# 主要角色` 与角色建议字段、封面、assets/audio 文件名契约、孤儿素材；输出 `[ok]`/`[warn]`/`[error]` 明细报告，**退出码非 0 当且仅当有 error**（warning 不影响——孤儿素材这类可解释项不拦你发布） |
 | `npm run test:e2e` | 真引擎 E2E 冒烟（2 回合；约 6–12 分钟，视模型与网络。前提：本机登录 grok CLI 且能出网到 x.ai——代理环境开 TUN 或给命令带 `https_proxy`，直连被墙的表现是回合 600s 超时） |
