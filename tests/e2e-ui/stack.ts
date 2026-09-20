@@ -53,6 +53,12 @@ export interface UiStackOptions {
   >;
   /** 是否写临时 HOME 的 `~/.grok/auth.json`（缺省 "ok"；"missing" = boot 屏未登录态用例的前置） */
   auth?: "ok" | "missing";
+  /** 预置进临时 HOME 的 `~/.bunkiten/credentials.json`（v1.10；验「已配置自备 key 直接开玩」与设置屏掩码） */
+  credentials?: {
+    version?: number;
+    llm?: { mode?: string; provider?: string; baseUrl?: string; apiKey?: string; model?: string };
+    image?: { mode?: string; provider?: string; baseUrl?: string; apiKey?: string; model?: string; size?: string };
+  } | null;
   /** 非默认浏览上下文（如 reduced-motion 用例的 { reducedMotion: "reduce" }）；不进 startFakeStack */
   contextOptions?: BrowserContextOptions;
 }

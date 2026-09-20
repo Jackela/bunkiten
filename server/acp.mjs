@@ -17,12 +17,16 @@ import path from "path";
  * @param {string} opts.effort 初始推理档位（entry.EFFORT）
  * @param {(text: string) => void} opts.onChunk agent_message_chunk 的文本（入口做标记扫描 + broadcast）
  * @param {(label: string) => void} opts.onSeg tool_call/tool_call_update 的进度标题（入口 seg+=1 + broadcast）
+ * @param {Record<string, string>} [opts.env] 额外注入子进程的 env（自备 key 的 BYOK 变量；
+ *   **我们的值优先**——展开顺序是 `{...process.env, ...env}`，同名键由这里覆盖，见 docs/ARCHITECTURE.md「引擎凭据与自备 key」）
+ * @param {Array<object>} [opts.mcpServers] 挂到会话上的 MCP server 列表（ACP McpServerStdio 形态；
+ *   配了图片自备 key 时才给，见 server/media-mcp.mjs 的 mediaMcpServers）
  * @returns {{proc: import("child_process").ChildProcess, request: (method: string, params?: object|null, timeoutMs?: number) => Promise<any>,
  *   boot: () => Promise<void>, resolveImage: (name: string) => string|null, sessionId: string|null}} sessionId 是 getter——
  *   sendPrompt 与 /img 路由经它读当前会话；request 的 Promise resolve 整个响应 msg（result/error 都在）
  */
-export function createAcpSession({ gameRoot, sessionFile, rules, effort, onChunk, onSeg }) {
-  const proc = spawn("grok", ["agent", "--always-approve", "stdio"], { cwd: gameRoot });
+export function createAcpSession({ gameRoot, sessionFile, rules, effort, onChunk, onSeg, env = {}, mcpServers = [] }) {
+  const proc = spawn("grok", ["agent", "--always-approve", "stdio"], { cwd: gameRoot, env: { ...process.env, ...env } });
   proc.stderr.on("data", (d) => process.stderr.write("[grok] " + d.toString().slice(0, 300)));
   proc.on("exit", (code) => console.error(`[acp] grok agent exited: ${code}`));
   const rl = readline.createInterface({ input: proc.stdout });
@@ -153,13 +157,14 @@ export function createAcpSession({ gameRoot, sessionFile, rules, effort, onChunk
     await new Promise((r) => setTimeout(r, 800));
     await request("initialize", { protocolVersion: 1, clientCapabilities: {} });
 
-    // 断线续档：优先 session/load 复用上次会话，失败降级 session/new 并覆写
+    // 断线续档：优先 session/load 复用上次会话，失败降级 session/new 并覆写。
+    // mcpServers 两条路径都传（第 0 步实证：session/load 与 session/new 一样会拉起 MCP 子进程）。
     const savedId = loadSavedSessionId();
     let booted = false;
     if (savedId) {
       try {
         const r = await request("session/load", {
-          sessionId: savedId, cwd: gameRoot, mcpServers: [], _meta: { yoloMode: true, rules },
+          sessionId: savedId, cwd: gameRoot, mcpServers, _meta: { yoloMode: true, rules },
         }, 60000);
         if (r.error) throw new Error(r.error.message || "session/load rejected");
         sessionId = r.result?.sessionId || savedId;
@@ -171,7 +176,7 @@ export function createAcpSession({ gameRoot, sessionFile, rules, effort, onChunk
     }
     if (!booted) {
       const s = await request("session/new", {
-        cwd: gameRoot, mcpServers: [], _meta: { yoloMode: true, rules },
+        cwd: gameRoot, mcpServers, _meta: { yoloMode: true, rules },
       });
       if (s.error) throw new Error(s.error.message || "session/new rejected");
       sessionId = s.result.sessionId;

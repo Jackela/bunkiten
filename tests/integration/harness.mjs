@@ -11,7 +11,7 @@
 //   · stack.fetch/getJSON/getText/getBytes/postJSON/prompt —— 打 HTTP 的薄封装
 //   · env KEEP_INTEGRATION_TMP=1 —— 失败现场保留（不删 tmp，打印路径）
 import { spawn } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -91,6 +91,7 @@ function seedWorld(worldsRoot, worldId, preset, title, meta = {}) {
 //   · indexExtra:  object        → 版本化索引里追加的未知顶层键（验读改写保留）
 //   · legacyIndexArray: boolean  → 写 v1.8 及以前的**裸数组**索引（验启动期 migrateWorldsSchema 真的升了它）
 //   · auth: "ok" | "missing"     → 是否在临时 HOME 里写 ~/.grok/auth.json（缺省 "ok"；"missing" = boot 屏未登录态）
+//   · credentials: object        → 写临时 HOME 的 ~/.bunkiten/credentials.json（0600；验自备 key 的注入与端点）
 function seedStack(root, presets, extra = {}) {
   const {
     assets = {},
@@ -252,6 +253,8 @@ async function httpOk(url) {
  * @param {Record<string, unknown>} [opts.indexExtra] 版本化索引里的未知顶层键（验读改写保留）
  * @param {boolean} [opts.legacyIndexArray] 写 v1.8 及以前的裸数组索引（验启动期 schema 迁移）
  * @param {"ok"|"missing"} [opts.auth] 是否写临时 HOME 的 `~/.grok/auth.json`（缺省 "ok"；"missing" 供 boot 屏未登录态用例）
+ * @param {object} [opts.credentials] 写进临时 HOME 的 `~/.bunkiten/credentials.json`（0600）的凭据文档
+ *   （验自备 key：真引擎侧看 fake-engine 的探针 JSONL，HTTP 侧打 /api/credentials）
  * @returns {Promise<object>} stack 句柄（root/home/events/waitFor/prompt/stop 等）
  */
 export async function startStack({
@@ -268,6 +271,7 @@ export async function startStack({
   indexExtra = {},
   legacyIndexArray = false,
   auth = "ok",
+  credentials = null,
 } = {}) {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "bunkiten-it-"));
   const root = path.join(tmp, "game");
@@ -282,6 +286,13 @@ export async function startStack({
   //（用例可以在中途把这个文件补上，验「重试」真的走通而不是只换个文案）。
   mkdirSync(path.join(home, ".grok"), { recursive: true });
   if (auth === "ok") writeFileSync(path.join(home, ".grok", "auth.json"), "{}\n");
+  // 引擎凭据（v1.10）：预置进临时 HOME 的 ~/.bunkiten/credentials.json。mode 与真实写入一致（0600 / 目录 0700），
+  // 这样「保存后的权限」与「读路径」在集成层是同一份行为，不必额外伪造。
+  if (credentials) {
+    const dir = path.join(home, ".bunkiten");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(path.join(dir, "credentials.json"), JSON.stringify(credentials, null, 2) + "\n", { mode: 0o600 });
+  }
   seedStack(root, presets, { assets, audioFiles, trees, stateFiles, worlds, snapshots, indexSchema, indexExtra, legacyIndexArray, auth });
 
   // 会话图片目录：server 用 os.homedir()（=HOME）+ encodeURIComponent(GAME_ROOT) + sessionId 拼接
@@ -298,6 +309,9 @@ export async function startStack({
   chmodSync(path.join(binDir, "grok"), 0o755);
 
   const port = 20000 + Math.floor(Math.random() * 40000); // 随机高位端口，避开开发中的 7800
+  // 假引擎探针（v1.10）：每次被 spawn 追加一条 start（env），每条 session/load|new 追加一条 session（mcpServers）。
+  // 断言面：自备 key 真的注进了引擎子进程 env、图片侧配了 key 才会挂 MCP。
+  const engineProbe = path.join(tmp, "fake-engine-probe.jsonl");
   const env = {
     ...process.env,
     PATH: `${binDir}${path.delimiter}${process.env.PATH || "/usr/bin:/bin"}`,
@@ -305,6 +319,7 @@ export async function startStack({
     GROK_GAME_ROOT: root,
     PORT: String(port),
     FAKE_ENGINE_TURNS: JSON.stringify(turns),
+    FAKE_ENGINE_PROBE: engineProbe,
   };
 
   const proc = spawn(process.execPath, [SERVER], { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -387,6 +402,19 @@ export async function startStack({
     port: null,
     base: null,
     stdout: () => stdoutLines.join("\n"),
+    /** 假引擎探针的原始路径（JSONL；每次 spawn 一条 start、每条 session/load|new 一条 session） */
+    engineProbe,
+    /** @returns {any[]} 探针条目（文件不存在时空数组） */
+    engineProbeEntries: () => {
+      try {
+        return readFileSync(engineProbe, "utf8")
+          .split("\n")
+          .filter((l) => l.trim())
+          .map((l) => JSON.parse(l));
+      } catch {
+        return [];
+      }
+    },
     stop,
   };
   stack.fetch = (p, init) => fetch(stack.base + p, init);

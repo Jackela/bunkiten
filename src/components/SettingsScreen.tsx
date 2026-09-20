@@ -14,6 +14,7 @@ import {
   type TextSpeed,
 } from "../lib/settings";
 import { useGameStore } from "../store/game";
+import EngineKeysSection from "./EngineKeysSection";
 import { ScreenShell } from "./ScreenShell";
 import { ShellPage } from "./ShellPage";
 
@@ -206,6 +207,9 @@ export default function SettingsScreen() {
               <p className="mt-2.5 text-meta leading-relaxed text-ink-hint">正文读完后，自动继续下一段的等待时长。</p>
             </div>
           </section>
+
+          {/* 引擎与密钥（v1.10）：自备的对话服务与出图服务——两份表单 + 保存提示与重启按钮 */}
+          <EngineKeysSection />
         </motion.div>
       </ShellPage>
     </ScreenShell>

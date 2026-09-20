@@ -14,5 +14,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["server/**/*.mjs", "shared/protocol.mjs", "scripts/doctor.mjs"]
+  "include": ["server/**/*.mjs", "shared/*.mjs", "scripts/doctor.mjs"]
 }

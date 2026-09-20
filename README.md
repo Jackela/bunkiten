@@ -45,11 +45,16 @@ bunkiten/
 ├─ electron/
 │  ├─ main.js               # Electron 主进程：GAME_ROOT、PATH 补齐、启动 acp-server、开窗口、打包态查更新（electron-updater）
 │  └─ notarize.cjs          # afterSign 公证钩子：APPLE_* 三件套不齐直接 return（本地与未配 secrets 的构建照常成功）
-├─ server/                  # 本地 Node 服务（零依赖；v1.7 拆成入口 + 10 模块，模块地图见入口文件头注释）
-│  └─ acp-server.mjs        # 入口与装配：ACP 客户端 + HTTP/SSE 路由 + /img /audio 直服 + 资产落盘 + 世界线/快照/剧本导出包接口
+├─ server/                  # 本地 Node 服务（零依赖；v1.7 拆成入口 + 10 模块，v1.10 加 3 个凭据/出图模块，模块地图见入口文件头注释）
+│  ├─ acp-server.mjs        # 入口与装配：ACP 客户端 + HTTP/SSE 路由 + /img /audio 直服 + 资产落盘 + 世界线/快照/剧本导出包接口 + 引擎凭据端点
+│  ├─ credentials.mjs       # 引擎凭据（v1.10）：~/.bunkiten/credentials.json 的读写/脱敏/转引擎 env（纯函数，永不抛）
+│  ├─ credentials-probe.mjs # 「测试连接」（v1.10）：对话侧 /models（或退化最小 completion）、图片侧一次最小生成
+│  └─ media-mcp.mjs         # 自建出图 MCP server（v1.10，stdio JSON-RPC，零依赖）：把自备图片服务变成引擎可调用的 generate_image
 ├─ shared/
 │  ├─ protocol.mjs          # 协议常量唯一真源（v1.7）：PROTOCOL_HEADS 9 头 / AUDIO_* 音频白名单与直服正则 / DIRECTIVE_PREFIX_RE 指令前缀（pickEffort 与 isMainTurn 共用）
-│  └─ protocol.d.mts        # 手写类型声明（tsc -b 经 .mjs→.d.mts 解析；运行时直接吃 .mjs）
+│  ├─ protocol.d.mts        # 手写类型声明（tsc -b 经 .mjs→.d.mts 解析；运行时直接吃 .mjs）
+│  ├─ providers.mjs         # 服务目录唯一真源（v1.10）：设置屏两个下拉与 server 侧校验共用（id/baseUrl/模型提示/说明）
+│  └─ providers.d.mts       # 同款手写类型声明
 ├─ scripts/
 │  └─ doctor.mjs            # 剧本体检查 CLI（npm run doctor，作者侧、不进 CI）：frontmatter/正文/封面/资产与音频命名/孤儿素材，退出码非 0 ⟺ 有 error
 ├─ src/                     # React 前端
@@ -74,7 +79,8 @@ bunkiten/
 │  └─ components/           # boot/title/worlds/protagonist/crafting/game 各屏 + assets 画廊 / creation 创作 / story-tree 剧情图 / settings 设置四个 overlay 屏、motifs/ 氛围层与 HUD（game/ 里 TopBar / DialogueBox / ChapterCard 等）
 │     ├─ WorldsScreen.tsx   # 世界线屏：继续 / 新世界线 / 导入 .world.json / 每行 ⋯ 菜单（改名与备注 / 导出 / 两段确认删除）/ 列表·家谱视图（forkedFrom 森林，可缩放平移）
 │     ├─ StoryTreeScreen.tsx # 剧情图屏：SVG 节点图（缩放平移）/ 顶部章节切换器 /> 40 节点降级列表 / 节点详情（宽屏右栏）/ 精确分叉 / 存档点回退与对比 / 一句话改树
-│     └─ SettingsScreen.tsx # 设置屏：主音量/静音/BGM/环境/音效 + 文本速度/自动前进
+│     ├─ EngineKeysSection.tsx # 「引擎与密钥」设置节（v1.10）：自备对话/出图服务两组表单 + 测试连接 + 立刻重启引擎（密钥只显掩码）
+│     └─ SettingsScreen.tsx # 设置屏：主音量/静音/BGM/环境/音效 + 文本速度/自动前进 + 引擎与密钥
 ├─ .grok/
 │  ├─ skills/bunkiten/SKILL.md  # 引擎全部真相：每轮协议/章节与剧情树/世界线/美术/音频/预载/导演层/状态纪律
 │  └─ commands/             # /new-game /recap /presets /help
@@ -97,14 +103,15 @@ bunkiten/
 │  ├─ diff.test.ts          # 快照对比行级 LCS 纯函数单测
 │  ├─ doctor.test.ts        # 剧本体检查纯函数单测（tmp 根造 preset）
 │  ├─ preload.test.ts       # 立绘差分预热（清单每剧本一次/命中角色全差分/失败静默）
+│  ├─ credentials.test.ts   # 引擎凭据纯函数（读写/0600/掩码/转 env/服务目录表/出图工具与探活，v1.10）
 │  ├─ ui.test.tsx           # 组件测试（TopBar/世界线（含家谱视图）/剧情图（含快照对比）/设置/Creation/Assets/主题/重演/角色面板/标题屏剧本导出导入/剧本体检屏/同屏多立绘）
 │  ├─ contract.test.ts      # 契约 lint（防漂移门禁：协议头/音频白名单/指令前缀真源断言（shared/protocol.mjs）/RULES 逐字副本/指令字符串/主题白名单/用例数下限/设置键；自身不计入合计下限）
 │  ├─ integration/          # 假引擎集成层（假 ACP 引擎 + 真 acp-server 子进程，秒级）
 │  │  ├─ harness.mjs        # 起全栈：临时 game root/HOME/PORT + path 垫片，收 SSE 事件与断言辅助
 │  │  ├─ fake-engine.mjs    # 最小 ACP 假引擎（按脚本队列回 session/update，可制造段切换）
-│  │  └─ *.test.ts          # 图片落盘与目录穿越防护 / 音频索引与逐轮快照 / 编译-落盘-事件管线
+│  │  └─ *.test.ts          # 图片落盘与目录穿越防护 / 音频索引与逐轮快照 / 编译-落盘-事件管线 / 引擎凭据端点与 env 注入
 │  ├─ e2e/smoke.spec.ts     # 真引擎 E2E 冒烟（helpers/stack.mjs 起全栈）
-│  ├─ e2e-ui/               # 假引擎确定性 UI e2e（20 个 spec / 38 条用例，随 CI 跑）
+│  ├─ e2e-ui/               # 假引擎确定性 UI e2e（20 个 spec / 41 条用例，随 CI 跑）
 │  └─ e2e-packaged/         # 打包态冒烟（_electron 起 dist:mac:dir 的 .app；opt-in，不进 CI）
 ├─ docs/
 │  ├─ ARCHITECTURE.md       # 架构：ACP 契约、文本协议契约、资产与音频管线、打包与发布布局
@@ -142,12 +149,12 @@ bunkiten/
 | `npm run dev` | 仅 vite 前端（浏览器调试，需另起 acp-server） |
 | `npm run dev:electron` | vite + Electron 并行开发 |
 | `npm run build` | `tsc -b && vite build`（类型检查 + 前端构建） |
-| `npm run typecheck:server` | server/shared/scripts 的 checkJs 门禁（`tsconfig.server.json` 对 `server/**/*.mjs` + `shared/protocol.mjs` + `scripts/doctor.mjs` 开 strict 检查，类型全靠 JSDoc；CI 也会跑） |
-| `npm test` | 单测 + 集成全量 447+ 例（含假引擎集成层，整体秒级；改协议字符串必须同步快照）。**用例数是下限口径**：唯一维护点是 `tests/contract.test.ts` 的 `CASE_GROUPS`/`CASE_TOTAL`——加用例不用改任何文档、删用例会在 lint 里红；同一文件另跑契约 lint（防漂移门禁：协议常量真源断言 + 双侧逐字比对，自身不计入合计下限） |
+| `npm run typecheck:server` | server/shared/scripts 的 checkJs 门禁（`tsconfig.server.json` 对 `server/**/*.mjs` + `shared/*.mjs` + `scripts/doctor.mjs` 开 strict 检查，类型全靠 JSDoc；CI 也会跑） |
+| `npm test` | 单测 + 集成全量 497+ 例（含假引擎集成层，整体秒级；改协议字符串必须同步快照）。**用例数是下限口径**：唯一维护点是 `tests/contract.test.ts` 的 `CASE_GROUPS`/`CASE_TOTAL`——加用例不用改任何文档、删用例会在 lint 里红；同一文件另跑契约 lint（防漂移门禁：协议常量真源断言 + 双侧逐字比对，自身不计入合计下限） |
 | `npm run test:coverage` | 同一批测试 + 覆盖率仪表（`@vitest/coverage-v8`，量 `src`/`server`/`shared`/`scripts` 四棵树，配置在 `vitest.config.ts`）：thresholds 是**防下滑线**（2026-09 基线 - 2pp：lines 74 / branches 64 / functions 77 / statements 72）——实际余量 1.56-1.87pp（基线未取整），不是硬指标；CI 用它替代 `npm test` 步骤（同一套测试避免双跑）并上传 HTML 报告 artifact |
 | `npm run doctor` | 剧本体检查（作者侧工具，按需跑、不进 CI）：`node scripts/doctor.mjs` 校验 `presets/` 每个剧本的结构健康度——frontmatter 必填键与 id=目录名、theme 逐键回退预警、`# 主要角色` 与角色建议字段、封面、assets/audio 文件名契约、孤儿素材；输出 `[ok]`/`[warn]`/`[error]` 明细报告，**退出码非 0 当且仅当有 error**（warning 不影响——孤儿素材这类可解释项不拦你发布） |
 | `npm run test:e2e` | 真引擎 E2E 冒烟（2 回合；约 6–12 分钟，视模型与网络。前提：本机登录 grok CLI 且能出网到 x.ai——代理环境开 TUN 或给命令带 `https_proxy`，直连被墙的表现是回合 600s 超时） |
-| `npm run test:e2e:ui` | 假引擎确定性 UI e2e（`tests/e2e-ui/`，20 个 spec / 38 条用例，默认 chromium、不重试、整套约 4 分钟）：开局与同屏多立绘（两人同屏的双硬约束）/设置/键盘/画廊/剧情图/世界线/回退/重掷/动效降级/焦点/角色面板/剧本导入导出/**章节循环（规划→制作中屏→开演→下一章）**/**创作模式（打磨→装配→新剧本入库 + 失败重试）**/**首启失败态（未登录 / 连不上服务，都可重试）**/**音频可观测面（三行协议各自触发直服请求、元素在播与音量、换曲交叉淡入、静音归零）**/**耐久规模（60 幕长历史与 200 条快照、600 节点大树）**，进程由 `helpers/fake-stack.mjs` 编排（假引擎 + 真 acp-server + vite dev）；CI 也会跑（真引擎 e2e 仍只在本机） |
+| `npm run test:e2e:ui` | 假引擎确定性 UI e2e（`tests/e2e-ui/`，20 个 spec / 41 条用例，默认 chromium、不重试、整套约 4 分钟）：开局与同屏多立绘（两人同屏的双硬约束）/设置/**引擎与密钥（填 key → 掩码 → 刷新仍在 → 重启引擎 → 清空回落 + 明文泄漏哨兵）**/键盘/画廊/剧情图/世界线/回退/重掷/动效降级/焦点/角色面板/剧本导入导出/**章节循环（规划→制作中屏→开演→下一章）**/**创作模式（打磨→装配→新剧本入库 + 失败重试）**/**首启三态（未登录给「填自备密钥」入口 / 已配 key 直接开玩 / 连不上服务可重试）**/**音频可观测面（三行协议各自触发直服请求、元素在播与音量、换曲交叉淡入、静音归零）**/**耐久规模（60 幕长历史与 200 条快照、600 节点大树）**，进程由 `helpers/fake-stack.mjs` 编排（假引擎 + 真 acp-server + vite dev）；CI 也会跑（真引擎 e2e 仍只在本机） |
 | `npm run test:e2e:packaged` | **打包态冒烟（opt-in，不进 CI）**：用 Playwright 的 `_electron` 起 `npm run dist:mac:dir` 产出的 `.app`，断言窗口开、标题屏渲染、`/app` 静态托管与 `resources/game` 资源可达——唯一覆盖「打包布局 + asar + 主进程 + 资源路径」的路径（dev 与 UI e2e 都绕开了它）。前置：先跑 `npm run dist:mac:dir`（产物缺失时该 spec 自动 skip）；平台相关，只在 mac 上跑 |
 | `npm run dist:win` | build 后打 Windows x64 包（nsis + portable，不签名） |
 | `npm run dist:mac` | build 后打 macOS 包（dmg + zip，arm64 + x64，不签名） |
@@ -168,7 +175,12 @@ npm run dev:electron
 
 > 环境自洽：若你的 shell 导出了 `NODE_ENV=production`，本仓库的 `.npmrc` 会强制安装 devDependencies、`vitest.config.ts` 也会自钉 `NODE_ENV=test`——不需要额外处理。
 
-三步进游戏：克隆 → `npm install` → `npm run dev:electron`。需要本机已登录 grok CLI（`grok login`）。
+三步进游戏：克隆 → `npm install` → `npm run dev:electron`。引擎有**两条入场**，任选一条：
+
+1. **终端登录**（默认）：本机装好 grok CLI 后跑一次 `grok login`。
+2. **自备密钥**（v1.10，不碰终端）：点开设置屏（或首启屏的「填自备密钥」）→「引擎与密钥」里填服务地址、密钥、模型名——对话与出图各一组，服务目录里预置了常见厂商（OpenAI / DeepSeek / 通义 / 智谱 / OpenRouter / Grok / Ollama…），也可以直接选「自定义」按任意 OpenAI 兼容服务填；改完点「立刻重启引擎」生效。
+
+密钥存在**这台机器上**的 `~/.bunkiten/credentials.json`（目录 0700 / 文件 0600，明文——本机磁盘加密是你的第一道防线），**不进仓库、不进世界线、不进任何导出包**；界面上只显示掩码（`sk-…4f2a`），清空即回落到「沿用终端登录」。填错了/服务方拒绝：对话侧会连不上（设置屏的「测试连接」会告诉你原因），出图失败则静默略过——**剧情照常进行**。
 
 ## 文档导航
 
@@ -205,3 +217,4 @@ npm run dev:electron
 - **v1.7.0** —— 后悔药补全、三个观察面、分享与作者工具、a11y 基线，以及一轮工程加固。**回退与重掷**：TopBar「重掷」撤销刚走完的一轮并自动重发同一句输入重新演绎（可连掷，本世界第一轮除外）；回退后历史只插一条分割线（旧幕不删），引擎重读档期间有「待重同步」徽章、失败可一键再同步。**新视图**：世界线屏「家谱」把 forkedFrom 血缘画成 SVG 森林（父线已删的孤儿带徽章、方向键走位）；剧情图节点详情「与上一快照对比」（剧情状态/前情摘要/剧情树三 tab 行级 diff，未变行折叠）；游戏屏「角色面板」抽屉实时读 state.md（好感度/表情徽章/秘密折叠/导演手记/Flags/伏笔，回合后自动刷新）。**分享与作者工具**：剧本导出包 `<id>.preset.json`（preset.md + 全部图 + 音频，二进制 base64；导入重名自动 `-2`、单包上限 50MB、文件名与内容全量校验）；`npm run doctor` 剧本体体检（七组检查，退出码非 0 当且仅当有 error）。**引擎侧可靠性**：回合原文日志 `logs/NNNN.json`（append-only、只写不读、不进导出包）；引擎漏写 `**行动**` 选项段时同一回合内自动追问一次补全（章末回合豁免）；引擎回 JSON-RPC error 时按失败回合传播（error 事件 + 409 + 不写快照）；快照列表与会话图读路径索引化。**无障碍基线**：跟随系统「减少动态效果」（位移瞬时化、交叉淡入保留、打字机整段显示，不加游戏内开关）、全局 `:focus-visible` 焦点环（键盘可见、鼠标不闪）、文字对比度三档 token（ink-body/ink-hint/ink-faint）。**工程**：协议常量收进 `shared/protocol.mjs` 唯一真源（ADR-0012）、server 拆成入口 + 10 模块（ADR-0013，外部 import 面不变）、删除一律进 `state/trash/` 回收站（ADR-0014，手工可找回、不自动清理）；测试安全网：假引擎确定性 UI e2e（12 个 spec，进 CI）、覆盖率阈值（`npm run test:coverage`）、server typecheck（`npm run typecheck:server`），契约 lint 升级为真源断言。测试 294 → 399 例。
 - **v1.8.0** —— 版式收口、文案洗玩家话、立绘归位。**壳层版式系统**：worlds / protagonist / crafting / settings / assets 五屏共用 `ShellPage` 页框（满幅主题底 + 全仓唯一一处定宽 `max-w-[84rem]` + 统一表头与可选 ≥xl 右栏），壳层屏不再各屏自写居中窄栏；面板与遮罩收成 `bg-panel`/`bg-panel-strong`/`bg-scrim`/`bg-scrim-soft` token，`.shell-backdrop`（主题满幅洗色，压住亮底图保对比度）与 `.shell-panel`（面板三件套）两个类刻意写在级联层外，屏里随手写的渐变盖不掉；**字号阶梯**收成 12→28 八档（`text-micro` 12 只给角标、`text-meta` 13 是**可读下限**、`text-ui` 14、正文 16、对话框 17、`text-lead` 18、屏标题 20、主标题 28），全仓不再手写 `text-[Npx]`。**玩家文案清洗**：内部术语一律不上玩家的屏——回合/轮 → **幕**（幕号 = 快照序号）、快照 → **存档点**（剧情图标「存档点 · 第 N 幕」、对比入口写「与上一个存档点对比（第 N 幕 → 第 M 幕）」、历史分割线写「第 N 幕已重演」）、引擎口吻的状态串统一走 `lib/status.ts` 的 `playerStatus`（顶栏 / 制作中屏 / aria-live 播报三处共用），旧版 server 写进世界线备注的「分叉自 <id> @ <节点>」按「没有备注」处理——裸 worldId 与 `快照 #N` 都不再上屏。**画面修复与新增**：立绘改成真占版面的布局盒（grid 单格堆叠、行高显式 `1fr`；此前 shrink-to-fit 包裹层宽恒为 0，`max-w-full` 解析成 `max-width:0`，立绘从来没画出来过），配套 `.portrait-reserve` 在 ≥lg 给对话区预留 `min(40vw,420px)` 右侧安全带；章节**过场卡**（章号一变在正中亮一次「第 N 章」约 2.2s，挂在 App 常驻层，从 overlay 返回不重亮）；对话面板内联**自动/快进**（自动走 `resumeAutoAdvance`，与设置屏同一份自动前进设置）。**各屏形态**：标题屏加产品字标（bunkiten / 分岐点）与左下「继续上次」直通最近游玩的世界线；剧情图顶部**章节切换器**列出解析出的每一章（进度章标「当前」，归档章只留目录信息、点了直说），节点详情 ≥lg 住右侧 380px 栏、<lg 回到画布下方；家谱画布补**缩放平移**（滚轮指针锚点 / 拖拽 / 双击 / `±` 与「适应」/ `+ - 0`）且渲染宽度**只封上界**（单节点 ≈270px，小森林不再被等比撑成巨卡）；世界线行收成一个主行动**「继续」+ 一个 `⋯` 菜单**（改名/导出/删除，两段确认收在菜单内）。**工程**：前端构建按包拆包（react / motion / vendor，首屏不再吃一个整包）。测试 399 → 415 例。
 - **v1.9.0** —— 把 v1.8.0 之后欠的账清完。**数据**：世界线索引升成 `{schema: 1, worlds}`（启动期 `migrateLegacyState` → `migrateWorldsSchema` 依序跑；裸数组升级、高版本只读不降级写回，ADR-0018），导出包 v2 带上 `forkedFrom`/`forkMd`（导入接受 1..2，v1 包照收并按当前形状补齐），修掉「导入回来的分叉线在家谱里变成根」。**舞台**：同屏多立绘上限 2（发言者高亮 + 名牌、非发言者压暗缩小，第三人按队首淘汰；让位两档实测面板 732px、两人最左缘 765px），背景 600ms 双层交叉淡入（reduce 下瞬时），立绘差分预热（每剧本拉一次清单、失败静默）。**无障碍**：浮层补齐 role=dialog/aria-modal/焦点陷阱/焦点归还，层开着时背景整块 `inert` + 滚动容器上锁；世界线 `⋯` 菜单迁 `@radix-ui/react-dropdown-menu`（不 portal，保住主题变量；↑↓/Home/End 与 typeahead 由原语接管）。**作者与内容**：剧本体检屏（`GET /api/presets/check?id=` 直出 doctor 判定）、世界线行封面缩略图（无封面退同尺寸占位块）、标题屏「素材」改为带当前中央卡（此前冷启动会打开空画廊）。**工程**：e2e 19 → 28 条（同屏 2 立绘几何/亮暗/名牌、体检屏、菜单键盘路径、家谱缩放、缩略图、reduce 换背景、预热不重复拉清单），spec 样板收进 `stack.ts`；性能实测结论「当前规模不需要虚拟化」（画廊 300 张真实素材与剧情图 600 节点同一时间地板，`/api/assets` 500 素材 + 30 世界 8.1ms），成本排序是图片解码/IO ≫ 布局与 DOM ≫ 纯函数。测试 415 → 447 例。
+- **v1.10.0** —— 引擎凭据进 GUI：把「引擎用什么模型、用什么出图」从隐式的本机全局状态（`grok login` 会话、`~/.grok/config.toml`、环境变量）变成应用里可配置、可验证、可撤销的一等公民。**两条入场**：首启屏三态（登录态 / 已配自备 key 直接开玩 / 都没有则给「填自备密钥」与终端登录两个入口），设置屏新增「引擎与密钥」——对话与出图各一组（服务目录下拉 + 地址/密钥/模型，出图另有尺寸高级项），保存即时生效、「测试连接」真连一次服务、key 只显示掩码、清空回落登录态。**对话侧**直接走 grok CLI 的 BYOK 通道（`GROK_MODELS_BASE_URL` + `XAI_API_KEY` + `GROK_DEFAULT_MODEL`，第 0 步实证：agent mode 下真的生效、无需登录）；**图片侧**自建零依赖 MCP server（`bunkiten-media__generate_image`，经 `search_tool`/`use_tool` 调用、自己落盘到剧本 assets），覆盖制作清单/首现背景/重绘三条路径，SKILL 新增「出图工具优先」硬规则。**服务目录**（`shared/providers.mjs`）是唯一真源，一张表同时喂 GUI 下拉与服务端校验；凡说 OpenAI 兼容协议的服务开箱可用（长尾走「自定义」/ one-api / LiteLLM 网关），不引 provider SDK、server 树保持零依赖。**安全面**：明文只落 `~/.bunkiten/credentials.json`（0700/0600），HTTP 出口一律脱敏、不进日志/快照/回合日志/导出包；任何响应与浏览器 console 都没有明文（集成层与 e2e 各有哨兵）。测试 447 → 497 例（+31 单测 / +19 集成），UI e2e 38 → 41 条。
