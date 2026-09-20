@@ -78,7 +78,7 @@ describe("credentials.mjs：出厂默认与容错读取", () => {
     const d = defaultCredentials();
     expect(d.version).toBe(CREDENTIALS_VERSION);
     expect(d.llm).toEqual({ mode: "session", provider: "openai", baseUrl: "", apiKey: "", model: "" });
-    expect(d.image).toEqual({ mode: "off", provider: "openai", baseUrl: "", apiKey: "", model: "", size: "" });
+    expect(d.image).toEqual({ mode: "off", provider: "openai", baseUrl: "", apiKey: "", model: "", size: "", sizeBackground: "" });
   });
 
   it("normalize：缺键/多余键/类型不对逐键回默认，未知 provider 回默认 provider", () => {
@@ -97,12 +97,13 @@ describe("credentials.mjs：出厂默认与容错读取", () => {
   it("normalize：非法 mode 回该组默认、超长字段截断（不整份拒绝）", () => {
     const n = normalizeCredentials({
       llm: { mode: "banana", apiKey: "k".repeat(5000) },
-      image: { mode: "byok", size: "s".repeat(200) },
+      image: { mode: "byok", size: "s".repeat(200), sizeBackground: "b".repeat(300) },
     });
     expect(n.llm.mode).toBe("session");
     expect(n.llm.apiKey.length).toBe(1000);
     expect(n.image.mode).toBe("byok");
     expect(n.image.size.length).toBe(40);
+    expect(n.image.sizeBackground.length).toBe(40);
   });
 
   it("readCredentials：文件不存在 / 坏 JSON / 目录被删都回默认且不抛", () => {
@@ -172,6 +173,7 @@ describe("credentials.mjs：merge / validate", () => {
       { llm: { nope: "1" } },
       { image: { size: "1024x1536x2" } },
       { image: { size: "huge" } },
+      { image: { sizeBackground: "big" } },
       { llm: { mode: "hybrid" } },
       { image: { mode: "session" } },
       { llm: { baseUrl: "javascript:alert(1)" } },
@@ -185,6 +187,7 @@ describe("credentials.mjs：merge / validate", () => {
     expect(validateCredentialsPatch({ llm: { mode: "byok", baseUrl: "http://localhost:11434/v1", apiKey: "k", model: "m" } }).ok).toBe(true);
     expect(validateCredentialsPatch({ image: { size: "auto" } }).ok).toBe(true);
     expect(validateCredentialsPatch({ image: { size: "" } }).ok).toBe(true);
+    expect(validateCredentialsPatch({ image: { sizeBackground: "1536x1024" } }).ok).toBe(true);
   });
 });
 
@@ -198,10 +201,18 @@ describe("credentials.mjs：掩码与脱敏视图", () => {
     expect(maskKey("xai-0123456789abcdef")).toBe("xai…cdef");
   });
 
-  it("publicView 永不含明文：键只有 mode/provider/baseUrl/model/size/hasKey/apiKeyMasked", () => {
+  it("publicView 永不含明文：键只有 mode/provider/baseUrl/model/size/sizeBackground/hasKey/apiKeyMasked", () => {
     const creds = normalizeCredentials({
       llm: { mode: "byok", provider: "xai", baseUrl: "https://api.x.ai/v1", apiKey: "sk-view-secret-4f2a", model: "grok-4.6" },
-      image: { mode: "byok", provider: "openai", baseUrl: "https://api.openai.com/v1", apiKey: "sk-img-secret-9b7c", model: "gpt-image-1", size: "1024x1024" },
+      image: {
+        mode: "byok",
+        provider: "openai",
+        baseUrl: "https://api.openai.com/v1",
+        apiKey: "sk-img-secret-9b7c",
+        model: "gpt-image-1",
+        size: "1024x1024",
+        sizeBackground: "1536x1024",
+      },
     });
     const view = publicView(creds);
     expect(view.llm).toEqual({
@@ -214,6 +225,7 @@ describe("credentials.mjs：掩码与脱敏视图", () => {
     });
     expect(view.image.apiKeyMasked).toBe("sk-…9b7c");
     expect(view.image.size).toBe("1024x1024");
+    expect(view.image.sizeBackground).toBe("1536x1024");
     expect(JSON.stringify(view)).not.toContain("secret");
   });
 
@@ -238,11 +250,26 @@ describe("credentials.mjs：credentialsToEnv（注入引擎子进程的键集合
 
   it("byok 模式逐键生成，空字段不产生空串键", () => {
     const full = normalizeCredentials({ llm: { mode: "byok", baseUrl: "https://api.example/v1", apiKey: "sk-env-key-4f2a", model: "m" } });
-    expect(credentialsToEnv(full)).toEqual({ GROK_MODELS_BASE_URL: "https://api.example/v1", XAI_API_KEY: "sk-env-key-4f2a", GROK_DEFAULT_MODEL: "m" });
+    expect(credentialsToEnv(full)).toEqual({
+      GROK_MODELS_BASE_URL: "https://api.example/v1",
+      XAI_API_KEY: "sk-env-key-4f2a",
+      GROK_DEFAULT_MODEL: "m",
+      // 会话标题那一下也指到自备模型（否则 CLI 拿自己的默认模型名去打 {base}/responses，必然 404）
+      GROK_CONFIG: JSON.stringify({ models: { session_summary: "m" } }),
+    });
     const noModel = normalizeCredentials({ llm: { mode: "byok", baseUrl: "https://api.example/v1", apiKey: "sk-env-key-4f2a" } });
     expect(credentialsToEnv(noModel)).toEqual({ GROK_MODELS_BASE_URL: "https://api.example/v1", XAI_API_KEY: "sk-env-key-4f2a" });
     const onlyKey = normalizeCredentials({ llm: { mode: "byok", apiKey: "sk-env-key-4f2a" } });
     expect(credentialsToEnv(onlyKey)).toEqual({ XAI_API_KEY: "sk-env-key-4f2a" });
+  });
+
+  it("GROK_CONFIG 只夹带 session_summary（不覆盖玩家配置文件里的其它键；无模型时整键不出现）", () => {
+    const env = credentialsToEnv(normalizeCredentials({ llm: { mode: "byok", baseUrl: "https://a.example/v1", apiKey: "k-123456", model: "my-model" } }));
+    const parsed = JSON.parse(env.GROK_CONFIG);
+    expect(Object.keys(parsed)).toEqual(["models"]);
+    expect(Object.keys(parsed.models)).toEqual(["session_summary"]);
+    expect(parsed.models.session_summary).toBe("my-model");
+    expect(JSON.stringify(env)).not.toContain("apiKey");
   });
 
   it("sanitizeErrorMessage：抹掉明文、压空白、截断 200 字", () => {
@@ -316,13 +343,25 @@ describe("shared/providers.mjs：目录表完整性", () => {
 });
 
 describe("media-mcp.mjs：纯函数", () => {
-  it("imageSizeFor：按类型默认，玩家填了就一律用它", () => {
+  it("imageSizeFor：取值链 = 背景专用 → 通用 → 按类型默认", () => {
     expect(DEFAULT_SIZES.立绘).toBe("1024x1536");
     expect(DEFAULT_SIZES.背景).toBe("1536x1024");
-    expect(imageSizeFor("立绘", "")).toBe("1024x1536");
-    expect(imageSizeFor("背景", "")).toBe("1536x1024");
-    expect(imageSizeFor("封面", "  512x512 ")).toBe("512x512");
-    expect(imageSizeFor("未知", "")).toBe("1024x1024");
+    // 两格都空：按类型默认
+    expect(imageSizeFor("立绘", {})).toBe("1024x1536");
+    expect(imageSizeFor("背景", {})).toBe("1536x1024");
+    expect(imageSizeFor("封面", {})).toBe("1024x1536");
+    // 只填通用：对所有类型生效（历史语义，老配置零漂移）
+    expect(imageSizeFor("立绘", { size: "512x512" })).toBe("512x512");
+    expect(imageSizeFor("封面", { size: "512x512" })).toBe("512x512");
+    expect(imageSizeFor("背景", { size: "512x512" })).toBe("512x512");
+    // 背景专用优先于通用，且只对背景生效
+    expect(imageSizeFor("背景", { size: "512x512", sizeBackground: "1792x1024" })).toBe("1792x1024");
+    expect(imageSizeFor("立绘", { size: "512x512", sizeBackground: "1792x1024" })).toBe("512x512");
+    expect(imageSizeFor("封面", { size: "", sizeBackground: "1792x1024" })).toBe("1024x1536");
+    // 只填背景专用：立绘/封面仍走默认
+    expect(imageSizeFor("背景", { sizeBackground: "1792x1024" })).toBe("1792x1024");
+    expect(imageSizeFor("立绘", { sizeBackground: "1792x1024" })).toBe("1024x1536");
+    expect(imageSizeFor("未知", {})).toBe("1024x1024");
   });
 
   it("imagesEndpoint：去尾斜杠后接 /images/generations", () => {

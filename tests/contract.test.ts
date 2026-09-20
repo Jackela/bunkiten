@@ -299,10 +299,11 @@ const CREDENTIALS_DIRNAME = ".bunkiten";
 const CREDENTIALS_FILENAME = "credentials.json";
 
 /**
- * LLM BYOK 注入引擎子进程的三个环境变量名（grok CLI 的文档口径：11-custom-models.md 的「Custom Models Endpoint」段）。
+ * LLM BYOK 注入引擎子进程的环境变量名（grok CLI 的文档口径：11-custom-models.md 的「Custom Models Endpoint」段；
+ * GROK_CONFIG 见 05-configuration.md 的「Injecting config with GROK_CONFIG」）。
  * 名字写错 = 引擎收不到自备 key 却又不报错（CLI 会静默沿用登录态），所以这里与文档双向钉死。
  */
-const ENV_NAMES = ["GROK_MODELS_BASE_URL", "XAI_API_KEY", "GROK_DEFAULT_MODEL"];
+const ENV_NAMES = ["GROK_MODELS_BASE_URL", "XAI_API_KEY", "GROK_DEFAULT_MODEL", "GROK_CONFIG"];
 
 describe("⑦ 引擎凭据：服务目录 ↔ 设置屏 / MCP 工具名 ↔ SKILL / 凭据落点 ↔ 文档", () => {
   it("服务目录表结构完整：id 唯一、kind 合法、地址合法或留空带 note、两种用途都有可选项", () => {

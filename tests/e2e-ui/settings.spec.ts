@@ -152,10 +152,12 @@ test("引擎与密钥 · 图片组与测试连接：两条探活路径（通过 
     await expect(page.getByTestId("engine-llm-test-result")).toContainText("通过（");
     await expect(page.getByTestId("engine-llm-test-result")).toContainText("个模型");
 
-    // 图片组：切模式 → 尺寸格出现 → 填一组必然连不上的地址（确定性失败路径）+ 掩码
+    // 图片组：切模式 → 尺寸两格出现 → 填一组必然连不上的地址（确定性失败路径）+ 掩码
     await page.getByTestId("engine-image-mode-byok").click();
     await expect(page.getByTestId("engine-image-size")).toBeVisible();
+    await expect(page.getByTestId("engine-image-size-background")).toBeVisible();
     await page.getByTestId("engine-image-size").fill("512x512");
+    await page.getByTestId("engine-image-size-background").fill("1792x1024");
     await page.getByTestId("engine-image-baseurl").fill("http://127.0.0.1:9/v1");
     await page.getByTestId("engine-image-model").fill("img-model");
     await page.getByTestId("engine-image-apikey").fill("sk-e2e-image-4321");
@@ -164,10 +166,17 @@ test("引擎与密钥 · 图片组与测试连接：两条探活路径（通过 
     await page.getByTestId("engine-image-test").click();
     await expect(page.getByTestId("engine-image-test-result")).toContainText("失败：");
 
-    // 两组都真的落到了服务端（尺寸这种图片组独有的字段也在）
+    // 两组都真的落到了服务端（尺寸两格与背景专用尺寸也是）
     const view = await (await page.request.get(`${stack.pageUrl}/api/credentials`)).json();
     expect(view.llm.apiKeyMasked).toBe("sk-…1234");
-    expect(view.image).toMatchObject({ mode: "byok", size: "512x512", hasKey: true, apiKeyMasked: "sk-…4321", model: "img-model" });
+    expect(view.image).toMatchObject({
+      mode: "byok",
+      size: "512x512",
+      sizeBackground: "1792x1024",
+      hasKey: true,
+      apiKeyMasked: "sk-…4321",
+      model: "img-model",
+    });
   } finally {
     await new Promise<void>((r) => provider.close(() => r()));
     await stopUiStack(page, stack);
