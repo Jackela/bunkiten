@@ -9,7 +9,8 @@
 //   ① 协议头集合唯一真源：shared/protocol.mjs 的 PROTOCOL_HEADS ↔ isProtocolLine 正则（parser.ts 构造）↔ server/parser 解析出口 ↔ SKILL 备忘 ↔ 文档
 //   ② RULES 逐字副本：server 常量 ↔ ARCHITECTURE 的 RULES 代码块（6 句，第 6 句音频纪律；引擎只读 .grok/ 不 import 代码，这份天然双份）
 //   ③ 指令字符串双处存在：src/lib/parser.ts 源码 ↔ SKILL.md
-//   ④ 用例数：README/AGENTS/ARCHITECTURE 声明的分组数字 ↔ 各测试文件实际用例数
+//   ④ 用例数下限：CASE_GROUPS 的分组下限 ↔ 各测试文件实际用例数（**唯一维护点**；三份文档只留一句粗口径、
+//     不再逐分组抄数字——v1.9 减税：加用例不用改任何文档，删用例这里会红）
 //   ⑤ 设置键与音频扩展名：settings.ts / shared 真源 / 文档三处一致
 //   ⑥ 指令前缀、章标记与主题白名单（v1.7）：DIRECTIVE_PREFIX_RE / CHAPTER_MARK_RE 单一真源（pickEffort/isMainTurn、
 //     parseChapterMark/质量守卫豁免都消费）；server 与 theme.ts 的字体/对话框白名单与兜底主题同集
@@ -284,38 +285,49 @@ describe("③ 指令字符串双处存在：src/lib/parser.ts 源码 ↔ SKILL.m
 
 // ——————————————————————— ④ 用例数 ———————————————————————
 
-/** 文档口径的分组（README / AGENTS / ARCHITECTURE 三处声明），合计 447 例；不含 e2e 与本文件 */
+/**
+ * 用例数口径是**下限语义**（v1.9 减税后）：数字说的是「不少于」，不是精确值。
+ *
+ * 为什么改：精确相等时加一个用例要同步四处——本文件、README、AGENTS、ARCHITECTURE 里每一处分组数字。
+ * 现在唯一维护点就是这个数组：文档只留一句粗口径（`单测 + 集成全量 N 例`，那个 N 同样是下限声明）。
+ * 代价是文档里的数字停在抬升那天；收益是「加用例」这个每天都在发生的动作不再有文档税。
+ *
+ * 三档规则：
+ *   · 加用例 —— 什么都不用改（实际 ≥ 下限自然成立）；
+ *   · 删用例 —— 这里会红（防静默砍测试；确实要删就先在本文件压低对应 floor，一处）；
+ *   · 抬高口径 —— 可选，只改这里的 floor 与 CASE_TOTAL（不抬高不会红）。
+ */
 const CASE_GROUPS = [
-  { name: "parser", files: ["tests/parser.test.ts"], declared: 65 },
-  { name: "server", files: ["tests/server.test.ts"], declared: 118 },
-  { name: "crafting", files: ["tests/crafting.test.ts"], declared: 56 },
-  { name: "treeLayout", files: ["tests/treeLayout.test.ts"], declared: 7 },
-  { name: "genealogy", files: ["tests/genealogy.test.ts"], declared: 8 },
-  { name: "diff", files: ["tests/diff.test.ts"], declared: 8 },
-  { name: "doctor", files: ["tests/doctor.test.ts"], declared: 12 },
-  { name: "preload", files: ["tests/preload.test.ts"], declared: 8 },
-  { name: "ui", files: ["tests/ui.test.tsx"], declared: 136 },
+  { name: "parser", files: ["tests/parser.test.ts"], floor: 65 },
+  { name: "server", files: ["tests/server.test.ts"], floor: 118 },
+  { name: "crafting", files: ["tests/crafting.test.ts"], floor: 56 },
+  { name: "treeLayout", files: ["tests/treeLayout.test.ts"], floor: 7 },
+  { name: "genealogy", files: ["tests/genealogy.test.ts"], floor: 8 },
+  { name: "diff", files: ["tests/diff.test.ts"], floor: 8 },
+  { name: "doctor", files: ["tests/doctor.test.ts"], floor: 12 },
+  { name: "preload", files: ["tests/preload.test.ts"], floor: 8 },
+  { name: "ui", files: ["tests/ui.test.tsx"], floor: 136 },
   {
     name: "integration",
     files: ["tests/integration/pipeline.test.ts", "tests/integration/audio-history.test.ts", "tests/integration/http-guard.test.ts"],
-    declared: 29,
+    floor: 29,
   },
 ];
 
-/** integration 的子分组（AGENTS / ARCHITECTURE 单独声明） */
+/** integration 的子分组下限（文档不再单独声明；留着是为了「砍的是哪个文件」能直接指出来） */
 const CASE_SUB_GROUPS = [
-  { name: "pipeline", file: "tests/integration/pipeline.test.ts", declared: 15 },
-  { name: "audio-history", file: "tests/integration/audio-history.test.ts", declared: 11 },
-  { name: "http-guard", file: "tests/integration/http-guard.test.ts", declared: 3 },
+  { name: "pipeline", file: "tests/integration/pipeline.test.ts", floor: 15 },
+  { name: "audio-history", file: "tests/integration/audio-history.test.ts", floor: 11 },
+  { name: "http-guard", file: "tests/integration/http-guard.test.ts", floor: 3 },
 ];
 
-/** 契约 lint 自己（也被 npm test 收录，但按文档口径**不计入** 447） */
+/** 契约 lint 自己（也被 npm test 收录，但不计入下限口径：它断言的就是这些数字，自指会让门禁自我循环） */
 const CONTRACT_FILE = "tests/contract.test.ts";
 
-/** 文档声明的合计口径 */
+/** 单测 + 集成的合计下限（抬高它要同批抬齐分组 floor——自洽断言会拦） */
 const CASE_TOTAL = 447;
 
-/** 三份声明口径的文档 */
+/** 三份带粗口径下限声明的文档 */
 const DOCS = ["README.md", "AGENTS.md", "docs/ARCHITECTURE.md"];
 
 /**
@@ -328,121 +340,101 @@ function countCases(rel: string): number {
 }
 
 /**
- * 文档里「分组 → 数字」的宽松抓取（允许「例」字、允许加号列、允许目录树形态）：
- * ① 加号列与括号注：`parser 65 + server 118`、`（server 118 例）`
- * ② 目录树形态：`parser.test.ts        # …（65 例）`、`integration/  # … 29 例`
- * ③ ARCHITECTURE 的「另有真 server 子进程的集成测试 29 例」——这句里没有 integration 字面
+ * 文档侧的粗口径下限声明（README「单测 + 集成全量 447 例」、AGENTS「**共 447 例**」；
+ * `447+` 的加号形态照认）：每份文档各需一句。数字是**下限声明**——不高于实际（不许吹）、
+ * 不低于 CASE_TOTAL（不许小到失去意义）；加用例时它自然停在旧值，不必同批改。
  */
-const DOC_GROUP_RES: { re: RegExp; group: (m: RegExpExecArray) => string }[] = [
-  { re: /\b(parser|crafting|server|treeLayout|genealogy|diff|doctor|preload|ui|integration)[ \t]+(\d+)\b/g, group: (m) => m[1] },
-  { re: /\b(parser|crafting|server|treeLayout|genealogy|diff|doctor|preload|ui|integration)(?:\.test\.(?:ts|tsx)|\/)[^\n]{0,80}?(\d+)\s*例/g, group: (m) => m[1] },
-  { re: /集成测试\s*(\d+)\s*例/g, group: () => "integration" },
-];
-
-/** 子分组声明（`pipeline 15`、`` `integration/pipeline` 15 ``） */
-const DOC_SUB_RE = /(pipeline|audio-history|http-guard)`?\s*(\d+)/g;
-/** 合计声明（README「单测 + 集成全量 447 例」、AGENTS「**共 447 例**」） */
-const DOC_TOTAL_RE = /(?:共|全量)\s*(?:\*\*)?(\d+)(?:\*\*)?\s*例/g;
+const DOC_TOTAL_RE = /(?:共|全量)\s*\*{0,2}(\d+)\+?\*{0,2}\s*例/g;
 
 /**
- * 「合计口径」的其它既有写法：这些数字同样必须等于 CASE_TOTAL（现在 447）。
- * 由来：AGENTS 的「自身不计入 447 口径」这类措辞在历次计数同步里都漏网过——数字换了、措辞没跟上，
- * 只能靠人眼才发现——这几条模式专门兜住这种漂移；文档换新措辞时把新模式补进来。
+ * 文档里**不该再出现**的逐分组数字（撤掉的税不要长回来）：命中即红并报行号——
+ * 加号列 `parser 65 + server 118`、目录树注 `ui.test.tsx … 136 例`、散句「集成测试 29 例」、
+ * 子分组 ``  `pipeline` 15 `` 都算。三组模式各自独立，报错时列出全部命中。
  */
-const DOC_TOTAL_ALT_RES = [
-  /不计入(?:这)?\s*(?:\*\*)?(\d+)/g, // 「不计入 447 口径」「不计入这 447**」
-  /与\s*(\d+)\s*\/\s*contract lint/g, // 「与 447/contract lint 计数无关」
-  /上述\s*(\d+)\s*例/g, // 「即上述 447 例 + 契约 lint」
+const DOC_GROUP_RES: RegExp[] = [
+  // 分组名（可跟 `.test.ts`/目录注）→ 数字 → 近处出现「例」或加号列（`server 600s` 这类不含例/加号的不算）
+  /\b(parser|crafting|server|treeLayout|genealogy|diff|doctor|preload|ui|integration)\b[\s`|.]{0,6}(?:[a-z-]+\.test\.tsx?[^\n]{0,40}?)?\d+[^\n]{0,24}?(?:例|\+)/g,
+  /集成测试\s*\d+/g,
+  /(pipeline|audio-history|http-guard)`?\s+\d+[^\n]{0,24}?(?:例|\+)/g,
 ];
 
-describe("④ 用例数：文档声明的分组数字 ↔ 各文件实际用例数", () => {
-  it("十个分组的实际用例数逐项等于文档口径", () => {
+describe("④ 用例数下限：CASE_GROUPS 的 floor ↔ 各文件实际用例数（唯一维护点）", () => {
+  it("十个分组的实际用例数都不低于下限（加用例不用改这里；删用例先压低 floor）", () => {
     for (const group of CASE_GROUPS) {
       const actual = group.files.reduce((n, file) => n + countCases(file), 0);
       expect(
         actual,
-        `「${group.name}」用例数不一致：${group.files.join(" + ")} 现在实际 ${actual} 例，文档声明 ${group.declared} 例（差 ${actual - group.declared}；加/删用例要同批改 README/AGENTS/ARCHITECTURE 的数字）`,
-      ).toBe(group.declared);
+        `「${group.name}」用例数跌破下限：${group.files.join(" + ")} 现在实际 ${actual} 例、下限 ${group.floor} 例（少了 ${group.floor - actual} 例）——若不是有意删除，先看是不是误删了用例；确实要删就在本文件把这个分组的 floor 压低`,
+      ).toBeGreaterThanOrEqual(group.floor);
     }
   });
 
-  it("integration 三个子分组逐项等于文档口径", () => {
+  it("integration 三个子分组不低于各自下限，且下限自洽（子项之和 ≤ 分组 ≤ 合计）", () => {
     for (const sub of CASE_SUB_GROUPS) {
       const actual = countCases(sub.file);
-      expect(actual, `integration 子分组「${sub.name}」用例数不一致：${sub.file} 现在实际 ${actual} 例，文档声明 ${sub.declared} 例`).toBe(sub.declared);
+      expect(actual, `integration 子分组「${sub.name}」跌破下限：${sub.file} 现在实际 ${actual} 例、下限 ${sub.floor} 例`).toBeGreaterThanOrEqual(sub.floor);
     }
-    const sum = CASE_SUB_GROUPS.reduce((n, s) => n + countCases(s.file), 0);
+    const subSum = CASE_SUB_GROUPS.reduce((n, s) => n + s.floor, 0);
     const integration = CASE_GROUPS.find((g) => g.name === "integration");
-    expect(sum, `integration 的分组口径自相矛盾：三个子文件相加 ${sum} 例，文档写 integration ${integration?.declared} 例`).toBe(integration?.declared);
+    expect(
+      subSum,
+      `integration 的分组下限自相矛盾：三个子文件下限相加 ${subSum} 例，分组下限写的是 ${integration?.floor} 例（子项之和不能超过分组下限）`,
+    ).toBeLessThanOrEqual(integration?.floor ?? 0);
+    const floorSum = CASE_GROUPS.reduce((n, g) => n + g.floor, 0);
+    expect(
+      floorSum,
+      `合计下限自相矛盾：十个分组 floor 相加 ${floorSum} 例，CASE_TOTAL 写的是 ${CASE_TOTAL} 例（CASE_TOTAL 不得低于分组下限之和）`,
+    ).toBeLessThanOrEqual(CASE_TOTAL);
   });
 
-  it("十个分组合计等于文档口径 447，且本文件不计入其中", () => {
-    const sum = CASE_GROUPS.reduce((n, g) => n + g.declared, 0);
-    expect(sum, `文档的分组口径自相矛盾：十个分组相加 ${sum} 例，文档合计写的是 ${CASE_TOTAL} 例`).toBe(CASE_TOTAL);
+  it("实际合计不低于 CASE_TOTAL，且本文件不计入其中", () => {
+    const actual = CASE_GROUPS.reduce((n, g) => n + g.files.reduce((m, file) => m + countCases(file), 0), 0);
+    expect(
+      actual,
+      `单测 + 集成实际合计 ${actual} 例，跌破 CASE_TOTAL 下限 ${CASE_TOTAL} 例——整批用例被砍会先在这里红（有意削减就先在本文件压低分组 floor 与 CASE_TOTAL）`,
+    ).toBeGreaterThanOrEqual(CASE_TOTAL);
     const self = countCases(CONTRACT_FILE);
     expect(self, `本文件 ${CONTRACT_FILE} 一个用例都没数到（${self} 例）：契约 lint 空跑等于没有门禁`).toBeGreaterThan(0);
     for (const group of CASE_GROUPS) {
       expect(
         group.files,
-        `文档的 ${CASE_TOTAL} 例口径里混进了本文件（${CONTRACT_FILE}，现在数到 ${self} 个用例）：它自己也被 npm test 收录，算进总数会让门禁自我循环（改断言就要改文档数字）`,
+        `下限口径里混进了本文件（${CONTRACT_FILE}，现在数到 ${self} 个用例）：它自己也被 npm test 收录，算进合计会让门禁自我循环（改断言就要改数字）`,
       ).not.toContain(CONTRACT_FILE);
     }
   });
 
-  it("三份文档里出现的每个分组数字都等于实际用例数（宽松解析：允许「例」与加号列）", () => {
-    const actualOf: Record<string, number> = {};
-    for (const group of CASE_GROUPS) actualOf[group.name] = group.files.reduce((n, file) => n + countCases(file), 0);
-    const expectedNames = CASE_GROUPS.map((g) => g.name).sort();
+  it("三份文档各有一句粗口径下限声明（`共/全量 N 例`）：不吹、不低于 CASE_TOTAL", () => {
+    const actual = CASE_GROUPS.reduce((n, g) => n + g.files.reduce((m, file) => m + countCases(file), 0), 0);
     for (const doc of DOCS) {
       const text = read(doc);
-      const seen = new Set<string>();
-      for (const { re, group } of DOC_GROUP_RES) {
-        for (const m of text.matchAll(re)) {
-          const name = group(m);
-          const declared = Number(m[2] ?? m[1]);
-          const actual = actualOf[name];
-          expect(
-            declared,
-            `${at(doc, text, m.index)} 把「${name}」写成 ${declared} 例，实际是 ${actual} 例（现在各是什么：文档 ${declared} 例 / 代码 ${actual} 例）`,
-          ).toBe(actual);
-          seen.add(name);
-        }
-      }
-      const missing = expectedNames.filter((n) => !seen.has(n));
+      const hits = [...text.matchAll(DOC_TOTAL_RE)];
       expect(
-        missing,
-        `${doc} 没有声明这些分组的用例数（分组口径必须九项齐全，好让 lint 逐项比对）：${missing.join("、")}——现在只声明了 ${[...seen].sort().join("、")}`,
-      ).toEqual([]);
+        hits.length,
+        `${doc} 里找不到「共 N 例」/「全量 N 例」形态的粗口径声明（每份文档各需一句；数字口径的唯一维护点是 ${CONTRACT_FILE} 的 CASE_GROUPS）：现在数到 ${hits.length} 处——文档可以说得比实际旧，但不能一句都不说`,
+      ).toBeGreaterThan(0);
+      for (const m of hits) {
+        const declared = Number(m[1]);
+        expect(
+          declared,
+          `${at(doc, text, m.index)} 的合计声明是 ${declared} 例，低于 CASE_TOTAL 下限 ${CASE_TOTAL} 例（谁和谁不一致：文档粗口径 ↔ ${CONTRACT_FILE} 的 CASE_TOTAL）`,
+        ).toBeGreaterThanOrEqual(CASE_TOTAL);
+        expect(
+          declared,
+          `${at(doc, text, m.index)} 声称合计 ${declared} 例，实际只有 ${actual} 例——下限语义允许文档停在旧数字，但不许吹（谁和谁不一致：文档粗口径 ↔ 实际用例数）`,
+        ).toBeLessThanOrEqual(actual);
+      }
     }
   });
 
-  it("文档里的子分组数字与合计（「共/全量 N 例」及「不计入/上述 N」等写法）都等于 CASE_TOTAL 口径", () => {
-    let totals = 0;
+  it("三份文档不再逐分组钉数字（撤掉的税不要长回来；要查数字看 CASE_GROUPS）", () => {
     for (const doc of DOCS) {
       const text = read(doc);
-      for (const m of text.matchAll(DOC_SUB_RE)) {
-        const sub = CASE_SUB_GROUPS.find((s) => s.name === m[1]);
-        if (!sub) continue;
-        expect(Number(m[2]), `${at(doc, text, m.index)} 把子分组「${sub.name}」写成 ${m[2]} 例，实际是 ${countCases(sub.file)} 例`).toBe(countCases(sub.file));
-      }
-      for (const m of text.matchAll(DOC_TOTAL_RE)) {
-        expect(
-          Number(m[1]),
-          `${at(doc, text, m.index)} 的合计口径是 ${m[1]} 例，文档分组口径是 ${CASE_TOTAL} 例（本文件 ${CONTRACT_FILE} 不计入合计——改断言不该改这个数字）`,
-        ).toBe(CASE_TOTAL);
-        totals += 1;
-      }
-      // 同一合计口径的其它措辞：数字同样必须是 CASE_TOTAL（换措辞但漏改数字的漂移靠这几条兜住）
-      for (const re of DOC_TOTAL_ALT_RES) {
-        for (const m of text.matchAll(re)) {
-          expect(
-            Number(m[1]),
-            `${at(doc, text, m.index)} 的合计口径写法是 ${m[1]}，应等于 ${CASE_TOTAL}（本文件 ${CONTRACT_FILE} 不计入合计）`,
-          ).toBe(CASE_TOTAL);
-        }
-      }
+      const offenders = DOC_GROUP_RES.flatMap((re) => [...text.matchAll(re)].map((m) => `${at(doc, text, m.index)}「${m[0].replace(/\s+/g, " ").trim()}」`));
+      expect(
+        offenders,
+        `${doc} 里又出现了逐分组的用例数字（谁和谁不一致：文档 ↔ ${CONTRACT_FILE} 的 CASE_GROUPS）：\n${offenders.map((o) => `  - ${o}`).join("\n")}\n分组数字的唯一维护点是 ${CONTRACT_FILE}，文档只留一句「单测 + 集成全量 N 例」的粗口径`,
+      ).toEqual([]);
     }
-    expect(totals, `README / AGENTS 各应有一处「共/全量 N 例」的合计陈述，现在只数到 ${totals} 处：合计口径没了，本文件是否计入就说不清`).toBeGreaterThanOrEqual(2);
   });
 });
 

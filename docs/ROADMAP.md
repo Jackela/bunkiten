@@ -81,15 +81,21 @@ v1.8.0 之后待办与**决策清单**（不是愿望清单）：每项写清「
   Chromium 下拇指是否可见需要肉眼看一次；jsdom 与 Playwright 的设值路径都看不见渲染。
   **本次（v1.9）没碰**：它与 a11y 缺口无关，留给「滑杆读数统一」那一件小事同批看。
 
-## 4. e2e 覆盖补面 —— **已补（19 → 24 条）；仍可加**
+## 4. e2e 覆盖补面 —— **已补（`tests/e2e-ui/` 20 个 spec / 38 条用例；打包态另有一条 opt-in）**
 
-- **前提更正**：清单里的**背景交叉淡入已经有浏览器级覆盖**——`tests/e2e-ui/opening.spec.ts` 在页面里挂 MutationObserver 抓「两层并存」帧、断言淡入时长等于 `BG_FADE_MS`、并断言过渡后收敛成一层（随 v1.8 功能同批落地）。真正的缺口是**reduce 下的背景换图**：`global.css` 在 `prefers-reduced-motion: reduce` 把 `.stage-bg-fade` 设为 `animation: none` = 瞬时硬切，而 `tests/e2e-ui/reduced-motion.spec.ts` 只断言了正文整段立现与屏切换，**没断言换背景不出现两层并存**。夹具够用：`tests/e2e-ui/stack.ts` 的 `turns` / `trees` / `worlds` / `snapshots` / `stateFiles` seed 项覆盖下面多数新用例，不必先扩 `tests/integration/harness.mjs`。
-- **对话面板 自动 / 快进**（今天只有 `tests/ui.test.tsx` 的 DialogueBox 组）→ 归 **`tests/e2e-ui/keyboard.spec.ts`**（对话交互的家：数字键与空格都在那）：断言点「自动」后倒计时标记出现且**正文没有被补全**（`stopPropagation` 的浏览器级证据）、点「快进」正文一次到全文且按钮随即禁用。
-- **剧情图章节切换器**（`ui.test.tsx` StoryTreeScreen 组）→ 归 **`tests/e2e-ui/story-tree.spec.ts`**：断言切到非进度章后画布节点集合确实变了、进度章仍标「当前」、点 `归档` 章只给一句实话而不改画布。
-- **家谱缩放 / 平移**（`ui.test.tsx` 家谱画布组）→ 归 **`tests/e2e-ui/worlds.spec.ts`**（该 spec 已有「家谱视图」用例）：与剧情图同款口径——滚轮后 `viewBox` 变化、拖拽平移、`+ - 0` 与工具条按钮等价，且单选节点时缩放不抢节点焦点。
-- **`⋯` 菜单键盘路径**（`ui.test.tsx` 菜单组已覆盖 Esc / 点外 / 半截确认）→ 归 **`worlds.spec.ts`（行为）+ `focus.spec.ts`（焦点环）**：断言 ⋯ 上 Enter 后焦点落在第一项（`:focus-visible` 环可见）、Esc 后焦点回触发器、菜单关闭后 `aria-expanded=false`。
-- **剧本体检屏**（`ui.test.tsx` PresetCheckScreen 与 TitleScreen 入口组）→ 倾向并进 **`tests/e2e-ui/presets.spec.ts`**（同屏族：标题屏当前卡带的出入出口），避免再添第 13 个 spec；断言入口进屏、摘要计数与 doctor 行原文逐字一致、点「重新检查」确实重发请求、错误态与「没有可展示」态各一条。**新建 spec 还是并进是个小决定**。
-- **立绘差分预载**（今天只有 node 环境的 `tests/preload.test.ts`）→ 浏览器级只能断言可观测面：同一会话内第二次显示同一角色时**没有第二次 `/api/assets` 请求**。收益与稳定性一般，标**可开工但优先级最低**。
+- **v1.9 收尾补的五块**（会话内落地，验收标准=「改坏哪一处它就会红」各自在 spec 文件头/提交信息里写明）：
+  1. **章节循环** `tests/e2e-ui/crafting.spec.ts`——规划→`【清单】`→逐项美术→`开演。`→`【章】`→**第二次进制作中屏**→第二章回 game。中间态（init/planning/queue）在 store 里各只活一两个回合（假引擎一回合 2–6ms）+ 屏转场 450ms，所以把每一跳 `/prompt` 用 `page.route` **挂在浏览器侧**，断言窗口由测试控制（不是睡等、也不是抢时序）。
+  2. **创作模式** `tests/e2e-ui/creation.spec.ts`——标题屏「创作新剧本」→ 打磨对话与选项 chip →「开始装配」→ 清单逐项点亮（封面/立绘/剧本文件）→`【新剧本】`进轮播可选中；另一条覆盖**装配失败→重试装配**。
+  3. **首启失败态** `tests/e2e-ui/boot.spec.ts`——checking / 未登录 / 连不上服务三态，后两者都断言「点重试真能恢复」。前置是 harness 新增的 seed 开关 `auth: "ok"|"missing"`；错误态用 `page.route` 把 `/api/auth` 拦成 502。
+  4. **音频可观测面** `tests/e2e-ui/audio.spec.ts`——三行协议各自触发一次 `/audio` 直服请求、`<audio>` 元素在播与音量（主音量 × 通道音量）、换曲交叉淡入旧元素被 pause、设置屏静音后音量归 0。**关键手法**：AudioManager 的元素是 `new Audio()` 的游离节点（不在 DOM 里），`addInitScript` 包一层 `window.Audio` 登记才能从页面侧观测。
+  5. **耐久规模** `tests/e2e-ui/scale.spec.ts`——60 幕长历史抽屉（逐条渲染/最新在最上/滚动容器真的可滚）、600 节点大树（>40 列表降级、切图形后 200 节点可键盘选中、缩放读数）、200 条快照（存档点标注与「与上一档对比」的确定 diff）。
+  6. **打包态（opt-in，不进 CI）** `tests/e2e-packaged/` + `playwright.electron.config.ts`——`_electron` 起 `npm run dist:mac:dir` 的 `.app`，断言窗口/标题屏/`/app` 静态托管/`resources/game` 可达。**首跑就抓到真 bug**：`win.loadURL("…/app")` 少了尾斜杠，产物 `index.html` 的相对资源全部 404、窗口一片空白（修在 `electron/main.js` 的 `/app/` 与 `server/routes.mjs` 的 `/app` → `/app/` 302）。
+
+- **仍没测（以及为什么 / 怎么才测得到）**：
+  - **打包态 Windows 产物**：要 Windows runner 才能起 `dist:win` 的 exe（`_electron` 支持，但 CI 目前是 mac/linux；win 的差异只在 NSIS 布局与图标元数据）。mac 那条已覆盖「打包布局 + asar + 主进程 + 资源路径」这条主干。
+  - **叙事纪律**（章节长度、选项数量、角色出场一致性）：假引擎回的是脚本化的 `session/update`，验不了叙事；只能真引擎。
+  - **音频纯逻辑面**（同一首重复请求不重启、`【曲】停`/`【环境】停` 的淡出停止、音效并发上限 `MAX_SFX`、索引失败静默）：要在浏览器里造时序，性价比低；留在 node 单测。
+  - **reduce 下换背景不出现两层并存**：`tests/e2e-ui/reduced-motion.spec.ts` 已断言换背景瞬时上屏（v1.9），此处仅留档。
 - **真引擎冒烟（`tests/e2e/smoke.spec.ts`）的 nightly / 手动触发需要什么**（只列清单，不实现）：① 有引擎凭据的 runner（`~/.grok` 的登录态必须以 secret 注入，不能进仓库）；② 出网到 x.ai 的能力（CI 直连或自托管 runner + 代理；被墙时表现为回合 600s 超时）；③ 预算护栏（两个 test 合计约 5 个真回合、本机 6–12 分钟，spec 内已设 900s/test）；④ 失败可诊断（除 Playwright trace 外，把 `state/worlds/*/logs/NNNN.json` 也 artifact 化——日志刻意不进导出包，但它在仓库根，CI 里必须显式收）；⑤ 沙箱隔离（该 spec 会直接改仓库根的 `state/worlds/index.json` 与 `.shell-session.json`，CI 必须跑在 checkout 的副本上）。
 
 ## 5. 世界线体验 —— **id 维持现状（已定）· 缩略图与导出包 v2 已落地**

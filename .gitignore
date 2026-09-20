@@ -5,6 +5,7 @@ release/
 coverage/
 test-results/
 test-results-ui/
+test-results-packaged/
 playwright-report/
 *.log
 *.tsbuildinfo
