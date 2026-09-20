@@ -22,10 +22,17 @@ files:
   - server/**
   - shared/** # 协议常量真源 protocol.mjs（server/acp-server.mjs 经相对路径 import，缺了打包态起不来）
   - package.json
-# MCP 出图 server 要被引擎拉成**子进程**，而子进程读不了 asar：把它同时解开到 app.asar.unpacked/，
-# 运行时路径由 server/media-mcp.mjs 的 mediaMcpPath() 把 `app.asar` 段换成 `app.asar.unpacked`。
+# MCP 出图 server 要被引擎拉成**子进程**，而子进程读不了 asar：它（以及它 import 的整棵树）必须
+# 落在 asar 外的真实文件上，运行时路径由 server/media-mcp.mjs 的 mediaMcpPath() 把 `app.asar` 段
+# 换成 `app.asar.unpacked`。
+# 为什么是**两整棵树**而不是只解 media-mcp.mjs：MCP 从 unpacked 路径启动，它的相对 import
+# （./config.mjs、./assets.mjs、./presets.mjs→./acp-server.mjs、./credentials.mjs、../shared/*.mjs）
+# 全部按「导入者所在目录」解析——只解一个文件时那些兄弟都不在 unpacked 树里，子进程第一步就
+# ERR_MODULE_NOT_FOUND（v1.10 实测抓到过）。枚举文件还会在下次改 import 时静默再坏，所以整棵解开；
+# 代价只是十几个小 .mjs 在磁盘上多一份。
 asarUnpack:
-  - server/media-mcp.mjs
+  - server/**
+  - shared/**
 extraResources:
   - from: .grok
     to: game/.grok

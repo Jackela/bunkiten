@@ -32,6 +32,7 @@ interface Draft {
   baseUrl: string;
   model: string;
   size: string;
+  sizeBackground: string;
 }
 
 /** 分组文案与默认值（两组共用一套渲染，只有这些差异） */
@@ -61,9 +62,9 @@ const GROUP_META: Record<
   },
 };
 
-/** 草稿 ↔ 服务端视图（size 只在图片组有，缺省空串） */
+/** 草稿 ↔ 服务端视图（尺寸两格只在图片组有，缺省空串） */
 function draftOf(view: CredentialGroupView): Draft {
-  return { mode: view.mode, provider: view.provider, baseUrl: view.baseUrl, model: view.model, size: view.size ?? "" };
+  return { mode: view.mode, provider: view.provider, baseUrl: view.baseUrl, model: view.model, size: view.size ?? "", sizeBackground: view.sizeBackground ?? "" };
 }
 
 /** 目录里某用途的可选项（kind 过滤在真源里） */
@@ -312,17 +313,30 @@ function GroupForm({
           </Field>
 
           {group === "image" ? (
-            <Field label="出图尺寸（高级）" hint="留空按画面类型自动：立绘与封面竖构图、背景横构图。">
-              <input
-                type="text"
-                data-testid="engine-image-size"
-                value={draft.size}
-                placeholder="1024x1536"
-                spellCheck={false}
-                onChange={(e) => setField("size")(e.target.value)}
-                className={inputClass}
-              />
-            </Field>
+            <>
+              <Field label="出图尺寸（高级）" hint="留空按画面类型自动：立绘与封面竖构图、背景横构图。填了就是所有类型的通用覆盖。">
+                <input
+                  type="text"
+                  data-testid="engine-image-size"
+                  value={draft.size}
+                  placeholder="1024x1536"
+                  spellCheck={false}
+                  onChange={(e) => setField("size")(e.target.value)}
+                  className={inputClass}
+                />
+              </Field>
+              <Field label="背景尺寸（高级）" hint="只对背景生效；留空则回落上面那格，再留空就按背景的横构图默认。">
+                <input
+                  type="text"
+                  data-testid="engine-image-size-background"
+                  value={draft.sizeBackground}
+                  placeholder="1536x1024"
+                  spellCheck={false}
+                  onChange={(e) => setField("sizeBackground")(e.target.value)}
+                  className={inputClass}
+                />
+              </Field>
+            </>
           ) : null}
 
           <div className="flex flex-wrap items-center gap-3 pt-1">
@@ -351,6 +365,9 @@ function GroupForm({
             </span>
           </div>
           {missing.length > 0 ? <p className="text-meta text-ink-hint">还差：{missing.join("、")}</p> : null}
+          {group === "image" && probe.state === "idle" ? (
+            <p className="text-meta leading-relaxed text-ink-faint">「测试连接」会真的生成一张小图来验证服务能用（可能产生一点点费用）。</p>
+          ) : null}
         </div>
       )}
     </div>

@@ -206,18 +206,20 @@ describe("引擎凭据端点（GET/POST /api/credentials）", () => {
 });
 
 describe("凭据 → 引擎子进程（env 与 MCP 挂载）", () => {
-  it("LLM 自备 key：三个变量真的出现在引擎进程 env 里；session 模式则一个都没有", async () => {
+  it("LLM 自备 key：四个变量真的出现在引擎进程 env 里；session 模式则一个都没有", async () => {
     const byokStack = await stack({ credentials: llmByok() });
     const first = byokStack.engineProbeEntries().find((e) => e.kind === "start");
     expect(first.env).toEqual({
       GROK_MODELS_BASE_URL: "http://127.0.0.1:9/v1",
       XAI_API_KEY: "sk-integration-llm-key-4f2a",
       GROK_DEFAULT_MODEL: "it-model",
+      // 会话标题那一下也指到自备模型（见 credentials.mjs 的 credentialsToEnv 注释）
+      GROK_CONFIG: JSON.stringify({ models: { session_summary: "it-model" } }),
     });
 
     const sessionStack = await stack({});
     const plain = sessionStack.engineProbeEntries().find((e) => e.kind === "start");
-    expect(plain.env).toEqual({ GROK_MODELS_BASE_URL: null, XAI_API_KEY: null, GROK_DEFAULT_MODEL: null });
+    expect(plain.env).toEqual({ GROK_MODELS_BASE_URL: null, XAI_API_KEY: null, GROK_DEFAULT_MODEL: null, GROK_CONFIG: null });
   });
 
   it("图片自备 key 才挂 MCP：挂载项指向 server/media-mcp.mjs，off 时不挂", async () => {

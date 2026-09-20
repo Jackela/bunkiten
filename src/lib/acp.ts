@@ -262,8 +262,10 @@ export interface CredentialGroupView {
   provider: string;
   baseUrl: string;
   model: string;
-  /** 仅图片组：出图尺寸（空串=按类型自动） */
+  /** 仅图片组：出图尺寸（空串=按类型自动；玩家填了就是**通用覆盖**，背景优先看 sizeBackground） */
   size?: string;
+  /** 仅图片组：背景专用尺寸（空串=回落 size，再回落按类型默认的横构图） */
+  sizeBackground?: string;
   /** 是否已存有 key（屏上显示「已配置」/「未配置」） */
   hasKey: boolean;
   /** key 的掩码（失焦后显示在输入框占位里，如 `sk-…4f2a`；没有 key 时是空串） */
@@ -280,7 +282,7 @@ export interface CredentialsView {
 /** POST /api/credentials 的请求体：只出现要改的键（空串=清该字段）；clear 里的组整组回默认 */
 export interface CredentialsPatch {
   llm?: { mode?: string; provider?: string; baseUrl?: string; apiKey?: string; model?: string };
-  image?: { mode?: string; provider?: string; baseUrl?: string; apiKey?: string; model?: string; size?: string };
+  image?: { mode?: string; provider?: string; baseUrl?: string; apiKey?: string; model?: string; size?: string; sizeBackground?: string };
   clear?: ("llm" | "image")[];
 }
 

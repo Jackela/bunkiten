@@ -69,14 +69,20 @@ export const TOOL_DEFINITION = Object.freeze({
 });
 
 /**
- * 出图尺寸（纯函数）：玩家在设置屏填了尺寸就一律用它；没填按类型默认（立绘/封面竖、背景宽）。
+ * 出图尺寸（纯函数）：取值链——
+ *   1. 背景专用 `sizeBackground`（只对背景生效）；
+ *   2. 通用 `size`（两格都空时的玩家覆盖，历史语义：对所有类型生效）；
+ *   3. 按类型默认（立绘/封面竖构图、背景横构图）。
  * @param {string} kind 美术类型（立绘/背景/封面）
- * @param {string} [override] 设置屏的「出图尺寸」（空串=按类型自动）
+ * @param {{size?: string, sizeBackground?: string}} [image] 图片组凭据（缺省=全按类型默认）
  * @returns {string} `<宽>x<高>`
  */
-export function imageSizeFor(kind, override = "") {
-  const s = String(override || "").trim();
-  if (s) return s;
+export function imageSizeFor(kind, image = {}) {
+  const k = String(kind || "").trim();
+  const general = String(image?.size || "").trim();
+  const background = String(image?.sizeBackground || "").trim();
+  const picked = k === "背景" ? background || general : general;
+  if (picked) return picked;
   return DEFAULT_SIZES[/** @type {keyof typeof DEFAULT_SIZES} */ (kind)] || "1024x1024";
 }
 
@@ -245,7 +251,7 @@ export async function generateImage(params, deps = {}) {
   if (!baseUrl || !apiKey || !model) return { ok: false, error: "图片服务配置不完整（需要地址、密钥与模型）" };
   const target = resolveOutputPath(params);
   if ("error" in target) return { ok: false, error: target.error };
-  const size = imageSizeFor(String(params?.kind || ""), creds.image.size || "");
+  const size = imageSizeFor(String(params?.kind || ""), creds.image);
   const out = await requestImage({ baseUrl, apiKey, model, prompt, size, fetchImpl: deps.fetchImpl });
   if ("error" in out) return { ok: false, error: out.error };
   const abs = path.join(gameRoot, target.rel);

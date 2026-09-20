@@ -42,7 +42,8 @@ const MAX_SIZE = 40;
  * @property {string} baseUrl 服务地址（空串=未填）
  * @property {string} apiKey 明文 key（**只在磁盘与内存里**；任何响应/日志都不许落它）
  * @property {string} model 模型 id
- * @property {string} [size] 仅图片组：出图尺寸（空串=按类型自动）
+ * @property {string} [size] 仅图片组：出图尺寸（空串=按类型自动；对有尺寸语义的服务是**通用覆盖**，背景优先看 sizeBackground）
+ * @property {string} [sizeBackground] 仅图片组：背景专用尺寸（空串=回落 size，再回落按类型默认的横构图）
  */
 
 /**
@@ -58,7 +59,7 @@ export function defaultCredentials() {
   return {
     version: CREDENTIALS_VERSION,
     llm: { mode: "session", provider: "openai", baseUrl: "", apiKey: "", model: "" },
-    image: { mode: "off", provider: "openai", baseUrl: "", apiKey: "", model: "", size: "" },
+    image: { mode: "off", provider: "openai", baseUrl: "", apiKey: "", model: "", size: "", sizeBackground: "" },
   };
 }
 
@@ -102,7 +103,10 @@ export function normalizeCredentials(raw) {
     target.baseUrl = field(src.baseUrl, MAX_URL);
     target.apiKey = field(src.apiKey, MAX_KEY);
     target.model = field(src.model, MAX_MODEL);
-    if (g.hasSize) target.size = field(src.size, MAX_SIZE);
+    if (g.hasSize) {
+      target.size = field(src.size, MAX_SIZE);
+      target.sizeBackground = field(src.sizeBackground, MAX_SIZE);
+    }
   }
   return out;
 }
@@ -168,7 +172,7 @@ export function mergeCredentials(current, patch = {}, clear = []) {
   for (const key of ["llm", "image"]) {
     const src = patchOf[key];
     if (!src || typeof src !== "object") continue;
-    const allowed = key === "image" ? ["mode", "provider", "baseUrl", "apiKey", "model", "size"] : ["mode", "provider", "baseUrl", "apiKey", "model"];
+    const allowed = key === "image" ? ["mode", "provider", "baseUrl", "apiKey", "model", "size", "sizeBackground"] : ["mode", "provider", "baseUrl", "apiKey", "model"];
     for (const f of allowed) {
       if (f in src) next[key][f] = src[f];
     }
@@ -190,7 +194,7 @@ export function validateCredentialsPatch(patch = {}, clear = []) {
   }
   const specs = [
     { key: "llm", modes: LLM_MODES, fields: ["mode", "provider", "baseUrl", "apiKey", "model"] },
-    { key: "image", modes: IMAGE_MODES, fields: ["mode", "provider", "baseUrl", "apiKey", "model", "size"] },
+    { key: "image", modes: IMAGE_MODES, fields: ["mode", "provider", "baseUrl", "apiKey", "model", "size", "sizeBackground"] },
   ];
   const patchOf = /** @type {Record<string, Record<string, unknown> | undefined>} */ (patch);
   for (const spec of specs) {
@@ -215,8 +219,10 @@ export function validateCredentialsPatch(patch = {}, clear = []) {
     }
     if ("apiKey" in src && str(src.apiKey).length > MAX_KEY) return { ok: false, error: `${spec.key}.apiKey 过长` };
     if ("model" in src && str(src.model).length > MAX_MODEL) return { ok: false, error: `${spec.key}.model 过长` };
-    if ("size" in src) {
-      const s = str(src.size);
+    // 尺寸两格（通用 + 背景专用）同一套校验与上限
+    for (const sizeField of spec.key === "image" ? ["size", "sizeBackground"] : []) {
+      if (!(sizeField in src)) continue;
+      const s = str(/** @type {any} */ (src)[sizeField]);
       if (s && !/^(auto|\d{1,5}x\d{1,5})$/.test(s)) return { ok: false, error: "出图尺寸形如 1024x1536，或留空按类型自动" };
       if (s.length > MAX_SIZE) return { ok: false, error: "出图尺寸过长" };
     }
@@ -271,7 +277,7 @@ export function publicView(creds) {
     provider: g.provider,
     baseUrl: g.baseUrl,
     model: g.model,
-    ...(withSize ? { size: g.size || "" } : {}),
+    ...(withSize ? { size: g.size || "", sizeBackground: g.sizeBackground || "" } : {}),
     hasKey: g.apiKey.trim() !== "",
     apiKeyMasked: maskKey(g.apiKey),
   });
@@ -286,8 +292,11 @@ export function publicView(creds) {
  * 凭据 → 注入引擎子进程的 env（只生成非空项；**我们的值优先**，与 process.env 合并时覆盖同名键）。
  * LLM 走 grok CLI 的 BYOK 通道（docs：GROK_MODELS_BASE_URL + XAI_API_KEY + GROK_DEFAULT_MODEL，
  * 第 0 步实证见 docs/ARCHITECTURE.md「引擎凭据与自备 key」）：地址进 GROK_MODELS_BASE_URL、
- * key 进 XAI_API_KEY、模型进 GROK_DEFAULT_MODEL。图片凭据**不进 env**——那是 media MCP server
- * 自己读凭据文件的事（少一条把 key 摊在进程环境里的路径）。
+ * key 进 XAI_API_KEY、模型进 GROK_DEFAULT_MODEL。
+ * 另加一个 GROK_CONFIG 覆盖（内联 JSON，只设 `models.session_summary`）：CLI 起会话时会用**它自己的**
+ * 默认模型名去打一次 `{base}/responses` 生成会话标题，对第三方端点必然 404（只留一条 stderr 杂音）；
+ * 把 session_summary 指到玩家配的模型，那条请求就变成一次正常的 chat 调用（实测：/responses 消失）。
+ * 图片凭据**不进 env**——那是 media MCP server 自己读凭据文件的事（少一条把 key 摊在进程环境里的路径）。
  * @param {Credentials} creds 凭据
  * @returns {Record<string, string>} 要注入的 env 键值（未配置时是空对象）
  */
@@ -297,7 +306,10 @@ export function credentialsToEnv(creds) {
   if (llm.mode !== "byok") return out;
   if (llm.baseUrl) out.GROK_MODELS_BASE_URL = llm.baseUrl;
   if (llm.apiKey) out.XAI_API_KEY = llm.apiKey;
-  if (llm.model) out.GROK_DEFAULT_MODEL = llm.model;
+  if (llm.model) {
+    out.GROK_DEFAULT_MODEL = llm.model;
+    out.GROK_CONFIG = JSON.stringify({ models: { session_summary: llm.model } });
+  }
   return out;
 }
 

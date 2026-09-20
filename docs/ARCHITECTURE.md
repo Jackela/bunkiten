@@ -614,7 +614,7 @@ presets/<剧本 id>/audio/音效-门响.wav       # 一次性音效
 |---|---|
 | 路径 | `~/.bunkiten/credentials.json`（**刻意不放 GAME_ROOT**：开发态它等于仓库根，`state/` 的 gitignore 规则不覆盖新文件，放那里迟早被 git 收走） |
 | 权限 | 目录 0700、文件 0600；临时文件 + rename 原子写（进程被杀也不会留半截 JSON） |
-| 形状 | `{ version: 1, llm: { mode:"session"\|"byok", provider, baseUrl, apiKey, model }, image: { mode:"off"\|"byok", provider, baseUrl, apiKey, model, size } }` |
+| 形状 | `{ version: 1, llm: { mode:"session"\|"byok", provider, baseUrl, apiKey, model }, image: { mode:"off"\|"byok", provider, baseUrl, apiKey, model, size, sizeBackground } }`（尺寸两格：`size` 是**通用覆盖**（历史语义，对所有类型生效），`sizeBackground` 只对背景生效、优先于 `size`） |
 | 读路径 | 坏 JSON / 缺键 / 多余键 / 类型不对 / 超长一律**逐键**回默认，永不抛（凭据坏了不该让 server 起不来） |
 | 写出面 | 只有脱敏视图（`publicView` → `hasKey` + `apiKeyMasked`，如 `sk-…4f2a`）；明文只活在磁盘与「玩家正在输入」的那一帧 |
 | 不进 | 日志、逐轮快照、回合日志、世界线/剧本导出包、SSE 事件 |
@@ -628,6 +628,7 @@ presets/<剧本 id>/audio/音效-门响.wav       # 一次性音效
 | `llm.baseUrl` | `GROK_MODELS_BASE_URL` | grok CLI 的「Custom Models Endpoint」通道：它据此拉 `{base}/models` 并把推理打到该地址 |
 | `llm.apiKey` | `XAI_API_KEY` | 以 `Authorization: Bearer` 发出；**有它就不需要 `grok login`** |
 | `llm.model` | `GROK_DEFAULT_MODEL` | 新会话的默认模型；留空时 CLI 用自带默认名（对第三方服务多半不存在，所以 GUI 提示填） |
+| `llm.model`（同一格） | `GROK_CONFIG` | 内联 JSON 覆盖，只设 `{"models":{"session_summary":"<模型>"}}`：CLI 起会话时会用**它自己的**默认模型名去打一次 `{base}/responses` 生成会话标题，对第三方端点必然 404（只留一条 stderr 杂音）——把 session_summary 指到玩家配的模型，那条请求就变成一次正常的 chat 调用（实测：`/responses` 消失、`chat/completions` 多一条标题请求）。只覆盖这一个键，玩家配置文件里其它 `[models]` 设置不动（覆盖层在 requirements 之下，企业 pin 仍然赢） |
 
 合并顺序是 `{...process.env, ...credentialsToEnv(creds)}`（`server/acp.mjs` 的 spawn）：**我们的值优先**——GUI 里填的就是想让引擎用的；沿用登录态时一个键都不产生，不会盖掉玩家 shell 里已有的变量。env 只在 spawn 时读一次，所以「保存 → 立刻重启引擎」（`POST /api/engine/restart`）是唯一生效路径。
 
@@ -645,6 +646,7 @@ grok CLI 的图像通道没有 BYOK 字段（只有 `features.image_gen` 开关�
 - **路径纪律**：落盘路径由 `assets.mjs`/`presets.mjs` 的纯函数重建（只从 `outRelPath` 里解析剧本 id，`presetIdFromPath`），并做 `path.resolve` 前缀校验——不接受任意路径。
 - **兼容梯子**：默认请求带 `size` 与 `response_format: "b64_json"`；服务端 400 且明确抱怨其中一个时**去掉它重试一次**（gpt-image-1 不接受 `response_format`、xAI 的 imagine 口径不认 `size`）——这就是「不逐个 provider 写适配」的落点。响应里的 `b64_json` 与 `url` 都认（`url` 会下载，超时 45s）。
 - **落盘字节与扩展名**：文件名固定 `.jpg`（资产路径契约的一部分：`/img` 直服按 `image/jpeg` 发、state 与【图】标记里写的就是这个路径），而服务商返回的字节可能是 PNG/WebP（gpt-image-1 默认就出 PNG）。浏览器对 `<img>` 按内容嗅探、不看声明的 MIME，所以照常渲染；**不做转码**（要引图像库，违背 server 树零依赖）。要严格对齐格式的话，把「出图模型」换成服务商那边的 JPEG 输出档即可。
+- **出图尺寸**：按类型的默认是立绘/封面竖构图（`1024x1536`）、背景横构图（`1536x1024`）；玩家可在设置屏填两格——`size` 是通用覆盖（对所有类型生效），`sizeBackground` 只对背景生效且优先于 `size`。尺寸随请求体里的 `size` 送（OpenAI 口径）；服务端不认 `size` 时按兼容梯子去掉它（服务商自己决定构图）。
 - **超时与失败**：一次生成 90s 上限；失败/超时/未配置都回可读的错误串给引擎（`{ok:false, error}`），引擎据此静默回退——玩家感知到的只是「这张图没出现」。
 - **不写日志**：MCP 子进程不打印 key；错误信息经 `sanitizeErrorMessage` 抹掉明文再回。
 
@@ -654,7 +656,7 @@ grok CLI 的图像通道没有 BYOK 字段（只有 `features.image_gen` 开关�
 |---|---|
 | `GET /api/credentials` | 脱敏视图（`{ok, version, llm, image}`，每组合 `mode/provider/baseUrl/model/size?/hasKey/apiKeyMasked`）；**永不回明文** |
 | `POST /api/credentials` | 局部更新 `{ llm?, image?, clear?: ["llm"\|"image"] }`：空串=清该字段、`clear` 整组回默认；逐字段校验（未知字段/非法 mode/非 http(s) 地址 → 400）；成功回脱敏视图 |
-| `POST /api/credentials/test` | 真连一次：对话侧先 `GET {baseUrl}/models`（通即通过，不消耗生成额度），404/405/501 时退化为一次最小 completion（`max_tokens` 被拒时换 `max_completion_tokens` 再试一次）；图片侧做一次最小生成（复用 `requestImage`，测试与真出图一条实现）。回 `{ ok, status, ms, error?, detail? }`，端点自身恒 200（「没通过」是业务结果）；错误串已脱敏截断 |
+| `POST /api/credentials/test` | 真连一次：对话侧先 `GET {baseUrl}/models`（通即通过，不消耗生成额度），404/405/501 时退化为一次最小 completion（`max_tokens` 被拒时换 `max_completion_tokens` 再试一次）；图片侧做一次最小生成（复用 `requestImage`，测试与真出图一条实现）——**这一步真花钱**（一张小图），所以 GUI 在图片组明写了这句。回 `{ ok, status, ms, error?, detail? }`，端点自身恒 200（「没通过」是业务结果）；错误串已脱敏截断 |
 | `POST /api/engine/restart` | 优雅重启引擎会话（旧进程退出 → 按当前凭据重建 → 重新握手）；回合进行中拒绝（409，避免截断这一回合的落盘） |
 
 `GET /api/auth` 扩展为 `{ loggedIn, hasCredentials }`（保留 `loggedIn` 字段名）：`hasCredentials` = LLM 侧配全了自备 key（`mode:"byok"` 且地址与密钥都非空），boot 屏据此放行——有登录态或配好 key 任一即可开玩。
@@ -673,9 +675,17 @@ grok CLI 的图像通道没有 BYOK 字段（只有 `features.image_gen` 开关�
 
 三条都成立，因此设计按原方案落地；第三条的「另一条 base」正是图片侧必须有自己通道的直接证据。
 
+**后续补充实证（同一天，针对三处残留问题）**：
+
+| 问题 | 尝试 | 结论 |
+|---|---|---|
+| 会话标题那条 `{base}/responses` 请求（用 CLI 自带默认模型名打自备端点，必然 404） | ① `GROK_TITLE_REFRESH=0`；② `GROK_TITLE_REFRESH=false`；③ `GROK_CONFIG='{"features":{"title_refresh":false}}'`；④ `GROK_CONFIG='{"models":{"session_summary":"<自备模型>"}}'` | ①②③ **无效**（请求照发）；④ **有效**——`/responses` 消失，标题请求改走 `chat/completions` 并用我们配的模型（mock 实测：3 条 chat/completions，其中 1 条 body 里是 session title 提示词，全部 `model=mock-model-1`）。取 ④ 落进 `credentialsToEnv` |
+| Anthropic 原生协议（`/v1/messages`）能否经我们这条通道支持 | `GROK_CONFIG='{"models":{"default":"bk-anthropic"},"model":{"bk-anthropic":{"model":"claude-x","base_url":"…","api_backend":"messages","api_key":"…"}}}'` | **不成立**：`model.*` 被覆盖层的白名单丢弃（请求仍是 `chat/completions` + env 给的模型、只有 Bearer，没有 `/v1/messages`）。CLI 的 `api_backend` 只能来自 `~/.grok/config.toml` 的 `[model.*]`——那条路是 ADR-0019 明确拒绝的（合写玩家全局配置）。要用 Anthropic 就走它的兼容网关（「自定义」/ one-api / LiteLLM） |
+| 打包态 MCP 子进程能不能起来 | 用 `dist:mac:dir` 产物跑 `ELECTRON_RUN_AS_NODE=1 …/app.asar.unpacked/server/media-mcp.mjs` | **坏了**：`ERR_MODULE_NOT_FOUND: Cannot find module '…/app.asar.unpacked/shared/protocol.mjs'`——`asarUnpack` 当时只解了 `media-mcp.mjs` 一个文件，它相对 import 的兄弟（`config.mjs`/`assets.mjs`/`presets.mjs`→`acp-server.mjs`/`credentials.mjs` 与 `shared/*`）都不在 unpacked 树里。修法：`asarUnpack: [server/**, shared/**]` 两整棵树 + 打包态冒烟里真的把 MCP 拉起来跑一遍握手（假引擎加 `FAKE_ENGINE_SPAWN_MCP=1`） |
+
 ### 打包（asar）
 
-MCP server 是被引擎拉起的**子进程**，子进程读不了 asar：`electron-builder.yml` 把 `server/media-mcp.mjs` 放进 `asarUnpack`，运行时 `mediaMcpPath()` 把路径里的 `app.asar` 段换成 `app.asar.unpacked`；命令用 `process.execPath` + `ELECTRON_RUN_AS_NODE=1`（打包态与开发态的 `execPath` 都是 Electron 可执行文件，不带这个变量会起出第二个 Electron 应用）。
+MCP server 是被引擎拉起的**子进程**，子进程读不了 asar：`electron-builder.yml` 把 **`server/**` 与 `shared/**` 两整棵树**放进 `asarUnpack`（不是只解 `media-mcp.mjs` 一个文件——它相对 import 的兄弟都得在同一棵 unpacked 树里，否则子进程第一步就 `ERR_MODULE_NOT_FOUND`，见上一节的实证表），运行时 `mediaMcpPath()` 把路径里的 `app.asar` 段换成 `app.asar.unpacked`；命令用 `process.execPath` + `ELECTRON_RUN_AS_NODE=1`（打包态与开发态的 `execPath` 都是 Electron 可执行文件，不带这个变量会起出第二个 Electron 应用——打包态实测：这条命令确实能当 node 跑起来，MCP 握手 `ok` 且工具可见，见 `tests/e2e-packaged/`）。
 
 ## HTTP / SSE API 一览
 
