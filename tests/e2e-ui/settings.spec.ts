@@ -3,9 +3,13 @@
 // 改主音量滑杆（受控 input：原生 value setter + dispatch input 事件，React onChange 才会吃到）
 // 与文本速度档位按钮 → 断言 localStorage `bunkiten.settings.v1` 即时落盘 → reload 后再进设置屏，
 // 断言改动被 loadSettings 读回并渲染（设置是本机偏好，不进世界线，生命周期就是 localStorage）。
-// v1.10 起另有一条「引擎与密钥」用例（自备 key 的填/掩码/持久化/重启/清空 + 明文泄漏哨兵）：
-// 它自己起一套 auth:"missing" 的栈（从 boot 屏的「填自备密钥」入口进设置屏），与上面共享栈的用例互不影响。
+// v1.10 起另有两条「引擎与密钥」用例（各自起一套 auth:"missing" 的栈，从 boot 屏的「填自备密钥」入口进设置屏）：
+//   ① 对话组全流程：填 key → 掩码 → 刷新后仍可开玩 → 重启引擎 → 清空回落，末尾带响应体明文哨兵；
+//   ② 图片组与「测试连接」：本机假服务商给一条**确定性成功**路径（GET /models），图片组则指向必然拒连的端口
+//      拿**确定性失败**，两条探活结果都要在屏上读到（三态的第三态「测试中」由点击到结果出现之间的短暂窗口承担，
+//      不额外断言——它是过渡态，钉它只会引入时序脆弱）。
 import { expect, test, type Page } from "@playwright/test";
+import http from "node:http";
 import { startUiStack, stopUiStack, type StartedStack } from "./stack";
 import { enterProtagonist, quickStartToGame } from "./flow";
 
@@ -112,6 +116,60 @@ test("引擎与密钥：填 key → 掩码 → 刷新后仍在 → 重启引擎�
 
     expect(leaked).toEqual([]);
   } finally {
+    await stopUiStack(page, stack);
+  }
+});
+
+test("引擎与密钥 · 图片组与测试连接：两条探活路径（通过 / 失败）都能在屏上看到", async ({ browser }) => {
+  // 本机假服务商：给「测试连接」一条确定性的**成功**路径（acp-server 与浏览器同机，能连到它）
+  const provider = http.createServer((req, res) => {
+    if ((req.url ?? "").endsWith("/models")) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ object: "list", data: [{ id: "fake-model" }] }));
+      return;
+    }
+    res.writeHead(404, { "content-type": "application/json" });
+    res.end("{}");
+  });
+  await new Promise<void>((r) => provider.listen(0, "127.0.0.1", () => r()));
+  const providerBase = `http://127.0.0.1:${(provider.address() as { port: number }).port}/v1`;
+
+  const { stack, page } = await startUiStack(browser, { presets: ["demo"], turns: [], auth: "missing" });
+  try {
+    await page.goto(stack.pageUrl);
+    await page.getByTestId("boot-credentials").click();
+    await expect(page.getByTestId("engine-keys")).toBeVisible();
+
+    // 对话组：指到假服务商 → 「测试连接」走 /models 那条路（不消耗生成额度）
+    await page.getByTestId("engine-llm-mode-byok").click();
+    await page.getByTestId("engine-llm-baseurl").fill(providerBase);
+    await page.getByTestId("engine-llm-model").fill("fake-model");
+    await page.getByTestId("engine-llm-apikey").fill("sk-e2e-probe-1234");
+    await page.getByTestId("engine-llm-apikey").blur();
+    // 掩码出现 = 那一笔保存（含防抖中的地址与模型）已经落盘，探针读到的就是这份配置
+    await expect(page.getByTestId("engine-llm-apikey")).toHaveAttribute("placeholder", "sk-…1234（已保存）");
+    await page.getByTestId("engine-llm-test").click();
+    await expect(page.getByTestId("engine-llm-test-result")).toContainText("通过（");
+    await expect(page.getByTestId("engine-llm-test-result")).toContainText("个模型");
+
+    // 图片组：切模式 → 尺寸格出现 → 填一组必然连不上的地址（确定性失败路径）+ 掩码
+    await page.getByTestId("engine-image-mode-byok").click();
+    await expect(page.getByTestId("engine-image-size")).toBeVisible();
+    await page.getByTestId("engine-image-size").fill("512x512");
+    await page.getByTestId("engine-image-baseurl").fill("http://127.0.0.1:9/v1");
+    await page.getByTestId("engine-image-model").fill("img-model");
+    await page.getByTestId("engine-image-apikey").fill("sk-e2e-image-4321");
+    await page.getByTestId("engine-image-apikey").blur();
+    await expect(page.getByTestId("engine-image-apikey")).toHaveAttribute("placeholder", "sk-…4321（已保存）");
+    await page.getByTestId("engine-image-test").click();
+    await expect(page.getByTestId("engine-image-test-result")).toContainText("失败：");
+
+    // 两组都真的落到了服务端（尺寸这种图片组独有的字段也在）
+    const view = await (await page.request.get(`${stack.pageUrl}/api/credentials`)).json();
+    expect(view.llm.apiKeyMasked).toBe("sk-…1234");
+    expect(view.image).toMatchObject({ mode: "byok", size: "512x512", hasKey: true, apiKeyMasked: "sk-…4321", model: "img-model" });
+  } finally {
+    await new Promise<void>((r) => provider.close(() => r()));
     await stopUiStack(page, stack);
   }
 });

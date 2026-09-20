@@ -375,13 +375,24 @@ async function watchCoverImg(): Promise<void> {
   });
 }
 
+/**
+ * 布局量的「同尺寸」比较：**不能用 toBe/toEqual 精确相等**——boundingBox() 来自
+ * getBoundingClientRect，缩放/抗锯齿下会带 ~1e-5 的浮点抖动（CI 实测：缺封面的行高
+ * 73.50001525878906 vs 有封面的 73.5，一次全量跑就红在这条上）。
+ * 容差 0.01px：真实回归（少一行文字、缩略图把行撑高）至少差 1px 量级，照样能红。
+ */
+function expectSamePx(actual: number, expected: number, what: string): void {
+  expect(Math.abs(actual - expected), `${what}：实测 ${actual}、基准 ${expected}（相差 ${Math.abs(actual - expected)}px）`).toBeLessThan(0.01);
+}
+
 // 行缩略图（ROADMAP §5）：缩略图取的是**剧本封面** `coverUrl(entry.preset)`（`/img` 白名单直服
 // `presets/<id>/cover.jpg`），所以两个剧本刚好把两态摆在一起——demo 有 cover.jpg（beforeAll 手写真 jpg）、
 // no-cover 没有（本仓多数 preset 的常态，/img 回真 404）。四条断言各管一件事：
 // ① 有封面：图真的解码上屏（naturalWidth > 0）、src 就是封面契约路径、alt 空（装饰性）；
 // ② 缩略图不吃行的点击（点它那一片 = 点行，选中与焦点都落到该行）；
 // ③ 没封面：那一次 /img 确实回 404，且图**挂上过又被摘掉**（DOM 里不留 <img>，破图图标因此不可能出现）；
-// ④ 缺图对布局零影响：占位块与有封面时逐像素同尺寸，两态的行高逐像素相同。
+// ④ 缺图对布局零影响：占位块与有封面时同尺寸，两态的行高相同（浮点抖动用 expectSamePx 的 0.01px 容差吸收）。
+
 test("行缩略图：有封面的剧本上封面图，没封面的只剩同尺寸占位块（无破图、行高不变）", async () => {
   await page.goto(stack.pageUrl);
   await expect(page.getByTestId("title-card-center")).toBeVisible();
@@ -401,7 +412,8 @@ test("行缩略图：有封面的剧本上封面图，没封面的只剩同尺�
   expect(await cover.evaluate((el) => (el as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
   expect(coverStatuses.get("presets/demo/cover.jpg")).toBe(200);
   const coverBox = (await page.getByTestId("world-cover-w1").boundingBox())!;
-  expect([coverBox.width, coverBox.height]).toEqual([56, 40]);
+  expectSamePx(coverBox.width, 56, "有封面的缩略图宽");
+  expectSamePx(coverBox.height, 40, "有封面的缩略图高");
 
   // —— ② 缩略图不吃行的点击（pointer-events-none）：那一片的命中目标就是行自己，点下去 = 点行 ——
   // 命中目标与「点完焦点/选中落到哪一行」两样都断言：前者是机制（elementFromPoint 会跳过
@@ -450,9 +462,10 @@ test("行缩略图：有封面的剧本上封面图，没封面的只剩同尺�
   const holder = page.getByTestId("world-cover-w5");
   await expect(holder).toBeVisible();
   const holderBox = (await holder.boundingBox())!;
-  expect([holderBox.width, holderBox.height]).toEqual([56, 40]);
+  expectSamePx(holderBox.width, 56, "占位块宽");
+  expectSamePx(holderBox.height, 40, "占位块高");
   await expect(page.getByTestId("world-row-w5")).toContainText("第 1 章");
   await expect(page.getByTestId("world-continue-w5")).toBeEnabled();
   const bareRowH = (await page.getByTestId("world-row-w5").boundingBox())!.height;
-  expect(bareRowH, `缺封面的行高 ${bareRowH} 与有封面的 ${demoRowH} 不一致（缩略图把行撑变形了）`).toBe(demoRowH);
+  expectSamePx(bareRowH, demoRowH, "缺封面的行高与有封面的不一致（缩略图把行撑变形了）");
 });

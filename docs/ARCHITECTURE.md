@@ -604,8 +604,8 @@ presets/<剧本 id>/audio/音效-门响.wav       # 一次性音效
 
 ### 为什么是「服务目录 + 环境变量」，不是 .env、也不是逐家适配
 
-- **事实标准优先**：目标服务都说 OpenAI 兼容协议（`/chat/completions`、`/images/generations`），差别只在 base_url 与模型名——把差异收进一张数据表（`shared/providers.mjs`），协议层就不必为每家写代码；长尾（自建、私有部署、聚合网关）用 one-api / LiteLLM 这类网关当逃生口。
-- **对话通道不自己实现**：`grok agent` 自带 BYOK 通道（`GROK_MODELS_BASE_URL` + `XAI_API_KEY` + `GROK_DEFAULT_MODEL`），我们只负责把凭据变成子进程 env；媒体生成没有这条通道，才需要自建 MCP 工具。
+- **事实标准优先**：目标服务都说 OpenAI 兼容协议（`/chat/completions`、`/images/generations`），差别只在 base_url 与模型名——把差异收进一张数据表（`shared/providers.mjs`），协议层就不必为每家写代码；长尾（自建、私有部署、聚合网关）用 one-api / LiteLLM 这类网关当逃生口。目录里目前 27 条（对话侧 27、出图侧 12），覆盖 OpenAI / Azure / Gemini / Mistral / OpenRouter / DeepSeek / Kimi（国内 + 全球）/ 智谱 / 百炼（北京 + 新加坡）/ SiliconFlow / 火山方舟 / Groq / Together / Fireworks / xAI / 本机（Ollama、LM Studio）/ 自建与网关，以及国内的千帆、混元、星火、MiniMax（国内 + 全球）。**地址一律按各家当前官方文档核对后写入**（不凭记忆），条目里的 `note` 承担那些文档才知道的坑：站点/地域必须与密钥配套（选错是 401 的常见原因）、模型格该填哪种形态的 id、某些通道只有 v2 才兼容 OpenAI。
+- **对话通道不自己实现**：`grok agent` 自带 BYOK 通道（`GROK_MODELS_BASE_URL` + `XAI_API_KEY` + `GROK_DEFAULT_MODEL`），我们只负责把凭据变成子进程 env；媒体生成没有这条通道，才需要自建 MCP 工具。也正因为走的是 CLI 的 env 通道，**Anthropic 原生协议（`/v1/messages`）不在目录里**：CLI 的 `api_backend` 只能写在 `~/.grok/config.toml` 的 `[model.*]` 里，env 通道给不了（要用 Anthropic 就走它的兼容网关，或等后续版本引入我们自己的 grok 配置文件）。
 - **不做 .env / 手改配置文件**：玩家不该为了填一个 key 去编辑文件或设环境变量；GUI 即时保存 + 「立刻重启引擎」比环境文件准确，也不会污染 shell（取舍与备选见 ADR-0019）。
 
 ### 落点、形状与读写纪律
@@ -644,6 +644,7 @@ grok CLI 的图像通道没有 BYOK 字段（只有 `features.image_gen` 开关�
 - **幂等**：工具直接落盘到目标路径，引擎随后的【图】标记带的就是同一个相对路径——缓存检查（SKILL 的「生成前缓存检查」）天然命中，不会二次出图；重绘路径照旧覆盖同名文件。
 - **路径纪律**：落盘路径由 `assets.mjs`/`presets.mjs` 的纯函数重建（只从 `outRelPath` 里解析剧本 id，`presetIdFromPath`），并做 `path.resolve` 前缀校验——不接受任意路径。
 - **兼容梯子**：默认请求带 `size` 与 `response_format: "b64_json"`；服务端 400 且明确抱怨其中一个时**去掉它重试一次**（gpt-image-1 不接受 `response_format`、xAI 的 imagine 口径不认 `size`）——这就是「不逐个 provider 写适配」的落点。响应里的 `b64_json` 与 `url` 都认（`url` 会下载，超时 45s）。
+- **落盘字节与扩展名**：文件名固定 `.jpg`（资产路径契约的一部分：`/img` 直服按 `image/jpeg` 发、state 与【图】标记里写的就是这个路径），而服务商返回的字节可能是 PNG/WebP（gpt-image-1 默认就出 PNG）。浏览器对 `<img>` 按内容嗅探、不看声明的 MIME，所以照常渲染；**不做转码**（要引图像库，违背 server 树零依赖）。要严格对齐格式的话，把「出图模型」换成服务商那边的 JPEG 输出档即可。
 - **超时与失败**：一次生成 90s 上限；失败/超时/未配置都回可读的错误串给引擎（`{ok:false, error}`），引擎据此静默回退——玩家感知到的只是「这张图没出现」。
 - **不写日志**：MCP 子进程不打印 key；错误信息经 `sanitizeErrorMessage` 抹掉明文再回。
 
