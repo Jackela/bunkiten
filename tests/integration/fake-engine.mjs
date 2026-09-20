@@ -3,7 +3,8 @@
 // 零网络、零真实引擎：固定应答握手，再按环境变量里的「脚本队列」回放 session/update 通知。
 //
 // 脚本格式（env FAKE_ENGINE_TURNS = JSON 数组），每个元素 = 一次 session/prompt 的回放：
-//   ["正文第一段\n\n【图】立绘|薇拉|images/1.jpg\n"]                 // 纯字符串 = agent_message_chunk 文本
+//   ["正文第一段\n\n【图】立绘|薇拉|images/1.jpg\n"]                 // 数组 = ops 列表（纯字符串 = agent_message_chunk 文本）
+//   "正文一段\n\n**行动**\n1. …\n"                                 // 裸字符串 = 单条文本 op（等价于只含一个字符串的数组）
 //   { match:"改树", ops:["已改好。\n", { tool:"写剧情树" }, "【树】\n"] } // 对象：按 match 子串选中；ops 里
 //                                                                     // {tool} 视作 tool_call（制造 seg 切换）
 // ops 元素三种：string = chunk 文本；{tool:"名"} = tool_call 通知（制造 seg 切换）；
@@ -45,7 +46,13 @@ function pickOps(promptText) {
   const entry = cursor < script.length ? script[cursor] : null;
   if (entry) used.add(cursor);
   cursor++;
-  return entry ? (Array.isArray(entry) ? entry : Array.isArray(entry.ops) ? entry.ops : []) : [];
+  // 元素三种形态：数组 = ops 列表本身；对象 = 取 .ops；**裸字符串 = 单条文本 op**。
+  // 裸字符串这一支是 v1.9 补的：tests/e2e-ui/stack.ts 的 UiStackOptions.turns 声明「元素为纯文本（顺次消费）」，
+  // 但这里此前把裸字符串当成「没有 ops 的对象」返回 []——那一跳静默什么都不演（无 chunk、回合空收尾），
+  // 是最难查的一类假绿（scale.spec.ts 的长历史用例就撞在这上面）。声明与实现取其一，这里选收编。
+  if (entry === null || entry === undefined) return [];
+  if (typeof entry === "string") return [entry];
+  return Array.isArray(entry) ? entry : Array.isArray(entry.ops) ? entry.ops : [];
 }
 
 // 回放一个回合：string → chunk 通知；{tool} → tool_call 通知（server 据此 seg+1）；

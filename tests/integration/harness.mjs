@@ -90,6 +90,7 @@ function seedWorld(worldsRoot, worldId, preset, title, meta = {}) {
 //   · indexSchema: number        → 版本化索引的 schema 号（缺省 1 = 当前形态；2 = 未来版本，验「读到、不降级写回」）
 //   · indexExtra:  object        → 版本化索引里追加的未知顶层键（验读改写保留）
 //   · legacyIndexArray: boolean  → 写 v1.8 及以前的**裸数组**索引（验启动期 migrateWorldsSchema 真的升了它）
+//   · auth: "ok" | "missing"     → 是否在临时 HOME 里写 ~/.grok/auth.json（缺省 "ok"；"missing" = boot 屏未登录态）
 function seedStack(root, presets, extra = {}) {
   const {
     assets = {},
@@ -101,6 +102,7 @@ function seedStack(root, presets, extra = {}) {
     indexSchema = 1,
     indexExtra = {},
     legacyIndexArray = false,
+    auth = "ok",
   } = extra;
   mkdirSync(path.join(root, "presets"), { recursive: true });
   const worldsRoot = path.join(root, "state", "worlds");
@@ -249,6 +251,7 @@ async function httpOk(url) {
  * @param {number} [opts.indexSchema] 索引的 schema 号（缺省 1；2 = 未来版本，验不降级写回）
  * @param {Record<string, unknown>} [opts.indexExtra] 版本化索引里的未知顶层键（验读改写保留）
  * @param {boolean} [opts.legacyIndexArray] 写 v1.8 及以前的裸数组索引（验启动期 schema 迁移）
+ * @param {"ok"|"missing"} [opts.auth] 是否写临时 HOME 的 `~/.grok/auth.json`（缺省 "ok"；"missing" 供 boot 屏未登录态用例）
  * @returns {Promise<object>} stack 句柄（root/home/events/waitFor/prompt/stop 等）
  */
 export async function startStack({
@@ -264,6 +267,7 @@ export async function startStack({
   indexSchema = 1,
   indexExtra = {},
   legacyIndexArray = false,
+  auth = "ok",
 } = {}) {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "bunkiten-it-"));
   const root = path.join(tmp, "game");
@@ -273,10 +277,12 @@ export async function startStack({
   mkdirSync(home, { recursive: true });
   mkdirSync(binDir, { recursive: true });
   // server 的 /api/auth 只检查 ~/.grok/auth.json 是否存在（开发机上有真登录态，临时 home 没有）；
-  // UI e2e 的 boot 屏靠它放行进 title——占位内容无所谓，写一个空 JSON 即可
+  // UI e2e 的 boot 屏靠它放行进 title——占位内容无所谓，写一个空 JSON 即可。
+  // auth:"missing" 时**不写**这个文件：给 boot 屏「还没登录叙事引擎」态一个可复现前置
+  //（用例可以在中途把这个文件补上，验「重试」真的走通而不是只换个文案）。
   mkdirSync(path.join(home, ".grok"), { recursive: true });
-  writeFileSync(path.join(home, ".grok", "auth.json"), "{}\n");
-  seedStack(root, presets, { assets, audioFiles, trees, stateFiles, worlds, snapshots, indexSchema, indexExtra, legacyIndexArray });
+  if (auth === "ok") writeFileSync(path.join(home, ".grok", "auth.json"), "{}\n");
+  seedStack(root, presets, { assets, audioFiles, trees, stateFiles, worlds, snapshots, indexSchema, indexExtra, legacyIndexArray, auth });
 
   // 会话图片目录：server 用 os.homedir()（=HOME）+ encodeURIComponent(GAME_ROOT) + sessionId 拼接
   const sessionImagesDir = path.join(home, ".grok", "sessions", encodeURIComponent(root), SESSION_ID, "images");

@@ -1,10 +1,12 @@
-// 集成测试（v1.6）：本地端点来源校验（403）+ POST body 上限（413）+ GET /api/history?seq= 只回目标条目。
+// 集成测试（v1.6）：本地端点来源校验（403）+ POST body 上限（413）+ GET /api/history?seq= 只回目标条目
+// + GET /app 的尾斜杠 302（v1.9）。
 // 同栈形态：假 ACP 引擎（PATH 垫片 bin/grok）+ 真 server/acp-server.mjs 子进程，全程离线。
 //
 // 覆盖：
 //   跨站 POST（sec-fetch-site: cross-site / 非本机 Origin）→ 403；无 Origin 与本机 Origin 放行
 //   超限 body → 413（/api/worlds、/prompt 同款上限）
 //   GET /api/history?seq= 只读目标文件、只回目标条目；不存在的 seq → 空列表
+//   GET /app（无尾斜杠）→ 302 /app/；临时 game root 没有 dist 时 /app/ 回可读的 404
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import http from "node:http";
@@ -145,5 +147,20 @@ describe("集成：本地端点来源校验 + body 上限 + history seq（v1.6�
     const missing = await stack.getJSON("/api/history?worldId=w1&seq=9");
     expect(missing.status).toBe(200);
     expect(missing.body.snapshots).toEqual([]);
+  }, 15000);
+
+  it("④ GET /app（无尾斜杠）302 到 /app/；静态托管缺产物时给可读的 404", async () => {
+    // 产物 index.html 的资源是相对路径（vite base "./"）：文档 URL 少了尾斜杠，./assets/… 就会解析到
+    // 站点根、全部 404——打包态窗口一片空白（v1.9 打包态冒烟抓到的真 bug，修在 server/routes.mjs 与
+    // electron/main.js）。这条把服务端那半钉住（打包态 spec 是 opt-in，不进 CI）。
+    const r = await stack.fetch("/app", { redirect: "manual" });
+    expect(r.status).toBe(302);
+    expect(r.headers.get("location")).toBe("/app/");
+
+    // /app/ 走静态托管：集成环境的临时 game root 没有 dist（resolveAppDist 的两条候选都不存在），
+    // 回 404 + 原因句——不是 500，也不是空响应
+    const slash = await stack.fetch("/app/");
+    expect(slash.status).toBe(404);
+    expect(await slash.text()).toContain("app dist not built");
   }, 15000);
 });

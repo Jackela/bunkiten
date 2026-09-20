@@ -51,6 +51,8 @@ export interface UiStackOptions {
       files: { state: string | null; summary: string | null; tree: string | null };
     }>
   >;
+  /** 是否写临时 HOME 的 `~/.grok/auth.json`（缺省 "ok"；"missing" = boot 屏未登录态用例的前置） */
+  auth?: "ok" | "missing";
   /** 非默认浏览上下文（如 reduced-motion 用例的 { reducedMotion: "reduce" }）；不进 startFakeStack */
   contextOptions?: BrowserContextOptions;
 }

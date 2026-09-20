@@ -450,8 +450,15 @@ export function createRequestHandler(ctx) {
       return;
     }
 
-    // 打包后的前端静态托管（生产/开发同构，前端请求一律走相对路径）
-    if (req.method === "GET" && (url.pathname === "/app" || url.pathname.startsWith("/app/"))) {
+    // 打包后的前端静态托管（生产/开发同构，前端请求一律走相对路径）。
+    // /app（无尾斜杠）302 到 /app/：产物 index.html 的资源是相对路径（vite base "./"），
+    // 少了尾斜杠基准地址会落在站点根、./assets/… 全 404（浏览器手输地址时同样中招）。
+    if (req.method === "GET" && url.pathname === "/app") {
+      res.writeHead(302, { location: "/app/" });
+      res.end();
+      return;
+    }
+    if (req.method === "GET" && url.pathname.startsWith("/app/")) {
       const appDist = resolveAppDist();
       if (!appDist) { res.writeHead(404, { "content-type": "text/plain; charset=utf-8" }); res.end("app dist not built"); return; }
       let rel;

@@ -51,8 +51,11 @@ async function createWindow() {
     if (!(await waitUntilReachable(DEV_URL))) console.error(`[electron] vite dev server 未就绪: ${DEV_URL}`);
     await win.loadURL(DEV_URL);
   } else {
-    // 前端对 /api /events /prompt /img 的相对请求由同一 origin 的 acp-server 承接
-    await win.loadURL(`http://127.0.0.1:${port}/app`);
+    // 前端对 /api /events /prompt /img 的相对请求由同一 origin 的 acp-server 承接。
+    // **尾斜杠是必须的**：产物 index.html 里的资源是相对路径（vite base "./"），文档 URL 少了它
+    // 基准地址就落在站点根，./assets/… 会解析成 /assets/…（404）——窗口一片空白。
+    // 服务端对 /app（无尾斜杠）也做了 302 兜底，两条入口都不会再踩这个坑。
+    await win.loadURL(`http://127.0.0.1:${port}/app/`);
   }
 }
 
