@@ -160,6 +160,8 @@ function timeoutSignal(ms) {
  * @param {string} p.size 尺寸（`<宽>x<高>`）
  * @param {typeof fetch} [p.fetchImpl] 注入的 fetch（缺省全局 fetch）
  * @returns {Promise<{bytes: Buffer, status: number} | {error: string, status?: number}>} 图片字节或人话错误
+ *   注：返回的字节可能是 PNG/WebP（服务商决定），落盘仍按资产契约叫 `.jpg`——`/img` 直服声明 image/jpeg，
+ *   浏览器按内容嗅探照常渲染；不转码（引图像库会破坏 server 树零依赖），见 docs/ARCHITECTURE.md「引擎凭据与自备 key」。
  */
 export async function requestImage({ baseUrl, apiKey, model, prompt, size, fetchImpl = fetch }) {
   const url = imagesEndpoint(baseUrl);
@@ -260,14 +262,23 @@ export async function generateImage(params, deps = {}) {
 // ---------------- 与 ACP 会话的接线（入口 acp.mjs 消费） ----------------
 
 /**
+ * asar 内路径 → `app.asar.unpacked/` 里的真实路径（纯函数，单测直测）。
+ * 开发态没有这两段，原样返回；打包态 `electron-builder.yml` 的 asarUnpack 保证解开的那份存在。
+ * @param {string} p 任意路径
+ * @returns {string} 替换后的路径
+ */
+export function asarUnpackedPath(p) {
+  return String(p).replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`);
+}
+
+/**
  * 本文件在磁盘上的真实路径：打包态它在 app.asar 里，而**子进程读不了 asar**——
  * electron-builder.yml 的 asarUnpack 把 server/media-mcp.mjs 同时放到 `app.asar.unpacked/`，
- * 这里把路径里的 `app.asar` 段换成 `app.asar.unpacked`（开发态没有这两段，原样返回）。
+ * 这里把路径里的 `app.asar` 段换成 `app.asar.unpacked`（见 {@link asarUnpackedPath}）。
  * @returns {string} 可直接喂给 spawn 的脚本路径
  */
 export function mediaMcpPath() {
-  const p = fileURLToPath(new URL("./media-mcp.mjs", import.meta.url));
-  return p.replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`);
+  return asarUnpackedPath(fileURLToPath(new URL("./media-mcp.mjs", import.meta.url)));
 }
 
 /**

@@ -27,7 +27,21 @@ import {
   writeCredentials,
 } from "../server/credentials.mjs";
 import { providersFor, providerById } from "../shared/providers.mjs";
-import { DEFAULT_SIZES, generateImage, imageSizeFor, imagesEndpoint, pickImagePayload, requestImage, resolveOutputPath } from "../server/media-mcp.mjs";
+import {
+  DEFAULT_SIZES,
+  generateImage,
+  handleMcpMessage,
+  imageSizeFor,
+  imagesEndpoint,
+  MEDIA_MCP_NAME,
+  MEDIA_TOOL_NAME,
+  mediaMcpPath,
+  mediaMcpServers,
+  asarUnpackedPath,
+  pickImagePayload,
+  requestImage,
+  resolveOutputPath,
+} from "../server/media-mcp.mjs";
 import { testImage, testLlm } from "../server/credentials-probe.mjs";
 
 /** 临时 HOME（单测用真磁盘验 mode / 往返；结束即删） */
@@ -269,6 +283,27 @@ describe("shared/providers.mjs：目录表完整性", () => {
     }
   });
 
+  it("每条都有一句 note，且站点/地域成对的那些互相指路（密钥与站点必须配套）", () => {
+    for (const p of providersFor("llm")) {
+      expect(p.note, `${p.id} 没有 note：玩家看不出这条服务的地址/口径特殊在哪`).toBeTruthy();
+    }
+    // 国内/海外站点成对的服务：两边的 note 必须互相点名（选错站点是 401 的最常见原因）
+    const pairs: [string, string][] = [
+      ["moonshot", "moonshot-global"],
+      ["minimax", "minimax-global"],
+      ["dashscope", "dashscope-intl"],
+    ];
+    for (const [cnId, intlId] of pairs) {
+      const cn = providerById(cnId);
+      const intl = providerById(intlId);
+      expect(cn, `目录里找不到 ${cnId}`).toBeTruthy();
+      expect(intl, `目录里找不到 ${intlId}`).toBeTruthy();
+      expect(cn!.baseUrl === intl!.baseUrl, `${cnId} 与 ${intlId} 的地址不该相同（站点不同）`).toBe(false);
+      expect(cn!.note, `${cnId} 的 note 应指向它的海外站（${intlId}）`).toContain(intl!.label);
+      expect(intl!.note, `${intlId} 的 note 应指向它的国内站（${cnId}）`).toContain(cn!.label);
+    }
+  });
+
   it("两种用途都有可选项；both 的服务同时出现在两个下拉里；providerById 未知回 null", () => {
     expect(providersFor("llm").length).toBeGreaterThan(5);
     expect(providersFor("image").length).toBeGreaterThan(2);
@@ -307,8 +342,7 @@ describe("media-mcp.mjs：纯函数", () => {
     });
     // 封面：剧本 id 以 outRelPath 为准（不看标题——同名剧本才不会被写错地方）
     expect(resolveOutputPath({ kind: "封面", name: "随便什么标题", outRelPath: "presets/demo/cover.jpg" })).toEqual({ rel: "presets/demo/cover.jpg" });
-    // 非法名与非法类型不会被拼出路径
-    expect("rel" in resolveOutputPath({ kind: "立绘", name: "../../etc/passwd", outRelPath: "presets/demo/assets/x.jpg" })).toBe(true);
+    // 名字里的路径分隔符被 sanitize（穿越不到 assets/ 之外）
     expect(resolveOutputPath({ kind: "立绘", name: "../../etc/passwd", outRelPath: "presets/demo/assets/x.jpg" }).rel).toBe("presets/demo/assets/立绘-.._.._etc_passwd.jpg");
     expect(resolveOutputPath({ kind: "海报", name: "薇拉", outRelPath: "presets/demo/assets/x.jpg" })).toEqual({ error: "kind 必须是 立绘/背景/封面" });
     expect("error" in resolveOutputPath({ kind: "立绘", name: "薇拉", outRelPath: "images/1.jpg" })).toBe(true);
@@ -332,6 +366,110 @@ describe("media-mcp.mjs：纯函数", () => {
     expect("bytes" in pickImagePayload({ data: PNG.toString("base64") })).toBe(true);
     expect(pickImagePayload({ data: [{ nope: 1 }] })).toEqual({ error: "响应里既没有 b64_json 也没有 url" });
     expect("error" in pickImagePayload({})).toBe(true);
+  });
+});
+
+describe("media-mcp.mjs：MCP 协议面（直喂消息，不必 spawn 子进程）", () => {
+  /** 收一条回包（handleMcpMessage 是「喂消息 + 回调」的纯接口） */
+  async function ask(msg: any, callTool?: (p: object) => Promise<{ ok?: boolean }>) {
+    const replies: any[] = [];
+    await handleMcpMessage(msg, (m) => replies.push(m), callTool);
+    return replies;
+  }
+
+  it("initialize 回协议版本与 serverInfo（name 取自 MEDIA_MCP_NAME）", async () => {
+    const [r] = await ask({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-11-25" } });
+    expect(r.result.serverInfo.name).toBe("bunkiten-media");
+    expect(r.result.protocolVersion).toBe("2025-11-25");
+    expect(r.result.capabilities).toEqual({ tools: {} });
+    // 客户端没给版本时回落一个确定的默认值（不是 undefined）
+    const [r2] = await ask({ jsonrpc: "2.0", id: 2, method: "initialize", params: {} });
+    expect(typeof r2.result.protocolVersion).toBe("string");
+  });
+
+  it("通知类消息（无 id / notifications/initialized）不回包", async () => {
+    expect(await ask({ jsonrpc: "2.0", method: "notifications/initialized" })).toEqual([]);
+    expect(await ask({ jsonrpc: "2.0", method: "tools/list" })).toEqual([]); // 无 id 的请求按通知处理
+  });
+
+  it("tools/list 回唯一工具，schema 的必填项与实现一致", async () => {
+    const [r] = await ask({ jsonrpc: "2.0", id: 3, method: "tools/list", params: {} });
+    expect(r.result.tools).toHaveLength(1);
+    const tool = r.result.tools[0];
+    expect(tool.name).toBe(MEDIA_TOOL_NAME);
+    expect(tool.name).toBe("generate_image");
+    expect(tool.inputSchema.required).toEqual(["prompt", "kind", "name", "outRelPath"]);
+    expect(tool.inputSchema.properties.kind.enum).toEqual(["立绘", "背景", "封面"]);
+  });
+
+  it("tools/call 把执行结果包成 content + isError（成功/失败两条路径都覆盖）", async () => {
+    const ok = await ask({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: MEDIA_TOOL_NAME, arguments: { prompt: "p" } } }, async () => ({
+      ok: true,
+      relPath: "presets/demo/assets/立绘-薇拉.jpg",
+    }));
+    expect(ok[0].result.isError).toBe(false);
+    expect(JSON.parse(ok[0].result.content[0].text)).toEqual({ ok: true, relPath: "presets/demo/assets/立绘-薇拉.jpg" });
+
+    const failed = await ask({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: MEDIA_TOOL_NAME, arguments: {} } }, async () => ({ ok: false, error: "未配置图片服务" }));
+    expect(failed[0].result.isError).toBe(true);
+    expect(JSON.parse(failed[0].result.content[0].text)).toEqual({ ok: false, error: "未配置图片服务" });
+  });
+
+  it("tools/call 的执行器抛异常也不会打穿协议（兜成 isError 结果）", async () => {
+    const [r] = await ask({ jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: MEDIA_TOOL_NAME, arguments: {} } }, async () => {
+      throw new Error("boom");
+    });
+    expect(r.result.isError).toBe(true);
+    expect(String(r.result.content[0].text)).toContain("boom");
+  });
+
+  it("未知工具名与未知方法：前者回 isError 结果，后者回 JSON-RPC -32601；垃圾输入不抛", async () => {
+    const [unknownTool] = await ask({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "nope", arguments: {} } });
+    expect(unknownTool.result.isError).toBe(true);
+    const [unknownMethod] = await ask({ jsonrpc: "2.0", id: 8, method: "resources/list", params: {} });
+    expect(unknownMethod.error.code).toBe(-32601);
+    expect(await ask(null)).toEqual([]);
+    expect(await ask({ jsonrpc: "2.0", id: 9 })).toEqual([]);
+    expect(await ask("不是对象")).toEqual([]);
+  });
+});
+
+describe("media-mcp.mjs：挂载项与 asar 路径（打包态前提）", () => {
+  it("mediaMcpServers 只在图片自备 key 时给挂载项，且形态是 ACP 的 McpServerStdio", () => {
+    const off = defaultCredentials();
+    expect(mediaMcpServers(off)).toEqual([]);
+    expect(mediaMcpServers(normalizeCredentials({ image: { mode: "session" } }))).toEqual([]);
+
+    const byok = normalizeCredentials({ image: { mode: "byok", baseUrl: "https://img.example/v1", apiKey: "sk-x-1234", model: "m" } });
+    const servers = mediaMcpServers(byok);
+    expect(servers).toHaveLength(1);
+    expect(servers[0]).toEqual({
+      name: MEDIA_MCP_NAME,
+      command: process.execPath,
+      args: [mediaMcpPath()],
+      env: [{ name: "ELECTRON_RUN_AS_NODE", value: "1" }],
+    });
+  });
+
+  it("asarUnpackedPath：把 app.asar 段换成 app.asar.unpacked；开发态路径原样", () => {
+    const sep = path.sep;
+    expect(asarUnpackedPath(`/Applications/B.app/Contents/Resources/app.asar${sep}server${sep}media-mcp.mjs`)).toBe(
+      `/Applications/B.app/Contents/Resources/app.asar.unpacked${sep}server${sep}media-mcp.mjs`,
+    );
+    // 幂等：已经是 unpacked 的不再动
+    const already = `/x/app.asar.unpacked${sep}server${sep}media-mcp.mjs`;
+    expect(asarUnpackedPath(already)).toBe(already);
+    // 开发态（仓库里）原样返回
+    const dev = `${sep}Users${sep}me${sep}bunkiten${sep}server${sep}media-mcp.mjs`;
+    expect(asarUnpackedPath(dev)).toBe(dev);
+  });
+
+  it("mediaMcpPath 指向真实存在的本文件（打包态靠 asarUnpack 保证 unpacked 那份也在）", () => {
+    const p = mediaMcpPath();
+    expect(path.isAbsolute(p)).toBe(true);
+    expect(p.endsWith(`server${path.sep}media-mcp.mjs`)).toBe(true);
+    expect(fs.existsSync(p), `mediaMcpPath 指到了不存在的文件：${p}`).toBe(true);
+    expect(fs.readFileSync(p, "utf8")).toContain('export const MEDIA_TOOL_NAME = "generate_image"');
   });
 });
 

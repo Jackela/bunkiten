@@ -9,7 +9,7 @@
 // 它是 opt-in 冒烟，不该让没打包的人「跑测试先失败」。
 // 已知副作用：打包态的 GAME_ROOT 是 .app 内的 resources/game（main.js 里写死，env 改不了），
 // 应用启动会往里写 state/worlds/（本 spec 只停在标题屏，不做世界线操作，写入量最小）。
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -129,6 +129,16 @@ test("打包态：窗口能开、标题屏渲染、/app 与 resources/game 资�
     const body = (await res.json()) as { presets: { id: string }[] };
     expect(Array.isArray(body.presets)).toBe(true);
     expect(body.presets.length).toBeGreaterThan(0);
+
+    // asarUnpack 的产物真的在（v1.10 出图 MCP 的前提）：MCP server 是引擎拉起的**子进程**，
+    // 子进程读不了 asar，所以 electron-builder.yml 把 server/media-mcp.mjs 同时放到 app.asar.unpacked/，
+    // 运行时 mediaMcpPath() 把 `app.asar` 段换成 `app.asar.unpacked`。
+    // 这条断言直接验那个前提——否则只有「配了图片自备 key 的打包态用户」才会踩到路径不存在。
+    const appRoot = path.resolve(APP_BIN as string, "..", ".."); // Contents/MacOS/Bunkiten → Contents
+    const unpacked = path.join(appRoot, "Resources", "app.asar.unpacked", "server", "media-mcp.mjs");
+    expect(existsSync(unpacked), `asarUnpack 没把出图 MCP 解开到 asar 外：${unpacked}（检查 electron-builder.yml 的 asarUnpack）`).toBe(true);
+    expect(readFileSync(unpacked, "utf8")).toContain('export const MEDIA_TOOL_NAME = "generate_image"');
+    expect(existsSync(path.join(appRoot, "Resources", "app.asar")), "app.asar 不在预期位置（打包布局变了，mediaMcpPath 的替换规则要跟着看）").toBe(true);
   } finally {
     await closeApp(app);
     rmSync(tmp, { recursive: true, force: true });
