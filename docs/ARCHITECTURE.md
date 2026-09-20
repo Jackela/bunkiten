@@ -598,6 +598,84 @@ presets/<剧本 id>/audio/音效-门响.wav       # 一次性音效
 - **剧透折叠**：角色的「秘密」默认收起（按钮 `aria-expanded`，点击展开）；引擎写「无」或空串时不留折叠位。剧情图/面板都不替玩家预判剧透边界——折叠而非隐藏。
 - **刷新时机**：面板打开拉一次；`turn_end` 后面板开着自动重拉（好感度/导演手记/伏笔随回合变）；关着不拉。换世界/换本/新开局（`resetRunState`）收起面板并清空视图；请求失败（含 404 还没写过 state.md）保持 null → 面板显示占位说明文案。
 
+## 引擎凭据与自备 key（v1.10，ADR-0019）
+
+默认形态没变：引擎用本机 grok CLI 的登录态（终端里 `grok login`）。v1.10 起玩家可以在设置屏改用**自备 key**——对话与出图各一组，填完立刻生效（引擎会话重启后拿到新配置）。凭据落在 `~/.bunkiten/credentials.json`（目录 0700 / 文件 0600），**不进仓库、不进世界线、不进任何导出包**。
+
+### 为什么是「服务目录 + 环境变量」，不是 .env、也不是逐家适配
+
+- **事实标准优先**：目标服务都说 OpenAI 兼容协议（`/chat/completions`、`/images/generations`），差别只在 base_url 与模型名——把差异收进一张数据表（`shared/providers.mjs`），协议层就不必为每家写代码；长尾（自建、私有部署、聚合网关）用 one-api / LiteLLM 这类网关当逃生口。
+- **对话通道不自己实现**：`grok agent` 自带 BYOK 通道（`GROK_MODELS_BASE_URL` + `XAI_API_KEY` + `GROK_DEFAULT_MODEL`），我们只负责把凭据变成子进程 env；媒体生成没有这条通道，才需要自建 MCP 工具。
+- **不做 .env / 手改配置文件**：玩家不该为了填一个 key 去编辑文件或设环境变量；GUI 即时保存 + 「立刻重启引擎」比环境文件准确，也不会污染 shell（取舍与备选见 ADR-0019）。
+
+### 落点、形状与读写纪律
+
+| 项 | 值 |
+|---|---|
+| 路径 | `~/.bunkiten/credentials.json`（**刻意不放 GAME_ROOT**：开发态它等于仓库根，`state/` 的 gitignore 规则不覆盖新文件，放那里迟早被 git 收走） |
+| 权限 | 目录 0700、文件 0600；临时文件 + rename 原子写（进程被杀也不会留半截 JSON） |
+| 形状 | `{ version: 1, llm: { mode:"session"\|"byok", provider, baseUrl, apiKey, model }, image: { mode:"off"\|"byok", provider, baseUrl, apiKey, model, size } }` |
+| 读路径 | 坏 JSON / 缺键 / 多余键 / 类型不对 / 超长一律**逐键**回默认，永不抛（凭据坏了不该让 server 起不来） |
+| 写出面 | 只有脱敏视图（`publicView` → `hasKey` + `apiKeyMasked`，如 `sk-…4f2a`）；明文只活在磁盘与「玩家正在输入」的那一帧 |
+| 不进 | 日志、逐轮快照、回合日志、世界线/剧本导出包、SSE 事件 |
+
+### LLM 侧：凭据 → 引擎子进程 env（我们的值优先）
+
+`credentialsToEnv(creds)` 只生成非空项（`llm.mode !== "byok"` 时是空对象，一个键都不产生）：
+
+| 凭据字段 | 注入的变量 | 说明 |
+|---|---|---|
+| `llm.baseUrl` | `GROK_MODELS_BASE_URL` | grok CLI 的「Custom Models Endpoint」通道：它据此拉 `{base}/models` 并把推理打到该地址 |
+| `llm.apiKey` | `XAI_API_KEY` | 以 `Authorization: Bearer` 发出；**有它就不需要 `grok login`** |
+| `llm.model` | `GROK_DEFAULT_MODEL` | 新会话的默认模型；留空时 CLI 用自带默认名（对第三方服务多半不存在，所以 GUI 提示填） |
+
+合并顺序是 `{...process.env, ...credentialsToEnv(creds)}`（`server/acp.mjs` 的 spawn）：**我们的值优先**——GUI 里填的就是想让引擎用的；沿用登录态时一个键都不产生，不会盖掉玩家 shell 里已有的变量。env 只在 spawn 时读一次，所以「保存 → 立刻重启引擎」（`POST /api/engine/restart`）是唯一生效路径。
+
+### 图片侧：一个 MCP 出图工具，覆盖三条出图路径
+
+grok CLI 的图像通道没有 BYOK 字段（只有 `features.image_gen` 开关与模型覆盖），第三方出图必须我们自己接：`server/media-mcp.mjs` 是零依赖的 stdio MCP server，暴露一个工具。
+
+| 工具（catalog 键） | 入参 | 行为 |
+|---|---|---|
+| `bunkiten-media__generate_image` | `prompt` / `kind`（立绘\|背景\|封面）/ `name` / `variant?` / `outRelPath` | 自己读凭据 → `POST {baseUrl}/images/generations`（`response_format: b64_json`）→ 自己落盘 `presets/<剧本 id>/assets/<类型>-<名字>[-<变体>].jpg`（封面 `presets/<id>/cover.jpg`）→ 回 `{ ok, relPath }`；失败回 `{ ok:false, error }`，**不抛栈** |
+
+- **挂载**：`session/new` 与 `session/load` 的 `mcpServers` 都传（`{name:"bunkiten-media", command: process.execPath, args:[media-mcp.mjs], env:[{name:"ELECTRON_RUN_AS_NODE", value:"1"}]}`），**只有 `image.mode === "byok"` 才挂**——没配的人不该多一个常驻子进程。
+- **引擎怎么用它**：grok 的 MCP 工具不进模型直接工具表，而是经 `search_tool` 发现、`use_tool` 调用（catalog 键 `server__tool`）。SKILL.md 的【美术】首条「出图工具优先（硬规则）」把这条路写给了引擎：先 `search_tool` 找 `bunkiten-media__generate_image`，找到就用 `use_tool` 调，拿到 `ok` 就直接出【图】标记（**不再调内置 `image_gen`**）；工具不在或失败 → 回退内置 `image_gen`；两者都不行 → 静默跳过（正文与选项绝不提图片）。
+- **幂等**：工具直接落盘到目标路径，引擎随后的【图】标记带的就是同一个相对路径——缓存检查（SKILL 的「生成前缓存检查」）天然命中，不会二次出图；重绘路径照旧覆盖同名文件。
+- **路径纪律**：落盘路径由 `assets.mjs`/`presets.mjs` 的纯函数重建（只从 `outRelPath` 里解析剧本 id，`presetIdFromPath`），并做 `path.resolve` 前缀校验——不接受任意路径。
+- **兼容梯子**：默认请求带 `size` 与 `response_format: "b64_json"`；服务端 400 且明确抱怨其中一个时**去掉它重试一次**（gpt-image-1 不接受 `response_format`、xAI 的 imagine 口径不认 `size`）——这就是「不逐个 provider 写适配」的落点。响应里的 `b64_json` 与 `url` 都认（`url` 会下载，超时 45s）。
+- **超时与失败**：一次生成 90s 上限；失败/超时/未配置都回可读的错误串给引擎（`{ok:false, error}`），引擎据此静默回退——玩家感知到的只是「这张图没出现」。
+- **不写日志**：MCP 子进程不打印 key；错误信息经 `sanitizeErrorMessage` 抹掉明文再回。
+
+### 端点与客户端
+
+| 端点 | 语义 |
+|---|---|
+| `GET /api/credentials` | 脱敏视图（`{ok, version, llm, image}`，每组合 `mode/provider/baseUrl/model/size?/hasKey/apiKeyMasked`）；**永不回明文** |
+| `POST /api/credentials` | 局部更新 `{ llm?, image?, clear?: ["llm"\|"image"] }`：空串=清该字段、`clear` 整组回默认；逐字段校验（未知字段/非法 mode/非 http(s) 地址 → 400）；成功回脱敏视图 |
+| `POST /api/credentials/test` | 真连一次：对话侧先 `GET {baseUrl}/models`（通即通过，不消耗生成额度），404/405/501 时退化为一次最小 completion（`max_tokens` 被拒时换 `max_completion_tokens` 再试一次）；图片侧做一次最小生成（复用 `requestImage`，测试与真出图一条实现）。回 `{ ok, status, ms, error?, detail? }`，端点自身恒 200（「没通过」是业务结果）；错误串已脱敏截断 |
+| `POST /api/engine/restart` | 优雅重启引擎会话（旧进程退出 → 按当前凭据重建 → 重新握手）；回合进行中拒绝（409，避免截断这一回合的落盘） |
+
+`GET /api/auth` 扩展为 `{ loggedIn, hasCredentials }`（保留 `loggedIn` 字段名）：`hasCredentials` = LLM 侧配全了自备 key（`mode:"byok"` 且地址与密钥都非空），boot 屏据此放行——有登录态或配好 key 任一即可开玩。
+
+客户端：设置屏的「引擎与密钥」节（`src/components/EngineKeysSection.tsx`）两组表单 + 「测试连接」+ 「立刻重启引擎」；key 格 `type="password"` + 「显示」切换 + 失焦即提交并回掩码（输入框清空、占位显示服务端掩码——屏上任何一帧都没有「服务端把明文发回来」这回事）。服务目录由 `shared/providers.mjs` 单一真源喂给两个下拉（契约 lint ⑦ 组钉住 GUI 不许自带第二份 id 表）。
+
+### 第 0 步实证（2026-09，grok CLI 1.0.34，`grok agent --always-approve stdio`）
+
+三条前提都是实测过的（起真 CLI + 本地 mock 端点 / 迷你 MCP server）：
+
+| 假设 | 结论 | 怎么验的 |
+|---|---|---|
+| `GROK_MODELS_BASE_URL` + `XAI_API_KEY` + `GROK_DEFAULT_MODEL` 在 agent mode 下生效 | **成立** | 临时 HOME（无 `auth.json`）+ 指向本地 mock：CLI 先 `GET {base}/models`（`Authorization: Bearer`），随后 `POST {base}/chat/completions`（`model` = `GROK_DEFAULT_MODEL`），`session/new` 回 `currentModelId` = 该模型；全程无需登录。副作用：另有一次会话标题请求打到 `{base}/responses`（用的是 CLI 自带默认模型名，第三方端点多半 404，**失败无害**——只留一条 stderr） |
+| `session/new` / `session/load` 的 `mcpServers` 被认，子进程语义明确 | **成立** | 传 ACP 形态 `{name, command, args, env:[{name,value}]}`：两条路径都真的拉起了子进程（`initialize` → `notifications/initialized` → `tools/list`），子进程 **cwd = 会话 cwd**、**env = 父进程 env ∪ 我们给的变量**。工具**不直接进模型工具表**：模型看到的是 `search_tool`/`use_tool` 两个元工具，`use_tool` 用 catalog 键 `server__tool` 调（实证里 `bunkiten-media__generate_image` 走通） |
+| 有 `XAI_API_KEY`、无 `grok login` 时内置 `image_gen` 可用 | **成立，但走的是另一条 base** | 让 mock 模型发起一次 `image_gen` 工具调用：CLI 打的是 `POST {GROK_XAI_API_BASE_URL}/images/generations`（模型 `grok-imagine-image-quality`，带 `aspect_ratio`/`resolution`/`response_format`），图落进会话目录 `images/1.jpg`。**它认的是 `endpoints.xai_api_base_url`，与 BYOK 的 `GROK_MODELS_BASE_URL` 是两条独立通道**——所以第三方出图不能靠它（地址形态与参数口径都不通用），必须自建 MCP 工具 |
+
+三条都成立，因此设计按原方案落地；第三条的「另一条 base」正是图片侧必须有自己通道的直接证据。
+
+### 打包（asar）
+
+MCP server 是被引擎拉起的**子进程**，子进程读不了 asar：`electron-builder.yml` 把 `server/media-mcp.mjs` 放进 `asarUnpack`，运行时 `mediaMcpPath()` 把路径里的 `app.asar` 段换成 `app.asar.unpacked`；命令用 `process.execPath` + `ELECTRON_RUN_AS_NODE=1`（打包态与开发态的 `execPath` 都是 Electron 可执行文件，不带这个变量会起出第二个 Electron 应用）。
+
 ## HTTP / SSE API 一览
 
 | 端点 | 方法 | 说明 |
@@ -607,7 +685,11 @@ presets/<剧本 id>/audio/音效-门响.wav       # 一次性音效
 | `/api/presets` | POST | 剧本导入（v1.7）`{ action:"import", bundle }`：校验与落盘纪律见「剧本导出包」→ `{ ok:true, id }`（id = 实际落地的剧本 id，可能已重名改 `-2`）；任何校验失败 400 `{ ok:false, error }`。**body 上限例外 50MB**（其余 POST 仍是 5MB） |
 | `/api/presets/export?id=<id>` | GET | 导出剧本包（v1.7）：`Content-Disposition: attachment; filename="<id>.preset.json"`，体为 `{ format:"bunkiten-preset", version:1, id, title, exportedAt, presetMd, assets, audio }`（二进制 base64）；id 非法 400、剧本不存在 404 |
 | `/api/presets/check?id=<id>` | GET | 剧本体检（v1.8，见「剧本体检屏」）：把 `npm run doctor` 的判定直出给界面 → `{ ok, id, title, items: [{ level:"ok"\|"warn"\|"error", group, label }] }`。`items` 顺序与 doctor 的报告一致（同组的行连着）；`label` 是 doctor 的行原文（中文逐字不改）；`ok` 为 false ⟺ 至少一条 error。id 缺失/非法 400、剧本目录不存在 404、doctor 模块不可用 503（`scripts/` 不进打包 layout，见「已知限制」） |
-| `/api/auth` | GET | `{ loggedIn }`（`~/.grok/auth.json` 存在性） |
+| `/api/auth` | GET | `{ loggedIn, hasCredentials }`（v1.10）：`loggedIn` = `~/.grok/auth.json` 存在性；`hasCredentials` = LLM 侧配全了自备 key（boot 屏据此放行，两者任一即可开玩）。**响应里不含任何 key** |
+| `/api/credentials` | GET | 引擎凭据的脱敏视图（v1.10，见「引擎凭据与自备 key」）→ `{ ok, version, llm, image }`，每组 `{ mode, provider, baseUrl, model, size?, hasKey, apiKeyMasked }`；**永不回明文** |
+| `/api/credentials` | POST | 局部更新凭据：`{ llm?, image?, clear?: ["llm"\|"image"] }`（空串=清该字段、`clear` 整组回默认）；逐字段校验，非法 400 `{ ok:false, error }`；成功 200 + 脱敏视图。body 上限走缺省 5MB |
+| `/api/credentials/test` | POST | 真连一次 `{ target: "llm"\|"image" }` → `{ ok, status, ms, error?, detail? }`（端点自身恒 200，「没通过」是业务结果；`error` 已脱敏截断）。target 非法 400 |
+| `/api/engine/restart` | POST | 优雅重启引擎会话（保存 key 后一键生效）：回合进行中 409 `{ ok:false, error }`，成功 200 `{ ok:true }` |
 | `/api/assets?preset=<id>` | GET | **该剧本**的资产清单（画廊与制作中屏清点共用）：`preset` 必填且须匹配 `[A-Za-z0-9_-]+`，缺失或非法 → 400 `{ error }`（v1.5.1 起不再有全局池）；磁盘扫描 `presets/<id>/assets/` 与 `presets/<id>/cover.jpg`，registry 补充未落盘项；每条形如 `{ type, name, variant, file, ready, inUse, mtime }`——`variant` 从文件名拆差分、`inUse` **只扫该剧本的世界**（`index.json` 按 preset 过滤后，任一 `state.md` 文本含名字即「在用」）、`mtime` 供画廊破缓存 |
 | `/api/assets` | POST | 素材删除 `{ action:"delete", preset, file }`：只删 `presets/<id>/assets/` 下的**单层** `jpe?g`（`ASSET_DELETE_FILE_RE`；`cover.jpg`、子目录、非图片一律不受理）→ `{ ok:true, trashed:true }`（v1.7：文件挪进 `state/trash/<ts>-<rand4>-<原名>`，EXDEV 等 rename 失败回退直删则 `trashed:false`）；未知动作/参数不合法 400、文件不存在 404、其余删除失败 500 |
 | `/api/audio?preset=<id>` | GET | 音频清单 → `{ items: [{ kind, name, file, url }] }`（按文件名排序）；`preset` 必填且须过 `PRESET_ID_RE`，缺失或非法 400；**剧本没有 `audio/` 目录 = 空数组**（不是 404）。`url` 是服务端拼好的 `/audio?p=…`，文件名做了百分号编码（名字里可能有 `&`、空格） |
@@ -763,7 +845,8 @@ theme:
 - **history 随回合线性增长（v1.6）**：每个正戏回合 append 一条**三文件全文**快照（state/summary/tree 各一份），磁盘占用随游玩线性上升，长世界线会很占地方（内容全等的相邻回合会被去重跳过，但正常回合每轮都不同）。没做压缩或淘汰——快照是精确回退的唯一依据，宁可占地方。
 - **本地端点只挡跨站浏览器请求（v1.6）**：来源校验针对的是浏览器发起的跨站请求（CSRF、端口探测），**不防本机其他进程**——本机任意脚本都能直接调 `/api/worlds`、`/prompt` 等端点，这里没有 token、没有登录态校验（`/api/auth` 只是查 `~/.grok/auth.json` 是否存在）。它是「本机专用服务」这个前提下的最小防护，不是鉴权层。
 - **mac 包默认未签名（v1.6 起条件签名）**：未配签名 secrets 时产物未签名，首次打开需右键 → 打开；配了 `CSC_LINK` / `APPLE_ID` 三件套的构建才会签名 + 公证 + staple。**未签名的 mac 包无法自动更新**——Squirrel.Mac 要求新旧包签名一致，仓库默认发布的正是未签名包，`electron-updater` 在 mac 上只会静默失败（升级走手动下载 Release 产物）。
-- **image_gen 依赖账号套餐**（Imagine 额度）：不可用或限额时引擎静默跳过，游戏不受影响。
+- **image_gen 依赖账号套餐**（Imagine 额度）：不可用或限额时引擎静默跳过，游戏不受影响。**根本解法是 v1.10 的图片自备 key**（自建 MCP 工具，见「引擎凭据与自备 key」）——配了自备图片服务就不再经 xAI 的 Imagine 通道；没配的人仍受这条限制。
+- **自备 key 明文落盘（v1.10，刻意取舍）**：`~/.bunkiten/credentials.json` 是明文 + 0600——本机磁盘加密（FileVault/BitLocker）是这里的第一道防线，加密存储（keychain/密钥派生）留给后续版本（见 ADR-0019 的「被否决的备选」）。任何本机进程只要读得到这个文件就能拿到 key，这与「本机端点只挡跨站浏览器请求」是同一条前提：server 是单机服务，不是多租户边界。
 
 ## 修改指引
 
@@ -803,11 +886,15 @@ theme:
 | `server/audio.mjs` | `scanPresetAudio`（`presets/<id>/audio/` 扫描；`AUDIO_FILE_RE`/`AUDIO_REL_RE`/`AUDIO_MIME` 真源在 `shared/protocol.mjs`） |
 | `server/http-util.mjs` | 本地端点两道闸（`isCrossSiteRequest`/`readBodyText` + `MAX_BODY_BYTES`；可选 `maxBytes` 唯一消费方是剧本导入 50MB）与 `/app` 静态托管的 `MIME`/`resolveAppDist` |
 | `server/acp.mjs` | `createAcpSession` 工厂：spawn/JSON-RPC request/sessionId 存取/boot 握手/会话图片定位 `resolveImage`（跨会话图索引 + 5s TTL，见「资产管线」）；与 HTTP 层的接缝只有 `onChunk`/`onSeg` 两回调 |
-| `server/routes.mjs` | `createRequestHandler(ctx)` HTTP 路由链（闭包能力由入口注入）：`/api/presets`(GET,POST:import)/`/api/presets/export`、`/api/auth`、`/api/assets`(GET,POST:删除)、`/api/audio`/`/audio`、`/api/worlds`(GET,POST 全 action)/`/api/worlds/export`、`/api/history`、`/api/tree`、`/api/state`、`/img`、`/events`、`/prompt`、`/app` 静态托管（端点语义见「HTTP / SSE API 一览」） |
+| `server/credentials.mjs` | 引擎凭据（v1.10，ADR-0019）：`defaultCredentials`/`normalizeCredentials`（逐键容错，永不抛）/`credentialsPath`/`readCredentials`/`writeCredentials`（目录 0700、文件 0600、临时文件 + rename）/`mergeCredentials`（空串=清字段，`clear` 整组回默认）/`validateCredentialsPatch`（路由写盘前的字段校验）/`maskKey`（`sk-…4f2a`）/`hasKey`/`llmReady`/`publicView`（HTTP 出口的脱敏形状，**永不含明文**）/`credentialsToEnv`（BYOK 的三个变量，未配置时是空对象）/`sanitizeErrorMessage`/`secretsOf` |
+| `server/credentials-probe.mjs` | 「测试连接」的实作（v1.10）：`testLlm`（先 `GET {baseUrl}/models`；404/405/501 退化一次最小 completion，`max_tokens` 被拒换 `max_completion_tokens`；401 直接判失败）/`testImage`（复用 media-mcp 的 `requestImage` 做一次最小生成）；都回 `{ ok, status, ms, error?, detail? }`，错误已脱敏截断 |
+| `server/media-mcp.mjs` | 自建出图 MCP server（v1.10，stdio JSON-RPC，零依赖）：工具 `bunkiten-media__generate_image`（`TOOL_DEFINITION`）、`requestImage`（OpenAI 兼容 `/images/generations` + 参数退让梯子 + `b64_json`/`url` 两种回包）、`generateImage`（读凭据 → 出图 → 按 `assets.mjs`/`presets.mjs` 的纯函数落盘）、`resolveOutputPath`/`imageSizeFor`/`imagesEndpoint`/`pickImagePayload`、`mediaMcpPath`/`mediaMcpServers`（asar 外路径与挂载项）、`handleMcpMessage`（协议面，单测直喂消息） |
+| `shared/providers.mjs` | 服务目录唯一真源（v1.10）：`PROVIDERS`（`{id, label, kind:"llm"\|"image"\|"both", baseUrl, models, imageModels?, note?}`）/`PROVIDER_IDS`（由 `PROVIDERS` 派生，服务端校验用）/`providersFor(kind)`（设置屏两个下拉用）/`providerById`。契约 lint ⑦ 组钉住「GUI 吃真源、不许自带第二份 id 表」；类型由手写 `shared/providers.d.mts` 承接（与 `protocol.mjs` 同款机制） |
+| `server/routes.mjs` | `createRequestHandler(ctx)` HTTP 路由链（闭包能力由入口注入）：`/api/presets`(GET,POST:import)/`/api/presets/export`、`/api/auth`、`/api/credentials`(GET,POST)/`/api/credentials/test`/`/api/engine/restart`、`/api/assets`(GET,POST:删除)、`/api/audio`/`/audio`、`/api/worlds`(GET,POST 全 action)/`/api/worlds/export`、`/api/history`、`/api/tree`、`/api/state`、`/img`、`/events`、`/prompt`、`/app` 静态托管（端点语义见「HTTP / SSE API 一览」） |
 | `server/config.mjs` | 路径与端口常量：`GAME_ROOT`/`BASE_PORT`/`PORT_MAX_RETRY`/`SESSION_FILE`/`WORLDS_ROOT` |
 | `shared/protocol.mjs` | 协议常量唯一真源（v1.7，见 `docs/adr/0012`）：`PROTOCOL_HEADS`（9 头）、`AUDIO_KINDS`/`AUDIO_EXTS`/`AUDIO_MIME`/`AUDIO_FILE_RE`/`AUDIO_REL_RE`（音频白名单与直服正则，后两者由前两者构造）、`ART_KINDS`/`ASSET_KINDS`/`ASSET_FILE_RE`（美术类型字面与资产文件名正则，v1.7 收尾收编；`ASSET_FILE_RE` 由 `ASSET_KINDS` 构造）、`DIRECTIVE_PREFIX_RE`（指令前缀正则，`pickEffort` 推理分档与 `isMainTurn` 正戏回合判定共用）。`src/lib/parser.ts` re-export（公共 API 不变）并从真源构造 `ART_LINE_BODY`/制作清单正则、`server/acp-server.mjs` import（并 re-export `AUDIO_KINDS`/`AUDIO_EXTS`/`ASSET_FILE_RE`/`ASSET_KINDS` 给 `scripts/doctor.mjs`）；`shared/protocol.d.mts` 是手写类型声明（tsc -b 按 `.mjs`→`.d.mts` 解析；vite/vitest/electron 运行时直接吃 `.mjs`）。`RULES` 刻意不收编：引擎只读 `.grok/` 提示词、不会 import 代码，server↔SKILL.md 双份 + lint 逐字比对仍是正确机制 |
-| `tests/parser.test.ts`、`tests/crafting.test.ts`、`tests/server.test.ts`、`tests/treeLayout.test.ts`、`tests/genealogy.test.ts`、`tests/diff.test.ts`、`tests/doctor.test.ts`、`tests/preload.test.ts`、`tests/ui.test.tsx`、`tests/integration/*` | **单测 + 集成全量 447+ 例**（**下限口径**：数字说的是「不少于」，唯一维护点是 `tests/contract.test.ts` 的 `CASE_GROUPS`/`CASE_TOTAL`——加用例不用改任何文档、删用例才红，逐分组数字不再抄进文档）——契约字符串快照与单测：开局指令四变体（含世界段）/续玩/剧情编辑、分项美术/重绘/章节规划/创作模式指令、`开演。`、清单（含差分项）/章标记与选项解析期望值（parser）、章节制作流水线指令序列（crafting，stub fetch）、世界线/资产落盘判定/协议解析/快照与导出导入/剧本导出包（往返/重名/文件名安全/扩展名与 base64 校验）/state.md 容错解析与 `/api/state` 路由判定、回合日志 `writeTurnLog` 与追问指令常量、索引 schema 与迁移（裸数组升起、写路径写 `{schema:1, worlds}`、未来 schema 读到且写回不降级——ADR-0018）（server，含剧本体检端点）、布局纯函数（treeLayout + genealogy：家谱森林分层、孤儿 missingParent、fork 环终止、层内排序确定性与键盘步进）、快照对比纯函数（diff：全等/全增/全删/替换块相对顺序/空输入/空行/典型 state.md 好感度一行）、剧本体检查纯函数（doctor：tmp 根造 preset 覆盖七组判定、theme 双层回退与 checkAllPresets 汇总，见「剧本体检查」节）、组件含设置屏、自动前进与回退后分割线/待重同步（含在途中止）、动效降级打字机、主题字体族与对话框质感、重掷本回合全链（含快照数不足时入口不渲染）、角色面板渲染/秘密折叠/turn_end 重拉/空态、世界线家谱视图、快照对比面板、标题屏剧本导出/导入、同屏多立绘的队列渲染与让位档（ui）；立绘差分预热纯函数（preload：清单每剧本只拉一次、命中角色的基础与全部差分都进预载、失败静默）；另有真 server 子进程的集成测试（`integration/pipeline`、`integration/audio-history`、`integration/http-guard`——音频事件、快照落盘与精确回退、世界线与剧本的导出/导入往返、索引 schema 的启动迁移（裸数组升起 / 未来 schema 读到且不被降级写回）、来源校验 403 与 body 上限 413、引擎 error response 的 409 传播、回合原文日志与缺选项段的质量守卫追问） |
-| `tests/contract.test.ts` | v1.6 起契约 lint（防漂移门禁，读源码与文档、不起子进程）：`PROTOCOL_HEADS` 唯一真源（`shared/protocol.mjs` 源码字面 + import 值 + parser re-export 链三方钉住）↔ server/parser 解析出口 ↔ `SKILL.md`「标记格式备忘」/本文档、`RULES` 逐字副本（server 常量 ↔ 本节代码块）、指令字符串双处存在（`parser.ts` ↔ `SKILL.md`）、`DIRECTIVE_PREFIX_RE` 单一真源（`pickEffort`/`isMainTurn` 函数体都引用它、server 无第二份前缀字面）、主题白名单与兜底主题（server ↔ `src/theme.ts` 同集同值）、各测试文件的 `it(`/`test(` 用例数不低于 `CASE_GROUPS` 声明的**分组下限**（下限语义：加用例不用改任何文档，删用例才红；文档只留一句粗口径、不再逐分组抄数字）、设置键 `bunkiten.settings.v1` 与音频扩展名三处一致（音频常量断言指向 `shared/protocol.mjs` 真源）、美术类型集合与资产文件名正则真源（`ART_KINDS`/`ASSET_KINDS`/`ASSET_FILE_RE`：双侧构造 + server/scripts 无第二份字面）。**它自己的用例不计入合计下限口径**（`tests/e2e/**` 同样不在口径内） |
+| `tests/parser.test.ts`、`tests/crafting.test.ts`、`tests/server.test.ts`、`tests/treeLayout.test.ts`、`tests/genealogy.test.ts`、`tests/diff.test.ts`、`tests/doctor.test.ts`、`tests/preload.test.ts`、`tests/credentials.test.ts`、`tests/ui.test.tsx`、`tests/integration/*` | **单测 + 集成全量 497+ 例**（**下限口径**：数字说的是「不少于」，唯一维护点是 `tests/contract.test.ts` 的 `CASE_GROUPS`/`CASE_TOTAL`——加用例不用改任何文档、删用例才红，逐分组数字不再抄进文档）——契约字符串快照与单测：开局指令四变体（含世界段）/续玩/剧情编辑、分项美术/重绘/章节规划/创作模式指令、`开演。`、清单（含差分项）/章标记与选项解析期望值（parser）、章节制作流水线指令序列（crafting，stub fetch）、世界线/资产落盘判定/协议解析/快照与导出导入/剧本导出包（往返/重名/文件名安全/扩展名与 base64 校验）/state.md 容错解析与 `/api/state` 路由判定、回合日志 `writeTurnLog` 与追问指令常量、索引 schema 与迁移（裸数组升起、写路径写 `{schema:1, worlds}`、未来 schema 读到且写回不降级——ADR-0018）（server，含剧本体检端点）、布局纯函数（treeLayout + genealogy：家谱森林分层、孤儿 missingParent、fork 环终止、层内排序确定性与键盘步进）、快照对比纯函数（diff：全等/全增/全删/替换块相对顺序/空输入/空行/典型 state.md 好感度一行）、剧本体检查纯函数（doctor：tmp 根造 preset 覆盖七组判定、theme 双层回退与 checkAllPresets 汇总，见「剧本体检查」节）、引擎凭据纯函数（credentials：读写往返与 0600、坏 JSON 容错、掩码边界、`credentialsToEnv` 每模式、`publicView` 不含明文、服务目录表完整性、media-mcp 的尺寸/端点/目标路径/取字节/参数退让、探活的两条路径——ADR-0019）、组件含设置屏、自动前进与回退后分割线/待重同步（含在途中止）、动效降级打字机、主题字体族与对话框质感、重掷本回合全链（含快照数不足时入口不渲染）、角色面板渲染/秘密折叠/turn_end 重拉/空态、世界线家谱视图、快照对比面板、标题屏剧本导出/导入、同屏多立绘的队列渲染与让位档（ui）；立绘差分预热纯函数（preload：清单每剧本只拉一次、命中角色的基础与全部差分都进预载、失败静默）；另有真 server 子进程的集成测试（`integration/pipeline`、`integration/audio-history`、`integration/http-guard`、`integration/credentials`——音频事件、快照落盘与精确回退、世界线与剧本的导出/导入往返、索引 schema 的启动迁移（裸数组升起 / 未来 schema 读到且不被降级写回）、来源校验 403 与 body 上限 413、引擎 error response 的 409 传播、回合原文日志与缺选项段的质量守卫追问；自备 key 则覆盖：端点脱敏与 400 校验、盘上 0600、env 真注进引擎子进程（假引擎探针）、图片侧才挂 MCP 与重启后重 spawn、`/api/auth` 的三态、`/test` 的两条探活路径、media-mcp 子进程的 initialize→tools/list→tools/call 冒烟） |
+| `tests/contract.test.ts` | v1.6 起契约 lint（防漂移门禁，读源码与文档、不起子进程）：`PROTOCOL_HEADS` 唯一真源（`shared/protocol.mjs` 源码字面 + import 值 + parser re-export 链三方钉住）↔ server/parser 解析出口 ↔ `SKILL.md`「标记格式备忘」/本文档、`RULES` 逐字副本（server 常量 ↔ 本节代码块）、指令字符串双处存在（`parser.ts` ↔ `SKILL.md`）、`DIRECTIVE_PREFIX_RE` 单一真源（`pickEffort`/`isMainTurn` 函数体都引用它、server 无第二份前缀字面）、主题白名单与兜底主题（server ↔ `src/theme.ts` 同集同值）、各测试文件的 `it(`/`test(` 用例数不低于 `CASE_GROUPS` 声明的**分组下限**（下限语义：加用例不用改任何文档，删用例才红；文档只留一句粗口径、不再逐分组抄数字）、设置键 `bunkiten.settings.v1` 与音频扩展名三处一致（音频常量断言指向 `shared/protocol.mjs` 真源）、美术类型集合与资产文件名正则真源（`ART_KINDS`/`ASSET_KINDS`/`ASSET_FILE_RE`：双侧构造 + server/scripts 无第二份字面）、引擎凭据（v1.10，⑦ 组）：服务目录表完整性与「GUI 吃 `shared/providers.mjs` 真源、src/ 不许出现目录 id 字面量」、两组模式字面与 server 的 `LLM_MODES`/`IMAGE_MODES` 同词、MCP 工具名（`media-mcp.mjs` 的两个常量拼出的 `bunkiten-media__generate_image` ↔ SKILL.md 的「出图工具优先」句）、凭据落点与环境变量名 ↔ 本文档逐字一致。**它自己的用例不计入合计下限口径**（`tests/e2e/**` 同样不在口径内） |
 
 v1.3 三组新契约的同步点速查（同一改动五处联动的具体落点）：
 

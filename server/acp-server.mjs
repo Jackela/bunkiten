@@ -19,6 +19,7 @@
 // 同理钉在本文件（契约 lint ⑥ 与 src/theme.ts 比对字面量），presets.mjs 反向 import（仅函数内引用，环形安全）。
 import http from "http";
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 // 协议常量唯一真源（v1.7，docs/adr/0012）：指令前缀正则与章标记正则在 shared/protocol.mjs，
@@ -41,6 +42,9 @@ import { RULES, SUPPLEMENT_PROMPT, parseArtLine, parseExpressionLine, parsePrese
 import { WORLD_ID_RE, parseTreePointer, readWorldFiles, writeSnapshot, writeTurnLog } from "./snapshots.mjs";
 import { readWorldsIndex, presetFromStateFile, worldChapterNo, migrateLegacyState, migrateWorldsSchema } from "./worlds.mjs";
 import { createAcpSession } from "./acp.mjs";
+import { readCredentials, writeCredentials, mergeCredentials, validateCredentialsPatch, publicView, credentialsToEnv, secretsOf, sanitizeErrorMessage } from "./credentials.mjs";
+import { testLlm, testImage } from "./credentials-probe.mjs";
+import { mediaMcpServers } from "./media-mcp.mjs";
 import { createRequestHandler } from "./routes.mjs";
 
 // ---------- 外部 import 面保活：拆出模块的既有导出符号逐名 re-export（electron/tests/doctor 从这里 import） ----------
@@ -97,6 +101,30 @@ export {
   migrateWorldsSchema,
 } from "./worlds.mjs";
 export { isCrossSiteRequest, readBodyText } from "./http-util.mjs";
+// 引擎凭据（v1.10）：纯函数面经入口 re-export（tests 与 doctor 侧统一从入口 import，与其余拆出符号同款）
+export {
+  CREDENTIALS_VERSION,
+  CREDENTIALS_DIRNAME,
+  CREDENTIALS_FILENAME,
+  LLM_MODES,
+  IMAGE_MODES,
+  defaultCredentials,
+  normalizeCredentials,
+  credentialsPath,
+  readCredentials,
+  writeCredentials,
+  mergeCredentials,
+  validateCredentialsPatch,
+  maskKey,
+  hasKey,
+  llmReady,
+  publicView,
+  credentialsToEnv,
+  sanitizeErrorMessage,
+  secretsOf,
+} from "./credentials.mjs";
+export { testLlm, testImage, PROBE_TIMEOUT_MS, PROBE_IMAGE_SIZE } from "./credentials-probe.mjs";
+export { MEDIA_MCP_NAME, MEDIA_TOOL_NAME, TOOL_DEFINITION, DEFAULT_SIZES, GENERATE_TIMEOUT_MS, imageSizeFor, imagesEndpoint, resolveOutputPath, pickImagePayload, requestImage, generateImage, mediaMcpPath, mediaMcpServers, handleMcpMessage } from "./media-mcp.mjs";
 // 剧本体检（v1.8）的纯函数视图：路由链住在 routes.mjs，这里只把测试面（tests/server.test.ts 直测 tmp 根）
 // 一起 re-export——与本文件其余拆出符号同款（外部 import 面永远是入口）。
 export { presetCheckResult, presetCheckView } from "./routes.mjs";
@@ -201,20 +229,97 @@ export function startServer() {
 
   // ACP 会话（spawn/JSON-RPC/sessionId/boot 都封装在 acp.mjs）：流式 chunk 与进度 label 回调进本闭包，
   // 这里才有 assetRegistry 与 SSE clients——标记扫描与 broadcast 因此留在入口（ingestChunkText/handleArtLine）。
-  const acp = createAcpSession({
-    gameRoot: GAME_ROOT,
-    sessionFile: SESSION_FILE,
-    rules: RULES,
-    effort: EFFORT,
-    onChunk: (text) => {
-      ingestChunkText(text);
-      broadcast({ type: "chunk", seg, text });
-    },
-    onSeg: (label) => {
-      seg += 1;
-      broadcast({ type: "seg", seg, label });
-    },
-  });
+  //
+  // 凭据在**每次 spawn 时**现读（v1.10，docs/adr/0019）：`credentialsToEnv` 的键覆盖继承来的同名 env
+  //（我们的值优先），`mediaMcpServers` 只在图片侧配了自备 key 时才挂 MCP 子进程。重启（restartAcp）
+  // 就是拿同一份逻辑再建一次会话——所以「保存 key → 立刻重启引擎」不需要再碰任何别的状态。
+  /** @returns {ReturnType<typeof createAcpSession>} */
+  function buildAcp() {
+    const creds = readCredentials();
+    return createAcpSession({
+      gameRoot: GAME_ROOT,
+      sessionFile: SESSION_FILE,
+      rules: RULES,
+      effort: EFFORT,
+      env: credentialsToEnv(creds),
+      mcpServers: mediaMcpServers(creds),
+      onChunk: (text) => {
+        ingestChunkText(text);
+        broadcast({ type: "chunk", seg, text });
+      },
+      onSeg: (label) => {
+        seg += 1;
+        broadcast({ type: "seg", seg, label });
+      },
+    });
+  }
+  let acp = buildAcp();
+
+  // ---------- 引擎凭据的闭包面（v1.10，docs/adr/0019）：路由链只做转手，判定都在 credentials*.mjs ----------
+
+  /**
+   * 优雅重启引擎会话（POST /api/engine/restart 的落地）：杀旧 grok 子进程 → 按**当前**凭据重建会话 → 重新握手。
+   * env 只在 spawn 时读一次，所以「保存 key 立刻生效」必须走这里。回合进行中拒绝——杀进程等于把这一回合
+   * 的推演连同落盘一起截断（客户端会停在「待重同步」态），宁可让玩家等这一回合结束。
+   * @returns {Promise<{ok: boolean, error?: string}>}
+   */
+  async function restartAcp() {
+    if (busy) return { ok: false, error: "正在演绎中，等这一回合结束再重启" };
+    const old = acp;
+    try { old.proc.kill(); } catch {}
+    // 等旧进程退出再拉新的：两个 grok 进程同时持同一会话目录会互相踩 session 文件
+    await new Promise((resolve) => {
+      if (old.proc.exitCode !== null || old.proc.signalCode !== null) return resolve(undefined);
+      const t = setTimeout(() => { try { old.proc.kill("SIGKILL"); } catch {} resolve(undefined); }, 1500);
+      old.proc.once("exit", () => { clearTimeout(t); resolve(undefined); });
+    });
+    acp = buildAcp();
+    lastEffort = EFFORT; // 新会话的 boot() 会把档位设成 EFFORT，记账跟着复位（否则同档位不再下发）
+    try {
+      await acp.boot();
+    } catch (e) {
+      console.error("[acp] restart failed:", e.message);
+      return { ok: false, error: `重启后引擎握手失败：${e.message}` };
+    }
+    console.log(`[acp] engine restarted: ${acp.sessionId}`);
+    return { ok: true };
+  }
+
+  /** @returns {object} 脱敏视图（永不回明文 key） */
+  function credentialsView() {
+    return publicView(readCredentials());
+  }
+
+  /**
+   * 局部更新凭据：校验 → 合并 → 原子落盘 → 回脱敏视图。
+   * @param {{llm?: Record<string, unknown>, image?: Record<string, unknown>}} patch 待写入的分组字段（未出现的键不动；空串=清该字段）
+   * @param {string[]} clear 要整组清空的组名
+   * @returns {{ok: boolean, error?: string, view?: object}}
+   */
+  function updateCredentials(patch, clear) {
+    const check = validateCredentialsPatch(patch, clear);
+    if (!check.ok) return { ok: false, error: check.error };
+    try {
+      const next = mergeCredentials(readCredentials(), patch, clear);
+      writeCredentials(os.homedir(), next);
+      console.log(`[acp] credentials updated: llm=${next.llm.mode} image=${next.image.mode}`); // 只记模式，不记 key
+      return { ok: true, view: publicView(next) };
+    } catch (e) {
+      return { ok: false, error: `写入凭据失败：${e.message}` };
+    }
+  }
+
+  /**
+   * 测一次连接（读当前凭据；错误信息再过一遍 secretsOf 脱敏——探针自己也会脱敏，这里是第二道保险）。
+   * @param {string} target "llm" | "image"
+   * @returns {Promise<{ok: boolean, status: number, ms: number, error?: string, detail?: string}>}
+   */
+  async function testCredentials(target) {
+    const creds = readCredentials();
+    const secrets = secretsOf(creds);
+    const out = target === "llm" ? await testLlm(creds.llm) : await testImage(creds.image);
+    return out.error ? { ...out, error: sanitizeErrorMessage(out.error, secrets) } : out;
+  }
 
   // ---------- 资产持久化：按「剧本 + 类型 + 名字」落盘（封面 presets/<id>/cover.jpg；重绘标志覆盖同名文件） ----------
   // 「拿不到剧本」告警去重（同一 key 只警告一次）：回合末补扫、每条 /img 预载都会反复走到同一资产，
@@ -600,6 +705,10 @@ export function startServer() {
     persistAssetFromFile,
     resolveImage: (name) => acp.resolveImage(name),
     warnLegacyPathOnce,
+    credentialsView,
+    updateCredentials,
+    testCredentials,
+    restartEngine: restartAcp,
     get currentPresetId() { return currentPresetId; },
     get sessionId() { return acp.sessionId; },
   }));
@@ -645,6 +754,7 @@ export function startServer() {
     for (const res of clients) res.destroy(); // SSE 长连接会拖住 server.close 回调
     clients.clear();
     if (handle) await /** @type {Promise<void>} */ (new Promise((resolve) => handle.server.close(() => resolve())));
+    // 杀**当前**的引擎进程：重启过就可能是新拉起的那个（旧 handle.proc 只是启动时的快照）
     try { acp.proc.kill(); } catch {}
     setTimeout(() => { try { acp.proc.kill("SIGKILL"); } catch {} }, 1500).unref(); // SIGTERM 不退则强杀
   };

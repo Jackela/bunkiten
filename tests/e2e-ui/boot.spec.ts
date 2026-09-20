@@ -11,11 +11,11 @@ import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { startUiStack, stopUiStack } from "./stack";
 
-test("未登录：出「还没登录叙事引擎」提示；补上登录态后点重试进标题屏", async ({ browser }) => {
+test("未登录：出「还没连上叙事引擎」提示；补上登录态后点重试进标题屏", async ({ browser }) => {
   const { stack, page } = await startUiStack(browser, { presets: ["demo"], turns: [], auth: "missing" });
   try {
     await page.goto(stack.pageUrl);
-    await expect(page.getByText("还没登录叙事引擎。")).toBeVisible();
+    await expect(page.getByText("还没连上叙事引擎。")).toBeVisible();
     await expect(page.getByText("grok login")).toBeVisible();
     await expect(page.getByRole("button", { name: "重试" })).toBeVisible();
 
@@ -23,6 +23,41 @@ test("未登录：出「还没登录叙事引擎」提示；补上登录态后�
     writeFileSync(path.join(stack.stack.home, ".grok", "auth.json"), "{}\n");
     await page.getByRole("button", { name: "重试" }).click();
     await expect(page.getByTestId("title-card-center")).toBeVisible();
+  } finally {
+    await stopUiStack(page, stack);
+  }
+});
+
+test("未登录：给两个入口——「填自备密钥」进设置屏的引擎与密钥节", async ({ browser }) => {
+  const { stack, page } = await startUiStack(browser, { presets: ["demo"], turns: [], auth: "missing" });
+  try {
+    await page.goto(stack.pageUrl);
+    await expect(page.getByTestId("boot-login")).toBeVisible();
+    await expect(page.getByTestId("boot-retry")).toBeVisible();
+    await page.getByTestId("boot-credentials").click();
+    await expect(page.getByTestId("engine-keys")).toBeVisible();
+    await expect(page.getByTestId("engine-llm-mode-byok")).toBeVisible();
+    await expect(page.getByTestId("engine-image-mode-byok")).toBeVisible();
+  } finally {
+    await stopUiStack(page, stack);
+  }
+});
+
+test("未登录但已配好自备 key：不必终端登录，直接进标题屏", async ({ browser }) => {
+  const { stack, page } = await startUiStack(browser, {
+    presets: ["demo"],
+    turns: [],
+    auth: "missing",
+    credentials: {
+      version: 1,
+      llm: { mode: "byok", provider: "custom", baseUrl: "http://127.0.0.1:9/v1", apiKey: "sk-boot-e2e-key-4f2a", model: "m" },
+      image: { mode: "off", provider: "openai", baseUrl: "", apiKey: "", model: "", size: "" },
+    },
+  });
+  try {
+    await page.goto(stack.pageUrl);
+    await expect(page.getByTestId("title-card-center")).toBeVisible();
+    await expect(page.getByTestId("boot-login")).toHaveCount(0);
   } finally {
     await stopUiStack(page, stack);
   }

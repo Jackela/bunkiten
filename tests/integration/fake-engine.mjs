@@ -12,7 +12,38 @@
 //   供「引擎回合失败 / 再同步失败」类用例制造 server 侧 error 事件。
 // 选中规则：优先「含 match 子串且尚未用过」的条目；否则按声明顺序顺次消费（队列语义）。
 // session/prompt 先逐条发通知、再回 {result:{}}（与真引擎「边流式边结束」一致）。
+//
+// 探针（v1.10）：env FAKE_ENGINE_PROBE 指向一个 JSONL 时，本进程把「自己拿到的 env」与「握手时的 mcpServers」
+// 追加进去——`start` 一条（每次被 spawn 都写，重启后就是第二条），`session` 每条 session/load|new 一条。
+// 用来断言「凭据真的注进了引擎子进程」「图片自备 key 才会挂 MCP」，不必给假引擎加协议外的行为。
+import fs from "node:fs";
 import readline from "node:readline";
+
+const probeFile = process.env.FAKE_ENGINE_PROBE || "";
+if (probeFile) {
+  try {
+    fs.appendFileSync(
+      probeFile,
+      JSON.stringify({
+        kind: "start",
+        at: Date.now(),
+        pid: process.pid,
+        env: {
+          GROK_MODELS_BASE_URL: process.env.GROK_MODELS_BASE_URL ?? null,
+          XAI_API_KEY: process.env.XAI_API_KEY ?? null,
+          GROK_DEFAULT_MODEL: process.env.GROK_DEFAULT_MODEL ?? null,
+        },
+      }) + "\n",
+    );
+  } catch {}
+}
+/** @param {object} entry 探针条目 */
+function probe(entry) {
+  if (!probeFile) return;
+  try {
+    fs.appendFileSync(probeFile, JSON.stringify({ at: Date.now(), ...entry }) + "\n");
+  } catch {}
+}
 
 const script = (() => {
   try {
@@ -76,9 +107,11 @@ function handle(msg) {
     case "initialize":
       return reply(msg.id, { protocolVersion: 1 });
     case "session/new":
+      probe({ kind: "session", method: "session/new", mcpServers: msg.params?.mcpServers ?? null });
       return reply(msg.id, { sessionId: "fake-session" });
     case "session/load":
       // 固定拒绝：让 server 走「降级 session/new」这条确定路径（CONTRACTS §8）
+      probe({ kind: "session", method: "session/load", mcpServers: msg.params?.mcpServers ?? null });
       return fail(msg.id, -32000, "no session");
     case "session/set_config_option":
       return reply(msg.id, {});

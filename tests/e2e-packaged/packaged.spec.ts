@@ -94,7 +94,13 @@ test("打包态：窗口能开、标题屏渲染、/app 与 resources/game 资�
         BrowserWindow.getAllWindows().map((w) => ({ visible: w.isVisible(), ...w.getBounds() })),
       );
     await expect.poll(async () => (await winState()).length).toBe(1);
-    expect((await winState())[0]).toMatchObject({ width: 1440, height: 900 });
+    // 宽度是 electron/main.js 里配置的 1440；高度会被 macOS 夹到屏幕**可用区**——Dock/菜单栏占位时
+    // 900 放不下（实测这台机器给出 800）。所以这里断言「不超过配置值、也没被压扁」而不是钉死 900：
+    // 钉死会让这条冒烟变成「取决于跑测试那台机器的 Dock 设置」，与它要验的东西（窗口真的按配置开出来）无关。
+    const bounds = (await winState())[0] as { width: number; height: number };
+    expect(bounds.width).toBe(1440);
+    expect(bounds.height).toBeLessThanOrEqual(900);
+    expect(bounds.height).toBeGreaterThan(600);
     await expect.poll(async () => (await winState())[0]?.visible).toBe(true);
 
     // 打包态走 acp-server 的静态托管（不是 vite）：**尾斜杠**是关键——产物 index.html 的资源是相对路径，

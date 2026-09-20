@@ -22,6 +22,10 @@ files:
   - server/**
   - shared/** # 协议常量真源 protocol.mjs（server/acp-server.mjs 经相对路径 import，缺了打包态起不来）
   - package.json
+# MCP 出图 server 要被引擎拉成**子进程**，而子进程读不了 asar：把它同时解开到 app.asar.unpacked/，
+# 运行时路径由 server/media-mcp.mjs 的 mediaMcpPath() 把 `app.asar` 段换成 `app.asar.unpacked`。
+asarUnpack:
+  - server/media-mcp.mjs
 extraResources:
   - from: .grok
     to: game/.grok

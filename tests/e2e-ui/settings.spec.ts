@@ -3,6 +3,8 @@
 // 改主音量滑杆（受控 input：原生 value setter + dispatch input 事件，React onChange 才会吃到）
 // 与文本速度档位按钮 → 断言 localStorage `bunkiten.settings.v1` 即时落盘 → reload 后再进设置屏，
 // 断言改动被 loadSettings 读回并渲染（设置是本机偏好，不进世界线，生命周期就是 localStorage）。
+// v1.10 起另有一条「引擎与密钥」用例（自备 key 的填/掩码/持久化/重启/清空 + 明文泄漏哨兵）：
+// 它自己起一套 auth:"missing" 的栈（从 boot 屏的「填自备密钥」入口进设置屏），与上面共享栈的用例互不影响。
 import { expect, test, type Page } from "@playwright/test";
 import { startUiStack, stopUiStack, type StartedStack } from "./stack";
 import { enterProtagonist, quickStartToGame } from "./flow";
@@ -46,6 +48,73 @@ async function setRangeValue(p: Page, testId: string, value: number): Promise<vo
       value,
     );
 }
+
+test("引擎与密钥：填 key → 掩码 → 刷新后仍在 → 重启引擎生效 → 清空回落，且响应里从无明文", async ({ browser }) => {
+  const { stack, page } = await startUiStack(browser, {
+    presets: ["demo"],
+    turns: [{ match: "开局：", ops: ["夜色落定。\n\n**行动**\n1. 走过去\n2. 先回房\n"] }],
+    auth: "missing",
+  });
+  const key = "sk-e2e-mask-key-4f2a";
+  // 明文泄漏哨兵：任何 /api/credentials* 的响应体里都不许出现这串 key
+  const leaked: string[] = [];
+  page.on("response", async (res) => {
+    if (!res.url().includes("/api/credentials")) return;
+    try {
+      if ((await res.text()).includes(key)) leaked.push(res.url());
+    } catch {
+      /* 无体响应：忽略 */
+    }
+  });
+  try {
+    // 从 boot 屏的「填自备密钥」进设置屏（也顺带覆盖未登录态的这个入口）
+    await page.goto(stack.pageUrl);
+    await page.getByTestId("boot-credentials").click();
+    await expect(page.getByTestId("engine-keys")).toBeVisible();
+
+    // 切「自备密钥」→ 表单展开；换服务 → 地址按目录预填
+    await page.getByTestId("engine-llm-mode-byok").click();
+    await expect(page.getByTestId("engine-llm-baseurl")).toBeVisible();
+    await page.getByTestId("engine-llm-provider").selectOption("deepseek");
+    await expect(page.getByTestId("engine-llm-baseurl")).toHaveValue("https://api.deepseek.com");
+
+    // 填 key → 失焦即提交并回掩码（输入框清空，占位显示服务端掩码）
+    await page.getByTestId("engine-llm-apikey").fill(key);
+    await page.getByTestId("engine-llm-apikey").blur();
+    await expect(page.getByTestId("engine-llm-apikey")).toHaveValue("");
+    await expect(page.getByTestId("engine-llm-apikey")).toHaveAttribute("placeholder", "sk-…4f2a（已保存）");
+    await expect(page.getByText("已配置")).toBeVisible();
+    await expect(page.getByTestId("engine-llm-apikey-clear")).toBeVisible();
+
+    // 刷新：配置在服务端，boot 自检直接放行（未登录也能开玩），掩码与地址原样回显
+    await page.goto(stack.pageUrl);
+    await expect(page.getByTestId("title-card-center")).toBeVisible();
+    await expect(page.getByTestId("boot-login")).toHaveCount(0);
+    await enterProtagonist(page, "示例剧本");
+    await quickStartToGame(page);
+    await page.getByTestId("settings").click();
+    await expect(page.getByTestId("engine-keys")).toBeVisible();
+    await expect(page.getByTestId("engine-llm-baseurl")).toHaveValue("https://api.deepseek.com");
+    await expect(page.getByTestId("engine-llm-apikey")).toHaveAttribute("placeholder", "sk-…4f2a（已保存）");
+    await expect(page.getByText("已配置")).toBeVisible();
+
+    // 「立刻重启引擎」：假引擎被重 spawn（重启后 HTTP 侧照常可用）
+    await page.getByTestId("engine-restart").click();
+    await expect(page.getByTestId("engine-restart-note")).toHaveText("引擎已重启，新配置已生效");
+    await expect.poll(async () => (await page.request.get(`${stack.pageUrl}/api/auth`)).status()).toBe(200);
+
+    // 清空 key：回落「未配置完整」，占位回到提示语；服务端视图里也没了
+    await page.getByTestId("engine-llm-apikey-clear").click();
+    await expect(page.getByTestId("engine-llm-apikey")).toHaveAttribute("placeholder", "粘贴服务商给的密钥");
+    await expect(page.getByTestId("engine-llm-apikey-clear")).toHaveCount(0);
+    const view = await (await page.request.get(`${stack.pageUrl}/api/credentials`)).json();
+    expect(view.llm.hasKey).toBe(false);
+
+    expect(leaked).toEqual([]);
+  } finally {
+    await stopUiStack(page, stack);
+  }
+});
 
 test("设置屏：改主音量与文本速度→localStorage 落盘→刷新后保持", async () => {
   await page.goto(stack.pageUrl);

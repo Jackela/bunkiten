@@ -4,7 +4,13 @@ v1.8.0 之后待办与**决策清单**（不是愿望清单）：每项写清「
 
 口径：代码引用一律到文件级（函数名/组件名可 `grep` 定位）；写「**需要先确认**」的句子是尚未核实的推断，不要当结论用；文中的数字都是可复跑的（`npm test` / `npm run doctor` / `grep`），不写会随改动漂移的用例计数。
 
-**进展（最近一轮）**：§1 已**接线**（写路径翻成 `{schema:1, worlds}`、启动期 `migrateLegacyState` → `migrateWorldsSchema`、高版本保留不覆写，决策记在 `docs/adr/0018`）、§4 的浏览器级覆盖（e2e 19 → 28 条）、§5 的导出包 v2 与行缩略图、§3 的第一面（世界线行 ⋯ 菜单迁 Radix DropdownMenu）、§6 的性能实测（结论：当前规模不需要虚拟化）、§2 的同屏多立绘（上限 2，按 VN 通行做法：发言者高亮 + 名牌、非发言者压暗）均已落地；§5 的 id 问题已定（维持 `<preset>-N`，理由见该节）。剩下的是 §3 的其余三面（抽屉/滑杆/弹窗仍用自写 `focusTrap`，背景 `inert` 与 typeahead 只在新菜单上有）与 §5 里「当前场景背景」那一版缩略图（要新开 `WorldEntry` 字段）。
+**进展（最近一轮）**：§1 已**接线**（写路径翻成 `{schema:1, worlds}`、启动期 `migrateLegacyState` → `migrateWorldsSchema`、高版本保留不覆写，决策记在 `docs/adr/0018`）、§4 的浏览器级覆盖（e2e 19 → 28 条）、§5 的导出包 v2 与行缩略图、§3 的第一面（世界线行 ⋯ 菜单迁 Radix DropdownMenu）、§6 的性能实测（结论：当前规模不需要虚拟化）、§2 的同屏多立绘（上限 2，按 VN 通行做法：发言者高亮 + 名牌、非发言者压暗）均已落地；§5 的 id 问题已定（维持 `<preset>-N`，理由见该节）。v1.10 另落地了 §7（引擎凭据，见该节与 `docs/adr/0019`）。剩下的是 §3 的其余三面（抽屉/滑杆/弹窗仍用自写 `focusTrap`，背景 `inert` 与 typeahead 只在新菜单上有）与 §5 里「当前场景背景」那一版缩略图（要新开 `WorldEntry` 字段）。
+
+## 7. 引擎凭据（GUI 自备 key）—— **已落地（v1.10）**
+
+- **已定（不再重开讨论）**：默认广泛兼容（OpenAI 兼容协议 = 事实标准，只填 base_url/api_key/model 或从服务目录选一个）；**不引 provider SDK / AI 框架**（协议差异已被 `shared/providers.mjs` 吸收，流式与 tool-call 编排由 grok CLI 承担，server 树零依赖是既有纪律）；**不做 `.env`**（玩家不该为填 key 去改文件或设环境变量；GUI 即时保存 + 一键重启比环境文件准确、也不污染 shell）；**不改写 `~/.grok/config.toml`**（合写玩家全局配置、要 TOML 读写、失败会污染他所有 CLI 会话）；**不加密 key**（本机 0600 + 磁盘加密是刻意取舍——加密要引依赖并处理恢复路径，而本机端点本身也只挡跨站浏览器请求、不防本机进程）；**不做多 profile 并行**（一次只激活一套，切换走「立刻重启引擎」）。理由与被否决的备选都写在 `docs/adr/0019`。
+- **落地形态**（读代码可得）：对话侧走 CLI 的 BYOK 通道（`GROK_MODELS_BASE_URL` / `XAI_API_KEY` / `GROK_DEFAULT_MODEL`，`server/credentials.mjs` 的 `credentialsToEnv`）；图片侧自建零依赖 MCP server（`server/media-mcp.mjs` 的 `bunkiten-media__generate_image`，经 `search_tool`/`use_tool` 调用、自己落盘），SKILL【美术】新增「出图工具优先（硬规则）」；凭据落 `~/.bunkiten/credentials.json`（0700/0600 原子写），HTTP 出口一律脱敏；端点 `GET/POST /api/credentials`、`POST /api/credentials/test`、`POST /api/engine/restart`，`/api/auth` 扩展 `hasCredentials`。
+- **没做的（留给后续，按需再评估）**：出图尺寸的 per-kind 双档（现在是一个可选覆盖 + 按类型默认）、图片服务的「只探活不生成」轻量测试（现在真的生成一张小图，玩家点按钮要付一点点成本）、Anthropic Messages 后端（CLI 的 `api_backend` 只能在配置文件的 `[model.*]` 里写，env 通道不支持——要支持得引入我们自己的 grok 配置文件，见 ADR-0019 的第三条实证结论）、把「服务目录」随版本更新推给玩家（现在是随包发一张静态表）。
 
 ## 1. 数据版本化与迁移 —— **已接线（v1.9）**
 

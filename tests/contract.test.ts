@@ -14,6 +14,8 @@
 //   ⑤ 设置键与音频扩展名：settings.ts / shared 真源 / 文档三处一致
 //   ⑥ 指令前缀、章标记与主题白名单（v1.7）：DIRECTIVE_PREFIX_RE / CHAPTER_MARK_RE 单一真源（pickEffort/isMainTurn、
 //     parseChapterMark/质量守卫豁免都消费）；server 与 theme.ts 的字体/对话框白名单与兜底主题同集
+//   ⑦ 引擎凭据（v1.10）：服务目录 shared/providers.mjs ↔ 设置屏渲染面（不许第二份 id 表）、MCP 出图工具名
+//     （media-mcp.mjs 常量 ↔ SKILL.md 的 `bunkiten-media__generate_image`）、凭据落点与环境变量名 ↔ 文档
 //
 // 纯 node：只读文件 + import 已导出的模块（不 spawn、不联网、不写盘），整体 <1s。
 // 注意：本文件自身也被 `npm test` 收录，但**不计入**文档声明的合计口径（数字以 CASE_TOTAL 为准；tests/e2e/** 同样不在口径内），见第 ④ 组。
@@ -24,6 +26,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AUDIO_KINDS, PROTOCOL_HEADS, isProtocolLine, parseChapterMark, parseManifest } from "../src/lib/parser";
 import { DIRECTIVE_PREFIX_RE as SHARED_DIRECTIVE_RE, PROTOCOL_HEADS as SHARED_HEADS, CHAPTER_MARK_RE as SHARED_CHAPTER_RE } from "../shared/protocol.mjs";
+import { PROVIDERS, PROVIDER_IDS, providersFor } from "../shared/providers.mjs";
 import { SETTINGS_STORAGE_KEY } from "../src/lib/settings";
 
 /** 仓库根（本文件在 tests/ 下） */
@@ -283,6 +286,114 @@ describe("③ 指令字符串双处存在：src/lib/parser.ts 源码 ↔ SKILL.m
   });
 });
 
+// ——————————————————————— ⑦ 引擎凭据（v1.10，ADR-0019） ———————————————————————
+
+/** 设置屏里渲染服务目录的那个组件（GUI 的渲染面就是它；契约 lint 从它的源码抓「是否吃真源」） */
+const GUI_PROVIDERS_FILE = "src/components/EngineKeysSection.tsx";
+
+/** 引擎凭据的文档面（凭据落点、环境变量名、MCP 工具名的说明都在 ARCHITECTURE 的新节里） */
+const CREDENTIALS_DOC = "docs/ARCHITECTURE.md";
+
+/** 凭据落点（server/credentials.mjs 的两个常量；lint 断言文档逐字写出，玩家问「key 存哪」有文档答案） */
+const CREDENTIALS_DIRNAME = ".bunkiten";
+const CREDENTIALS_FILENAME = "credentials.json";
+
+/**
+ * LLM BYOK 注入引擎子进程的三个环境变量名（grok CLI 的文档口径：11-custom-models.md 的「Custom Models Endpoint」段）。
+ * 名字写错 = 引擎收不到自备 key 却又不报错（CLI 会静默沿用登录态），所以这里与文档双向钉死。
+ */
+const ENV_NAMES = ["GROK_MODELS_BASE_URL", "XAI_API_KEY", "GROK_DEFAULT_MODEL"];
+
+describe("⑦ 引擎凭据：服务目录 ↔ 设置屏 / MCP 工具名 ↔ SKILL / 凭据落点 ↔ 文档", () => {
+  it("服务目录表结构完整：id 唯一、kind 合法、地址合法或留空带 note、两种用途都有可选项", () => {
+    const ids = [...PROVIDER_IDS];
+    expect(new Set(ids).size, `shared/providers.mjs 的 id 有重复：${ids.join("、")}`).toBe(ids.length);
+    for (const p of PROVIDERS) {
+      expect(p.id, `目录条目 id 不合规：${p.id}`).toMatch(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
+      expect(typeof p.label === "string" && p.label.length > 0, `目录条目 ${p.id} 缺 label`).toBe(true);
+      expect(["llm", "image", "both"], `目录条目 ${p.id} 的 kind 非法：${p.kind}`).toContain(p.kind);
+      if (p.baseUrl === "") {
+        expect(Boolean(p.note), `目录条目 ${p.id} 地址留空却没写 note（玩家不知道该填什么形态）`).toBe(true);
+      } else {
+        expect(() => new URL(p.baseUrl), `目录条目 ${p.id} 的 baseUrl 不是合法 URL：${p.baseUrl}`).not.toThrow();
+      }
+    }
+    expect(providersFor("llm").length, "对话侧没有任何可选服务").toBeGreaterThan(5);
+    expect(providersFor("image").length, "出图侧没有任何可选服务").toBeGreaterThan(2);
+  });
+
+  it("服务目录是唯一真源：PROVIDER_IDS 由 PROVIDERS 派生，GUI 吃真源而不是自带第二份 id 表", () => {
+    const rel = "shared/providers.mjs";
+    const src = read(rel);
+    expect(
+      src,
+      `${rel} 的 PROVIDER_IDS 不再由 PROVIDERS 派生：GUI 下拉与服务端校验会分成两份清单（谁先加一个服务，另一边就漏一个）`,
+    ).toMatch(/export const PROVIDER_IDS = Object\.freeze\(PROVIDERS\.map\(/);
+    const gui = read(GUI_PROVIDERS_FILE);
+    expect(
+      gui,
+      `${GUI_PROVIDERS_FILE} 没有从 ${rel} import 服务目录：下拉会退化成另一份手写清单`,
+    ).toContain('from "../../shared/providers.mjs"');
+    expect(gui, `${GUI_PROVIDERS_FILE} 没有消费 providersFor（目录过滤在真源里，GUI 只渲染）`).toContain("providersFor(");
+    expect(src, `${rel} 应导出 providersFor（GUI 与测试都消费它）`).toContain("export function providersFor(");
+    // 第二份 id 表的防漂移：目录 id 不许在 src/ 下以字符串字面量出现（`"deepseek"` 这种）
+    const quotedIds = [`"deepseek"`, `"dashscope"`, `"siliconflow"`, `"volcengine"`, `"moonshot"`, `"zhipu"`, `"openrouter"`, `"lmstudio"`];
+    const offenders = srcFiles().filter((file) => {
+      const text = read(file);
+      return quotedIds.some((q) => text.includes(q));
+    });
+    expect(
+      offenders,
+      `src/ 下出现了服务目录 id 的字符串字面量（谁和谁不一致：${rel} 的真源 ↔ 客户端 GUI）：${offenders.join("、")}——` +
+        `下拉的选项必须来自真源，别处手写一份就等着漂移`,
+    ).toEqual([]);
+  });
+
+  it("设置屏的两组模式字面与 server 的 LLM_MODES/IMAGE_MODES 对得上（byok/session/off 三词不许各写各的）", () => {
+    const gui = read(GUI_PROVIDERS_FILE);
+    const creds = read("server/credentials.mjs");
+    expect(creds, "server/credentials.mjs 里 LLM_MODES 不再是 [session, byok]").toMatch(/export const LLM_MODES = Object\.freeze\(\["session", "byok"\]\)/);
+    expect(creds, "server/credentials.mjs 里 IMAGE_MODES 不再是 [off, byok]").toMatch(/export const IMAGE_MODES = Object\.freeze\(\["off", "byok"\]\)/);
+    for (const mode of ['"session"', '"byok"', '"off"']) {
+      expect(gui, `${GUI_PROVIDERS_FILE} 里没有模式字面量 ${mode}（设置屏的模式开关必须与服务端同一套词）`).toContain(mode);
+    }
+  });
+
+  it("MCP 出图工具名：media-mcp.mjs 的两个常量拼出 SKILL.md 里写的那把 catalog 键", async () => {
+    const serverMod = await loadServer();
+    const name = String(serverMod.MEDIA_MCP_NAME);
+    const tool = String(serverMod.MEDIA_TOOL_NAME);
+    expect(name, `server/media-mcp.mjs 的 MEDIA_MCP_NAME 变了：${name}（改名要同批改 SKILL 与本文档节）`).toBe("bunkiten-media");
+    expect(tool, `server/media-mcp.mjs 的 MEDIA_TOOL_NAME 变了：${tool}`).toBe("generate_image");
+    const qualified = `${name}__${tool}`;
+    const skill = read(".grok/skills/bunkiten/SKILL.md");
+    expect(
+      skill,
+      `SKILL.md 里找不到出图工具的 catalog 键「${qualified}」：引擎要靠 search_tool 找它（改 server/media-mcp.mjs 的名字时同批改 SKILL 的「出图工具优先」句）`,
+    ).toContain(qualified);
+    // 工具定义本身也用常量（不是手写第二份字面量）
+    const src = read("server/media-mcp.mjs");
+    expect(src, "server/media-mcp.mjs 的 TOOL_DEFINITION 没有引用 MEDIA_TOOL_NAME：工具名有了第二份字面量").toContain("name: MEDIA_TOOL_NAME");
+  });
+
+  it("凭据落点与环境变量名：server 常量 ↔ 文档逐字一致（key 存哪、怎么注入引擎）", () => {
+    const rel = "server/credentials.mjs";
+    const src = read(rel);
+    expect(src, `${rel} 的 CREDENTIALS_DIRNAME 变了：${CREDENTIALS_DIRNAME}`).toContain(`export const CREDENTIALS_DIRNAME = "${CREDENTIALS_DIRNAME}"`);
+    expect(src, `${rel} 的 CREDENTIALS_FILENAME 变了：${CREDENTIALS_FILENAME}`).toContain(`export const CREDENTIALS_FILENAME = "${CREDENTIALS_FILENAME}"`);
+    const doc = read(CREDENTIALS_DOC);
+    expect(
+      doc,
+      `${CREDENTIALS_DOC} 里没有逐字写出凭据落点「${CREDENTIALS_DIRNAME}/${CREDENTIALS_FILENAME}」：玩家问「key 存哪」时文档答不上来`,
+    ).toContain(`${CREDENTIALS_DIRNAME}/${CREDENTIALS_FILENAME}`);
+    for (const env of ENV_NAMES) {
+      expect(src, `${rel} 里没有生成环境变量 ${env}（LLM BYOK 的注入面）`).toContain(env);
+      expect(doc, `${CREDENTIALS_DOC} 的「引擎凭据与自备 key」一节没有写 ${env}：引擎侧注入面没有文档锚点`).toContain(env);
+    }
+    expect(doc, `${CREDENTIALS_DOC} 里没有两条出图途径的说明（MCP 工具与内置 image_gen 的优先级）`).toContain("bunkiten-media__generate_image");
+  });
+});
+
 // ——————————————————————— ④ 用例数 ———————————————————————
 
 /**
@@ -306,12 +417,14 @@ const CASE_GROUPS = [
   { name: "diff", files: ["tests/diff.test.ts"], floor: 8 },
   { name: "doctor", files: ["tests/doctor.test.ts"], floor: 12 },
   { name: "preload", files: ["tests/preload.test.ts"], floor: 8 },
+  { name: "credentials", files: ["tests/credentials.test.ts"], floor: 30 },
   { name: "ui", files: ["tests/ui.test.tsx"], floor: 136 },
   {
     name: "integration",
     files: ["tests/integration/pipeline.test.ts", "tests/integration/audio-history.test.ts", "tests/integration/http-guard.test.ts"],
     floor: 29,
   },
+  { name: "credentials-integration", files: ["tests/integration/credentials.test.ts"], floor: 18 },
 ];
 
 /** integration 的子分组下限（文档不再单独声明；留着是为了「砍的是哪个文件」能直接指出来） */
@@ -325,7 +438,7 @@ const CASE_SUB_GROUPS = [
 const CONTRACT_FILE = "tests/contract.test.ts";
 
 /** 单测 + 集成的合计下限（抬高它要同批抬齐分组 floor——自洽断言会拦） */
-const CASE_TOTAL = 447;
+const CASE_TOTAL = 497;
 
 /** 三份带粗口径下限声明的文档 */
 const DOCS = ["README.md", "AGENTS.md", "docs/ARCHITECTURE.md"];

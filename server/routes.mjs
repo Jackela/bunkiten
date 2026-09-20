@@ -12,6 +12,7 @@ import { isCrossSiteRequest, readBodyText, MIME, resolveAppDist } from "./http-u
 import { PRESET_ID_RE, LEGACY_ASSET_RE, ASSET_DELETE_FILE_RE, presetIdFromPath, legacyAssetCandidates, resolvePersistPreset } from "./assets.mjs";
 import { parseFrontmatter, scanPresets, assetTargetFile, buildPresetBundle, importPresetBundle, PRESET_IMPORT_MAX_BYTES } from "./presets.mjs";
 import { scanPresetAudio } from "./audio.mjs";
+import { readCredentials, llmReady } from "./credentials.mjs";
 import { WORLD_ID_RE, TREE_FILE, readSnapshot, readSnapshots } from "./snapshots.mjs";
 import {
   moveToTrash, readWorldsIndex, listWorlds, createWorld, forkWorld, restoreWorld, updateWorld,
@@ -29,7 +30,24 @@ import {
  * @property {(rel: string) => void} warnLegacyPathOnce 旧档路径告警（去重）
  * @property {string} currentPresetId 嗅探出的当前剧本 id
  * @property {string|null} sessionId 当前 ACP 会话 id
+ * @property {() => object} credentialsView 引擎凭据的脱敏视图（**永不含明文 key**）
+ * @property {(patch: {llm?: Record<string, unknown>, image?: Record<string, unknown>}, clear: string[]) => {ok: boolean, error?: string, view?: object}} updateCredentials
+ *   局部更新凭据（校验 → 合并 → 原子落盘；空串=清该字段，clear 里的组整组回默认）
+ * @property {(target: string) => Promise<{ok: boolean, status: number, ms: number, error?: string, detail?: string}>} testCredentials
+ *   真连一次（LLM 走 /models 或最小 completion；图片走一次最小生成）
+ * @property {() => Promise<{ok: boolean, error?: string}>} restartEngine 优雅重启引擎会话（保存 key 后一键生效）
  */
+
+/**
+ * 一条 JSON 响应（v1.10 起的新路由共用；既有路由保留各自就地写法，不做无谓改动）。
+ * @param {import("http").ServerResponse} res 响应对象
+ * @param {number} code HTTP 状态
+ * @param {object} obj 响应体
+ */
+function sendJSON(res, code, obj) {
+  res.writeHead(code, { "content-type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify(obj));
+}
 
 // ---------- 剧本体检（v1.8）：GET /api/presets/check?id=<id> 的作者侧 doctor 直出 ----------
 // 判定只有一份：scripts/doctor.mjs 的 checkPreset（`npm run doctor` 的核，作者侧 CLI 与这里 import 同一个函数）。
@@ -193,7 +211,8 @@ export function createRequestHandler(ctx) {
       res.end(
         "galgame acp-server running. API: /api/presets(GET,POST:import) /api/presets/export?id= /api/presets/check?id= /api/auth /api/assets?preset=(GET,POST删除) " +
           "/api/audio?preset= /api/worlds(POST: create/fork/restore/update/delete/import) /api/worlds/export?worldId= /api/history?worldId=[&seq=] " +
-          "/api/tree /api/state?worldId= /events(SSE) /prompt(POST) /img?p=&t=&n=&preset= /audio?p=. 打包前端见 /app。",
+          "/api/tree /api/state?worldId= /api/credentials(GET,POST) /api/credentials/test /api/engine/restart " +
+          "/events(SSE) /prompt(POST) /img?p=&t=&n=&preset= /audio?p=. 打包前端见 /app。",
       );
       return;
     }
@@ -445,8 +464,50 @@ export function createRequestHandler(ctx) {
 
     if (req.method === "GET" && url.pathname === "/api/auth") {
       const loggedIn = fs.existsSync(path.join(os.homedir(), ".grok", "auth.json"));
-      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ loggedIn }));
+      // hasCredentials（v1.10）：LLM 侧配全了自备 key 时，boot 屏不必再要求终端登录（第三个态）
+      const hasCredentials = llmReady(readCredentials());
+      sendJSON(res, 200, { loggedIn, hasCredentials });
+      return;
+    }
+
+    // ---------- 引擎凭据（v1.10，docs/adr/0019）：GUI 里填的自备 key ----------
+    // 四个端点的共同纪律：**响应永不回明文 key**（出口一律 credentialsView 的脱敏形状，
+    // 见 server/credentials.mjs 的 publicView）。两道闸（跨站 403 / body 5MB→413）由本函数开头与
+    // readBodyText 的缺省上限统一覆盖，这里不额外开洞。
+    if (req.method === "GET" && url.pathname === "/api/credentials") {
+      sendJSON(res, 200, { ok: true, ...ctx.credentialsView() });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/credentials") {
+      readBodyText(req, res, (body) => {
+        // JSON.parse 边界：同 /api/presets，字段在 updateCredentials 里逐个校验（未知字段/非法值 → 400）
+        let payload = /** @type {any} */ ({});
+        try { payload = JSON.parse(body) || {}; } catch {}
+        const clear = Array.isArray(payload.clear) ? /** @type {unknown[]} */ (payload.clear).map((c) => String(c)) : [];
+        const out = ctx.updateCredentials({ llm: payload.llm, image: payload.image }, clear);
+        if (!out.ok) { sendJSON(res, 400, { ok: false, error: out.error }); return; }
+        sendJSON(res, 200, { ok: true, ...out.view });
+      });
+      return;
+    }
+    // 真连一次：判定与脱敏都在 server/credentials-probe.mjs（这里只转手）。
+    // 端点自身一律 200——「测试没通过」是业务结果（body 里的 ok:false + error），不是 HTTP 错误。
+    if (req.method === "POST" && url.pathname === "/api/credentials/test") {
+      readBodyText(req, res, async (body) => {
+        let payload = /** @type {any} */ ({});
+        try { payload = JSON.parse(body) || {}; } catch {}
+        const target = String(payload.target || "");
+        if (target !== "llm" && target !== "image") { sendJSON(res, 400, { ok: false, error: "target 只能是 llm 或 image" }); return; }
+        sendJSON(res, 200, await ctx.testCredentials(target));
+      });
+      return;
+    }
+    // 保存 key 后一键生效：引擎会话的 env 只在 spawn 时读一次，必须重启才拿得到新配置
+    if (req.method === "POST" && url.pathname === "/api/engine/restart") {
+      readBodyText(req, res, async () => {
+        const out = await ctx.restartEngine();
+        sendJSON(res, out.ok ? 200 : 409, out);
+      });
       return;
     }
 

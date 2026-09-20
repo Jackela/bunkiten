@@ -243,11 +243,113 @@ export type AcpEvent =
   /** v1.6 【曲】/【环境】/【音效】协议行（单独成段、不进正文；文件缺失由客户端静默 no-op） */
   | { type: "audio"; kind: AudioKind; name: string };
 
-/** @returns {Promise<{loggedIn: boolean}>} grok CLI 登录态（~/.grok/auth.json 存在性） */
-export async function fetchAuth(): Promise<{ loggedIn: boolean }> {
+/** @returns {Promise<{loggedIn: boolean; hasCredentials: boolean}>} 登录态 + 是否已配好自备 key（v1.10；两者任一即可开玩） */
+export async function fetchAuth(): Promise<{ loggedIn: boolean; hasCredentials: boolean }> {
   const r = await fetch("/api/auth");
   if (!r.ok) throw new Error(`GET /api/auth -> HTTP ${r.status}`);
-  return (await r.json()) as { loggedIn: boolean };
+  const data = (await r.json()) as { loggedIn?: boolean; hasCredentials?: boolean };
+  return { loggedIn: data.loggedIn === true, hasCredentials: data.hasCredentials === true };
+}
+
+/**
+ * 引擎凭据的一组（LLM 或图片）在客户端看到的形状（v1.10）：**永不含明文 key**——
+ * 明文只在「玩家输入中」的本地 state 与磁盘上存在，服务端出口一律脱敏。
+ */
+export interface CredentialGroupView {
+  /** LLM: session=沿用 grok 登录态 / byok=自备；图片: off=不出图 / byok=自备 */
+  mode: string;
+  /** 服务目录 id（shared/providers.mjs；未知值服务端会回落到目录里的默认项） */
+  provider: string;
+  baseUrl: string;
+  model: string;
+  /** 仅图片组：出图尺寸（空串=按类型自动） */
+  size?: string;
+  /** 是否已存有 key（屏上显示「已配置」/「未配置」） */
+  hasKey: boolean;
+  /** key 的掩码（失焦后显示在输入框占位里，如 `sk-…4f2a`；没有 key 时是空串） */
+  apiKeyMasked: string;
+}
+
+/** GET /api/credentials 的响应体（v1.10） */
+export interface CredentialsView {
+  version: number;
+  llm: CredentialGroupView;
+  image: CredentialGroupView;
+}
+
+/** POST /api/credentials 的请求体：只出现要改的键（空串=清该字段）；clear 里的组整组回默认 */
+export interface CredentialsPatch {
+  llm?: { mode?: string; provider?: string; baseUrl?: string; apiKey?: string; model?: string };
+  image?: { mode?: string; provider?: string; baseUrl?: string; apiKey?: string; model?: string; size?: string };
+  clear?: ("llm" | "image")[];
+}
+
+/** 一次连接测试的结果（POST /api/credentials/test；端点自身恒 200，成败在 body 里） */
+export interface CredentialProbe {
+  ok: boolean;
+  /** 探针打的最后一个 HTTP 状态（连不上时为 0） */
+  status: number;
+  /** 墙钟耗时（毫秒，屏上显示「通过（123 ms）」） */
+  ms: number;
+  /** 失败原因（服务端已脱敏、已截断；**不含明文 key**） */
+  error?: string;
+  /** 成功时的补充说明（如「服务列出了 12 个模型」） */
+  detail?: string;
+}
+
+/**
+ * 读引擎凭据（脱敏视图）。
+ * @param {AbortSignal} [signal] 取消
+ * @returns {Promise<CredentialsView>} 当前配置（含掩码，不含明文）
+ * @throws HTTP 非 200 时抛错（屏内走错误态）
+ */
+export async function fetchCredentials(signal?: AbortSignal): Promise<CredentialsView> {
+  const r = await fetch("/api/credentials", { signal });
+  if (!r.ok) throw new Error(`GET /api/credentials -> HTTP ${r.status}`);
+  const data = (await r.json()) as CredentialsView & { ok?: boolean };
+  return { version: data.version, llm: data.llm, image: data.image };
+}
+
+/**
+ * 保存凭据（局部更新；设置屏无「保存」按钮，改动即时调用）。
+ * @param {CredentialsPatch} patch 要写的字段（空串=清该字段）
+ * @returns {Promise<{ok: boolean; error?: string; view?: CredentialsView}>} 失败在 error 里返回，不抛错
+ */
+export async function postCredentials(patch: CredentialsPatch): Promise<{ ok: boolean; error?: string; view?: CredentialsView }> {
+  const r = await fetch("/api/credentials", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  const data = (await r.json().catch(() => ({}))) as Partial<CredentialsView> & { ok?: boolean; error?: string };
+  if (!r.ok || data.ok === false) return { ok: false, error: data.error || `HTTP ${r.status}` };
+  return { ok: true, view: { version: data.version ?? 1, llm: data.llm as CredentialGroupView, image: data.image as CredentialGroupView } };
+}
+
+/**
+ * 真连一次（LLM 优先拉 /models，不支持则退化为一次最小对话；图片做一次最小生成）。
+ * @param {"llm" | "image"} target 测哪一组（测的是**已保存**的配置）
+ * @returns {Promise<CredentialProbe>} 结果（端点恒 200；成功/失败看 ok）
+ */
+export async function testCredentials(target: "llm" | "image"): Promise<CredentialProbe> {
+  const r = await fetch("/api/credentials/test", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ target }),
+  });
+  const data = (await r.json().catch(() => ({}))) as Partial<CredentialProbe> & { error?: string };
+  if (!r.ok) return { ok: false, status: 0, ms: 0, error: data.error || `HTTP ${r.status}` };
+  return { ok: data.ok === true, status: data.status ?? 0, ms: data.ms ?? 0, error: data.error, detail: data.detail };
+}
+
+/**
+ * 重启引擎会话（保存 key 后一键生效）：服务端杀旧进程、按当前凭据重新 spawn 并握手。
+ * @returns {Promise<{ok: boolean; error?: string}>} 回合进行中会被拒（error 里给玩家一句人话）
+ */
+export async function restartEngine(): Promise<{ ok: boolean; error?: string }> {
+  const r = await fetch("/api/engine/restart", { method: "POST" });
+  const data = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+  return { ok: r.ok && data.ok !== false, error: data.error };
 }
 
 /**
