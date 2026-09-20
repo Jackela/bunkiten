@@ -19,9 +19,13 @@
 //   每回合正文都带 `**行动**` 段：server 的正戏回合质量守卫在缺选项段时会补发一次内部追问
 //   （server/acp-server.mjs 的 supplementMissingOptions），那会额外吃掉一条脚本、打乱上面这张账。
 //
-// 规模取值与取舍（N=60）：60 回合 × 假引擎秒级往返 ≈ 十几秒，60s 的 per-test timeout 留了数倍余量；不再往上加
-// 是因为抽屉要验的只有「逐轮累积 + 最新在上 + 容器真能滚」三件事——60 幕（约 4560px）已经把 671px 高的滚动区
-// 撑出 6 倍以上，再加回合只是线性加时间、不加覆盖。若 CI 机器更慢，把 TURNS 降到 50 仍满足同一条覆盖。
+// 规模取值与取舍（N=60）：60 回合 × 假引擎秒级往返 ≈ 十几秒（本地实测整条 spec 33s / 这条约 18s）；不再往上加
+// 是因为抽屉要验的只有「逐轮累积 + 最新在最上 + 容器真能滚」三件事——60 幕（约 4560px）已经把 671px 高的滚动区
+// 撑出 6 倍以上，再加回合只是线性加时间、不加覆盖。
+// **per-test timeout 单独放宽到 150s（见 test.setTimeout）**：CI 的 ubuntu 跑者比开发机慢 3–4 倍，60s 默认值
+// 会被顶破——症状是「最后一条断言一直等 + Protocol error: session closed」（Playwright 到点拆页面，不是渲染器崩），
+// 2026-09 起连续两次 CI 都红在这条上（一次表现为 toContainText 拿不到、一次表现为 toHaveCount 轮询到超时）。
+// 覆盖价值不值得为跑者速度砍回合数，所以只给这一条放宽时限（本 spec 其余两条仍是 60s）。
 //
 // 为什么推进回合用 click({ force: true })：选项按钮是 framer-motion 浮入动画（duration 0.5s，见 OptionList 的
 // `transition={{ duration: 0.5, delay: min(i*0.08, 0.32) }}`），严格点击每一步都要等按钮「稳定」= 白等动画收尾，
@@ -198,6 +202,9 @@ async function openW1(p: Page): Promise<void> {
 }
 
 test("回想抽屉 · 60 回合长历史：逐条渲染、最新一幕在最上、滚动容器真的能滚", async () => {
+  // 这一条要跑 60 个真回合（60 次点击 → /prompt → SSE → 重渲染），是整套里最重的一条：
+  // 默认 60s 在 CI 跑者上会被顶破（见文件头的实测记录），这里单独放宽。
+  test.setTimeout(150_000);
   await page.goto(stack.pageUrl);
   await enterProtagonist(page, "示例剧本");
   await quickStartToGame(page);
