@@ -295,7 +295,7 @@ export default function TitleScreen() {
         >
           素材
         </button>
-        {/* 剧本体检（v1.8）：对象恒为**当前中央卡**——标题屏还没「插卡」时 store 的 selected 可能还是空
+        {/* 剧本体检（v1.9）：对象恒为**当前中央卡**——标题屏还没「插卡」时 store 的 selected 可能还是空
             或上一局的剧本，所以把卡带进 openCheck（只落 selected，不进世界线屏、不重置运行态）。
             没有卡可检时禁用并说明原因，不留一个点了没反应的死按钮 */}
         <button

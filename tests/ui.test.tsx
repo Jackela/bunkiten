@@ -502,7 +502,7 @@ describe("CreationScreen：选项 chip 化与排队提示", () => {
     useGameStore.setState({ pendingCreationMessage: "我的构想" });
     await waitFor(() => expect(screen.getByText("就绪后自动发送")).toBeTruthy());
 
-    // —— v1.8 a11y：返回确认层（Esc 链第三环）的模态语义 + 焦点陷阱 + 关闭归还 ——
+    // —— v1.9 a11y：返回确认层（Esc 链第三环）的模态语义 + 焦点陷阱 + 关闭归还 ——
     const headerBack = screen.getByRole("button", { name: "返回" });
     headerBack.focus(); // 现实里点「返回」就会聚焦它，它也是开层前的「上一个元素」
     // 关着确认层时：创作整列没有 inert、对话流（本屏的滚动容器）没有滚动锁
@@ -2137,7 +2137,7 @@ describe("AssetsScreen：选择模式、批量重绘与批量删除（v1.6）", 
     // 所以「焦点陷阱能把焦点送进来」与「背景已 inert」这两条必须同时成立——顺序错了这条会红
     await waitFor(() => expect(document.activeElement).toBe(close));
 
-    // 焦点陷阱（v1.8）：面板里可 Tab 到的是「关闭 + 重新生成」两枚；两端回绕，Tab 走不到画廊
+    // 焦点陷阱（v1.9）：面板里可 Tab 到的是「关闭 + 重新生成」两枚；两端回绕，Tab 走不到画廊
     const regen = screen.getByTestId("assets-preview-regen");
     expect(focusableElements(dialog)).toEqual([close, regen]);
     regen.focus();
@@ -3175,7 +3175,7 @@ describe("回退后的客户端语义：非破坏式分割线、待重同步与�
     expect(acts[1].className).toContain("opacity-50");
     expect(acts[2].className).toContain("opacity-50");
 
-    // —— v1.8 a11y：抽屉语义 + 焦点陷阱 + 关闭归还 ——
+    // —— v1.9 a11y：抽屉语义 + 焦点陷阱 + 关闭归还 ——
     const panel = screen.getByTestId("history-panel");
     expect(panel.getAttribute("role")).toBe("dialog");
     expect(panel.getAttribute("aria-modal")).toBe("true");
@@ -4004,7 +4004,7 @@ describe("角色面板：渲染 / 秘密折叠 / turn_end 重拉 / 空态（v1.7
     expect(screen.getByTestId("characters-notes").textContent).toContain("已读旧信");
     expect(screen.getByTestId("characters-notes").textContent).toContain("码头工人提到的白船");
 
-    // —— v1.8 a11y：抽屉语义 + 焦点陷阱 + 关闭归还 ——
+    // —— v1.9 a11y：抽屉语义 + 焦点陷阱 + 关闭归还 ——
     const panel = screen.getByTestId("characters-panel");
     expect(panel.getAttribute("role")).toBe("dialog");
     expect(panel.getAttribute("aria-modal")).toBe("true");
@@ -4753,7 +4753,7 @@ describe("WorldsScreen：家谱画布缩放与渲染宽度上界（v1.8）", () 
   });
 });
 
-describe("PresetCheckScreen：剧本体检（v1.8）", () => {
+describe("PresetCheckScreen：剧本体检（v1.9）", () => {
   /**
    * 一份「三过一警一错」的响应（行原文照抄 doctor 的真实产出）：覆盖摘要计数、组块切分、
    * error 行与 ok 行的区分——frontmatter 组里同一条 error 与一条 ok 并存（组内不得整块染红/染绿）。
@@ -4865,7 +4865,7 @@ describe("PresetCheckScreen：剧本体检（v1.8）", () => {
   });
 });
 
-describe("TitleScreen：剧本体检入口（v1.8）", () => {
+describe("TitleScreen：剧本体检入口（v1.9）", () => {
   let presetResp: Preset[];
   let fetchMock: ReturnType<typeof vi.fn>;
 

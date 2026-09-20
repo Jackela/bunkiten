@@ -116,7 +116,7 @@ function CharacterCard({ c }: { c: StateCharacter }) {
  * 分块：剧情状态（时间/场景/周目）、主角、角色卡（好感度/表情徽章/秘密折叠/最近互动）、幕后手记、线索/伏笔。
  * 刷新时机在 store（打开拉一次 + turn_end 面板开着重拉）；换世界清空——这里只渲染 {@link stateView}。
  * stateView 为 null 或解析全空时显示占位说明（还没写过 state.md）。
- * 抽屉语义（v1.8）：role=dialog + aria-modal + 标题作名字，焦点进抽屉、Tab 在抽屉里循环、关时归还；
+ * 抽屉语义（v1.9）：role=dialog + aria-modal + 标题作名字，焦点进抽屉、Tab 在抽屉里循环、关时归还；
  * Esc 仍归 App 的关闭链（这里刻意不碰键盘的 Esc）。
  */
 export default function CharactersDrawer() {

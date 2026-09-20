@@ -389,7 +389,7 @@ export interface PresetCheckResult {
 }
 
 /**
- * 剧本体检（v1.8）：把作者侧 `npm run doctor` 的判定搬进屏里，作者不必离开游戏去终端看报告。
+ * 剧本体检（v1.9）：把作者侧 `npm run doctor` 的判定搬进屏里，作者不必离开游戏去终端看报告。
  * @param {string} id 剧本 id（服务端过 PRESET_ID_RE；缺失/非法 400、目录不存在 404、doctor 模块不可用 503）
  * @param {AbortSignal} [signal] 屏卸载时取消
  * @returns {Promise<PresetCheckResult>} 逐条结论（行原文来自 doctor，屏上不加工）

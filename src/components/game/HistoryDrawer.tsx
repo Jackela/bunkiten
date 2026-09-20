@@ -7,7 +7,7 @@ import { useGameStore } from "../../store/game";
 /** 回想抽屉：右滑入，最新一幕在最上（对齐旧版 #drawer）。标题带上当前章号（顶栏已不再显示章号）。
  * 回溯是非破坏式的：分割线（—— 已回溯到第 N 幕 ——／重演时「—— 第 N 幕已重演 ——」）
  * 之前的幕原样保留、只降不透明度。
- * 抽屉语义（v1.8）：role=dialog + aria-modal + 标题作名字，焦点进抽屉、Tab 在抽屉里循环、关时归还；
+ * 抽屉语义（v1.9）：role=dialog + aria-modal + 标题作名字，焦点进抽屉、Tab 在抽屉里循环、关时归还；
  * Esc 仍归 App 的关闭链（这里刻意不碰键盘的 Esc）。 */
 export default function HistoryDrawer() {
   const open = useGameStore((s) => s.drawerOpen);

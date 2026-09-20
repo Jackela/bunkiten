@@ -1,4 +1,4 @@
-// 剧本体检屏（check overlay，v1.8）：把作者侧的 `npm run doctor` 搬进游戏里——手写剧本或创作模式
+// 剧本体检屏（check overlay，v1.9）：把作者侧的 `npm run doctor` 搬进游戏里——手写剧本或创作模式
 // 装配出新剧本后，不必离开游戏去终端看报告，当场就知道哪一条会让剧本进不了轮播、哪一条会让素材永远 404。
 //
 // 数据直出 doctor 的纯函数（`GET /api/presets/check?id=<id>`，见 docs/ARCHITECTURE.md「剧本体检」）：
