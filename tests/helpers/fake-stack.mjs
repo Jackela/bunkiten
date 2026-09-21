@@ -169,6 +169,10 @@ export async function startFakeStack(options = {}) {
       });
     });
     await waitFor(() => httpOk(pageUrl), { label: "vite dev server http" });
+    // 再等一次**经 Vite 代理**的 /api/auth：上面的只等 index.html，页面已能加载不等于 /api/* 的转发已热。
+    // 冷代理下测试的首个 goto 会撞上「页面起来了、boot 的第一个 GET 却卡住」——启动屏停在
+    // 「正在确认登录状态…」直到断言超时（历史上 flaky 的那一段）。先戳一次把代理路径捂热再交给用例。
+    await waitFor(() => httpOk(pageUrl + "/api/auth"), { label: "vite proxy /api/auth" });
     return { stack, pageUrl, stop };
   } catch (e) {
     await stop(); // 启动中途失败也要回收子进程
