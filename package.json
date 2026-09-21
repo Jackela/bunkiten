@@ -39,8 +39,8 @@
   "dependencies": {
     "@radix-ui/react-dropdown-menu": "^2.1.24",
     "electron-updater": "^6.8.9",
-    "framer-motion": "^13.3.0",
-    "lucide-react": "^1.46.0",
+    "framer-motion": "^13.4.0",
+    "lucide-react": "^1.47.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "zustand": "^5.0.15"
@@ -56,9 +56,9 @@
     "@vitejs/plugin-react": "^6.1.1",
     "@vitest/coverage-v8": "^5.0.1",
     "concurrently": "^10.0.5",
-    "electron": "^44.3.0",
+    "electron": "^44.4.2",
     "electron-builder": "^26.15.3",
-    "jsdom": "^30.0.1",
+    "jsdom": "~30.0.1",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
     "vite": "^8.3.0",
