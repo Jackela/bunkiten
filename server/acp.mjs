@@ -21,12 +21,19 @@ import path from "path";
  *   **我们的值优先**——展开顺序是 `{...process.env, ...env}`，同名键由这里覆盖，见 docs/ARCHITECTURE.md「引擎凭据与自备 key」）
  * @param {Array<object>} [opts.mcpServers] 挂到会话上的 MCP server 列表（ACP McpServerStdio 形态；
  *   配了图片自备 key 时才给，见 server/media-mcp.mjs 的 mediaMcpServers）
+ * 引擎 skill 注入：spawn 参数固定带 `--plugin-dir <gameRoot>/.grok`（ADR 0021）——绕开 grok CLI 的
+ *   项目级 skill 信任门，让每个真实会话开局就宣告 bunkiten skill（本项目 .grok 只有 commands/ 与 skills/）。
  * @returns {{proc: import("child_process").ChildProcess, request: (method: string, params?: object|null, timeoutMs?: number) => Promise<any>,
  *   boot: () => Promise<void>, resolveImage: (name: string) => string|null, sessionId: string|null}} sessionId 是 getter——
  *   sendPrompt 与 /img 路由经它读当前会话；request 的 Promise resolve 整个响应 msg（result/error 都在）
  */
 export function createAcpSession({ gameRoot, sessionFile, rules, effort, onChunk, onSeg, env = {}, mcpServers = [] }) {
-  const proc = spawn("grok", ["agent", "--always-approve", "stdio"], { cwd: gameRoot, env: { ...process.env, ...env } });
+  // 引擎 skill 注入（ADR 0021）：grok CLI 把项目级 skill 按「文件夹信任」门控（~/.grok/trusted_folders.toml），
+  // 未信托的仓根与打包态 game root 都不会把 bunkiten skill 宣告进会话——历史上一整个真实会话开局都要模型
+  // 自己探索到 .grok/skills/bunkiten/SKILL.md 才激活。`--plugin-dir <gameRoot>/.grok` 是 session 级、
+  // always-trusted 的注入通道（官方给 Agent SDK 用），正好绕开全局信任文件；目录不存在/为空都无害。
+  // 前提：该目录里只有 commands/ 与 skills/（无 hooks/MCP），而 plugin-dir 会 always-trust 其 hooks/MCP。
+  const proc = spawn("grok", ["agent", "--always-approve", "--plugin-dir", path.join(gameRoot, ".grok"), "stdio"], { cwd: gameRoot, env: { ...process.env, ...env } });
   proc.stderr.on("data", (d) => process.stderr.write("[grok] " + d.toString().slice(0, 300)));
   proc.on("exit", (code) => console.error(`[acp] grok agent exited: ${code}`));
   const rl = readline.createInterface({ input: proc.stdout });

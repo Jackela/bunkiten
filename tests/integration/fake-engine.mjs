@@ -13,8 +13,9 @@
 // 选中规则：优先「含 match 子串且尚未用过」的条目；否则按声明顺序顺次消费（队列语义）。
 // session/prompt 先逐条发通知、再回 {result:{}}（与真引擎「边流式边结束」一致）。
 //
-// 探针（v1.10）：env FAKE_ENGINE_PROBE 指向一个 JSONL 时，本进程把「自己拿到的 env」与「握手时的 mcpServers」
-// 追加进去——`start` 一条（每次被 spawn 都写，重启后就是第二条），`session` 每条 session/load|new 一条。
+// 探针（v1.10）：env FAKE_ENGINE_PROBE 指向一个 JSONL 时，本进程把「自己拿到的 env 与 argv」与「握手时的
+// mcpServers」追加进去——`start` 一条（每次被 spawn 都写，重启后就是第二条；argv = process.argv.slice(2)，
+// 即 PATH 垫片原样透传过来的 grok CLI 参数，可断言 spawn 参数面），`session` 每条 session/load|new 一条。
 // 用来断言「凭据真的注进了引擎子进程」「图片自备 key 才会挂 MCP」，不必给假引擎加协议外的行为。
 //
 // 另有一个可选行为（env FAKE_ENGINE_SPAWN_MCP=1）：收到 mcpServers 时**像真 agent 一样把它们拉起来**
@@ -36,6 +37,8 @@ if (probeFile) {
         kind: "start",
         at: Date.now(),
         pid: process.pid,
+        // 垫片（bin/grok）用 `exec node fake-engine.mjs "$@"` 原样透传，故 slice(2) = acp.mjs spawn 的 grok 参数
+        argv: process.argv.slice(2),
         env: {
           GROK_MODELS_BASE_URL: process.env.GROK_MODELS_BASE_URL ?? null,
           XAI_API_KEY: process.env.XAI_API_KEY ?? null,
