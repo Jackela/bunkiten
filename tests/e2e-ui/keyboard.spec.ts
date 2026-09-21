@@ -7,7 +7,7 @@
 // （aria-pressed + OptionList 的 auto-advance 行），不碰内部状态：点击与倒计时都是浏览器里真的在跑。
 import { expect, test, type Page } from "@playwright/test";
 import { startUiStack, stopUiStack, type StartedStack } from "./stack";
-import { enterProtagonist, quickStartToGame } from "./flow";
+import { enterProtagonist, handFocusBackToBody, quickStartToGame } from "./flow";
 
 /** 第三条用例的开局正文（≈190 字）：标准档打字机（24ms/字、落后较多时按追赶步长补齐）要走 2s 以上，
  *  留出「打字中手点快进」的确定窗口；末句当「是否补全」的探针（打字路径下它最后才轮到）。 */
@@ -63,8 +63,10 @@ test("数字键 2 选中第二项：prompt 带选项文本、下一回合正文�
     .toBeGreaterThanOrEqual(3);
 
   // FreeInput 在就绪时自动聚焦，而数字键对输入框让路（在打字不是在选选项）——
-  // 先点一下对话框把焦点还给 body（打字已完成，completeNow 空转），再按数字键
-  await page.getByTestId("dialogue-text").click();
+  // 先点一下把焦点还给 body（等自动聚焦落过地、并确认焦点真的在 body 上，见 flow.handFocusBackToBody），
+  // 再按数字键。用画面角落而不是点对话框：两条路都把焦点还给 body，但前者不碰对话框，
+  // 不会顺带触发一次 completeNow（本用例此刻打字已完成，那一击本来就是空转，换个更纯的点法）
+  await handFocusBackToBody(page);
   await page.keyboard.press("2");
   await expect(page.getByTestId("status")).toHaveText("就绪");
   await expect(page.getByTestId("dialogue-text")).toContainText("侧门虚掩着，回廊里只有你自己的脚步声");
@@ -80,11 +82,11 @@ test("打字中按空格：正文立即完整（dialogue-text 含末句）", asy
   await expect(page.getByTestId("dialogue-text")).toContainText("夜色沉进长廊");
   await expect(page.getByTestId("dialogue-hint")).toBeVisible();
 
-  // 空格同样对聚焦的输入框让路：点一下画面角落（不可聚焦的常驻底图，真实手势）把焦点移回 body——
-  // 就绪态的状态簇走 sr-only 点不到（见 TopBar 文件头）；这里绝不能点 dialogue-box：
-  // 那一击会 completeNow 补全文，打字中的证据链就没了。
-  // mouse.click 直接落到视口坐标：<body> 在 fixed 布局下没有布局盒，locator.click 过不了 actionability
-  await page.mouse.click(4, 4);
+  // 空格同样对聚焦的输入框让路：把焦点移回 body——就绪态的状态簇走 sr-only 点不到（见 TopBar 文件头）；
+  // 这里绝不能点 dialogue-box：那一击会 completeNow 补全文，打字中的证据链就没了。
+  // handFocusBackToBody 点的正是画面角落（不可聚焦的常驻底图），并会先等就绪态自动聚焦落过地、
+  // 再确认焦点真的在 body 上，才让下面的空格按下去（否则这一击会落进那个刚被自动聚焦的输入框）
+  await handFocusBackToBody(page);
 
   // 空格 → completeNow 立即 setShown(target)。按键后单次读取 DOM：若未补全，此刻必然只有前缀
   await page.keyboard.press(" ");

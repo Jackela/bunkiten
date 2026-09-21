@@ -29,6 +29,15 @@ export const MEDIA_MCP_NAME = "bunkiten-media";
 /** 工具名（catalog 键 = `${MEDIA_MCP_NAME}__${MEDIA_TOOL_NAME}` = `bunkiten-media__generate_image`） */
 export const MEDIA_TOOL_NAME = "generate_image";
 
+/**
+ * 工具在引擎 `use_tool` catalog 里的全名（`<server>__<tool>`）。第 0 步实证（ARCHITECTURE「引擎凭据与自备 key」）：
+ * MCP 工具**不直接进模型工具表**，模型经 `search_tool`/`use_tool` 用 catalog 键调它——所以 `tools/call` 的
+ * `params.name` 可能是这个带前缀的形态（假引擎的 mock 出图链路就是按真实引擎的口径发这个键，见
+ * tests/integration/fake-engine.mjs 的 FAKE_ENGINE_CALL_MCP）。两种（裸名与 catalog 全名）都认，
+ * 免得「接口名与实证不一致」把出图静默变成 `未知工具`。
+ */
+export const MEDIA_TOOL_CATALOG_NAME = `${MEDIA_MCP_NAME}__${MEDIA_TOOL_NAME}`;
+
 /** 一次生成的墙钟上限（毫秒）：超了放弃——引擎那边还有自己的工具超时，早失败早回退 */
 export const GENERATE_TIMEOUT_MS = 90_000;
 
@@ -345,7 +354,8 @@ export async function handleMcpMessage(msg, respond, callTool = (p) => generateI
   if (msg.method === "tools/call") {
     const name = String(msg.params?.name || "");
     const args = msg.params?.arguments && typeof msg.params.arguments === "object" ? msg.params.arguments : {};
-    if (name !== MEDIA_TOOL_NAME) {
+    // 裸工具名（MCP 客户端直发）与 catalog 全名（引擎 use_tool 口径）都认——见 MEDIA_TOOL_CATALOG_NAME 的注释
+    if (name !== MEDIA_TOOL_NAME && name !== MEDIA_TOOL_CATALOG_NAME) {
       respond({
         jsonrpc: "2.0",
         id,

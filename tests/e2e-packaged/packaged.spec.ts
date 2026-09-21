@@ -14,6 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { _electron as electron, expect, test, type ElectronApplication } from "@playwright/test";
+import { startMockImageServer } from "../helpers/mock-image-server.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const FAKE_ENGINE = path.join(ROOT, "tests", "integration", "fake-engine.mjs");
@@ -228,5 +229,178 @@ test("打包态：窗口能开、标题屏渲染、/app 与 resources/game 资�
   } finally {
     await closeApp(app);
     rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+/** 扫 `presets/<id>/assets/*.jpe?g`（相对路径 → {size, mtimeMs}）：跑前后各取一次做「新文件」判定 */
+function snapshotPackagedAssets(presetsRoot: string): Record<string, { size: number; mtimeMs: number }> {
+  const out: Record<string, { size: number; mtimeMs: number }> = {};
+  let dirs: string[] = [];
+  try {
+    dirs = readdirSync(presetsRoot, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+  } catch {
+    return out;
+  }
+  for (const id of dirs) {
+    let files: string[] = [];
+    try {
+      files = readdirSync(path.join(presetsRoot, id, "assets"));
+    } catch {
+      continue;
+    }
+    for (const f of files) {
+      if (!/\.jpe?g$/i.test(f)) continue;
+      try {
+        const st = statSync(path.join(presetsRoot, id, "assets", f));
+        out[`presets/${id}/assets/${f}`] = { size: st.size, mtimeMs: st.mtimeMs };
+      } catch {
+        /* 读不到就跳过 */
+      }
+    }
+  }
+  return out;
+}
+
+// 打包态 · mock 出图（opt-in，**不需要任何真凭据/真网络**；见 playwright.electron.config.ts 文件头）：
+// 打包 .app + 假引擎（FAKE_ENGINE_SPAWN_MCP=1 + FAKE_ENGINE_CALL_MCP=1）+ 本 spec 进程内起的假图片服务，
+// 把「打包布局 → 引擎子进程 → 拉起 MCP → tools/call → 打自备图片服务 → 落盘 Resources/game/presets」
+// 这条 v1.10 出图链路**在打包态**串起来验一遍——real-image.spec 是同一条链路的真跑版（要真凭据、真出网），
+// 本条是它的离线替身：只花本地端口与一个假服务。
+//
+// 与 real-image.spec 的差异（更轻量）：不点 UI（直接 POST /prompt 发重绘指令）、不碰包里自带的资产——
+// 用一个包里没有的唯一立绘名，让假引擎兜底落「排序第一个剧本目录」，于是断言面就是「跑前后快照里多出的那张 jpg」。
+// 已知副作用：同第一条冒烟，应用启动会往 Resources/game 写 state/worlds/；收尾只删本次新增的 jpg。
+test("打包态 mock 出图：假引擎真发 tools/call + 本地假图片服务，Resources/game 落一张新 jpg 且 /img 直服 200", async () => {
+  test.skip(APP_BIN === null, "未找到打包产物：先跑 `npm run dist:mac:dir`（产物在 release/mac-<arch>/Bunkiten.app）");
+  test.setTimeout(180_000);
+
+  const mock = await startMockImageServer();
+  const tmp = mkdtempSync(path.join(os.tmpdir(), "bunkiten-packaged-mock-"));
+  const home = path.join(tmp, "home");
+  const binDir = path.join(tmp, "bin");
+  const probeFile = path.join(tmp, "probe.jsonl");
+  mkdirSync(path.join(home, ".grok"), { recursive: true });
+  mkdirSync(binDir, { recursive: true });
+  writeFileSync(path.join(home, ".grok", "auth.json"), "{}\n");
+  // 图片自备 key 指向本 spec 进程内的假服务（0600 落盘；打包态 acp-server/media-mcp 的 os.homedir() 就是这个 HOME）
+  mkdirSync(path.join(home, ".bunkiten"), { recursive: true, mode: 0o700 });
+  writeFileSync(
+    path.join(home, ".bunkiten", "credentials.json"),
+    JSON.stringify({
+      version: 1,
+      llm: { mode: "session", provider: "openai", baseUrl: "", apiKey: "", model: "" },
+      image: { mode: "byok", provider: "custom", baseUrl: mock.base, apiKey: "sk-packaged-mock-0001", model: "mock-image", size: "" },
+    }),
+    { mode: 0o600 },
+  );
+  // PATH 垫片：`grok` → 同一个 node 跑假引擎（与第一条冒烟同款：必须放临时 HOME 的 ~/.grok/bin 里）
+  mkdirSync(path.join(home, ".grok", "bin"), { recursive: true });
+  const shim = path.join(home, ".grok", "bin", "grok");
+  writeFileSync(shim, `#!/bin/sh\nexec '${process.execPath}' '${FAKE_ENGINE}' "$@"\n`);
+  chmodSync(shim, 0o755);
+
+  // 打包态 GAME_ROOT = .app 内 resources/game（main.js 写死；extraResources 把仓库 presets/ 铺到这）
+  const appContents = path.resolve(APP_BIN as string, "..", "..");
+  const gameRoot = path.join(appContents, "Resources", "game");
+  const presetsRoot = path.join(gameRoot, "presets");
+  const before = snapshotPackagedAssets(presetsRoot);
+  // 包里没有的唯一立绘名：重绘后必然是一个「新文件」（与包里自带的资产区分开）
+  const name = `MockProbe${Date.now().toString(36)}`;
+  let created: string[] = [];
+
+  let app: ElectronApplication | null = null;
+  const appLogs: string[] = [];
+  try {
+    app = await electron.launch({
+      executablePath: APP_BIN as string,
+      env: {
+        ...process.env,
+        HOME: home,
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        FAKE_ENGINE_TURNS: "[]",
+        FAKE_ENGINE_PROBE: probeFile,
+        FAKE_ENGINE_SPAWN_MCP: "1",
+        FAKE_ENGINE_CALL_MCP: "1",
+        BUNKITEN_DISABLE_UPDATE: "1",
+      },
+    });
+    app.process().stdout?.on("data", (d) => appLogs.push(String(d)));
+    app.process().stderr?.on("data", (d) => appLogs.push(String(d)));
+
+    const win = await app.firstWindow();
+    await expect(win.getByTestId("title-wordmark")).toBeVisible({ timeout: 60_000 });
+    const port = new URL(win.url()).port;
+    const probeEntries = (): any[] =>
+      existsSync(probeFile)
+        ? readFileSync(probeFile, "utf8")
+            .split("\n")
+            .filter((l) => l.trim())
+            .map((l) => JSON.parse(l))
+        : [];
+    const postPrompt = () =>
+      fetch(`http://127.0.0.1:${port}/prompt`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: `美术：重绘 立绘 ${name}` }),
+      });
+    // 引擎握手就绪的判据与第一条冒烟同款：假引擎收到 session/new 就写一条 `session` 探针。
+    //（**不**依赖 app 日志：打包态 Electron 主进程的 stdout 在 _electron 下不定能被捕获；
+    //  探针走文件，是这两条 spec 都实测可靠的信号。）
+    try {
+      await expect
+        .poll(() => probeEntries().some((e) => e.kind === "session"), { timeout: 60_000, message: "假引擎没写下 session 握手探针（FAKE_ENGINE_PROBE 没生效？）" })
+        .toBe(true);
+    } catch (e) {
+      console.log("[packaged-mock] probe:", JSON.stringify(probeEntries()));
+      console.log("[packaged-mock] app logs:", appLogs.join("").slice(-2500));
+      throw e;
+    }
+    // 就绪前 POST /prompt 会 409（引擎未就绪/上一回合在跑）；轮询到 200——成功那一次就是唯一一次真正发指令
+    try {
+      await expect
+        .poll(async () => (await postPrompt()).status, { timeout: 60_000, message: "POST /prompt 一直不是 200（409=引擎未就绪）" })
+        .toBe(200);
+    } catch (e) {
+      console.log("[packaged-mock] probe:", JSON.stringify(probeEntries()));
+      console.log("[packaged-mock] app logs:", appLogs.join("").slice(-2500));
+      throw e;
+    }
+
+    // 断言：Resources/game/presets/**/assets/ 里多出一张 jpg（跑前后快照对比）
+    await expect
+      .poll(() => Object.keys(snapshotPackagedAssets(presetsRoot)).filter((k) => !(k in before)).length, {
+        timeout: 30_000,
+        message: "重绘后 Resources/game/presets 下没有出现新 jpg",
+      })
+      .toBe(1);
+    created = Object.keys(snapshotPackagedAssets(presetsRoot)).filter((k) => !(k in before));
+    const newRel = created[0];
+    expect(newRel, "新 jpg 的文件名应就是本次重绘的目标").toMatch(new RegExp(`^presets/[^/]+/assets/立绘-${name}\\.jpg$`));
+    const bytes = readFileSync(path.join(gameRoot, newRel));
+    expect(bytes.length, "新 jpg 应非空").toBeGreaterThan(0);
+    expect(bytes.equals(mock.imageBytes), "落盘字节应等于假服务返回的图").toBe(true);
+    expect(mock.calls, "假图片服务应恰好收到 1 次生成请求").toHaveLength(1);
+
+    // /img 直服 200 且非空（落盘契约的另一半）
+    const served = await fetch(`http://127.0.0.1:${port}/img?p=${encodeURIComponent(newRel)}`);
+    expect(served.status, `/img 直服 ${newRel} 应 200`).toBe(200);
+    const servedBytes = Buffer.from(await served.arrayBuffer());
+    expect(servedBytes.length).toBeGreaterThan(0);
+    expect(servedBytes.equals(mock.imageBytes)).toBe(true);
+    console.log(`[packaged-mock] 新增 ${newRel}（${bytes.length}B），mock 收到 ${mock.calls.length} 次请求`);
+  } finally {
+    if (app) await closeApp(app);
+    // 收尾：只删本次新增的 jpg（绝不动包里自带的）
+    for (const rel of created) {
+      try {
+        rmSync(path.join(gameRoot, rel));
+      } catch {
+        /* 删不掉就留着，已在报告里说明 */
+      }
+    }
+    rmSync(tmp, { recursive: true, force: true });
+    await mock.close();
   }
 });
