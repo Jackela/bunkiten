@@ -12,11 +12,6 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: "chore(deps)"
-    # jsdom 30.1.0 起让 tests/ui.test.tsx 6 例红（5 例 Radix 菜单 + 1 例音效槽位；二分：30.0.1→150 passed，
-    # 30.1.0→6 failed，framer-motion 回退无效）。钉在 30.0.x 等上游/适配，见 tests/setup-react-act.mjs 顶部。
-    ignore:
-      - dependency-name: "jsdom"
-        versions: [">=30.1.0 <30.2.0"]
     groups:
       npm-patch:
         applies-to: version-updates
