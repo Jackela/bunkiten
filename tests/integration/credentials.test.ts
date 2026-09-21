@@ -206,7 +206,7 @@ describe("引擎凭据端点（GET/POST /api/credentials）", () => {
   });
 });
 
-describe("在线目录的新 provider 可保存（v1.11，docs/adr/0020）", () => {
+describe("在线目录的新 provider 可保存（v1.10，docs/adr/0020）", () => {
   /** 只回固定 JSON 的本地目录服务器（BUNKITEN_PROVIDERS_URL 指它；含一个内置表里没有的 id） */
   async function startMockCatalog() {
     const server = http.createServer((_req, res) => {

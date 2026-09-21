@@ -347,7 +347,7 @@ export async function fetchAuth(signal?: AbortSignal): Promise<{ loggedIn: boole
 }
 
 /**
- * 服务目录的客户端视图（v1.11，docs/adr/0020）：GET /api/providers 的响应体。
+ * 服务目录的客户端视图（v1.10，docs/adr/0020）：GET /api/providers 的响应体。
  * 服务端按「进程内 memo → 本地缓存 → 内置表」三级回落，`source` 说的就是**这一份** providers 的来源：
  * 刚抓到发布源是 `"remote"`、读的本地缓存是 `"cache"`、缓存坏/缺或还没抓到是 `"bundled"`（= 内置表本身）。
  * **只读**：这是下拉候选，服务端与 GUI 都不据此改写玩家已存的 baseUrl / key / 模型（那些走 /api/credentials）。

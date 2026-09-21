@@ -1,4 +1,4 @@
-// 服务目录更新通道的集成覆盖（v1.11，docs/adr/0020）：真 acp-server 子进程 + 本地 mock 发布源。
+// 服务目录更新通道的集成覆盖（v1.10，docs/adr/0020）：真 acp-server 子进程 + 本地 mock 发布源。
 //
 // 这一层每条对着「改坏哪一处会红」：
 //   · 启动期非阻塞抓取 + /api/providers 的 source 语义 → 改 acp-server.mjs 的 `void refreshCatalog()` 与 routes.mjs 的端点；
@@ -49,7 +49,7 @@ async function waitForSource(s: any, want: string, timeout = 8000) {
   }
 }
 
-describe("服务目录更新通道（v1.11，docs/adr/0020）：远端 → 缓存 → 内置兜底", () => {
+describe("服务目录更新通道（v1.10，docs/adr/0020）：远端 → 缓存 → 内置兜底", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "bunkiten-providers-home-"));
   const cacheFile = path.join(home, ".bunkiten", "providers.json");
   let mock: { url: string; close: () => Promise<void> };

@@ -16,7 +16,7 @@
 // v1.10 续：启动链三条读接口（/api/auth、/api/presets、/api/worlds）的显式超时与卸载取消——
 //      上限覆盖到 body 解析（先回响应头、再挂 body 的代理不再「永远转圈」），卸载优先于超时归一
 //      （传输层不理 signal 时也不再往已拆的屏写错误态），启动屏补上 AbortController。
-// v1.11 续：设置屏「引擎与密钥」的服务目录候选（在线目录画下拉 / 读不到静默回落内置真源 / 目录更新
+// v1.10 续：设置屏「引擎与密钥」的服务目录候选（在线目录画下拉 / 读不到静默回落内置真源 / 目录更新
 //      不让玩家已存的那家从下拉里消失），见 EngineKeysSection 的用例组。
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -943,7 +943,7 @@ describe("SettingsScreen：设置项、持久化与入口（v1.6）", () => {
   });
 });
 
-describe("fetchProviders：GET /api/providers 的形状归一（v1.11）", () => {
+describe("fetchProviders：GET /api/providers 的形状归一（v1.10）", () => {
   /** 把 global fetch 换成「固定回包」的桩（全局 afterEach 会 unstubAllGlobals 收尾） */
   const stubFetch = (body: unknown, status = 200) => {
     const mock = vi.fn(async () => jsonResponse(body, status));
@@ -978,7 +978,7 @@ describe("fetchProviders：GET /api/providers 的形状归一（v1.11）", () =>
   });
 });
 
-describe("EngineKeysSection：服务目录候选（v1.11）", () => {
+describe("EngineKeysSection：服务目录候选（v1.10）", () => {
   /**
    * GET /api/credentials 的脱敏视图（两组都回默认：对话沿用终端登录、出图不用）。
    * POST 时把补丁并进这一份再回包——与真 server「局部更新后回整份视图」同形。

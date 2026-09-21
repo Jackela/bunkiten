@@ -8,7 +8,7 @@
 //   · 「测试连接」测的是**已保存**的配置（真连一次服务），失败原因来自服务端（已脱敏、已截断）；
 //   · 保存成功给一句人话提示 + 「立刻重启引擎」——引擎子进程的 env 只在启动时读一次。
 //
-// 服务目录（v1.11，docs/adr/0020）：下拉候选优先取服务端的在线目录（`/api/providers`），
+// 服务目录（v1.10，docs/adr/0020）：下拉候选优先取服务端的在线目录（`/api/providers`），
 // 读不到就回落内置真源 `providersFor`（唯一的 id 表，别处不许再抄一份）。**目录只喂候选**：
 // 它到屏上只影响「有哪些服务可挑」，绝不改写玩家已存的地址/密钥/模型（保存仍只由玩家动作触发）。
 //
@@ -408,14 +408,14 @@ function GroupForm({
 /**
  * 设置屏的「引擎与密钥」整节：两份 GroupForm + 保存提示与重启按钮。
  * 取数失败走一句人话 + 重试（与设置屏其余部分不同：凭据在服务端，拉不到就画不出掩码）。
- * 另外独立读一次在线服务目录（v1.11）：读到就用它画下拉、没读到就静默回落内置表（不占错误态）。
+ * 另外独立读一次在线服务目录（v1.10）：读到就用它画下拉、没读到就静默回落内置表（不占错误态）。
  */
 export default function EngineKeysSection() {
   const [view, setView] = useState<CredentialsView | null>(null);
   const [loadError, setLoadError] = useState("");
   const [notice, setNotice] = useState("");
   const [restart, setRestart] = useState<{ state: "idle" | "running" | "done" | "error"; error?: string }>({ state: "idle" });
-  // 在线服务目录（v1.11）：读到且里面有条目就换掉下拉候选（两组共用这一份），否则保持 null → 内置表。
+  // 在线服务目录（v1.10）：读到且里面有条目就换掉下拉候选（两组共用这一份），否则保持 null → 内置表。
   // 读不到**不报错也不提示**——服务目录是候选的加分项，缺了就照旧用内置表，不该在屏上留一条玩家的红字。
   const [catalog, setCatalog] = useState<ProviderCatalogView | null>(null);
 

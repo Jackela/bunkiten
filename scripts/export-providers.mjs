@@ -1,4 +1,4 @@
-// 生成服务目录发布源 docs/providers.json（v1.11，docs/adr/0020）。
+// 生成服务目录发布源 docs/providers.json（v1.10，docs/adr/0020）。
 //
 // 唯一真源是 shared/providers.mjs 的 PROVIDERS——本脚本只做「搬不改」：把它序列化成
 // `{version, updatedAt, providers}` 写进仓库的 docs/providers.json。那份 JSON 是**发布源**：
