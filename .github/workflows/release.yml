@@ -6,7 +6,8 @@
 # - 平台清单写 SHA256SUMS-<platform>.txt（不是同名 SHA256SUMS.txt）：download-artifact 的 merge-multiple
 #   会把两个 artifact 解到同一目录，同名文件会互相覆盖；最终 SHA256SUMS.txt 由 release job 合并生成。
 # - 签名/公证全部条件化：secrets 缺失时先 unset 空环境变量（空 CSC_LINK 会被 electron-builder 当成
-#   证书路径而失败）再走未签名构建，构建照样成功。
+#   证书路径而失败）再走未签名构建，构建照样成功。mac（CSC_LINK + APPLE_* 三件套）与 win（WIN_CSC_LINK）
+#   同款条件化：证书一到就自动生效，怎么开、怎么验见 docs/RELEASING.md。
 #   已知限制：未签名 mac 包无法自动更新（Squirrel.Mac 要求签名一致），见 docs/ARCHITECTURE.md「已知限制」。
 # - guard job 是唯一测试门禁：npm test（单测 + 集成，约 10s；e2e 不进 CI）不过就不发版。放 guard 只跑一次，
 #   两个平台的 GB 级打包不受影响，也不算重复算力。
@@ -179,10 +180,29 @@ jobs:
       - name: Build（tsc -b && vite build）
         run: npm run build
 
-      # Windows 侧保持不签名（electron-builder.yml 的 win.signExecutable: false）；
-      # 后续接入代码签名证书时在这里加 CSC_LINK/CSC_KEY_PASSWORD 即可，配置无需改。
+      # Windows 侧签名同样条件化（与 mac 同款）：配了 WIN_CSC_LINK（.pfx 的 base64）才签，否则走未签名路径。
+      # 这里不需要 CSC_IDENTITY_AUTO_DISCOVERY——那只在 mac 侧被读（app-builder-lib out/util/flags.js 的
+      # isAutoDiscoveryCodeSignIdentity()，唯一消费者是 macCodeSign.js），对 Windows 签名没有任何影响；
+      # Windows 的开关只有一个：有没有 cscInfo。
+      # 为什么只注入 WIN_CSC_LINK 而不顺手也传 CSC_LINK：getCscLink("WIN_CSC_LINK") 内部本就回退到 CSC_LINK
+      # （chooseNotNull(WIN_CSC_LINK, CSC_LINK)，而 chooseNotNull 只判 null/undefined），**空字符串会盖住回退值**；
+      # 本 job 里不出现 CSC_LINK，Windows 签名就只由 WIN_CSC_LINK 决定（Apple 的 .p12 不该进 Windows 这条路）。
+      # 空值 unset 的意义与 mac 同：secrets 缺失时注入的是空串而不是未定义，先把它从环境里摘掉，
+      # 才是真正的「没有任何签名信息」路径——那条路上 electron-builder 只打一条 debug 就跳过签名，不 fail。
       - name: Package（win nsis + portable，x64）
-        run: npx electron-builder --win --x64 --publish never
+        shell: pwsh
+        env:
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WIN_CSC_LINK)) { Remove-Item Env:\WIN_CSC_LINK -ErrorAction SilentlyContinue }
+          if ([string]::IsNullOrWhiteSpace($env:WIN_CSC_KEY_PASSWORD)) { Remove-Item Env:\WIN_CSC_KEY_PASSWORD -ErrorAction SilentlyContinue }
+          if ($env:WIN_CSC_LINK) {
+            Write-Host "签名路径：WIN_CSC_LINK 已配置 → 应用 exe / NSIS 安装器与卸载器签名 + RFC3161 时间戳"
+          } else {
+            Write-Host "未签名路径：没有 WIN_CSC_LINK → 跳过签名，图标与版本元数据照写"
+          }
+          npx electron-builder --win --x64 --publish never
 
       - name: Checksums（exe/latest*.yml）
         shell: pwsh

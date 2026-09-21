@@ -5,7 +5,8 @@
 //   · 长度上限 / 白名单字段 → 改 MAX_* 常量与 normalizeEntry；
 //   · 目录 0700 / 文件 0600 / 原子写 / 坏缓存回落 → 改 readCatalogCache / writeCatalogCache；
 //   · 缓存优先与进程内 memo → 改 catalogState；
-//   · 先主后备、TTL 节流、两个兼容开关、失败静默 → 改 refreshCatalog。
+//   · 两源并行取最新（updatedAt 最大者胜、并列取主源、缺失当最旧）、TTL 节流、两个兼容开关、失败静默 → 改 refreshCatalog / pickNewest；
+//   · 读路径的 stale-while-revalidate（单飞、TTL 守卫、永不抛）→ 改 revalidateCatalog。
 import { beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -19,6 +20,7 @@ import {
   loadCatalog,
   readCatalogCache,
   refreshCatalog,
+  revalidateCatalog,
   validateCatalogDocument,
   writeCatalogCache,
   __resetCatalogMemo,
@@ -36,9 +38,11 @@ function entry(over: any = {}) {
   return { id: "svc", label: "Svc", kind: "llm", baseUrl: "https://svc.example/v1", models: [], note: "说明", ...over };
 }
 
-/** 一份合法目录文档 */
-function doc(providers: any[] = [entry()]) {
-  return { version: CATALOG_VERSION, updatedAt: "2026-01-01T00:00:00.000Z", providers };
+/** 一份合法目录文档；updatedAt 传 null 表示**整键缺席**（验「缺失当最旧」） */
+function doc(providers: any[] = [entry()], updatedAt: string | null = "2026-01-01T00:00:00.000Z") {
+  const d: any = { version: CATALOG_VERSION, providers };
+  if (updatedAt !== null) d.updatedAt = updatedAt;
+  return d;
 }
 
 /** 假 fetch（记录调用；refreshCatalog 只读 res.ok 与 res.text()） */
@@ -259,15 +263,16 @@ describe("loadCatalog：缓存优先 → 内置兜底（进程内 memo）", () =
   });
 });
 
-describe("refreshCatalog：抓取三态与 TTL 节流", () => {
-  it("抓到合法文档 → 落盘 0600 + memo 变 remote（打的是主源）", async () => {
+describe("refreshCatalog：两源并行取最新、抓取三态与 TTL 节流", () => {
+  it("两源都有效 → 两源都抓，落盘 0600 + memo 变 remote", async () => {
     const home = tmpHome();
     try {
       const { impl, calls } = makeFetch(() => ({ text: JSON.stringify(doc([entry({ id: "remote-only" })])) }));
       const now = Date.parse("2026-06-06T00:00:00.000Z");
       const out = await refreshCatalog({ root: home, fetchImpl: impl, env: {}, now });
       expect(out.ok).toBe(true);
-      expect(calls.map((c) => c.url)).toEqual([CATALOG_URLS[0]]);
+      // 两源并行都打（不是首个有效即止）：调用顺序即 CATALOG_URLS 顺序
+      expect(calls.map((c) => c.url)).toEqual([...CATALOG_URLS]);
       const loaded = loadCatalog({ root: home });
       expect(loaded.source).toBe("remote");
       expect(loaded.fetchedAt).toBe("2026-06-06T00:00:00.000Z");
@@ -280,18 +285,66 @@ describe("refreshCatalog：抓取三态与 TTL 节流", () => {
     }
   });
 
-  it("主源坏（非 2xx / 坏 JSON / 校验不过）→ 退备源抓一次", async () => {
+  it("两源都有效但 updatedAt 不同 → 取**新**的那份（落盘与 memo 都是它）", async () => {
     const home = tmpHome();
     try {
-      const { impl, calls } = makeFetch((_url, call) =>
-        call === 1 ? { status: 503, text: "cdn down" } : { text: JSON.stringify(doc([entry({ id: "backup" })])) },
+      // 主源（jsDelivr）吐旧目录、备源（raw）吐新目录：取新，证明没有被「主源可用即止」拖住
+      const { impl, calls } = makeFetch((url) =>
+        url === CATALOG_URLS[0]
+          ? { text: JSON.stringify(doc([entry({ id: "old" })], "2026-01-01T00:00:00.000Z")) }
+          : { text: JSON.stringify(doc([entry({ id: "new" })], "2026-06-06T00:00:00.000Z")) },
       );
       const out = await refreshCatalog({ root: home, fetchImpl: impl, env: {} });
       expect(out.ok).toBe(true);
-      expect(calls.map((c) => c.url)).toEqual([CATALOG_URLS[0], CATALOG_URLS[1]]);
+      expect(calls.map((c) => c.url)).toEqual([...CATALOG_URLS]);
+      expect(loadCatalog({ root: home }).providers.map((p) => p.id)).toEqual(["new"]); // memo
+      const onDisk = JSON.parse(fs.readFileSync(catalogCachePath(home), "utf8"));
+      expect(onDisk.providers.map((p: any) => p.id)).toEqual(["new"]); // 落盘
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("只有备用源有效 → 用它（原「先主后备」行为的等价物）", async () => {
+    const home = tmpHome();
+    try {
+      const { impl, calls } = makeFetch((url) =>
+        url === CATALOG_URLS[0] ? { status: 503, text: "cdn down" } : { text: JSON.stringify(doc([entry({ id: "backup" })])) },
+      );
+      const out = await refreshCatalog({ root: home, fetchImpl: impl, env: {} });
+      expect(out.ok).toBe(true);
+      expect(calls.map((c) => c.url)).toEqual([...CATALOG_URLS]); // 两源都试过
       expect(loadCatalog({ root: home }).providers.map((p) => p.id)).toEqual(["backup"]);
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("时间戳：缺失/解析不出当最旧（有戳的那份赢）；完全并列取靠前源（主源）", async () => {
+    // 其一：主源缺 updatedAt、备源有戳 → 备源赢（缺失不压过有戳）
+    const h1 = tmpHome();
+    const h2 = tmpHome();
+    try {
+      const { impl: impl1 } = makeFetch((url) =>
+        url === CATALOG_URLS[0]
+          ? { text: JSON.stringify(doc([entry({ id: "no-stamp" })], null)) }
+          : { text: JSON.stringify(doc([entry({ id: "stamped" })], "2020-01-01T00:00:00.000Z")) },
+      );
+      expect((await refreshCatalog({ root: h1, fetchImpl: impl1, env: {} })).ok).toBe(true);
+      expect(loadCatalog({ root: h1 }).providers.map((p) => p.id)).toEqual(["stamped"]);
+
+      // 其二：两源都缺戳（并列）→ 取靠前源（CATALOG_URLS[0]）
+      __resetCatalogMemo();
+      const { impl: impl2 } = makeFetch((url) =>
+        url === CATALOG_URLS[0]
+          ? { text: JSON.stringify(doc([entry({ id: "first-src" })], null)) }
+          : { text: JSON.stringify(doc([entry({ id: "second-src" })], null)) },
+      );
+      expect((await refreshCatalog({ root: h2, fetchImpl: impl2, env: {} })).ok).toBe(true);
+      expect(loadCatalog({ root: h2 }).providers.map((p) => p.id)).toEqual(["first-src"]);
+    } finally {
+      fs.rmSync(h1, { recursive: true, force: true });
+      fs.rmSync(h2, { recursive: true, force: true });
     }
   });
 
@@ -315,26 +368,34 @@ describe("refreshCatalog：抓取三态与 TTL 节流", () => {
     }
   });
 
-  it("TTL：本地副本还新鲜就不打扰发布源；过期（或时间戳不可信）才抓", async () => {
+  it("TTL：本地副本还新鲜就不打扰发布源；过期（或时间戳不可信）才抓（用 CATALOG_TTL_MS 推算）", async () => {
     const now = Date.parse("2026-07-07T00:00:00.000Z");
+    // 新鲜（TTL - 1s）→ 不抓；边界（正好 TTL）与过期（TTL + 1s）→ 抓。别写死时长，全按导出的常量推算
     const fresh = tmpHome();
+    const boundary = tmpHome();
     const stale = tmpHome();
     try {
-      // 新鲜：跳过，fetchImpl 一次都不打
-      writeCatalogCache(fresh, doc([entry({ id: "fresh" })]), new Date(now - 60 * 1000).toISOString());
+      writeCatalogCache(fresh, doc([entry({ id: "fresh" })]), new Date(now - (CATALOG_TTL_MS - 1000)).toISOString());
       const a = makeFetch(() => ({ text: JSON.stringify(doc()) }));
       expect((await refreshCatalog({ root: fresh, fetchImpl: a.impl, env: {}, now })).ok).toBe(false);
       expect(a.calls.length).toBe(0);
 
-      // 过期：真的抓一次
+      // 过期：真的抓（两源并行 → 一轮 = CATALOG_URLS.length 次）
       __resetCatalogMemo(); // memo 是进程级的（生产里 root 恒为 HOME，测试换了 root 要清）
+      writeCatalogCache(boundary, doc([entry({ id: "boundary" })]), new Date(now - CATALOG_TTL_MS).toISOString());
+      const c = makeFetch(() => ({ text: JSON.stringify(doc([entry({ id: "refreshed-0" })])) }));
+      expect((await refreshCatalog({ root: boundary, fetchImpl: c.impl, env: {}, now })).ok).toBe(true);
+      expect(c.calls.length).toBe(CATALOG_URLS.length);
+
+      __resetCatalogMemo();
       writeCatalogCache(stale, doc([entry({ id: "stale" })]), new Date(now - CATALOG_TTL_MS - 60 * 1000).toISOString());
       const b = makeFetch(() => ({ text: JSON.stringify(doc([entry({ id: "refreshed" })])) }));
       expect((await refreshCatalog({ root: stale, fetchImpl: b.impl, env: {}, now })).ok).toBe(true);
-      expect(b.calls.length).toBe(1);
+      expect(b.calls.length).toBe(CATALOG_URLS.length);
       expect(loadCatalog({ root: stale }).providers.map((p) => p.id)).toEqual(["refreshed"]);
     } finally {
       fs.rmSync(fresh, { recursive: true, force: true });
+      fs.rmSync(boundary, { recursive: true, force: true });
       fs.rmSync(stale, { recursive: true, force: true });
     }
   });
@@ -352,7 +413,7 @@ describe("refreshCatalog：抓取三态与 TTL 节流", () => {
     }
   });
 
-  it("BUNKITEN_PROVIDERS_URL 覆盖源：只打这一个（测试/镜像口径）", async () => {
+  it("BUNKITEN_PROVIDERS_URL 覆盖源：只打这一个（测试/镜像口径；单源语义不变）", async () => {
     const home = tmpHome();
     try {
       const { impl, calls } = makeFetch(() => ({ text: JSON.stringify(doc([entry({ id: "mirror" })])) }));
@@ -360,6 +421,71 @@ describe("refreshCatalog：抓取三态与 TTL 节流", () => {
       expect(out.ok).toBe(true);
       expect(calls.map((c) => c.url)).toEqual(["http://127.0.0.1:9/providers.json"]);
       expect(loadCatalog({ root: home }).providers.map((p) => p.id)).toEqual(["mirror"]);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("revalidateCatalog：读路径的 stale-while-revalidate（单飞 / TTL 守卫 / 永不抛）", () => {
+  it("新鲜缓存 → 零请求（TTL 守卫照用，一次网络都不打）", async () => {
+    const now = Date.parse("2026-08-08T00:00:00.000Z");
+    const home = tmpHome();
+    try {
+      writeCatalogCache(home, doc([entry({ id: "fresh" })]), new Date(now - 60 * 1000).toISOString());
+      const { impl, calls } = makeFetch(() => ({ text: JSON.stringify(doc()) }));
+      const out = await revalidateCatalog({ root: home, fetchImpl: impl, env: {}, now });
+      expect(out.ok).toBe(false);
+      expect(calls.length).toBe(0);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("过期缓存 → 真的抓一轮并落地（memo 变 remote）", async () => {
+    const now = Date.parse("2026-08-08T00:00:00.000Z");
+    const home = tmpHome();
+    try {
+      writeCatalogCache(home, doc([entry({ id: "stale" })]), new Date(now - CATALOG_TTL_MS - 1000).toISOString());
+      const { impl, calls } = makeFetch(() => ({ text: JSON.stringify(doc([entry({ id: "refreshed" })])) }));
+      const out = await revalidateCatalog({ root: home, fetchImpl: impl, env: {}, now });
+      expect(out.ok).toBe(true);
+      expect(calls.length).toBe(CATALOG_URLS.length);
+      const loaded = loadCatalog({ root: home });
+      expect(loaded.source).toBe("remote");
+      expect(loaded.providers.map((p) => p.id)).toEqual(["refreshed"]);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("并发调用只发一轮（单飞：同一在途 Promise 被复用）", async () => {
+    const now = Date.parse("2026-08-08T00:00:00.000Z");
+    const home = tmpHome();
+    try {
+      writeCatalogCache(home, doc([entry({ id: "stale" })]), new Date(now - CATALOG_TTL_MS - 1000).toISOString());
+      const { impl, calls } = makeFetch(() => ({ text: JSON.stringify(doc([entry({ id: "once" })])) }));
+      const p1 = revalidateCatalog({ root: home, fetchImpl: impl, env: {}, now });
+      const p2 = revalidateCatalog({ root: home, fetchImpl: impl, env: {}, now });
+      const p3 = revalidateCatalog({ root: home, fetchImpl: impl, env: {}, now });
+      expect(p2).toBe(p1); // 进程内一个在途 Promise 复用
+      expect(p3).toBe(p1);
+      await Promise.all([p1, p2, p3]);
+      expect(calls.length).toBe(CATALOG_URLS.length); // 一轮 = 两源各一次，不是三轮
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("永不抛：fetchImpl 直接抛也只回 {ok:false}（返回的 Promise 不 reject）", async () => {
+    const now = Date.parse("2026-08-08T00:00:00.000Z");
+    const home = tmpHome();
+    try {
+      writeCatalogCache(home, doc([entry({ id: "stale" })]), new Date(now - CATALOG_TTL_MS - 1000).toISOString());
+      const impl = (async () => {
+        throw new Error("network exploded");
+      }) as unknown as typeof fetch;
+      await expect(revalidateCatalog({ root: home, fetchImpl: impl, env: {}, now })).resolves.toEqual({ ok: false });
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }

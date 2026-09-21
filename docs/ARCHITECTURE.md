@@ -658,17 +658,19 @@ grok CLI 的图像通道没有 BYOK 字段（只有 `features.image_gen` 开关�
 
 ### 服务目录在线更新（v1.10，ADR-0020）
 
-服务目录（`shared/providers.mjs` 的 `PROVIDERS`）原先只是**打进包里的死数据**：新服务、或某家改了 `base_url`/模型示例，只有等下一个游戏版本才到得了玩家机器。v1.10 起它变成可**随版本单独更新**的发布物，链路是「仓库 JSON 发布源 → 服务端启动抓取 → 本地缓存 → 内置兜底」：
+服务目录（`shared/providers.mjs` 的 `PROVIDERS`）原先只是**打进包里的死数据**：新服务、或某家改了 `base_url`/模型示例，只有等下一个游戏版本才到得了玩家机器。v1.10 起它变成可**随版本单独更新**的发布物，链路是「仓库 JSON 发布源 → 服务端抓取（启动 + GET 后台 revalidate）→ 本地缓存 → 内置兜底」。
+
+**发布→可见的窗口**（ADR-0020 的「修订」段）：`min(各发布源 CDN 缓存) + TTL(≤6h) + 一次抓取延迟`，触发点是启动或过期后的下一次 `GET /api/providers`。raw 可达时 `min` 是 ~5 分钟（raw 的 `cache-control: max-age=300`），最坏 ≈ 6h 多；只有 raw 不可达、退到 jsDelivr 时才回到 ≤12h（jsDelivr 边端 `s-maxage=43200`）+ 6h。**不必重启**：长开着的应用下次设置屏 GET 就会后台刷新。
 
 | 层 | 落点 | 说明 |
 |---|---|---|
 | 唯一真源 | `shared/providers.mjs` 的 `PROVIDERS` | 也是**内置兜底**那份；加服务仍是改数据不是改代码 |
 | 发布源 | `docs/providers.json`（`{version:1, updatedAt, providers}`） | 由 `npm run providers:export`（`scripts/export-providers.mjs`）从真源生成，**只搬不改**；契约 lint ⑦ 组断言它与 `PROVIDERS` 深等——手改 JSON 会红，不存在第二份目录 |
-| 抓取 | `server/providers-catalog.mjs` 的 `refreshCatalog()` | `startServer()` 里 `void refreshCatalog()` **非阻塞**跑一次；主源 jsDelivr（`…@main/docs/providers.json`）、备源 GitHub raw（`CATALOG_URLS` 按序试），单次 10s 墙钟上限（`CATALOG_TIMEOUT_MS`），**失败静默**（不抛、不响、不落盘） |
-| 缓存 | `~/.bunkiten/providers.json` | 与凭据**同目录**（`CREDENTIALS_DIRNAME` 只有一份），目录 0700 / 文件 0600、临时文件 + rename 原子写；`CATALOG_TTL_MS = 24h` 节流（本地副本还新鲜就不打扰发布源）；坏 JSON / 版本不认 / 校验不过一律**当无缓存**（读路径永不抛） |
-| 下发 | `GET /api/providers` | `{ providers, source: "bundled"\|"cache"\|"remote", fetchedAt }`，`loadCatalog()` 按 memo → 缓存 → 内置三级回落；**只读**——只回答「有哪些服务可选」 |
+| 抓取 | `server/providers-catalog.mjs` 的 `refreshCatalog()` | `startServer()` 里 `void refreshCatalog()` **非阻塞**跑一次；**两源并行都抓**（`CATALOG_URLS`：jsDelivr `…@main/docs/providers.json` + GitHub raw），各自 10s 墙钟上限（`CATALOG_TIMEOUT_MS`），校验后取 `updatedAt` 最大的一份（缺失/解析不出当最旧、完全并列取靠前源），**失败静默**（不抛、不响、不落盘）。**`GET /api/providers` 还会 stale-while-revalidate**：`providersView` 先立即回当前 `loadCatalog()`，再 fire-and-forget `revalidateCatalog()`（单飞、非阻塞、永不抛、TTL/开关守卫照用）——长开着的应用不必重启就刷新 |
+| 缓存 | `~/.bunkiten/providers.json` | 与凭据**同目录**（`CREDENTIALS_DIRNAME` 只有一份），目录 0700 / 文件 0600、临时文件 + rename 原子写；`CATALOG_TTL_MS = 6h` 节流（本地副本还新鲜就不打扰发布源）；坏 JSON / 版本不认 / 校验不过一律**当无缓存**（读路径永不抛） |
+| 下发 | `GET /api/providers` | `{ providers, source: "bundled"\|"cache"\|"remote", fetchedAt }`，`loadCatalog()` 按 memo → 缓存 → 内置三级回落；响应先于后台刷新返回（见「抓取」行的 revalidate）；**只读**——只回答「有哪些服务可选」 |
 
-- **开关**（与 electron-updater 的既有做法同款）：`BUNKITEN_PROVIDERS_URL=<url>` 覆盖发布源（只打这一个，测试/镜像用）；`BUNKITEN_DISABLE_UPDATE=1` **跳过抓取**——注意语义是「不抓」，**不禁止读本地缓存**（缓存照吃；打包冒烟用它保证不联网，集成栈也默认钉它，免得网络抖动拖红既有用例）。
+- **开关**（与 electron-updater 的既有做法同款）：`BUNKITEN_PROVIDERS_URL=<url>` 覆盖发布源（只打这一个、**保持单源语义**，测试/镜像用）；`BUNKITEN_DISABLE_UPDATE=1` **跳过抓取**——注意语义是「不抓」，**不禁止读本地缓存**（缓存照吃；打包冒烟用它保证不联网，集成栈也默认钉它，免得网络抖动拖红既有用例）。两个开关对 `revalidateCatalog()` 同样生效（它只是 `refreshCatalog` 的包装）：GET 时也不会触发抓取。
 - **校验取捨**（`validateCatalogDocument` 纯函数，单测直测）：**整包**形状坏（非对象 / `version` 不认 / `providers` 不是数组 / 剔完一条不剩）→ 拒整包、回落缓存/内置；**单条**坏（id 非法或重复、`kind` 不认识、`label` 空、地址非法、超长、地址留空又没 `note`）→ **只丢那一条**。远端是不可信输入，而目录是下拉候选全集——宁可少一个选项，也不给玩家一个打不通的地址。
 - **安全约束（本通道的边界，实现里逐条钉住）**：① **远端只喂下拉候选**——绝不据此改写玩家已存的 `baseUrl`/`apiKey`/模型（那是 GUI 里手填的一等公民，走 `/api/credentials`）；② **https-only**——发布源里的地址只收 `https`，例外只有 `http://localhost:*` 与 `http://127.0.0.1:*`（内置表里 ollama / LM Studio 本就是本机明文 HTTP）；③ **整包校验失败即弃**（不动缓存、不更 memo）；④ **只搬白名单字段**（`normalizeEntry` 重建对象，远端多出的键一律丢掉——那些键进了 GUI 视图就是注入面）。
 - **服务端凭据校验随之放宽**：provider 白名单 = **内置 ∪ 当前目录**（入口闭包 `allowedProviderIds()`，注入给 `credentials.mjs` 的 `validateCredentialsPatch`）——目录能被远端注入新 id，下拉里选得到的就必须存得下（否则「能选不能存」）；反过来，目录暂时不可用（抓不到 → `source:"bundled"`）时，玩家**已存的远端 id 也不会被静默改写**。**读路径只按形状**保留（`PROVIDER_ID_RE` 的真源已收进 `shared/providers.mjs`，`credentials.mjs` 不再自带第二份 id 形态）。
@@ -721,7 +723,7 @@ MCP server 是被引擎拉起的**子进程**，子进程读不了 asar：`elect
 | `/api/presets/export?id=<id>` | GET | 导出剧本包（v1.7）：`Content-Disposition: attachment; filename="<id>.preset.json"`，体为 `{ format:"bunkiten-preset", version:1, id, title, exportedAt, presetMd, assets, audio }`（二进制 base64）；id 非法 400、剧本不存在 404 |
 | `/api/presets/check?id=<id>` | GET | 剧本体检（v1.8，见「剧本体检屏」）：把 `npm run doctor` 的判定直出给界面 → `{ ok, id, title, items: [{ level:"ok"\|"warn"\|"error", group, label }] }`。`items` 顺序与 doctor 的报告一致（同组的行连着）；`label` 是 doctor 的行原文（中文逐字不改）；`ok` 为 false ⟺ 至少一条 error。id 缺失/非法 400、剧本目录不存在 404、doctor 模块不可用 503（`scripts/` 不进打包 layout，见「已知限制」） |
 | `/api/auth` | GET | `{ loggedIn, hasCredentials }`（v1.10）：`loggedIn` = `~/.grok/auth.json` 存在性；`hasCredentials` = LLM 侧配全了自备 key（boot 屏据此放行，两者任一即可开玩）。**响应里不含任何 key** |
-| `/api/providers` | GET | 服务目录候选（v1.10，ADR-0020）→ `{ providers, source:"bundled"\|"cache"\|"remote", fetchedAt }`：`source` 说的是**这一份目录是从哪来的**（本进程刚抓到远端 / 读的本地缓存 / 回落内置表），设置屏两个下拉吃它。**只读**——远端目录只喂下拉候选，绝不据此改写玩家已存的 `baseUrl`/`apiKey`/模型；服务端启动时非阻塞抓一次发布源（`docs/providers.json`），24h TTL、失败静默（见「服务目录在线更新」） |
+| `/api/providers` | GET | 服务目录候选（v1.10，ADR-0020）→ `{ providers, source:"bundled"\|"cache"\|"remote", fetchedAt }`：`source` 说的是**这一份目录是从哪来的**（本进程刚抓到远端 / 读的本地缓存 / 回落内置表），设置屏两个下拉吃它。**只读**——远端目录只喂下拉候选，绝不据此改写玩家已存的 `baseUrl`/`apiKey`/模型；服务端启动时非阻塞抓一次发布源（`docs/providers.json`），并在此端点每次 GET 时后台 revalidate（先回当前视图、刷新在后台跑）、6h TTL、失败静默（见「服务目录在线更新」） |
 | `/api/credentials` | GET | 引擎凭据的脱敏视图（v1.10，见「引擎凭据与自备 key」）→ `{ ok, version, llm, image }`，每组 `{ mode, provider, baseUrl, model, size?, hasKey, apiKeyMasked }`；**永不回明文** |
 | `/api/credentials` | POST | 局部更新凭据：`{ llm?, image?, clear?: ["llm"\|"image"] }`（空串=清该字段、`clear` 整组回默认）；逐字段校验，非法 400 `{ ok:false, error }`；成功 200 + 脱敏视图。body 上限走缺省 5MB |
 | `/api/credentials/test` | POST | 真连一次 `{ target: "llm"\|"image" }` → `{ ok, status, ms, error?, detail? }`（端点自身恒 200，「没通过」是业务结果；`error` 已脱敏截断）。target 非法 400 |
@@ -852,7 +854,7 @@ theme:
 - productName `Bunkiten`（ASCII，规避 NSIS/非 UTF-8 终端对中文的兼容风险）。
 - **`presets/` 随包分发的不只是剧本文件**：立绘/背景（`presets/<id>/assets/`）、封面（`presets/<id>/cover.jpg`）与音频（`presets/<id>/audio/`，v1.6 起）都在里面——打包会把当前仓库的素材一起装进去；顶层 `assets/` 目录在 v1.5.1 已删除，打包配置里不再有它。
 - **`.grok/` 随包分发（引擎 skill 的唯一真源）**：`extraResources` 把仓库 `.grok/`（`skills/bunkiten/SKILL.md` + `commands/`）复制进 `resources/game/.grok`，而 `server/acp.mjs` 的 `--plugin-dir` 指的就是它（开发态指仓库根那份）——skill 是引擎纪律的全部真相，必须随包装进去才生效（v1.10，ADR-0021；为什么不是靠文件夹信任，见「ACP 契约」的传输一节）。**该目录只放 `commands/` 与 `skills/`**：`--plugin-dir` 会把它当 always trusted，往里加 hooks/MCP 等于对引擎无条件授予执行权。
-- Windows：`npm run dist:win`（x64，`nsis` + `portable`）。不签名由 `electron-builder.yml` 的 `win.signExecutable: false` 决定（只跳过签名，保留图标与版本元数据写入）；本地脚本另设 `CSC_IDENTITY_AUTO_DISCOVERY=false` 双保险。
+- Windows：`npm run dist:win`（x64，`nsis` + `portable`）。**签名与 mac 同款条件化**——`electron-builder.yml` 的 `win` 段刻意不写 `signExecutable`（默认 `true`）：没有 `WIN_CSC_LINK` 时 electron-builder 只打一条 debug 就跳过签名，而图标/版本元数据走的是另一条路径（`signAndEditResources()` 先 `editWindowsResources()` 再 `signIf()`），所以未签名构建的产物与从前完全一致；有证书时应用 exe、asar 外 exe/dll、NSIS 安装器与卸载器一并签名（带默认时间戳）。注意 `signExecutable: false` 是**硬关**（证书配齐也不签），已不再使用；本地脚本另设 `CSC_IDENTITY_AUTO_DISCOVERY=false`（只对 mac 的 identity 自动发现有效）。开启步骤与验收命令见 [RELEASING.md](RELEASING.md)。
 - macOS：`npm run dist:mac`（`dmg` + `zip`，arm64 + x64）。**签名/公证是条件化的**——`electron-builder.yml` 不再写死 `identity: null`：`CSC_LINK` + `CSC_KEY_PASSWORD` 与 `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` 齐备时才自动发现证书签名，并由根级 `afterSign: electron/notarize.cjs` 钩子提交 notarytool 公证、成功后 `xcrun stapler staple` 把 ticket 钉进 `.app`（staple 是 best-effort，失败只告警不 fail 构建）；三件套不齐时钩子直接 return，本地 `dist:mac` / `dist:mac:dir` 显式 `CSC_IDENTITY_AUTO_DISCOVERY=false` 走未签名路径。`hardenedRuntime: true` 与 `build/entitlements.mac.plist` 是公证的前置条件。
 - `publish` 声明为 **github provider**（`Jackela/bunkiten`）：这是 `latest*.yml` / `app-update.yml` 与 `electron-updater` 的前提。实际发布只由 release job 做（打包一律 `--publish never`），这里只声明 update channel 的来源，避免 update-info 环节拿到 null channel 崩溃。
 - 产物在 `release/`。
@@ -881,10 +883,10 @@ theme:
 - **快照有量级上限（v1.6）**：`state/worlds/<worldId>/history/NNNN.json` 是 4 位递增，`seq > 9999` 后**不再写快照**并告警一次（文件名位数不变，不做滚动清理）——单条世界线约一万个正戏回合后，回退精度停在最后一条快照上。
 - **history 随回合线性增长（v1.6）**：每个正戏回合 append 一条**三文件全文**快照（state/summary/tree 各一份），磁盘占用随游玩线性上升，长世界线会很占地方（内容全等的相邻回合会被去重跳过，但正常回合每轮都不同）。没做压缩或淘汰——快照是精确回退的唯一依据，宁可占地方。
 - **本地端点只挡跨站浏览器请求（v1.6）**：来源校验针对的是浏览器发起的跨站请求（CSRF、端口探测），**不防本机其他进程**——本机任意脚本都能直接调 `/api/worlds`、`/prompt` 等端点，这里没有 token、没有登录态校验（`/api/auth` 只是查 `~/.grok/auth.json` 是否存在）。它是「本机专用服务」这个前提下的最小防护，不是鉴权层。
-- **mac 包默认未签名（v1.6 起条件签名）**：未配签名 secrets 时产物未签名，首次打开需右键 → 打开；配了 `CSC_LINK` / `APPLE_ID` 三件套的构建才会签名 + 公证 + staple。**未签名的 mac 包无法自动更新**——Squirrel.Mac 要求新旧包签名一致，仓库默认发布的正是未签名包，`electron-updater` 在 mac 上只会静默失败（升级走手动下载 Release 产物）。
+- **mac 包默认未签名（v1.6 起条件签名）**：未配签名 secrets 时产物未签名，首次打开需右键 → 打开；配了 `CSC_LINK` / `APPLE_ID` 三件套的构建才会签名 + 公证 + staple。**未签名的 mac 包无法自动更新**——Squirrel.Mac 要求新旧包签名一致，仓库默认发布的正是未签名包，`electron-updater` 在 mac 上只会静默失败（升级走手动下载 Release 产物）。Windows 侧同理条件化（未配 `WIN_CSC_LINK` 即未签名，只影响 SmartScreen 提示，不影响更新）。**怎么开、开了会怎样、怎么验见 [RELEASING.md](RELEASING.md)。**
 - **image_gen 依赖账号套餐**（Imagine 额度）：不可用或限额时引擎静默跳过，游戏不受影响。**根本解法是 v1.10 的图片自备 key**（自建 MCP 工具，见「引擎凭据与自备 key」）——配了自备图片服务就不再经 xAI 的 Imagine 通道；没配的人仍受这条限制。
 - **自备 key 明文落盘（v1.10，刻意取舍）**：`~/.bunkiten/credentials.json` 是明文 + 0600——本机磁盘加密（FileVault/BitLocker）是这里的第一道防线，加密存储（keychain/密钥派生）留给后续版本（见 ADR-0019 的「被否决的备选」）。任何本机进程只要读得到这个文件就能拿到 key，这与「本机端点只挡跨站浏览器请求」是同一条前提：server 是单机服务，不是多租户边界。
-- **在线服务目录有窗口期（v1.10）**：目录更新是尽力而为的后台动作——主源 jsDelivr 的 `@main` 引用有 CDN 边缘缓存窗口，本机还有 24h TTL 节流，所以「作者往目录里加了一个新服务」到玩家下拉里看得见，最多要等一天 + 边缘缓存；抓不到 / 缓存坏 / 校验不过就继续用内置表（`source:"bundled"`），**这不影响任何已存凭据**——远端只喂下拉候选，永不改写玩家已存的服务地址、密钥与模型（见「服务目录在线更新」）。
+- **在线服务目录有窗口期（v1.10；窗口已收窄，ADR-0020 修订）**：目录更新是尽力而为的后台动作。窗口 = `min(各发布源 CDN 缓存) + TTL(6h) + 一次抓取延迟`，触发点是启动或过期后的下一次 `GET /api/providers`（**不必重启**）：两源并行取最新，raw 可达时其缓存是分钟级（`cache-control: max-age=300`），最坏 ≈ 6h 多；只有 raw 不可达、退到 jsDelivr 时才回到 ≤12h（其边端 `s-maxage=43200`）+ 6h。抓不到 / 缓存坏 / 校验不过就继续用内置表（`source:"bundled"`），**这不影响任何已存凭据**——远端只喂下拉候选，永不改写玩家已存的服务地址、密钥与模型（见「服务目录在线更新」）。
 
 ## 修改指引
 
@@ -965,7 +967,7 @@ v1.10 服务目录在线更新 / 引擎 skill 注入 / 出图工具名的同步�
 
 | 契约 | 同步点 |
 |---|---|
-| 服务目录在线更新（发布源 `docs/providers.json` → 服务端抓取 → `~/.bunkiten/providers.json` 缓存 → 内置兜底，`/api/providers` 的 `source` 三态） | 真源 `shared/providers.mjs` 的 `PROVIDERS`（也是内置兜底）· `scripts/export-providers.mjs` + `package.json` 的 `providers:export`（改真源要同批重生成并提交，否则契约 lint ⑦ 组红）· `server/providers-catalog.mjs`（`CATALOG_URLS`/`CATALOG_VERSION`/`CATALOG_TTL_MS`/`CATALOG_TIMEOUT_MS`、`validateCatalogDocument`/`readCatalogCache`/`writeCatalogCache`/`loadCatalog`/`refreshCatalog`）与入口 `startServer` 的 `void refreshCatalog()` + 闭包 `providersView`/`allowedProviderIds` · `routes.mjs` 的 `GET /api/providers` · `credentials.mjs` 的 `validateCredentialsPatch`（白名单由调用方注入：内置 ∪ 目录）与 `shared/providers.mjs` 的 `PROVIDER_ID_RE`（形态真源，读路径用）· GUI `src/components/EngineKeysSection.tsx`（在线目录优先、`providersFor(kind)` 回落、「在线目录」标注 `engine-catalog-online`）· `tests/providers-catalog.test.ts` + `tests/integration/providers-catalog.test.ts` · `docs/adr/0020` |
+| 服务目录在线更新（发布源 `docs/providers.json` → 服务端抓取 → `~/.bunkiten/providers.json` 缓存 → 内置兜底，`/api/providers` 的 `source` 三态） | 真源 `shared/providers.mjs` 的 `PROVIDERS`（也是内置兜底）· `scripts/export-providers.mjs` + `package.json` 的 `providers:export`（改真源要同批重生成并提交，否则契约 lint ⑦ 组红）· `server/providers-catalog.mjs`（`CATALOG_URLS`/`CATALOG_VERSION`/`CATALOG_TTL_MS`（**6h**，与窗口算式配套，改它要同批改本表与 ADR-0020）/`CATALOG_TIMEOUT_MS`、`validateCatalogDocument`/`readCatalogCache`/`writeCatalogCache`/`loadCatalog`/`refreshCatalog`（两源并行取最新）/`revalidateCatalog`（GET 时后台刷新））与入口 `startServer` 的 `void refreshCatalog()` + 闭包 `providersView`（**先回视图、再 `void revalidateCatalog()`** 的接缝）/`allowedProviderIds` · `routes.mjs` 的 `GET /api/providers` · `credentials.mjs` 的 `validateCredentialsPatch`（白名单由调用方注入：内置 ∪ 目录）与 `shared/providers.mjs` 的 `PROVIDER_ID_RE`（形态真源，读路径用）· GUI `src/components/EngineKeysSection.tsx`（在线目录优先、`providersFor(kind)` 回落、「在线目录」标注 `engine-catalog-online`）· `tests/providers-catalog.test.ts` + `tests/integration/providers-catalog.test.ts` · `docs/adr/0020`（含「修订」段） |
 | 引擎 skill 注入（spawn 固定带 `--plugin-dir <gameRoot>/.grok`） | `server/acp.mjs` 的 spawn 参数面 · `.grok/` 目录布局（**只有 `commands/` 与 `skills/`**——`--plugin-dir` 会 always-trust 它，加 hooks/MCP 就是无条件授予执行权）· `electron-builder.yml` 的 `extraResources`（`.grok` → `resources/game/.grok`）与打包布局一节 · 假引擎探针 `tests/integration/fake-engine.mjs`（记录 `argv`）+ `tests/integration/credentials.test.ts`（断言参数含 `--plugin-dir` 且值 = `<gameRoot>/.grok`）· `docs/adr/0021` |
 | 出图工具名（`bunkiten-media__generate_image` 与裸名 `generate_image` 都认） | `server/media-mcp.mjs` 的 `MEDIA_MCP_NAME`/`MEDIA_TOOL_NAME`/`MEDIA_TOOL_CATALOG_NAME` 与 `tools/call` 分支 · `SKILL.md`【美术】「出图工具优先（硬规则）」（引擎经 `search_tool`/`use_tool` 用 catalog 全名调）· 契约 lint ⑦ 组（两个常量拼出的键必须逐字出现在 SKILL.md 里）· 三层 mock 出图用例（`tests/integration/media-mock`、`tests/e2e-ui/media-mock.spec.ts`、`tests/e2e-packaged/packaged.spec.ts` 第二条）与真链路 `tests/e2e-packaged/real-image.spec.ts` |
 

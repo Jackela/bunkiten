@@ -9,3 +9,23 @@
 **被否决**：**其一，保持纯内置**（现状）——这正是要修的问题：目录是服务商世界的快照，换代很快，把它的更新绑在游戏发版上，玩家拿到新服务要等整包；成本也低（一个 JSON + 一个抓取函数）。**其二，客户端（GUI）直抓**——渲染进程直连第三方 CDN 会把「玩家本机 IP + 使用痕迹」暴露给发布源，还绕过了服务端已有的两道闸（跨站 403 / body 上限）与「一个进程一份缓存」的一致性；渲染侧还要各写一份 fetch/超时/缓存逻辑。服务端抓、客户端只读 `/api/providers`，是更小的信任面与更少的重复。**其三，现在就上签名**——对一份公开的、非敏感的服务目录做内容签名，要引入密钥管理、公钥分发与轮换，收益与复杂度不成比例；真正的安全边界是上面那四条（只喂候选/不该动玩家的值/https-only/校验即弃），它们不依赖签名。**其四，逐服务商适配 / 引入 provider SDK**——协议差异早已被「OpenAI 兼容 + 数据表」压到 `base_url` 与模型名两个字段（ADR-0019 的边界），目录更新解决的是「数据更新的时机」，不是「协议支持的面」；写代码只会把「加一个服务」从改数据变成改代码。**另**：不做「服务端替玩家预填/自动写入凭据」（越权且违反第 ① 条），不做「目录条目带 key/账号」（目录是公开物，永不携带凭据）。
 
 **代价与前提**：其一，`server/` 多一个模块（`providers-catalog.mjs`）、入口闭包多一个 `providersView` 与一行启动期 `void refreshCatalog()`、`routes.mjs` 多一个端点（`/api/providers`）与类型声明；其二，`scripts/export-providers.mjs` + `package.json` 的 `providers:export` 是新的作者侧步骤——**改了 `shared/providers.mjs` 要顺手跑一次并提交 `docs/providers.json`**，忘了会被契约 lint ⑦ 组红；其三，测试面新增两层：`tests/providers-catalog.test.ts`（校验/缓存/回落/抓取三态，纯函数）+ `tests/integration/providers-catalog.test.ts`（本地 mock 发布源：remote → 落盘 0600 → 断源重启吃缓存 → 离线内置兜底），集成 harness 为此加了 `extraEnv` 与 `homeDir` 两个可选参数，并**默认给集成栈 `BUNKITEN_DISABLE_UPDATE=1`**（离线、不因网络抖动拖红既有用例）；其四，jsDelivr 的 `@main` 分支引用有 CDN 缓存窗口（内容更新到边端有延迟），这是选它当主源的固有代价，与我们 24h 的 TTL 节流同量级、不影响正确性（抓到哪版就用哪版，坏则丢）。
+
+---
+
+## 修订（2026-09-21）：把「发布→可见」的窗口收窄
+
+**触发**：原文的窗口是「jsDelivr 边缘缓存（可达 12h 量级）+ 24h TTL + **必须重启**」——最长一天多、且长开着的应用即使发布源已经更新也只能等下次启动才看得到（`release notes` 里那句「最多一天 + 缓存」就是这么来的）。窗口的每一项都可以压，本修订把三项一起动。
+
+**实证（本机直连，`docs/providers.json` 已发布在 `main`）**：两源**内容一致**（同 `updatedAt` `2026-09-21T02:12:48.437Z`、27 条、同 `content-length` 7946），但缓存窗口差一个数量级——jsDelivr 回 `cache-control: public, max-age=604800, s-maxage=43200`（**边端 12h**，`x-cache: MISS` 说明本次是回源取的新副本）、GitHub raw 回 `cache-control: max-age=300`（**5 分钟**）。也就是说：**raw 这条路径本身几乎不滞后，滞后的是 jsDelivr**；原文「先主后备、首个有效即止」让可达性更好的 jsDelivr 一旦可用就永远赢，把 raw 那条快路白等着。
+
+**新语义一：两源并行抓、取「最新有效」**（`refreshCatalog` → `fetchValidCatalog` + `pickNewest`）。`Promise.allSettled` 并行抓 `CATALOG_URLS`（各自 10s 上限不变），各自过 `validateCatalogDocument`，在**全部有效**结果里取 `updatedAt` 最大的一份（缺失/解析不出视为最旧，完全并列按 `CATALOG_URLS` 顺序取前者）；只有一份有效就用它；全无效 → `{ok:false}`。效果：新鲜度取两源的 **min**——raw 可达时就是 raw 的分钟级，jsDelivr 从「永远压住」变成「raw 抽风时的兜底」。`BUNKITEN_PROVIDERS_URL` 覆盖时**保持单源语义不变**（测试/镜像要的是确定性）。
+
+**新语义二：TTL 24h → 6h**（`CATALOG_TTL_MS`）。TTL 直接落进窗口算式里，一天太长；6h 与常用 CDN 的边缘缓存同量级，让本地这一层不再是窗口里的主导项。
+
+**新语义三：GET 时 stale-while-revalidate**（新增导出 `revalidateCatalog({root, fetchImpl, env, now})`）。接到 `/api/providers` 的读取路径上（`acp-server.mjs` 闭包 `providersView`）：先**立即**回当前 `loadCatalog()` 的结果，再 fire-and-forget 触发一次后台刷新。它的纪律：**永不抛**（返回的 Promise 不 reject）、**非阻塞**（调用方不 await）、**单飞**（进程内一条在途 Promise 被所有并发 GET 复用，落地后清零）、**TTL/开关守卫照用**（只是 `refreshCatalog` 的一次包装，未过期或 `BUNKITEN_DISABLE_UPDATE=1` 时一次网络都不打）。效果：长开着的应用下次设置屏 GET 就会后台刷新，**不必等重启**。
+
+**收窄后的窗口算式（发布 `docs/providers.json` → 玩家可见）**：`min(各发布源 CDN 缓存) + TTL(≤6h) + 一次抓取延迟`，触发点是**启动**或**过期后的下一次 `GET /api/providers`**。raw 可达时 `min` 就是 **~5 分钟** → 最坏 ≈ **6h 多**；只有 raw 不可达、退到 jsDelivr 时才回到 **≤12h + 6h**。对比原文：从「12h + 24h + 重启」压到「~5min + 6h + 一次 GET」。
+
+**被否决的替代**：**其一，维持 24h / jsDelivr 单源**（现状）——正是要修的问题：raw 明明分钟级却永远用不上，重启也是硬门槛，窗口主导项（24h）白留。**其二，把发布源换成 GitHub Release 资产链接**——资产更新要**发版**（tag + 打包 + 建 Release），把「改一份 JSON」重新绑回发版流程，比原问题（等下一个游戏版本）好得有限，且边界更重；仓库 `main` 上的文件本就是最短路径。**其三，给 jsDelivr 链接打查询串（`?v=<hash>`）破它的边端缓存**——jsDelivr 的 `@main` 分支引用不保证按查询串区分对象、行为随 CDN 策略漂移，**不可靠**，破缓存这件事连「下次一定拿到新的」都不成立；正确做法不是骗缓存，而是**同时抓事实上的快源（raw）并按内容时间取新**。
+
+**代价与前提**：`refreshCatalog` 从「顺序首个有效即止」变成「并行都抓」——每次刷新从**最多打满到第一个有效**变成**恒定打两个源**（两次请求、共用一个 10s 窗口，最坏仍是 10s 而不是 20s）；多一个导出 `revalidateCatalog` 与它在 `providersView` 里的一行 `void`；测试在两层各加了覆盖（单测：两源取新 / 只有备源有效 / 两源都失效 / 缺失当最旧与并列取前者 / TTL 边界 / revalidate 的零请求·真抓·单飞·永不抛；集成：预写过期缓存 → GET 先回缓存态再轮询到 `remote`、预写新鲜缓存 → GET 后 mock 源零请求）。`docs/providers.json` 与 `shared/providers.mjs` 不动。
