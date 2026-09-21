@@ -16,6 +16,8 @@
 // v1.10 续：启动链三条读接口（/api/auth、/api/presets、/api/worlds）的显式超时与卸载取消——
 //      上限覆盖到 body 解析（先回响应头、再挂 body 的代理不再「永远转圈」），卸载优先于超时归一
 //      （传输层不理 signal 时也不再往已拆的屏写错误态），启动屏补上 AbortController。
+// v1.11 续：设置屏「引擎与密钥」的服务目录候选（在线目录画下拉 / 读不到静默回落内置真源 / 目录更新
+//      不让玩家已存的那家从下拉里消失），见 EngineKeysSection 的用例组。
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import React from "react";
@@ -34,6 +36,7 @@ import AssetsScreen from "../src/components/AssetsScreen";
 import WorldsScreen, { relativeTime, worldDisplayName } from "../src/components/WorldsScreen";
 import StoryTreeScreen, { earliestSnapshotByNode, prevSnapshotSeq, snapshotTurnNo } from "../src/components/StoryTreeScreen";
 import SettingsScreen from "../src/components/SettingsScreen";
+import EngineKeysSection from "../src/components/EngineKeysSection";
 import PresetCheckScreen from "../src/components/PresetCheckScreen";
 import App, { StatusAnnouncer } from "../src/App";
 import { useGameStore, type PreloadItem } from "../src/store/game";
@@ -45,7 +48,7 @@ import { playerStatus } from "../src/lib/status";
 import { TREE_ZOOM_MAX, clampZoom, fitView, panView, viewBoxOf, zoomViewAt } from "../src/lib/treeLayout";
 import { layoutGenealogy } from "../src/lib/genealogy";
 import { FONT_STACKS, dialogClass, getTheme, themeVars } from "../src/theme";
-import { BOOT_FETCH_TIMEOUT_MS, fetchPresets, type AssetEntry, type AudioItem, type Preset, type PresetCheckResult, type StateView, type WorldEntry, type WorldSnapshotMeta } from "../src/lib/acp";
+import { BOOT_FETCH_TIMEOUT_MS, fetchPresets, fetchProviders, type AssetEntry, type AudioItem, type Preset, type PresetCheckResult, type StateView, type WorldEntry, type WorldSnapshotMeta } from "../src/lib/acp";
 
 /** ui 测试用的最小剧本 fixture（与世界线屏/顶栏的展示字段对齐） */
 const PRESET: Preset = {
@@ -937,6 +940,197 @@ describe("SettingsScreen：设置项、持久化与入口（v1.6）", () => {
     );
     // master 7 被收敛到 1（=默认值）、bgm -1 → 0、非法档位回默认；只有合法的 muted 被保留
     expect(loadSettings()).toEqual({ ...DEFAULT_SETTINGS, bgm: 0, muted: true });
+  });
+});
+
+describe("fetchProviders：GET /api/providers 的形状归一（v1.11）", () => {
+  /** 把 global fetch 换成「固定回包」的桩（全局 afterEach 会 unstubAllGlobals 收尾） */
+  const stubFetch = (body: unknown, status = 200) => {
+    const mock = vi.fn(async () => jsonResponse(body, status));
+    vi.stubGlobal("fetch", mock);
+    return mock;
+  };
+
+  it("source 不是 remote/cache（服务端拼错或加了新来源）→ 一律归一到 bundled（不把意外值透到屏上）", async () => {
+    stubFetch({ providers: [], source: "mirror", fetchedAt: "2026-01-02T03:04:05.000Z" });
+    expect((await fetchProviders()).source).toBe("bundled");
+  });
+
+  it("fetchedAt 不是字符串 → null（屏上/下游只认字符串时刻或没有）", async () => {
+    stubFetch({ providers: [], source: "remote", fetchedAt: 12345 });
+    expect((await fetchProviders()).fetchedAt).toBe(null);
+    stubFetch({ providers: [], source: "remote" });
+    expect((await fetchProviders()).fetchedAt).toBe(null);
+  });
+
+  it("providers 不是数组 → 空数组（坏数据不透给下拉；空目录由调用方按组回落内置表）", async () => {
+    stubFetch({ providers: { nope: true }, source: "remote", fetchedAt: null });
+    expect((await fetchProviders()).providers).toEqual([]);
+    stubFetch({ source: "remote" });
+    expect((await fetchProviders()).providers).toEqual([]);
+  });
+
+  it("非 2xx 抛错（调用方静默回落内置表）；remote/cache 原样透出", async () => {
+    stubFetch({ providers: [], source: "cache", fetchedAt: null });
+    expect((await fetchProviders()).source).toBe("cache");
+    stubFetch({ error: "boom" }, 500);
+    await expect(fetchProviders()).rejects.toThrow("HTTP 500");
+  });
+});
+
+describe("EngineKeysSection：服务目录候选（v1.11）", () => {
+  /**
+   * GET /api/credentials 的脱敏视图（两组都回默认：对话沿用终端登录、出图不用）。
+   * POST 时把补丁并进这一份再回包——与真 server「局部更新后回整份视图」同形。
+   */
+  type View = {
+    version: number;
+    llm: Record<string, string | boolean>;
+    image: Record<string, string | boolean>;
+  };
+  function defaultView(): View {
+    return {
+      version: 1,
+      llm: { mode: "session", provider: "openai", baseUrl: "", model: "", hasKey: false, apiKeyMasked: "" },
+      image: { mode: "off", provider: "openai", baseUrl: "", model: "", size: "", sizeBackground: "", hasKey: false, apiKeyMasked: "" },
+    };
+  }
+  /** 服务端视图的本地态（POST 后更新） */
+  let creds: View;
+  /** GET /api/providers 的回包（null = 这条读不到：非 2xx） */
+  let providersResp: unknown;
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    creds = defaultView();
+    providersResp = null;
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname === "/api/credentials") {
+        if (init?.method === "POST") {
+          const patch = JSON.parse(String(init.body)) as { llm?: Record<string, string>; image?: Record<string, string> };
+          // key 不出现在视图里：只把它折成 hasKey（与 server 的 publicView 同一口径）
+          const merge = (prev: Record<string, string | boolean>, next?: Record<string, string>) => {
+            const { apiKey, ...rest } = next ?? {};
+            return { ...prev, ...rest, ...(apiKey === undefined ? {} : { hasKey: apiKey !== "" }) };
+          };
+          creds = { ...creds, llm: merge(creds.llm, patch.llm), image: merge(creds.image, patch.image) };
+        }
+        return jsonResponse({ ok: true, ...creds });
+      }
+      if (url.pathname === "/api/providers") {
+        return providersResp ? jsonResponse(providersResp) : jsonResponse({ error: "boom" }, 500);
+      }
+      return jsonResponse({}, 404);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  /** 展开一组表单（默认 mode 不是 byok 时下拉不渲染），返回该组的服务下拉 */
+  async function openGroup(group: "llm" | "image"): Promise<HTMLSelectElement> {
+    await waitFor(() => expect(screen.getByTestId(`engine-${group}-mode-byok`)).toBeTruthy());
+    fireEvent.click(screen.getByTestId(`engine-${group}-mode-byok`));
+    return screen.getByTestId(`engine-${group}-provider`) as HTMLSelectElement;
+  }
+
+  /** 下拉里的选项文案（顺序即渲染顺序） */
+  const optionLabels = (sel: HTMLSelectElement) => [...sel.options].map((o) => o.textContent);
+
+  it("读到在线目录：两组下拉用远端候选（含改名的旧条目与新增条目）、地址按远端预填，并出现「在线目录」标注", async () => {
+    providersResp = {
+      version: 1,
+      updatedAt: "2026-01-02T03:04:05.000Z",
+      providers: [
+        // 已有 id 改名 + 换地址：屏上必须显示远端这一份，而不是内置表那份
+        { id: "deepseek", label: "深海探路者", kind: "llm", baseUrl: "https://api.deepseek.com/online", models: ["deepseek-chat"] },
+        { id: "newcomer-llm", label: "新来的服务", kind: "llm", baseUrl: "https://newcomer.example/v1", models: [] },
+        { id: "newcomer-image", label: "新来的出图服务", kind: "image", baseUrl: "https://newcomer.example/img", models: [], imageModels: ["new-image-1"] },
+      ],
+      source: "remote",
+      fetchedAt: "2026-01-02T03:04:05.000Z",
+    };
+    render(<EngineKeysSection />);
+
+    // 标注：来源不是内置表时才出现（玩家话，不带 env / 内部标识）
+    await waitFor(() => expect(screen.getByTestId("engine-catalog-online")).toBeTruthy());
+
+    const llm = await openGroup("llm");
+    expect(optionLabels(llm)).toContain("深海探路者"); // 远端给的名字
+    expect(optionLabels(llm)).not.toContain("DeepSeek"); // 内置表那份没顶替进来
+    expect(optionLabels(llm)).toContain("新来的服务"); // 远端新增的条目也能挑
+
+    // 选中远端条目：地址按远端目录预填（不是内置表的 https://api.deepseek.com）
+    fireEvent.change(llm, { target: { value: "deepseek" } });
+    expect((screen.getByTestId("engine-llm-baseurl") as HTMLInputElement).value).toBe("https://api.deepseek.com/online");
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/credentials", expect.objectContaining({ method: "POST" })));
+
+    // 出图组同样吃远端候选
+    const image = await openGroup("image");
+    expect(optionLabels(image)).toContain("新来的出图服务");
+  });
+
+  it("读不到在线目录（非 2xx）：下拉回落内置表，且不出现「在线目录」标注", async () => {
+    render(<EngineKeysSection />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/providers", expect.objectContaining({ signal: expect.anything() })));
+    await act(async () => {
+      await Promise.resolve(); // 让失败那一跳落地：失败是静默的（不占错误态、不打日志）
+    });
+
+    const llm = await openGroup("llm");
+    expect(optionLabels(llm)).toContain("DeepSeek"); // 内置真源里的名字
+    expect(screen.queryByTestId("engine-catalog-online")).toBeNull();
+    expect(screen.queryByTestId("engine-keys-retry")).toBeNull(); // 目录读不到不是「配置读不到」
+  });
+
+  it("在线目录是空的（HTTP 200 但一条候选都没有）：这一份不算目录，同样回落内置表", async () => {
+    providersResp = { version: 1, providers: [], source: "remote", fetchedAt: "2026-01-02T03:04:05.000Z" };
+    render(<EngineKeysSection />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/providers", expect.objectContaining({ signal: expect.anything() })));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const llm = await openGroup("llm");
+    expect(optionLabels(llm)).toContain("DeepSeek"); // 空目录不画空下拉
+    expect(screen.queryByTestId("engine-catalog-online")).toBeNull(); // 也没换来一句「已是最新」
+  });
+
+  it("已存的服务不在在线目录里（缓存那版撤了这条）：仍留在下拉里，当前选择不会变成空白", async () => {
+    // source=cache 也算「非内置」，标注同样要出现
+    providersResp = {
+      version: 1,
+      providers: [{ id: "newcomer-llm", label: "新来的服务", kind: "llm", baseUrl: "https://newcomer.example/v1", models: [] }],
+      source: "cache",
+      fetchedAt: "2026-01-02T03:04:05.000Z",
+    };
+    render(<EngineKeysSection />);
+    await waitFor(() => expect(screen.getByTestId("engine-catalog-online")).toBeTruthy());
+
+    const llm = await openGroup("llm");
+    expect(llm.value).toBe("openai"); // 已存的那家还在候选里（下拉不是空的）
+    expect([...llm.options].map((o) => o.value)).toEqual(["openai", "newcomer-llm"]);
+    // 补进候选只为了「看得见」，玩家已存的地址/模型照旧回显（这里都是空的，故不预填远端地址）
+    expect((screen.getByTestId("engine-llm-baseurl") as HTMLInputElement).value).toBe("");
+  });
+
+  it("在线目录里这一组一条都不匹配（示例：远端只加了出图服务）→ 该组按组回落内置表，不画空下拉", async () => {
+    providersResp = {
+      version: 1,
+      providers: [{ id: "newcomer-image", label: "新来的出图服务", kind: "image", baseUrl: "https://newcomer.example/img", models: [], imageModels: ["new-image-1"] }],
+      source: "remote",
+      fetchedAt: "2026-01-02T03:04:05.000Z",
+    };
+    render(<EngineKeysSection />);
+    await waitFor(() => expect(screen.getByTestId("engine-catalog-online")).toBeTruthy());
+
+    // 对话组：远端唯一的条目 kind=image，对对话侧不可用 → 这一组回落内置表（宁可留着旧候选，也不给空下拉）
+    const llm = await openGroup("llm");
+    expect(optionLabels(llm)).toContain("DeepSeek"); // 内置真源里的名字
+    expect(optionLabels(llm)).not.toContain("新来的出图服务");
+
+    // 出图组：远端这条可用 → 用它画候选
+    const image = await openGroup("image");
+    expect(optionLabels(image)).toContain("新来的出图服务");
   });
 });
 

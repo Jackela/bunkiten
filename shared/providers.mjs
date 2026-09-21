@@ -259,6 +259,18 @@ export const PROVIDERS = Object.freeze([
 export const PROVIDER_IDS = Object.freeze(PROVIDERS.map((p) => p.id));
 
 /**
+ * 服务 id 的稳定键形态（kebab-case 的 `[a-z0-9-]`）。
+ *
+ * 为什么单拎出来当唯一真源：目录可被远端更新注入**新 id**（docs/adr/0020），所以「是不是一个 id」
+ * 这个形态判据、与「这张内置表里有没有它」这个白名单判据必须分开——
+ *   · 读路径（server/credentials.mjs 的 normalizeCredentials）只按**形态**保留：目录一次抓不到时
+ *     不能拿内置 PROVIDER_IDS 把玩家已存的远程 id 改回默认，否则目录抖一下配置就丢了；
+ *   · 写路径（server/credentials.mjs 的 validateCredentialsPatch）仍按**白名单**严校验，白名单由调用点注入。
+ * 同一份正则也被 server/providers-catalog.mjs 校验远端条目 id、契约 lint ⑦ 组复用（不抄第二份）。
+ */
+export const PROVIDER_ID_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/**
  * 按用途筛出可选服务（设置屏两个下拉用）。
  * @param {"llm" | "image"} kind 用途
  * @returns {readonly ProviderEntry[]} kind 为 both 或该用途的条目（保持目录顺序）

@@ -59,6 +59,9 @@ export interface UiStackOptions {
     llm?: { mode?: string; provider?: string; baseUrl?: string; apiKey?: string; model?: string };
     image?: { mode?: string; provider?: string; baseUrl?: string; apiKey?: string; model?: string; size?: string };
   } | null;
+  /** 追加/覆盖给 acp-server 子进程的环境变量（透传 harness.startStack.extraEnv；在线目录用例用它指
+   *  BUNKITEN_PROVIDERS_URL 到本地 mock、并开 BUNKITEN_DISABLE_UPDATE=0——服务端与浏览器看到的是同一份目录） */
+  extraEnv?: Record<string, string>;
   /** 非默认浏览上下文（如 reduced-motion 用例的 { reducedMotion: "reduce" }）；不进 startFakeStack */
   contextOptions?: BrowserContextOptions;
 }

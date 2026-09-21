@@ -1,5 +1,6 @@
 // acp-server 的 HTTP/SSE 客户端。全部走相对路径：dev 由 vite 代理，生产由 /app 同源托管。
 import type { AudioKind } from "./parser";
+import type { ProviderEntry } from "../../shared/providers.mjs";
 
 /** 剧本主题（preset frontmatter 的 theme 字段；字段非法或缺省由 theme.ts 兜底） */
 export interface PresetTheme {
@@ -343,6 +344,41 @@ async function fetchBootJson<T>(url: string, external?: AbortSignal, httpLabel =
 export async function fetchAuth(signal?: AbortSignal): Promise<{ loggedIn: boolean; hasCredentials: boolean }> {
   const data = await fetchBootJson<{ loggedIn?: boolean; hasCredentials?: boolean }>("/api/auth", signal);
   return { loggedIn: data.loggedIn === true, hasCredentials: data.hasCredentials === true };
+}
+
+/**
+ * 服务目录的客户端视图（v1.11，docs/adr/0020）：GET /api/providers 的响应体。
+ * 服务端按「进程内 memo → 本地缓存 → 内置表」三级回落，`source` 说的就是**这一份** providers 的来源：
+ * 刚抓到发布源是 `"remote"`、读的本地缓存是 `"cache"`、缓存坏/缺或还没抓到是 `"bundled"`（= 内置表本身）。
+ * **只读**：这是下拉候选，服务端与 GUI 都不据此改写玩家已存的 baseUrl / key / 模型（那些走 /api/credentials）。
+ */
+export interface ProviderCatalogView {
+  providers: ProviderEntry[];
+  source: "bundled" | "cache" | "remote";
+  /** 抓到远端的那次时刻（ISO）；缓存给出它记下的时刻，内置兜底为 null */
+  fetchedAt: string | null;
+}
+
+/**
+ * 读服务目录（设置屏画下拉候选用）。
+ * 注意这条**不是**启动链（`fetchBootJson`）的一环：它只被设置屏在挂载时读一次，拿不到就用内置表兜底
+ * （见 EngineKeysSection），所以这里照 fetchCredentials/fetchAssets 的朴素写法——不套启动链那套有界超时。
+ * @param {AbortSignal} [signal] 组件卸载时取消
+ * @returns {Promise<ProviderCatalogView>} 候选目录（形状恒完整：缺字段按空目录/内置口径归一）
+ * @throws HTTP 非 200 时抛错（调用方捕获后回落内置表，不打扰玩家）
+ */
+export async function fetchProviders(signal?: AbortSignal): Promise<ProviderCatalogView> {
+  const r = await fetch("/api/providers", { signal });
+  if (!r.ok) throw new Error(`GET /api/providers -> HTTP ${r.status}`);
+  const data = (await r.json()) as Partial<ProviderCatalogView>;
+  // 归一到「已知来源」：认不出的 source 一律当内置（缩小白名单的唯一真源仍在 shared/providers.mjs，
+  // 这里只是不把服务端的意外值透到屏上）
+  const source = data.source === "remote" || data.source === "cache" ? data.source : "bundled";
+  return {
+    providers: Array.isArray(data.providers) ? data.providers : [],
+    source,
+    fetchedAt: typeof data.fetchedAt === "string" ? data.fetchedAt : null,
+  };
 }
 
 /**

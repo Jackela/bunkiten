@@ -7,11 +7,14 @@
 //   · 读路径永不抛：坏 JSON / 缺键 / 多余键 / 类型不对一律逐键回默认（凭据坏掉不该让 server 起不来）；
 //   · 写路径原子：临时文件 + rename（进程被杀也不会留下半截 JSON），文件 0600、目录 0700。
 //
-// 与目录真源的关系：provider 的合法集合来自 shared/providers.mjs（PROVIDER_IDS），本模块不抄第二份。
+// 与目录真源的关系：provider 的**形态**真源是 shared/providers.mjs 的 PROVIDER_ID_RE，本模块不抄第二份；
+// 「写进去的 id 是不是当前目录里的服务」这件事由调用点把白名单（内置表 ∪ 当前目录）注入进来判（见
+// validateCredentialsPatch 的第三参）——本模块**不 import providers-catalog.mjs**（后者已 import 本模块的
+// CREDENTIALS_DIRNAME，反向会成环），所以读路径只按形态保留、写路径按注入的白名单严校验。
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { PROVIDER_IDS } from "../shared/providers.mjs";
+import { PROVIDER_IDS, PROVIDER_ID_RE } from "../shared/providers.mjs";
 
 /** 凭据文件的当前结构版本（结构变更才升；读路径对未知版本仍然逐键容错） */
 export const CREDENTIALS_VERSION = 1;
@@ -38,7 +41,7 @@ const MAX_SIZE = 40;
  * 一组凭据（LLM 或图片）。
  * @typedef {Object} CredentialGroup
  * @property {string} mode LLM: session|byok；image: off|byok（非法值由 normalize 回该组默认）
- * @property {string} provider 服务目录 id（shared/providers.mjs 的 PROVIDER_IDS；未知回落默认）
+ * @property {string} provider 服务目录 id（形态见 shared/providers.mjs 的 PROVIDER_ID_RE；读路径形态非法才回落默认）
  * @property {string} baseUrl 服务地址（空串=未填）
  * @property {string} apiKey 明文 key（**只在磁盘与内存里**；任何响应/日志都不许落它）
  * @property {string} model 模型 id
@@ -99,7 +102,12 @@ export function normalizeCredentials(raw) {
     const mode = field(src.mode, 20);
     target.mode = g.modes.includes(mode) ? mode : g.defMode;
     const provider = field(src.provider, 40);
-    target.provider = PROVIDER_IDS.includes(provider) ? provider : out[g.key].provider;
+    // 读路径放宽：**只要 id 形态合法就原样保留**，不拿内置 PROVIDER_IDS 当白名单。
+    // 理由（docs/adr/0020）：服务目录可被远端更新注入新 id，读路径（启动/GET）不能依赖目录是否可达——
+    // 若在目录暂时抓不到（回落内置表）时按内置表收口，玩家已存的远程 id 会被静默改写成默认值（目录抖一下配置就丢）。
+    // 取舍：手改凭据文件塞一个「形态合法但目录里没有」的 id 也会被保留；但那是写路径（validateCredentialsPatch）
+    // 该拦的事，而读路径的铁律是「永不抛、永不整份丢弃」（见文件头），provider 也只是个下拉选键，不是安全边界。
+    target.provider = PROVIDER_ID_RE.test(provider) ? provider : out[g.key].provider;
     target.baseUrl = field(src.baseUrl, MAX_URL);
     target.apiKey = field(src.apiKey, MAX_KEY);
     target.model = field(src.model, MAX_MODEL);
@@ -182,13 +190,21 @@ export function mergeCredentials(current, patch = {}, clear = []) {
 
 /**
  * 校验一次局部更新（路由在写盘前调用；纯函数，单测直测）。
- * 规则：只认已知字段与合法模式；地址非空时必须是 http(s) URL；出图尺寸非空时是 `<宽>x<高>` 或 auto；
- * 长度上限与 normalize 一致（这里**拒绝**而不是截断——手填的错值该让玩家看见）。
+ * 规则：只认已知字段与合法模式；provider 必须在 `allowedProviderIds` 里；地址非空时必须是 http(s) URL；
+ * 出图尺寸非空时是 `<宽>x<高>` 或 auto；长度上限与 normalize 一致（这里**拒绝**而不是截断——手填的错值该让玩家看见）。
+ *
+ * 为什么 provider 白名单要注入（而不是本模块自己拉目录）：服务目录可被远端更新注入**新 id**，不认它的话
+ * 「不换版本用上新服务」在保存这一步就被 400 挡住（/api/providers 已把它下发给下拉了）——这是动态目录的核心收益。
+ * 而本模块**不能 import providers-catalog.mjs**（后者已 import 本模块的 CREDENTIALS_DIRNAME，反向会成环），
+ * 所以白名单（内置表 ∪ 当前目录）从调用点注入：入口 acp-server.mjs 的 updateCredentials 闭包持有目录 memo。
+ * 默认值仍是内置 PROVIDER_IDS：直测/无目录上下文时写路径照旧只认内置表（**严**校验，形状合法但不在集合里也拒）。
  * @param {{llm?: Record<string, unknown>, image?: Record<string, unknown>}} patch 待写入的局部字段
  * @param {string[]} [clear] 要整组清空的组名
+ * @param {Iterable<string>} [allowedProviderIds] 允许写入的 provider id 集合（Set 或数组；缺省内置 PROVIDER_IDS）
  * @returns {{ok: true} | {ok: false, error: string}} 校验结果
  */
-export function validateCredentialsPatch(patch = {}, clear = []) {
+export function validateCredentialsPatch(patch = {}, clear = [], allowedProviderIds = PROVIDER_IDS) {
+  const allowedIds = allowedProviderIds instanceof Set ? allowedProviderIds : new Set(allowedProviderIds);
   for (const key of clear) {
     if (key !== "llm" && key !== "image") return { ok: false, error: `未知的清除目标：${key}` };
   }
@@ -209,7 +225,7 @@ export function validateCredentialsPatch(patch = {}, clear = []) {
     if ("mode" in src && !spec.modes.includes(str(src.mode))) {
       return { ok: false, error: `${spec.key}.mode 只能是 ${spec.modes.join(" / ")}` };
     }
-    if ("provider" in src && !PROVIDER_IDS.includes(str(src.provider))) {
+    if ("provider" in src && !allowedIds.has(str(src.provider))) {
       return { ok: false, error: `${spec.key}.provider 不在服务目录里` };
     }
     if ("baseUrl" in src) {

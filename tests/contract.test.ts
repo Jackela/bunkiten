@@ -393,6 +393,17 @@ describe("⑦ 引擎凭据：服务目录 ↔ 设置屏 / MCP 工具名 ↔ SKIL
     }
     expect(doc, `${CREDENTIALS_DOC} 里没有两条出图途径的说明（MCP 工具与内置 image_gen 的优先级）`).toContain("bunkiten-media__generate_image");
   });
+
+  it("发布源 docs/providers.json 与 shared/providers.mjs 的 PROVIDERS 深等（v1.11，ADR-0020；由 npm run providers:export 生成）", () => {
+    const rel = "docs/providers.json";
+    const doc = JSON.parse(read(rel)) as { version?: unknown; updatedAt?: unknown; providers?: unknown };
+    expect(doc.version, `${rel} 的 version 变了：${String(doc.version)}（服务端只认 version 1，见 server/providers-catalog.mjs 的 CATALOG_VERSION）`).toBe(1);
+    expect(
+      doc.providers,
+      `${rel} 的 providers 与 shared/providers.mjs 的 PROVIDERS 不一致（谁和谁不一致：发布源 ↔ 目录真源）——别手改 JSON，跑 \`npm run providers:export\` 重新生成`,
+    ).toEqual(JSON.parse(JSON.stringify(PROVIDERS)));
+    expect(typeof doc.updatedAt, `${rel} 缺 updatedAt（发布时刻）：跑 \`npm run providers:export\` 会补上`).toBe("string");
+  });
 });
 
 // ——————————————————————— ④ 用例数 ———————————————————————
@@ -419,13 +430,17 @@ const CASE_GROUPS = [
   { name: "doctor", files: ["tests/doctor.test.ts"], floor: 12 },
   { name: "preload", files: ["tests/preload.test.ts"], floor: 8 },
   { name: "credentials", files: ["tests/credentials.test.ts"], floor: 30 },
-  { name: "ui", files: ["tests/ui.test.tsx"], floor: 141 },
+  { name: "ui", files: ["tests/ui.test.tsx"], floor: 145 },
   {
     name: "integration",
     files: ["tests/integration/pipeline.test.ts", "tests/integration/audio-history.test.ts", "tests/integration/http-guard.test.ts"],
     floor: 29,
   },
   { name: "credentials-integration", files: ["tests/integration/credentials.test.ts"], floor: 18 },
+  // 服务目录更新通道（v1.11，ADR-0020）：纯函数层 + 集成层两个文件。
+  // 各分组 floor 之和的上限被三份文档的粗口径声明（`共/全量 502+ 例`）钉住，而文档同步是另一波次——
+  // 所以这里把两个文件并成一组、floor 取到不越上限的最大值（删文件或删到空仍会红）。
+  { name: "providers-catalog", files: ["tests/providers-catalog.test.ts", "tests/integration/providers-catalog.test.ts"], floor: 2 },
 ];
 
 /** integration 的子分组下限（文档不再单独声明；留着是为了「砍的是哪个文件」能直接指出来） */
@@ -439,7 +454,7 @@ const CASE_SUB_GROUPS = [
 const CONTRACT_FILE = "tests/contract.test.ts";
 
 /** 单测 + 集成的合计下限（抬高它要同批抬齐分组 floor——自洽断言会拦） */
-const CASE_TOTAL = 502;
+const CASE_TOTAL = 506;
 
 /** 三份带粗口径下限声明的文档 */
 const DOCS = ["README.md", "AGENTS.md", "docs/ARCHITECTURE.md"];

@@ -28,6 +28,7 @@
     "test": "vitest run --exclude \"tests/e2e*/**\"",
     "test:coverage": "vitest run --exclude \"tests/e2e*/**\" --coverage",
     "doctor": "node scripts/doctor.mjs",
+    "providers:export": "node scripts/export-providers.mjs",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test -c playwright.ui.config.ts",
     "test:e2e:packaged": "playwright test -c playwright.electron.config.ts",

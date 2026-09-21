@@ -26,6 +26,7 @@ import { fileURLToPath } from "url";
 // 前者 pickEffort 与 isMainTurn 共用同一份值、后者 parseChapterMark（客户端）与质量守卫豁免（本文件）
 // 共用同一份值；本文件不再自持副本（契约 lint ⑤⑥组断言这一点）。
 import { CHAPTER_MARK_RE, DIRECTIVE_PREFIX_RE } from "../shared/protocol.mjs";
+import { PROVIDER_IDS } from "../shared/providers.mjs";
 import { GAME_ROOT, BASE_PORT, PORT_MAX_RETRY, SESSION_FILE, WORLDS_ROOT } from "./config.mjs";
 import {
   PRESET_ID_RE,
@@ -44,6 +45,7 @@ import { readWorldsIndex, presetFromStateFile, worldChapterNo, migrateLegacyStat
 import { createAcpSession } from "./acp.mjs";
 import { readCredentials, writeCredentials, mergeCredentials, validateCredentialsPatch, publicView, credentialsToEnv, secretsOf, sanitizeErrorMessage } from "./credentials.mjs";
 import { testLlm, testImage } from "./credentials-probe.mjs";
+import { loadCatalog, refreshCatalog } from "./providers-catalog.mjs";
 import { mediaMcpServers } from "./media-mcp.mjs";
 import { createRequestHandler } from "./routes.mjs";
 
@@ -124,6 +126,22 @@ export {
   secretsOf,
 } from "./credentials.mjs";
 export { testLlm, testImage, PROBE_TIMEOUT_MS, PROBE_IMAGE_SIZE } from "./credentials-probe.mjs";
+// 服务目录更新通道（v1.11，docs/adr/0020）：纯函数面经入口 re-export（与其余拆出符号同款；
+// 单测也可直接从 server/providers-catalog.mjs import）
+export {
+  CATALOG_FILENAME,
+  CATALOG_VERSION,
+  CATALOG_TTL_MS,
+  CATALOG_TIMEOUT_MS,
+  CATALOG_URLS,
+  validateCatalogDocument,
+  catalogCachePath,
+  readCatalogCache,
+  writeCatalogCache,
+  loadCatalog,
+  refreshCatalog,
+  __resetCatalogMemo, // 测试探针（仅 tests/providers-catalog.test.ts 清进程内 memo 用，不是对外 API）
+} from "./providers-catalog.mjs";
 export { MEDIA_MCP_NAME, MEDIA_TOOL_NAME, TOOL_DEFINITION, DEFAULT_SIZES, GENERATE_TIMEOUT_MS, imageSizeFor, imagesEndpoint, resolveOutputPath, pickImagePayload, requestImage, generateImage, mediaMcpPath, mediaMcpServers, handleMcpMessage } from "./media-mcp.mjs";
 // 剧本体检（v1.8）的纯函数视图：路由链住在 routes.mjs，这里只把测试面（tests/server.test.ts 直测 tmp 根）
 // 一起 re-export——与本文件其余拆出符号同款（外部 import 面永远是入口）。
@@ -297,7 +315,7 @@ export function startServer() {
    * @returns {{ok: boolean, error?: string, view?: object}}
    */
   function updateCredentials(patch, clear) {
-    const check = validateCredentialsPatch(patch, clear);
+    const check = validateCredentialsPatch(patch, clear, allowedProviderIds());
     if (!check.ok) return { ok: false, error: check.error };
     try {
       const next = mergeCredentials(readCredentials(), patch, clear);
@@ -319,6 +337,33 @@ export function startServer() {
     const secrets = secretsOf(creds);
     const out = target === "llm" ? await testLlm(creds.llm) : await testImage(creds.image);
     return out.error ? { ...out, error: sanitizeErrorMessage(out.error, secrets) } : out;
+  }
+
+  // ---------- 服务目录的闭包面（v1.11，docs/adr/0020）：路由链只转手，判定都在 providers-catalog.mjs ----------
+
+  /**
+   * 服务目录候选（GET /api/providers 的响应主体）。只读视图：GUI 拿它画下拉，
+   * **绝不据此改写玩家已存的 baseUrl / key**（见 server/providers-catalog.mjs 的铁律）。
+   * @returns {{providers: object[], source: string, fetchedAt: string|null}} source = remote/cache/bundled
+   */
+  function providersView() {
+    return loadCatalog({ root: os.homedir() });
+  }
+
+  /**
+   * POST /api/credentials 允许写入的 provider id 集合：**内置表 ∪ 当前目录**（remote/cache/bundled 都算）。
+   * 为什么写路径要合并目录 id：目录可被远端更新注入新 id，`providersView` 已经把它下发给下拉了，
+   * 不合并的话「不换版本用上新服务」在保存这一步就被 400「不在服务目录里」挡住——正是那条通道的核心收益不可达。
+   * 为什么读路径不这么做（读路径也不能这么做）：读路径不能依赖目录可达（一次抓不到就回落内置表），
+   * 否则玩家已存的远程 id 会被静默改写；所以读路径按「id 形态合法即保留」放宽（见 credentials.mjs 的 normalizeCredentials），
+   * 写路径仍严校验。方向：credentials.mjs 不 import 本模块的目录（providers-catalog.mjs 已 import credentials.mjs
+   * 的 CREDENTIALS_DIRNAME，反向会成环），故白名单从**调用点注入**，而不是让 credentials.mjs 自己拉目录。
+   * @returns {Set<string>} 允许写入的 provider id
+   */
+  function allowedProviderIds() {
+    const ids = new Set(PROVIDER_IDS);
+    for (const p of loadCatalog({ root: os.homedir() }).providers) ids.add(p.id);
+    return ids;
   }
 
   // ---------- 资产持久化：按「剧本 + 类型 + 名字」落盘（封面 presets/<id>/cover.jpg；重绘标志覆盖同名文件） ----------
@@ -697,6 +742,11 @@ export function startServer() {
     console.log("[acp] state/worlds/index.json 已升级：裸数组 → {schema: 1, worlds}");
   }
 
+  // 服务目录更新（v1.11，docs/adr/0020）：非阻塞抓一次发布源（先主后备）→ 校验 → 落 `~/.bunkiten/providers.json`。
+  // `void` 掉：启动不被网络拖住，失败静默（refreshCatalog 永不抛），抓不到就继续用缓存/内置兜底。
+  // 两个开关：`BUNKITEN_DISABLE_UPDATE=1` 直接跳过（打包冒烟用，与 electron-updater 同款）；`BUNKITEN_PROVIDERS_URL` 覆盖源（测试/镜像）。
+  void refreshCatalog({ root: os.homedir() });
+
   // ---------- HTTP ----------
   const server = http.createServer(createRequestHandler({
     clients,
@@ -709,6 +759,7 @@ export function startServer() {
     updateCredentials,
     testCredentials,
     restartEngine: restartAcp,
+    providersView,
     get currentPresetId() { return currentPresetId; },
     get sessionId() { return acp.sessionId; },
   }));

@@ -206,6 +206,79 @@ describe("引擎凭据端点（GET/POST /api/credentials）", () => {
   });
 });
 
+describe("在线目录的新 provider 可保存（v1.11，docs/adr/0020）", () => {
+  /** 只回固定 JSON 的本地目录服务器（BUNKITEN_PROVIDERS_URL 指它；含一个内置表里没有的 id） */
+  async function startMockCatalog() {
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          version: 1,
+          updatedAt: "2026-01-02T03:04:05.000Z",
+          providers: [{ id: "newcomer-llm", label: "新来的服务", kind: "llm", baseUrl: "https://newcomer.example/v1", models: [] }],
+        }),
+      );
+    });
+    await new Promise((r) => server.listen(0, "127.0.0.1", () => r(undefined)));
+    const port = /** @type {import("net").AddressInfo} */ (server.address()).port;
+    return { url: `http://127.0.0.1:${port}/providers.json`, close: () => new Promise((r) => server.close(() => r(undefined))) };
+  }
+
+  /** 轮询 /api/providers 直到 source 到期望值（启动期抓取是异步的；拿可见证据而不是 sleep） */
+  async function waitForSource(s: any, want: string, timeout = 8000) {
+    const deadline = Date.now() + timeout;
+    for (;;) {
+      const r = await s.getJSON("/api/providers");
+      if (r.status === 200 && r.body?.source === want) return r.body;
+      if (Date.now() > deadline) throw new Error(`timeout waiting for source=${want}（最后一次：${JSON.stringify(r.body)}）`);
+      await new Promise((res) => setTimeout(res, 25));
+    }
+  }
+
+  it("目录里的远程 id 能保存成功（200）并回显；未知 id 仍 400", async () => {
+    const mock = await startMockCatalog();
+    const s = await stack({ extraEnv: { BUNKITEN_DISABLE_UPDATE: "0", BUNKITEN_PROVIDERS_URL: mock.url } });
+    try {
+      const catalog = await waitForSource(s, "remote");
+      expect(catalog.providers.map((p: any) => p.id)).toContain("newcomer-llm");
+
+      // 用**只存在于在线目录里**的 id 保存：必须 200（旧行为是 400「不在服务目录里」——目录的核心收益被挡住）
+      const saved = await s.postJSON("/api/credentials", {
+        llm: { mode: "byok", provider: "newcomer-llm", baseUrl: "https://newcomer.example/v1", apiKey: "sk-remote-svc-4f2a", model: "m" },
+      });
+      expect(saved.status).toBe(200);
+      expect(saved.body.llm).toMatchObject({ mode: "byok", provider: "newcomer-llm", baseUrl: "https://newcomer.example/v1", hasKey: true });
+
+      // GET 回显同一 id（读路径也不改写它）
+      const got = await s.getJSON("/api/credentials");
+      expect(got.status).toBe(200);
+      expect(got.body.llm.provider).toBe("newcomer-llm");
+
+      // 未知 id（不在内置表、也不在目录里）仍被写路径拒 400
+      const bad = await s.postJSON("/api/credentials", { llm: { provider: "totally-unknown-svc" } });
+      expect(bad.status).toBe(400);
+      expect(String(bad.body.error)).toContain("不在服务目录里");
+    } finally {
+      await mock.close();
+    }
+  }, 20000);
+
+  it("目录暂时不可用（离线 → 内置表）时，已存的远程 id 不被静默改写", async () => {
+    // harness 默认 BUNKITEN_DISABLE_UPDATE=1 且不指发布源 = 目录回落内置表（正是「抓不到」那一态）
+    const s = await stack({
+      credentials: {
+        version: 1,
+        llm: { mode: "byok", provider: "newcomer-llm", baseUrl: "https://newcomer.example/v1", apiKey: "sk-remote-svc-4f2a", model: "m" },
+        image: { mode: "off", provider: "openai", baseUrl: "", apiKey: "", model: "", size: "" },
+      },
+    });
+    const prov = await s.getJSON("/api/providers");
+    expect(prov.body.source).toBe("bundled"); // 目录确实不可用（回内置表）
+    const got = await s.getJSON("/api/credentials");
+    expect(got.body.llm.provider).toBe("newcomer-llm"); // 已存的远程 id 原样保留，不被改回内置默认
+  }, 20000);
+});
+
 describe("凭据 → 引擎子进程（env 与 MCP 挂载）", () => {
   it("LLM 自备 key：四个变量真的出现在引擎进程 env 里；session 模式则一个都没有", async () => {
     const byokStack = await stack({ credentials: llmByok() });
