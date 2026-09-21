@@ -326,7 +326,7 @@ export async function startStack({
     PORT: String(port),
     FAKE_ENGINE_TURNS: JSON.stringify(turns),
     FAKE_ENGINE_PROBE: engineProbe,
-    // 服务目录更新（v1.11，ADR-0020）：集成栈默认**离线**——启动时不打扰发布源，让这一层不被网络拖慢/拖红。
+    // 服务目录更新（v1.10，ADR-0020）：集成栈默认**离线**——启动时不打扰发布源，让这一层不被网络拖慢/拖红。
     // 要测抓取通道（tests/integration/providers-catalog.test.ts）就在 extraEnv 里显式给它 "0" 并指到本地 mock。
     // 与打包冒烟（tests/e2e-packaged/*.spec.ts）用的是同一个开关，语义见 electron/main.js 的 electron-updater 段。
     BUNKITEN_DISABLE_UPDATE: "1",

@@ -472,7 +472,7 @@ export function createRequestHandler(ctx) {
       return;
     }
 
-    // 服务目录（v1.11，docs/adr/0020）：给设置屏画下拉候选。`source` 是**本条响应里 providers 的来源**
+    // 服务目录（v1.10，docs/adr/0020）：给设置屏画下拉候选。`source` 是**本条响应里 providers 的来源**
     //（启动期刚抓到远端是 "remote"、读本地缓存 "cache"、内置兜底 "bundled"）；`fetchedAt` 为抓取时刻或 null。
     // 目录**只喂候选**：绝不据此改写玩家已存的 baseUrl / key（那些走 /api/credentials）。
     if (req.method === "GET" && url.pathname === "/api/providers") {

@@ -199,7 +199,7 @@ _Avoid_: 选项、配置
 _Avoid_: API key 管理、账号、登录（登录特指 grok CLI 的 `grok login` 那条路）
 
 **服务目录（Provider catalog）**:
-`shared/providers.mjs` 里那张预置服务表（id / 显示名 / 用途 / 地址 / 模型提示 / 说明），设置屏的两个下拉与服务端校验共用同一份——加一个服务是改数据，不是改代码。凡说 OpenAI 兼容协议的服务都在射程内（27 条，含国内的千帆/混元/星火/MiniMax，以及 Kimi·MiniMax·百炼 的国内与海外分站各一条）；长尾走「自定义」或自建网关（one-api / LiteLLM）。每条地址按官方文档核对，`note` 负责讲清「站点/地域要与密钥配套」这类文档里的坑。
+`shared/providers.mjs` 里那张预置服务表（id / 显示名 / 用途 / 地址 / 模型提示 / 说明），设置屏的两个下拉与服务端校验共用同一份——加一个服务是改数据，不是改代码。凡说 OpenAI 兼容协议的服务都在射程内（27 条，含国内的千帆/混元/星火/MiniMax，以及 Kimi·MiniMax·百炼 的国内与海外分站各一条）；长尾走「自定义」或自建网关（one-api / LiteLLM）。每条地址按官方文档核对，`note` 负责讲清「站点/地域要与密钥配套」这类文档里的坑。这张表同时是**内置兜底**：服务端启动时会去仓库发布源 `docs/providers.json`（`npm run providers:export` 生成）抓一份更新版，校验后缓存到本机，抓不到/校验不过就继续用随包这份（见 `docs/adr/0020`）——设置屏的下拉优先吃在线那份，读不到才回落这张表。
 _Avoid_: 适配器、插件、provider 实现
 
 **出图工具（Media tool）**:

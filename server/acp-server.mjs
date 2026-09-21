@@ -126,7 +126,7 @@ export {
   secretsOf,
 } from "./credentials.mjs";
 export { testLlm, testImage, PROBE_TIMEOUT_MS, PROBE_IMAGE_SIZE } from "./credentials-probe.mjs";
-// 服务目录更新通道（v1.11，docs/adr/0020）：纯函数面经入口 re-export（与其余拆出符号同款；
+// 服务目录更新通道（v1.10，docs/adr/0020）：纯函数面经入口 re-export（与其余拆出符号同款；
 // 单测也可直接从 server/providers-catalog.mjs import）
 export {
   CATALOG_FILENAME,
@@ -339,7 +339,7 @@ export function startServer() {
     return out.error ? { ...out, error: sanitizeErrorMessage(out.error, secrets) } : out;
   }
 
-  // ---------- 服务目录的闭包面（v1.11，docs/adr/0020）：路由链只转手，判定都在 providers-catalog.mjs ----------
+  // ---------- 服务目录的闭包面（v1.10，docs/adr/0020）：路由链只转手，判定都在 providers-catalog.mjs ----------
 
   /**
    * 服务目录候选（GET /api/providers 的响应主体）。只读视图：GUI 拿它画下拉，
@@ -742,7 +742,7 @@ export function startServer() {
     console.log("[acp] state/worlds/index.json 已升级：裸数组 → {schema: 1, worlds}");
   }
 
-  // 服务目录更新（v1.11，docs/adr/0020）：非阻塞抓一次发布源（先主后备）→ 校验 → 落 `~/.bunkiten/providers.json`。
+  // 服务目录更新（v1.10，docs/adr/0020）：非阻塞抓一次发布源（先主后备）→ 校验 → 落 `~/.bunkiten/providers.json`。
   // `void` 掉：启动不被网络拖住，失败静默（refreshCatalog 永不抛），抓不到就继续用缓存/内置兜底。
   // 两个开关：`BUNKITEN_DISABLE_UPDATE=1` 直接跳过（打包冒烟用，与 electron-updater 同款）；`BUNKITEN_PROVIDERS_URL` 覆盖源（测试/镜像）。
   void refreshCatalog({ root: os.homedir() });

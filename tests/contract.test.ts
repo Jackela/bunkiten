@@ -394,7 +394,7 @@ describe("⑦ 引擎凭据：服务目录 ↔ 设置屏 / MCP 工具名 ↔ SKIL
     expect(doc, `${CREDENTIALS_DOC} 里没有两条出图途径的说明（MCP 工具与内置 image_gen 的优先级）`).toContain("bunkiten-media__generate_image");
   });
 
-  it("发布源 docs/providers.json 与 shared/providers.mjs 的 PROVIDERS 深等（v1.11，ADR-0020；由 npm run providers:export 生成）", () => {
+  it("发布源 docs/providers.json 与 shared/providers.mjs 的 PROVIDERS 深等（v1.10，ADR-0020；由 npm run providers:export 生成）", () => {
     const rel = "docs/providers.json";
     const doc = JSON.parse(read(rel)) as { version?: unknown; updatedAt?: unknown; providers?: unknown };
     expect(doc.version, `${rel} 的 version 变了：${String(doc.version)}（服务端只认 version 1，见 server/providers-catalog.mjs 的 CATALOG_VERSION）`).toBe(1);
@@ -437,7 +437,7 @@ const CASE_GROUPS = [
     floor: 29,
   },
   { name: "credentials-integration", files: ["tests/integration/credentials.test.ts"], floor: 18 },
-  // 服务目录更新通道（v1.11，ADR-0020）：纯函数层 + 集成层两个文件。
+  // 服务目录更新通道（v1.10，ADR-0020）：纯函数层 + 集成层两个文件。
   // 各分组 floor 之和的上限被三份文档的粗口径声明（`共/全量 502+ 例`）钉住，而文档同步是另一波次——
   // 所以这里把两个文件并成一组、floor 取到不越上限的最大值（删文件或删到空仍会红）。
   { name: "providers-catalog", files: ["tests/providers-catalog.test.ts", "tests/integration/providers-catalog.test.ts"], floor: 2 },

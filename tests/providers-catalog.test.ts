@@ -1,4 +1,4 @@
-// 服务目录更新通道的纯函数单测（v1.11，docs/adr/0020）：server/providers-catalog.mjs 的
+// 服务目录更新通道的纯函数单测（v1.10，docs/adr/0020）：server/providers-catalog.mjs 的
 // 校验 / 缓存读写 / 缓存优先 / 抓取三态。每条都对着「改坏哪一处会红」：
 //   · 整包拒 vs 单条丢的两级取捨 → 改 validateCatalogDocument；
 //   · https-only 与本机 http 例外 → 改 isAllowedBaseUrl；

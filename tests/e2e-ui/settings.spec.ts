@@ -8,7 +8,7 @@
 //   ② 图片组与「测试连接」：本机假服务商给一条**确定性成功**路径（GET /models），图片组则指向必然拒连的端口
 //      拿**确定性失败**，两条探活结果都要在屏上读到（三态的第三态「测试中」由点击到结果出现之间的短暂窗口承担，
 //      不额外断言——它是过渡态，钉它只会引入时序脆弱）。
-// v1.11 续：③ 在线服务目录（docs/adr/0020）。这一条**真的**给服务端喂一份「在线目录」（本地 mock 发布源
+// v1.10 续：③ 在线服务目录（docs/adr/0020）。这一条**真的**给服务端喂一份「在线目录」（本地 mock 发布源
 //   + BUNKITEN_PROVIDERS_URL），所以浏览器读到的候选与 POST 保存时服务端校验看到的是**同一份目录**：
 //   候选换成远端那份（含改名条目与新增条目）、地址按远端预填、屏上出现「在线目录」标注，并且**真的保存一个
 //   只存在于这份 mock 目录里的 provider**（旧实现只在浏览器侧替掉读接口，会掩盖「服务端白名单不认远程 id → 400」
@@ -81,7 +81,7 @@ test("引擎与密钥：填 key → 掩码 → 刷新后仍在 → 重启引擎�
     await page.getByTestId("boot-credentials").click();
     await expect(page.getByTestId("engine-keys")).toBeVisible();
     // 假栈离线（harness 默认 BUNKITEN_DISABLE_UPDATE=1）→ /api/providers 回内置表 → 不出现「在线目录」标注，
-    // 下面的下拉走的就是内置那份候选（v1.11 的在线目录分支见本文件第 ③ 条用例）
+    // 下面的下拉走的就是内置那份候选（v1.10 的在线目录分支见本文件第 ③ 条用例）
     await expect(page.getByTestId("engine-catalog-online")).toHaveCount(0);
 
     // 切「自备密钥」→ 表单展开；换服务 → 地址按目录预填

@@ -4,14 +4,14 @@ v1.8.0 之后待办与**决策清单**（不是愿望清单）：每项写清「
 
 口径：代码引用一律到文件级（函数名/组件名可 `grep` 定位）；写「**需要先确认**」的句子是尚未核实的推断，不要当结论用；文中的数字都是可复跑的（`npm test` / `npm run doctor` / `grep`），不写会随改动漂移的用例计数。
 
-**进展（最近一轮）**：§1 已**接线**（写路径翻成 `{schema:1, worlds}`、启动期 `migrateLegacyState` → `migrateWorldsSchema`、高版本保留不覆写，决策记在 `docs/adr/0018`）、§4 的浏览器级覆盖（e2e 19 → 28 条）、§5 的导出包 v2 与行缩略图、§3 的第一面（世界线行 ⋯ 菜单迁 Radix DropdownMenu）、§6 的性能实测（结论：当前规模不需要虚拟化）、§2 的同屏多立绘（上限 2，按 VN 通行做法：发言者高亮 + 名牌、非发言者压暗）均已落地；§5 的 id 问题已定（维持 `<preset>-N`，理由见该节）。v1.10 另落地了 §7（引擎凭据，见该节与 `docs/adr/0019`）。剩下的是 §3 的其余三面（抽屉/滑杆/弹窗仍用自写 `focusTrap`，背景 `inert` 与 typeahead 只在新菜单上有）与 §5 里「当前场景背景」那一版缩略图（要新开 `WorldEntry` 字段）。
+**进展（最近一轮）**：§1 已**接线**（写路径翻成 `{schema:1, worlds}`、启动期 `migrateLegacyState` → `migrateWorldsSchema`、高版本保留不覆写，决策记在 `docs/adr/0018`）、§4 的浏览器级覆盖（e2e 19 → 28 条）、§5 的导出包 v2 与行缩略图、§3 的第一面（世界线行 ⋯ 菜单迁 Radix DropdownMenu）、§6 的性能实测（结论：当前规模不需要虚拟化）、§2 的同屏多立绘（上限 2，按 VN 通行做法：发言者高亮 + 名牌、非发言者压暗）均已落地；§5 的 id 问题已定（维持 `<preset>-N`，理由见该节）。v1.10 另落地了 §7（引擎凭据，见该节与 `docs/adr/0019`；同节尾巴「服务目录随版本更新」也在 v1.10 落地，见 ADR-0020）。剩下的是 §3 的其余三面（抽屉/滑杆/弹窗仍用自写 `focusTrap`，背景 `inert` 与 typeahead 只在新菜单上有）与 §5 里「当前场景背景」那一版缩略图（要新开 `WorldEntry` 字段）。
 
 ## 7. 引擎凭据（GUI 自备 key）—— **已落地（v1.10）**
 
 - **已定（不再重开讨论）**：默认广泛兼容（OpenAI 兼容协议 = 事实标准，只填 base_url/api_key/model 或从服务目录选一个）；**不引 provider SDK / AI 框架**（协议差异已被 `shared/providers.mjs` 吸收，流式与 tool-call 编排由 grok CLI 承担，server 树零依赖是既有纪律）；**不做 `.env`**（玩家不该为填 key 去改文件或设环境变量；GUI 即时保存 + 一键重启比环境文件准确、也不污染 shell）；**不改写 `~/.grok/config.toml`**（合写玩家全局配置、要 TOML 读写、失败会污染他所有 CLI 会话）；**不加密 key**（本机 0600 + 磁盘加密是刻意取舍——加密要引依赖并处理恢复路径，而本机端点本身也只挡跨站浏览器请求、不防本机进程）；**不做多 profile 并行**（一次只激活一套，切换走「立刻重启引擎」）。理由与被否决的备选都写在 `docs/adr/0019`。
 - **落地形态**（读代码可得）：对话侧走 CLI 的 BYOK 通道（`GROK_MODELS_BASE_URL` / `XAI_API_KEY` / `GROK_DEFAULT_MODEL`，`server/credentials.mjs` 的 `credentialsToEnv`）；图片侧自建零依赖 MCP server（`server/media-mcp.mjs` 的 `bunkiten-media__generate_image`，经 `search_tool`/`use_tool` 调用、自己落盘），SKILL【美术】新增「出图工具优先（硬规则）」；凭据落 `~/.bunkiten/credentials.json`（0700/0600 原子写），HTTP 出口一律脱敏；端点 `GET/POST /api/credentials`、`POST /api/credentials/test`、`POST /api/engine/restart`，`/api/auth` 扩展 `hasCredentials`。
 - **落定（v1.10 收尾轮实测）**：出图尺寸做成两格（`size` 通用覆盖 + `sizeBackground` 背景专用，留空按类型默认）；图片探活的成本在 GUI/QUICKSTART/ARCHITECTURE 三处明写（对话侧只拉 `/models` 免费，图片侧真生成一张小图）；**Anthropic 原生协议已实证不可行**——CLI 的 `api_backend` 只能写在 `~/.grok/config.toml` 的 `[model.*]` 里，而 `GROK_CONFIG` 覆盖层的白名单会丢弃 `model.*`（实测：请求仍是 `chat/completions` + env 的模型）；要用 Anthropic 就走它的兼容网关，除非哪天愿意接受「改写玩家全局配置」——那正是 ADR-0019 拒绝的路径。会话标题那条杂音也已处理：`GROK_TITLE_REFRESH`/`features.title_refresh` 三种开关均无效，改由 `GROK_CONFIG` 把 `models.session_summary` 指到玩家配的模型（`/responses` 消失）。
-- **没做的**：把「服务目录」随版本更新推给玩家（现在是随包发一张静态表）。
+- **已实现（v1.10，ADR-0020）**：服务目录随版本更新推给玩家——仓库 JSON 发布源 `docs/providers.json`（`npm run providers:export` 从 `shared/providers.mjs` 生成）+ 服务端启动抓取 / 本地缓存 / 内置兜底（`server/providers-catalog.mjs` → `GET /api/providers` 的 `source` 三态）。**这项原挂在「没做的」里，现已划掉**；「没做的」清空。
 
 ## 1. 数据版本化与迁移 —— **已接线（v1.9）**
 
@@ -88,7 +88,7 @@ v1.8.0 之后待办与**决策清单**（不是愿望清单）：每项写清「
   Chromium 下拇指是否可见需要肉眼看一次；jsdom 与 Playwright 的设值路径都看不见渲染。
   **本次（v1.9）没碰**：它与 a11y 缺口无关，留给「滑杆读数统一」那一件小事同批看。
 
-## 4. e2e 覆盖补面 —— **已补（`tests/e2e-ui/` 20 个 spec / 38 条用例；打包态另有一条 opt-in）**
+## 4. e2e 覆盖补面 —— **已补（`tests/e2e-ui/` 21 个 spec / 44 条用例；打包态另有 opt-in 的冒烟与真链路）**
 
 - **v1.9 收尾补的五块**（会话内落地，验收标准=「改坏哪一处它就会红」各自在 spec 文件头/提交信息里写明）：
   1. **章节循环** `tests/e2e-ui/crafting.spec.ts`——规划→`【清单】`→逐项美术→`开演。`→`【章】`→**第二次进制作中屏**→第二章回 game。中间态（init/planning/queue）在 store 里各只活一两个回合（假引擎一回合 2–6ms）+ 屏转场 450ms，所以把每一跳 `/prompt` 用 `page.route` **挂在浏览器侧**，断言窗口由测试控制（不是睡等、也不是抢时序）。
@@ -97,6 +97,8 @@ v1.8.0 之后待办与**决策清单**（不是愿望清单）：每项写清「
   4. **音频可观测面** `tests/e2e-ui/audio.spec.ts`——三行协议各自触发一次 `/audio` 直服请求、`<audio>` 元素在播与音量（主音量 × 通道音量）、换曲交叉淡入旧元素被 pause、设置屏静音后音量归 0。**关键手法**：AudioManager 的元素是 `new Audio()` 的游离节点（不在 DOM 里），`addInitScript` 包一层 `window.Audio` 登记才能从页面侧观测。
   5. **耐久规模** `tests/e2e-ui/scale.spec.ts`——60 幕长历史抽屉（逐条渲染/最新在最上/滚动容器真的可滚）、600 节点大树（>40 列表降级、切图形后 200 节点可键盘选中、缩放读数）、200 条快照（存档点标注与「与上一档对比」的确定 diff）。
   6. **打包态（opt-in，不进 CI）** `tests/e2e-packaged/` + `playwright.electron.config.ts`——`_electron` 起 `npm run dist:mac:dir` 的 `.app`，断言窗口/标题屏/`/app` 静态托管/`resources/game` 可达。**首跑就抓到真 bug**：`win.loadURL("…/app")` 少了尾斜杠，产物 `index.html` 的相对资源全部 404、窗口一片空白（修在 `electron/main.js` 的 `/app/` 与 `server/routes.mjs` 的 `/app` → `/app/` 302）。
+
+- **打包态 + 真 CLI + 真图片服务的「真画一张图」——已实现（v1.10）**：opt-in 真链路 `tests/e2e-packaged/real-image.spec.ts`（真 grok CLI + 本机登录态 + 真图片服务凭据 + 出网；走画廊重绘——SKILL 里唯一绕过生成前缓存的路径，真花一次对话与一张图；缺凭据/登录/产物即干净跳过，不进 CI），外加**三层 mock 覆盖**：集成层 `tests/integration/media-mock.test.ts` 与 e2e-ui 层 `tests/e2e-ui/media-mock.spec.ts`（**进 CI**）、打包态 `tests/e2e-packaged/packaged.spec.ts` 的第二条（**opt-in**，假引擎真调 MCP + 本地假图片服务，不需要真凭据/真网络）。三层替身各测协议面/UI 面/打包面，真链路负责证明「真能画出来」。
 
 - **仍没测（以及为什么 / 怎么才测得到）**：
   - **打包态 Windows 产物**：要 Windows runner 才能起 `dist:win` 的 exe（`_electron` 支持，但 CI 目前是 mac/linux；win 的差异只在 NSIS 布局与图标元数据）。mac 那条已覆盖「打包布局 + asar + 主进程 + 资源路径」这条主干。
