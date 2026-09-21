@@ -1,5 +1,5 @@
 // 启动屏：确认叙事引擎能不能用（v1.10 起：grok 登录态 **或** 已配好自备密钥，两者任一即可开玩）。
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { KeyRound, RefreshCw } from "lucide-react";
 import { fetchAuth } from "../lib/acp";
 import { useGameStore } from "../store/game";
@@ -32,20 +32,31 @@ export default function BootScreen() {
   const toTitle = useGameStore((s) => s.toTitle);
   const openSettings = useGameStore((s) => s.openSettings);
   const [state, setState] = useState<BootState>("checking");
+  // 自检的取消信号（对齐 TitleScreen 的既有做法）：自检挂着 15s 上限，不取消的话切屏后会有一条
+  // /api/auth 拖到点，再往已卸载的组件里写 error 态。retry 复用同一个 controller（同一次挂载内不互相取消）
+  const abortRef = useRef<AbortController | null>(null);
 
   const check = useCallback(async () => {
     setState("checking");
     try {
-      const { loggedIn, hasCredentials } = await fetchAuth();
+      const { loggedIn, hasCredentials } = await fetchAuth(abortRef.current?.signal);
       if (loggedIn || hasCredentials) toTitle();
       else setState("login");
-    } catch {
+    } catch (e) {
+      // 卸载/切屏：静默（与 TitleScreen 的 catch 同款——只放行 AbortError）；其余一律进错误态
+      if ((e as Error).name === "AbortError") return;
       setState("error");
     }
   }, [toTitle]);
 
   useEffect(() => {
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
     void check();
+    return () => {
+      ctrl.abort();
+      abortRef.current = null;
+    };
   }, [check]);
 
   return (

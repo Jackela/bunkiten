@@ -9,6 +9,11 @@ import { expect, type Page } from "@playwright/test";
  * expect.timeout）够看「屏间动作」，不足以覆盖冷启动。这里显式给 30s，且**只给这一步**：
  * 屏立起来之后的断言照旧走全局 10s，把冷启动预算与交互预算分开记（调大全局 timeout 会把
  * 真正的慢一起藏起来）。本文件导出给 focus.spec 等自起栈的 spec 复用，避免数字各写一份。
+ *
+ * 分工（其余 spec 的同跳仍吃全局 10s 是**有意的**，别顺手统一）：冷代理那一层已经由起栈探活兜住
+ * （fake-stack.mjs 在交栈前先探一次**经 Vite 代理**的 /api/auth，把转发路径捂热），所以
+ * 「首个 goto 撞冷代理」的概率已经很低；这里给的 30s 只是给「已捂热的栈仍然首屏偏慢」留余量。
+ * 若将来真的定位到冷启动 >10s（探活之后仍复现），再统一换用本常量，而不是逐个 spec 加 timeout。
  */
 export const BOOT_TO_TITLE_MS = 30_000;
 
