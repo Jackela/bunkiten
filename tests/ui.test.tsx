@@ -13,6 +13,9 @@
 // v1.9 续：四处浮层的背景收口（ROADMAP §3 最后一面）——抽屉打开时 GameStage 的舞台层整体 inert、
 //      画廊预览打开时整页框 inert + 壳层根滚动锁、创作返回确认打开时创作整列 inert + 对话流滚动锁
 //      （断言都落在既有的 a11y 块里：inert 的边界、焦点仍在层内、关闭即摘干净）。
+// v1.10 续：启动链三条读接口（/api/auth、/api/presets、/api/worlds）的显式超时与卸载取消——
+//      上限覆盖到 body 解析（先回响应头、再挂 body 的代理不再「永远转圈」），卸载优先于超时归一
+//      （传输层不理 signal 时也不再往已拆的屏写错误态），启动屏补上 AbortController。
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import React from "react";
@@ -24,6 +27,7 @@ import FreeInput from "../src/components/game/FreeInput";
 import GameStage from "../src/components/game/GameStage";
 import HistoryDrawer from "../src/components/game/HistoryDrawer";
 import OptionList from "../src/components/game/OptionList";
+import BootScreen from "../src/components/BootScreen";
 import TitleScreen from "../src/components/TitleScreen";
 import CreationScreen from "../src/components/CreationScreen";
 import AssetsScreen from "../src/components/AssetsScreen";
@@ -41,7 +45,7 @@ import { playerStatus } from "../src/lib/status";
 import { TREE_ZOOM_MAX, clampZoom, fitView, panView, viewBoxOf, zoomViewAt } from "../src/lib/treeLayout";
 import { layoutGenealogy } from "../src/lib/genealogy";
 import { FONT_STACKS, dialogClass, getTheme, themeVars } from "../src/theme";
-import type { AssetEntry, AudioItem, Preset, PresetCheckResult, StateView, WorldEntry, WorldSnapshotMeta } from "../src/lib/acp";
+import { BOOT_FETCH_TIMEOUT_MS, fetchPresets, type AssetEntry, type AudioItem, type Preset, type PresetCheckResult, type StateView, type WorldEntry, type WorldSnapshotMeta } from "../src/lib/acp";
 
 /** ui 测试用的最小剧本 fixture（与世界线屏/顶栏的展示字段对齐） */
 const PRESET: Preset = {
@@ -4925,5 +4929,172 @@ describe("TitleScreen：剧本体检入口（v1.9）", () => {
     expect(off.getAttribute("title")).toBe("还没有可体检的剧本");
     fireEvent.click(off);
     expect(useGameStore.getState().screen).toBe("title");
+  });
+});
+
+// ————————————————— 启动链超时：boot → title 的读接口（v1.10） —————————————————
+// 三条启动链请求（/api/auth、/api/presets、/api/worlds）过去没有等待上限：本地代理/服务卡住时，
+// 启动屏永远停在「正在确认登录状态…」、标题屏永远停在「加载中…」——没有反馈也没有出口。
+// 现在它们共用一个显式超时（BOOT_FETCH_TIMEOUT_MS），且**fetch 与 body 解析在同一个有界作用域里**
+// （只包 fetch 的话 `await r.json()` 既没有 deadline 也没有 signal：先回响应头再挂 body 的代理照样转圈），
+// 到点落到**两屏既有的**错误态：启动屏的 RetryCard（「重试」）、标题屏的 setError（「剧本加载失败：…」）。
+// 这组用例钉住五件事：
+//   1. 超时**不提前**（差 1ms 仍是 checking 态），到点才落地；
+//   2. 上限覆盖到解析——响应头先回来、body 挂住，也在同一个上限上落地（否则等于只兜了前半段）；
+//   3. 超时错误不是 AbortError——标题屏的 catch 只对 AbortError 静默（那是卸载路径），
+//      一旦超时也被静默，玩家就又回到「永远转圈」了，所以这条必须断言到错误文案；
+//   4. 交给 fetch 的是**组合 signal（新对象）**：把自己的 signal 原样递下去，超时那一路就取消不了底层请求；
+//   5. 卸载优先——外部 signal abort 后立刻以 AbortError 落地（即便传输层不理 signal），
+//      不再等到上限把卸载报成 TimeoutError、往已拆掉的屏里写错误态。
+describe("启动链超时：读接口挂住时落地到两屏既有的错误态（v1.10）", () => {
+  /** 永不 settle 的 fetch：模拟「代理卡住」——既不响应也不失败，**且故意不理 signal**
+   *（只让 signal 负责「真取消」是不够的：这条替身证明的是超时靠赛跑落地，不是靠传输层守规矩） */
+  function hangingFetch(): ReturnType<typeof vi.fn> {
+    const mock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => new Promise<Response>(() => {}));
+    vi.stubGlobal("fetch", mock);
+    return mock;
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers(); // 超时是 setTimeout 驱动的（不是 AbortSignal.timeout 的内部计时器，那个假计时器推不动）
+    useGameStore.setState({ presets: [], screen: "boot", screenReturn: null, selected: null, worldId: null, engineBusy: false });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("BootScreen：/api/auth 挂到超时 → 出错误重试卡（不再永远停在「正在确认登录状态…」）", async () => {
+    const fetchMock = hangingFetch();
+    render(<BootScreen />);
+    expect(screen.getByText("正在确认登录状态…")).toBeTruthy();
+
+    // 差 1ms：还在自检，不提前报错（超时只兜底真卡住，不该把慢当成坏）
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(BOOT_FETCH_TIMEOUT_MS - 1);
+    });
+    expect(screen.getByText("正在确认登录状态…")).toBeTruthy();
+    expect(screen.queryByText("连不上叙事服务。")).toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    // 既有落点：error 态的 RetryCard（不新增 UI 形态、不改文案），按钮点了就重跑一次自检
+    expect(screen.getByText("连不上叙事服务。")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(1);
+    // 超时不只让调用方收场：底层请求真的被取消（signal 已 abort），不把连接留在后台
+    expect((fetchMock.mock.calls[0][1] as RequestInit).signal?.aborted).toBe(true);
+  });
+
+  it("TitleScreen：/api/presets 挂到超时 → 既有 setError 错误态（超时不是 AbortError，不许被静默）", async () => {
+    hangingFetch();
+    render(<TitleScreen />);
+    expect(screen.getByText("加载中…")).toBeTruthy();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(BOOT_FETCH_TIMEOUT_MS);
+    });
+    expect(screen.getByText(/剧本加载失败：/)).toBeTruthy();
+    expect(screen.getByText(new RegExp(`超时（${BOOT_FETCH_TIMEOUT_MS}ms）`))).toBeTruthy();
+    // 轮播没起来：没有可插的卡，错误态是唯一出口（不是「空轮播 + 继续等待」）
+    expect(screen.queryByTestId("title-card-center")).toBeNull();
+  });
+
+  it("TitleScreen：响应头先回来、body 挂住 → 同样在上限落地（超时覆盖到解析，不只盖响应头）", async () => {
+    // 与 hangingFetch 的差别只在「卡在哪一步」：这里 fetch 立刻 resolve（响应头到手），卡的是解析那一步。
+    // 上限只包 fetch 的话，这条就会永远停在「加载中…」（r.json() 既没有 deadline 也没有 signal）
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: true, status: 200, json: () => new Promise<never>(() => {}) }) as unknown as Response),
+    );
+    render(<TitleScreen />);
+    expect(screen.getByText("加载中…")).toBeTruthy();
+
+    // 差 1ms：body 还没来也不许提前报错（只是慢的话不该被判死）
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(BOOT_FETCH_TIMEOUT_MS - 1);
+    });
+    expect(screen.getByText("加载中…")).toBeTruthy();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(screen.getByText(/剧本加载失败：/)).toBeTruthy();
+    expect(screen.getByText(new RegExp(`超时（${BOOT_FETCH_TIMEOUT_MS}ms）`))).toBeTruthy();
+  });
+
+  it("卸载 abort 仍被静默：组合 signal 透到 fetch，abort 后不再发新请求，超时计时器也不残留", async () => {
+    const signals: AbortSignal[] = [];
+    const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.signal) signals.push(init.signal);
+      // 与真 fetch 同形：signal 一 abort，请求就以 AbortError 拒绝（组合 signal 得把它透进来）
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          const e = new Error("The operation was aborted.");
+          e.name = "AbortError";
+          reject(e);
+        });
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { unmount } = render(<TitleScreen />);
+    // 两条启动链请求（presets + worlds）都带着组合 signal（外部 signal ∪ 超时 signal），卸载前都没 abort
+    expect(signals.length).toBe(2);
+    expect(signals.every((s) => !s.aborted)).toBe(true);
+
+    unmount(); // 切屏/关页面：TitleScreen 的 AbortController abort → 经组合 signal 透到 fetch
+    expect(signals.every((s) => s.aborted)).toBe(true);
+
+    // 收尾：请求以 AbortError 结束（标题屏照旧静默吞掉），超时那条路不该再补一枪，计时器也不许残留
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(vi.getTimerCount()).toBe(0);
+
+    // 越过上限再看一眼：卸载之后不该再有任何新的请求（卸载的屏不许还有后续动作）
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(BOOT_FETCH_TIMEOUT_MS);
+    });
+    expect(fetchMock.mock.calls.length).toBe(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("组合 signal 是新对象（超时那一路才取消得到底层请求）；卸载优先：传输层不理 signal 也立刻以 AbortError 落地", async () => {
+    const seen: AbortSignal[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.signal) seen.push(init.signal);
+        return new Promise<Response>(() => {}); // 故意不理 signal：这条替身只让赛跑负责落地
+      }),
+    );
+
+    const external = new AbortController();
+    const settled: string[] = [];
+    void fetchPresets(external.signal).then(
+      () => settled.push("resolved"),
+      (e: Error) => settled.push(e.name),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(seen.length).toBe(1);
+    // 组合 signal 必须是**新对象**：把外部 signal 原样递下去的话，超时那一路就取消不了底层请求
+    //（上限只剩「调用方不等了」这一半，连接与 body 全留在后台）——这条只在组合成立时才会绿
+    expect(seen[0]).not.toBe(external.signal);
+    expect(seen[0].aborted).toBe(false);
+    expect(settled).toEqual([]); // 还没 abort：仍挂着，不提前落地
+
+    external.abort();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    // 卸载优先：立刻落地，且名字是 AbortError。等 15s 由超时那条路赢下的话，卸载会被报成 TimeoutError
+    //（标题屏的 catch 只静默 AbortError），错误态就写进已拆掉的屏里了
+    expect(settled).toEqual(["AbortError"]);
+    expect(seen[0].aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0); // 计时器随请求一起收掉，不留 15s 的残余
   });
 });

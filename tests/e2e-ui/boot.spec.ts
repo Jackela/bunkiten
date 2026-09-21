@@ -6,9 +6,14 @@
 //     用例中途把文件补上再点「重试」——验的是重试**真的走通**，不是只换个文案；
 //   · 连不上态用 page.route 把 /api/auth 拦下来（先挂住 → 落 502 → 再撤拦截），
 //     checking 态因此是确定可观测的中间态（不是抢时序），三态全覆盖。
+// 注意（15s 上限之后）：checking 不再是「想挂多久就挂多久」——`/api/auth` 之上有
+// BOOT_FETCH_TIMEOUT_MS 的启动链上限，挂过点也会进同一个「连不上叙事服务。」错误态。所以那条用例
+// 必须把「502 分支」钉死（放行前仍是 checking、且断言 502 已落地才看错误态），否则它会悄悄
+// 退化成「超时 → 错误态」还在装绿。
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
+import { BOOT_FETCH_TIMEOUT_MS } from "../../src/lib/acp";
 import { startUiStack, stopUiStack } from "./stack";
 
 test("未登录：出「还没连上叙事引擎」提示；补上登录态后点重试进标题屏", async ({ browser }) => {
@@ -66,22 +71,41 @@ test("未登录但已配好自备 key：不必终端登录，直接进标题屏"
 test("连不上叙事服务：checking → 错误提示 → 服务恢复后重试进标题屏", async ({ browser }) => {
   const { stack, page } = await startUiStack(browser, { presets: ["demo"], turns: [] });
   try {
-    // 拦下 /api/auth 并把它挂在半途（既不响应也不失败）：checking 态在这段时间里是稳定画面
-    const gate: { armed: boolean; open: () => void } = { armed: false, open: () => {} };
+    // 拦下 /api/auth 并把它挂在半途（既不响应也不失败）：checking 态在这段时间里是稳定画面。
+    // 三个时间点都记下来，用来把「502 分支」和「超时分支」分开（两者落到同一个错误文案，看症状分不出来）：
+    // armedAt=拦到请求、servedAt=502 真的写回浏览器、open()=我们放行。
+    const gate: { armed: boolean; armedAt: number; servedAt: number; open: () => void } = {
+      armed: false,
+      armedAt: 0,
+      servedAt: 0,
+      open: () => {},
+    };
     await page.route("**/api/auth", async (route) => {
       gate.armed = true;
+      gate.armedAt = Date.now();
       await new Promise<void>((resolve) => {
         gate.open = resolve;
       });
       await route.fulfill({ status: 502, contentType: "application/json", body: JSON.stringify({ error: "boom" }) });
+      gate.servedAt = Date.now(); // 502 已交回浏览器：此后才允许出现错误态
     });
     await page.goto(stack.pageUrl);
     await expect(page.getByText("正在确认登录状态…")).toBeVisible();
     // 拦下（armed）才放行——避免「请求还没发出就 open」的空放行
     await expect.poll(() => gate.armed, { message: "GET /api/auth 未被拦截到" }).toBe(true);
 
+    // 放行前仍是 checking（还没有错误态）：这是「没踩到 15s 上限」的现场证据——若这一跳已经挂过点，
+    // 启动链上限会先落地成同一个错误态，后面那条断言就不再能证明走的是 502 分支了
+    expect(Date.now() - gate.armedAt, "挂住时长已逼近启动链上限，这条用例正在退化成「超时 → 错误态」").toBeLessThan(
+      BOOT_FETCH_TIMEOUT_MS,
+    );
+    await expect(page.getByText("连不上叙事服务。")).toHaveCount(0);
+
     gate.open(); // 502 → fetchAuth 抛错 → 错误态
-    await expect(page.getByText("连不上叙事服务。")).toBeVisible();
+    // 只在 502 分支成立的顺序与时限：① 502 真的落回浏览器（route.fulfill 完成）才可能出错误态；
+    // ② 错误态在 5s 内出现——超时分支此刻还差大半截（放行前挂住时长 + 5s < 上限），出不来。
+    await expect.poll(() => gate.servedAt, { message: "502 未被写回浏览器" }).toBeGreaterThan(0);
+    await expect(page.getByText("连不上叙事服务。")).toBeVisible({ timeout: 5_000 });
     await expect(page.getByRole("button", { name: "重试" })).toBeVisible();
 
     // 服务恢复（撤掉拦截）后重试：自检通过 → 标题屏

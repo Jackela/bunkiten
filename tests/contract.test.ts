@@ -419,7 +419,7 @@ const CASE_GROUPS = [
   { name: "doctor", files: ["tests/doctor.test.ts"], floor: 12 },
   { name: "preload", files: ["tests/preload.test.ts"], floor: 8 },
   { name: "credentials", files: ["tests/credentials.test.ts"], floor: 30 },
-  { name: "ui", files: ["tests/ui.test.tsx"], floor: 136 },
+  { name: "ui", files: ["tests/ui.test.tsx"], floor: 141 },
   {
     name: "integration",
     files: ["tests/integration/pipeline.test.ts", "tests/integration/audio-history.test.ts", "tests/integration/http-guard.test.ts"],
@@ -439,7 +439,7 @@ const CASE_SUB_GROUPS = [
 const CONTRACT_FILE = "tests/contract.test.ts";
 
 /** 单测 + 集成的合计下限（抬高它要同批抬齐分组 floor——自洽断言会拦） */
-const CASE_TOTAL = 497;
+const CASE_TOTAL = 502;
 
 /** 三份带粗口径下限声明的文档 */
 const DOCS = ["README.md", "AGENTS.md", "docs/ARCHITECTURE.md"];

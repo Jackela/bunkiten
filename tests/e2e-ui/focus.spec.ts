@@ -7,6 +7,7 @@
 //      免去 :focus-visible rect 描边的备选方案）——focused 且 outline 生效即证明选型成立。
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { startUiStack, stopUiStack, type StartedStack } from "./stack";
+import { BOOT_TO_TITLE_MS } from "./flow";
 
 /** w1 的三节点小树（进度指针 1-2，方向键可走 1-1↔1-3） */
 function smallTree(): string {
@@ -61,7 +62,9 @@ test.afterAll(async () => {
 async function openWorlds(p: Page): Promise<void> {
   await p.goto(stack.pageUrl);
   const card = p.getByTestId("title-card-center");
-  await expect(card).toBeVisible();
+  // 首个断言付冷启动：本 spec 自起栈（vite dev + acp-server + 假引擎），这一步给 BOOT_TO_TITLE_MS，
+  // 其余断言仍走全局 10s（理由与分账方式见 flow.ts 的同名常量）
+  await expect(card).toBeVisible({ timeout: BOOT_TO_TITLE_MS });
   await card.click();
   await expect(p.getByTestId("worlds-screen")).toBeVisible();
 }

@@ -243,11 +243,105 @@ export type AcpEvent =
   /** v1.6 【曲】/【环境】/【音效】协议行（单独成段、不进正文；文件缺失由客户端静默 no-op） */
   | { type: "audio"; kind: AudioKind; name: string };
 
-/** @returns {Promise<{loggedIn: boolean; hasCredentials: boolean}>} 登录态 + 是否已配好自备 key（v1.10；两者任一即可开玩） */
-export async function fetchAuth(): Promise<{ loggedIn: boolean; hasCredentials: boolean }> {
-  const r = await fetch("/api/auth");
-  if (!r.ok) throw new Error(`GET /api/auth -> HTTP ${r.status}`);
-  const data = (await r.json()) as { loggedIn?: boolean; hasCredentials?: boolean };
+/**
+ * 启动链三条读接口（/api/auth、/api/presets、/api/worlds）的等待上限（ms）。
+ * 这三条都在「屏还没立起来」之前的必经路径上：本地服务/代理卡住时，过去会无限停在启动屏的
+ * 「正在确认登录状态…」或标题屏的「加载中…」——既没有反馈也没有出口（e2e 里表现为 10s 断言超时，
+ * 快照定在启动屏或标题屏）。给一个显式上限，超时就走两屏**既有的**错误态，不新增 UI。
+ * 15s 对 localhost 的读接口是极宽松的预算：真到点了就是真有问题，不是「慢」。
+ */
+export const BOOT_FETCH_TIMEOUT_MS = 15_000;
+
+/** 超时错误的 name（与 AbortError 分开：外部 signal 的 abort 仍要静默，超时必须能进错误态） */
+const BOOT_TIMEOUT_NAME = "TimeoutError";
+
+/**
+ * 与传输层 abort 同形的错误（名对了调用方就静默——两屏的 catch 只认 name）。
+ * 只在「外部 signal 已 abort，但赛跑被超时那条路赢下」时自造，其余情况一律透传传输层的错误。
+ */
+function bootAbortError(): Error {
+  const e = new Error("The operation was aborted.");
+  e.name = "AbortError";
+  return e;
+}
+
+/**
+ * 启动链专用 GET + 解析：显式超时 + 外部 signal 组合，**fetch 与 body 解析在同一个有界作用域里**
+ * （三条读接口共用一个实现，免得约束分成三份）。
+ *
+ * 为什么解析也必须在界内：只包 `fetch()` 的话 `Response` 一到手就返回、`finally` 已 clearTimeout，
+ * 调用方的 `await r.json()` 从此既没有 deadline 也没有 signal——服务/代理先回响应头、再挂住 body 时，
+ * 两屏照样回到「永远转圈」（超时只剩「响应头没回来」那一半，等于没兜住）。所以上限覆盖「响应头 + body」整段。
+ *
+ * 为什么不是 `AbortSignal.timeout(...)` 一把梭（三个理由都跟「超时必须真的落地」有关）：
+ *  1. 只给 signal 没有「抛错保证」——传输层不理 signal（测试替身、将来多一层封装）时调用方还是挂死，
+ *     所以这里再与一个 setTimeout 的拒绝赛跑，谁先到算谁；
+ *  2. 计时器得是 setTimeout：单测用假计时器推进（AbortSignal.timeout 的内部计时器不受 vi 控制）；
+ *  3. 外部 signal 另赛一路：AbortSignal.any 只负责把它透给 fetch，传输层不理会就没人接这枪——
+ *     卸载要能立刻落地（并在 finally 里收掉 15s 计时器），不靠底层守规矩。
+ * 组合 signal 仍用 AbortSignal.any（语义与手写 addEventListener 组合一致，但少一份自己的清理代码）：
+ * 外部 signal（组件卸载/切屏）abort 抛 AbortError，调用方原有的静默语义不变；超时抛 name 为 TimeoutError
+ * 的错误——两屏既有的错误态接得住（标题屏的 catch 只放行 AbortError）。
+ * 两者同时成立时**卸载优先**（见 catch）。
+ * @param {string} url 启动链路径（超时文案里带整条 URL：排障时一眼看出卡在哪一条、带的什么过滤条件）
+ * @param {AbortSignal} [external] 外部取消信号（组件卸载）
+ * @param {string} [httpLabel] HTTP 非 200 文案里的地址（缺省用 url）：/api/worlds 那条过去只写路径、
+ *   不带 `?preset=`（屏上错误条与用例都盯着这句原文），所以这里留个口子，别顺手把 query 拼进去
+ * @returns {Promise<T>} 响应体 JSON（形状由调用方断言，与过去 `r.json() as T` 一致）
+ * @throws HTTP 非 200 时抛 `GET <httpLabel> -> HTTP <status>`；挂住超过上限抛 TimeoutError；外部取消抛 AbortError
+ */
+async function fetchBootJson<T>(url: string, external?: AbortSignal, httpLabel = url): Promise<T> {
+  const timeoutCtrl = new AbortController();
+  const signal = external ? AbortSignal.any([external, timeoutCtrl.signal]) : timeoutCtrl.signal;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onExternalAbort: (() => void) | undefined;
+  let timedOut = false;
+  const timeoutError = (): Error => {
+    const e = new Error(`GET ${url} 超时（${BOOT_FETCH_TIMEOUT_MS}ms）`);
+    e.name = BOOT_TIMEOUT_NAME;
+    return e;
+  };
+  try {
+    return await Promise.race([
+      (async () => {
+        const r = await fetch(url, { signal });
+        if (!r.ok) throw new Error(`GET ${httpLabel} -> HTTP ${r.status}`);
+        return (await r.json()) as T;
+      })(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          reject(timeoutError()); // 先让赛跑落地，再 abort：反过来的话 abort 引发的 AbortError 可能先赢
+          timeoutCtrl.abort(); // 真取消底层请求：别把一个还挂着的连接（连同它的 body）留在后台
+        }, BOOT_FETCH_TIMEOUT_MS);
+      }),
+      new Promise<never>((_, reject) => {
+        if (!external) return; // 没有外部 signal：这一路永远 pending（比赛不在乎），别白造监听
+        onExternalAbort = () => reject(bootAbortError());
+        external.addEventListener("abort", onExternalAbort, { once: true });
+      }),
+    ]);
+  } catch (e) {
+    // 卸载优先：外部 signal 已 abort 就一律当取消处理（传输层的 AbortError 原样透传；若赢的是超时那条路，
+    // 也换成 AbortError）——否则已拆掉的屏会收到 TimeoutError，往已卸载的组件里写错误态。
+    // 反过来：超时之后传输层抛什么（多半是 abort 引发的 AbortError）都归一到超时错误，标题屏的 catch
+    // 只对 AbortError 静默（那是卸载路径），不归一的话超时会被当成卸载吞掉——玩家又回到「一直转圈」。
+    if (external?.aborted) throw (e as Error | undefined)?.name === "AbortError" ? (e as Error) : bootAbortError();
+    if (timedOut) throw timeoutError();
+    throw e;
+  } finally {
+    clearTimeout(timer);
+    if (external && onExternalAbort) external.removeEventListener("abort", onExternalAbort);
+  }
+}
+
+/**
+ * @param {AbortSignal} [signal] 组件卸载时取消（BootScreen 的 AbortController）
+ * @returns {Promise<{loggedIn: boolean; hasCredentials: boolean}>} 登录态 + 是否已配好自备 key（v1.10；两者任一即可开玩）
+ * @throws HTTP 非 200 时抛错；挂住超过 {@link BOOT_FETCH_TIMEOUT_MS} 抛 TimeoutError（启动屏走错误态）
+ */
+export async function fetchAuth(signal?: AbortSignal): Promise<{ loggedIn: boolean; hasCredentials: boolean }> {
+  const data = await fetchBootJson<{ loggedIn?: boolean; hasCredentials?: boolean }>("/api/auth", signal);
   return { loggedIn: data.loggedIn === true, hasCredentials: data.hasCredentials === true };
 }
 
@@ -357,12 +451,11 @@ export async function restartEngine(): Promise<{ ok: boolean; error?: string }> 
 /**
  * @param {AbortSignal} [signal] 组件卸载时取消
  * @returns {Promise<PresetsResponse>} presets + 解析失败的目录
- * @throws HTTP 非 200 时带上下文抛错
+ * @throws HTTP 非 200 时带上下文抛错；响应头**或 body** 挂住超过 {@link BOOT_FETCH_TIMEOUT_MS} 抛 TimeoutError（标题屏走错误态）
  */
 export async function fetchPresets(signal?: AbortSignal): Promise<PresetsResponse> {
-  const r = await fetch("/api/presets", { signal });
-  if (!r.ok) throw new Error(`GET /api/presets -> HTTP ${r.status}`);
-  return (await r.json()) as PresetsResponse;
+  // 解析在 fetchBootJson 的界内完成：只回响应头、body 挂住的代理同样会在 15s 落地（过去这里会永远转圈）
+  return await fetchBootJson<PresetsResponse>("/api/presets", signal);
 }
 
 /**
@@ -383,13 +476,13 @@ export async function fetchAssets(preset: string, signal?: AbortSignal): Promise
  * @param {string} [preset] 只看某个剧本的世界（世界线屏按选中的卡过滤）
  * @param {AbortSignal} [signal] 取消
  * @returns {Promise<WorldEntry[]>} 世界列表（最近游玩优先）
- * @throws HTTP 非 200 时抛错
+ * @throws HTTP 非 200 时抛错；响应头**或 body** 挂住超过 {@link BOOT_FETCH_TIMEOUT_MS} 抛 TimeoutError（世界线屏走错误态）
  */
 export async function fetchWorlds(preset?: string, signal?: AbortSignal): Promise<WorldEntry[]> {
   const q = preset ? `?preset=${encodeURIComponent(preset)}` : "";
-  const r = await fetch(`/api/worlds${q}`, { signal });
-  if (!r.ok) throw new Error(`GET /api/worlds -> HTTP ${r.status}`);
-  const data = (await r.json()) as { worlds?: WorldEntry[] };
+  // HTTP 文案仍用不带 query 的路径（与裸 fetch 那版逐字一致：屏上错误条的世界线过滤条件是另一条线索）；
+  // 超时文案带整条 URL（含 query）——那条过去也是这么写的
+  const data = await fetchBootJson<{ worlds?: WorldEntry[] }>(`/api/worlds${q}`, signal, "/api/worlds");
   return data.worlds ?? [];
 }
 

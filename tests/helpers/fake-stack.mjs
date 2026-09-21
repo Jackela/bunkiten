@@ -38,15 +38,43 @@ function teeFactory() {
   };
 }
 
-async function httpOk(url) {
+/**
+ * 单跳探活的等待上限（ms）：冷代理下**裸 fetch 会挂到 undici 的头超时（~5 分钟）**，而 Playwright 会先以
+ * 60s 超收场——拿不到「vite proxy /api/auth」这条诊断（只看到一条 60s timeout）。给单跳一个上限，
+ * 让「没就绪」在 4s 内变成一条可读的状态/错误，再由 waitFor 按 100ms 间隔继续探。
+ */
+const PROBE_TIMEOUT_MS = 4000;
+
+/**
+ * 探活一跳：单次带上限 + **消费掉 body**（每 100ms 一跳、最长 30s，不消费的响应体会积一堆短命连接）。
+ * 失败不抛错（轮询期间失败视同未就绪），把「最后一次看到的状态/错误」写进 ctx.last——
+ * waitFor 失败时贴进消息，否则只剩一句 timeout，分不清是没起来、还是 502/ECONNREFUSED。
+ * @param {string} url 探的地址
+ * @param {{last: string}} ctx 跨跳共享的诊断槽（每次覆盖为最新一跳）
+ * @returns {Promise<boolean>} HTTP ok 与否
+ */
+async function httpProbe(url, ctx) {
   try {
-    return (await fetch(url)).ok;
-  } catch {
+    const r = await fetch(url, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+    void r.body?.cancel(); // 只关心 ok/status：body 不读就显式取消（不消费会一直攒连接）
+    ctx.last = `GET ${url} -> HTTP ${r.status}`;
+    return r.ok;
+  } catch (e) {
+    ctx.last = `GET ${url} -> ${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}`;
     return false;
   }
 }
 
-function waitFor(predicate, { timeoutMs = 30_000, intervalMs = 100, label = "condition" } = {}) {
+/**
+ * 轮询到 predicate 为真。
+ * 注意 deadline 是在 predicate **返回之后**才查的：单跳最长可以吃掉 PROBE_TIMEOUT_MS，
+ * 所以真实上限是 timeoutMs + 一跳的预算（探活那种一跳带上限的用法下这是有界的；带无止境 await 的
+ * predicate 仍会拖过 deadline，别拿它当硬截止）。
+ * @param {() => Promise<boolean> | boolean} predicate 未就绪返回假值（抛错视同未就绪）
+ * @param {{timeoutMs?: number, intervalMs?: number, label?: string, detail?: string | (() => string)}} [options]
+ *   detail：失败消息里追加的实况（如最后一次探活看到的 HTTP 状态/错误）
+ */
+function waitFor(predicate, { timeoutMs = 30_000, intervalMs = 100, label = "condition", detail } = {}) {
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolve, reject) => {
     const tick = async () => {
@@ -57,7 +85,10 @@ function waitFor(predicate, { timeoutMs = 30_000, intervalMs = 100, label = "con
         /* 轮询期间失败视同未就绪 */
       }
       if (ok) return resolve();
-      if (Date.now() > deadline) return reject(new Error(`timeout waiting for ${label}`));
+      if (Date.now() > deadline) {
+        const extra = typeof detail === "function" ? detail() : detail;
+        return reject(new Error(`timeout waiting for ${label}${extra ? `（最后状态：${extra}）` : ""}`));
+      }
       setTimeout(tick, intervalMs);
     };
     tick();
@@ -168,7 +199,13 @@ export async function startFakeStack(options = {}) {
         }
       });
     });
-    await waitFor(() => httpOk(pageUrl), { label: "vite dev server http" });
+    // 探活两跳共用一个诊断槽：失败消息里贴的是**最后一跳**看到的 HTTP 状态/错误（不是一句光秃秃的 timeout）
+    const probe = { last: "还没有探活结果" };
+    await waitFor(() => httpProbe(pageUrl, probe), { label: "vite dev server http", detail: () => probe.last });
+    // 再等一次**经 Vite 代理**的 /api/auth：上面的只等 index.html，页面已能加载不等于 /api/* 的转发已热。
+    // 冷代理下测试的首个 goto 会撞上「页面起来了、boot 的第一个 GET 却卡住」——启动屏停在
+    // 「正在确认登录状态…」直到断言超时（历史上 flaky 的那一段）。先戳一次把代理路径捂热再交给用例。
+    await waitFor(() => httpProbe(pageUrl + "/api/auth", probe), { label: "vite proxy /api/auth", detail: () => probe.last });
     return { stack, pageUrl, stop };
   } catch (e) {
     await stop(); // 启动中途失败也要回收子进程
