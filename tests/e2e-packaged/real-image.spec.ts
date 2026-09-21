@@ -226,12 +226,22 @@ test("打包态真出图：真 grok CLI + 真图片服务，画廊重绘落一�
     // 引擎握手：acp-server 的 `[acp] grok session ready:` 走主进程 stdout（与 tests/helpers/stack.mjs 同一条线）。
     // 就绪前点「重新生成」会撞 /prompt 409；boot 失败要连日志一起报出来（真 grok 在临时 HOME 下跑不通时就看这里）。
     const ready = () => appLogs.join("");
-    await expect
-      .poll(() => ready().includes("grok session ready") || ready().includes("boot failed"), {
-        timeout: 180_000,
-        message: () => `引擎未就绪；app logs=${ready().slice(-1500)}`,
-      })
-      .toBe(true);
+    // 失败消息必须是**字符串**：expect.poll 的 message 只收 string，传函数会被原样 stringify（拿到的是函数源码，
+    // 等于没有诊断）。所以静态上下文在轮询前拼好，轮询后的实况（日志尾巴）在 catch 里补打再原样抛出
+    //（同一手法见同目录 packaged.spec.ts 的两处 poll）。
+    try {
+      await expect
+        .poll(() => ready().includes("grok session ready") || ready().includes("boot failed"), {
+          timeout: 180_000,
+          message:
+            "引擎未就绪：180s 内 app stdout 既没有 'grok session ready' 也没有 'boot failed'" +
+            `（app=${APP_BIN}；grok=${REAL_GROK ?? "(无)"}；凭据来源=${CREDS_PICK.source}）`,
+        })
+        .toBe(true);
+    } catch (e) {
+      console.log(`[real-image] 引擎未就绪；app logs=${ready().slice(-1500)}`);
+      throw e;
+    }
     expect(ready(), `引擎 boot 失败（真 grok 未跑起来）：\n${ready().slice(-2000)}`).not.toContain("boot failed");
 
     // 当前剧本 id：标题屏导出链接的 testid 就带着它（比按标题反查稳）。画廊「素材」入口用的正是这张中央卡。
@@ -271,30 +281,36 @@ test("打包态真出图：真 grok CLI + 真图片服务，画廊重绘落一�
 
     // 关键断言：目标 jpg 的 mtime 前进且字节数 > 0（真出了一张、真落了盘）。
     // 驱动是引擎回合（写剧情树/出图都不由我们控制时序），一律用 expect.poll，绝不写死 sleep。
-    await expect
-      .poll(
-        () => {
-          try {
-            const st = statSync(targetAbs);
-            return st.mtimeMs > beforeMtime && st.size > 0;
-          } catch {
-            return false;
-          }
-        },
-        {
-          timeout: 700_000,
-          message: async () => {
-            const notice = await win.getByTestId("assets-regen-notice").textContent().catch(() => null);
-            return (
-              `重绘后目标 jpg 未更新：${targetRel}\n` +
-              `目录现状=${JSON.stringify(snapshotDir(assetsDir))}\n` +
-              `画廊提示=${notice ?? "(无)"}\n` +
-              `app logs=${ready().slice(-1200)}`
-            );
+    // message 传字符串（poll 只收 string；传函数会被 stringify）：把「运行前的现场」先拼进去——
+    // 目标、期望关系、运行前快照都是轮询前就已知的，正是失败时最需要的那几行。
+    try {
+      await expect
+        .poll(
+          () => {
+            try {
+              const st = statSync(targetAbs);
+              return st.mtimeMs > beforeMtime && st.size > 0;
+            } catch {
+              return false;
+            }
           },
-        },
-      )
-      .toBe(true);
+          {
+            timeout: 700_000,
+            message:
+              `重绘后目标 jpg 未更新：${targetRel}（期望 mtime > ${beforeMtime} 且 size > 0）\n` +
+              `运行前快照=${JSON.stringify(before)}`,
+          },
+        )
+        .toBe(true);
+    } catch (e) {
+      // 轮询后的实况（poll 的字符串消息拿不到）：目录现状 / 画廊提示 / 日志尾巴都打出来再原样抛
+      const notice = await win.getByTestId("assets-regen-notice").textContent().catch(() => null);
+      console.log(`[real-image] 目标未更新：${targetRel}`);
+      console.log(`[real-image] 目录现状=${JSON.stringify(snapshotDir(assetsDir))}`);
+      console.log(`[real-image] 画廊提示=${notice ?? "(无)"}`);
+      console.log(`[real-image] app logs=${ready().slice(-1200)}`);
+      throw e;
+    }
 
     // 收尾强断言：新文件确实非空（poll 已含 size>0，这里再读一次做「字节数」的显式证据）
     const after = statSync(targetAbs);

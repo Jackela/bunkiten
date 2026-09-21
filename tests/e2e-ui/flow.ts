@@ -37,3 +37,32 @@ export async function quickStartToGame(page: Page): Promise<void> {
   await page.getByTestId("skip-preload").click();
   await expect(page.getByTestId("status")).toHaveText("就绪");
 }
+
+/**
+ * 「把焦点从就绪态的自动聚焦手里收回来」：点一下画面角落（不可聚焦的常驻底图）把焦点还给 body，
+ * 并**等到焦点真的在 body 上**才返回——调用方紧接着发键盘（Tab/数字键/空格）时才不会落错地方。
+ *
+ * 为什么要先等 `free-input-field` 聚焦（而不是只等 status 行「就绪」）：game 屏就绪后 FreeInput 会
+ * 自动聚焦输入框，那次 `input.focus()` 挂在 `status` 上、是**回合收尾之后才跑的被动 effect**——
+ * React 先把「就绪」写进 DOM，随后才执行它。于是 status 行读到「就绪」的那一刻，App 手里还欠一次
+ * 聚焦动作：此刻点画面角落把焦点还给 body，那次自动聚焦会晚一步落下来，把焦点从我们要发键盘的地方抢走。
+ * 后果正是 post-merge CI 上偶发红的那条：Tab 的起点从 body 变成输入框——首个焦点跑到面板的
+ * 麦克风/发送上（不是命令轨「设置」），空格与数字键也会被输入框吃掉（`isTypingTarget` 让路）。
+ *
+ * 判据是**事件**不是时长：等到输入框真的拿到焦点，就说明那次欠下的聚焦已经落地，之后不再有任何
+ * 程序化 focus 会抢焦点（没有玩家输入就不会有新回合、也就没有新的 status 变化 → FreeInput 的 effect
+ * 不会再触发）。桌面/CI 一样成立，也不吃「机器多慢」——等待没有时长参数可调。
+ * 前置：game 屏已达就绪（enterProtagonist/quickStartToGame/continueWorld 等过 status 行之后）。
+ */
+export async function handFocusBackToBody(page: Page): Promise<void> {
+  // 就绪态的自动聚焦（一次性）已落地：此后没有任何 pending 的 focus 会跟我们的键盘抢焦点
+  await expect(page.getByTestId("free-input-field")).toBeFocused();
+  // 走 mouse.click 发原始指针事件而不是 locator.click：全屏都是 fixed 定位，<body> 自身没有布局盒，
+  // 后者会卡在 actionability 检查（element is not visible）超时
+  await page.mouse.click(4, 4);
+  await expect
+    .poll(() => page.evaluate(() => document.activeElement === document.body), {
+      message: "点击画面角落后焦点没回到 body（document.activeElement 另有其人）——后续键盘会从这里起步",
+    })
+    .toBe(true);
+}

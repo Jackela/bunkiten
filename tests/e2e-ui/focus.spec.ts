@@ -7,7 +7,7 @@
 //      免去 :focus-visible rect 描边的备选方案）——focused 且 outline 生效即证明选型成立。
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { startUiStack, stopUiStack, type StartedStack } from "./stack";
-import { BOOT_TO_TITLE_MS } from "./flow";
+import { BOOT_TO_TITLE_MS, handFocusBackToBody } from "./flow";
 
 /** w1 的三节点小树（进度指针 1-2，方向键可走 1-1↔1-3） */
 function smallTree(): string {
@@ -91,12 +91,13 @@ test("game 屏 Tab：首个焦点是命令轨「设置」，按钮出 :focus-vis
   await openWorlds(page);
   await continueWorld(page);
 
-  // 就绪时 FreeInput 自动聚焦：点一下画面角落（不可聚焦的常驻底图）把焦点还给 body，再 Tab——
-  // 命令轨「设置」是 game 屏 DOM 里第一个可聚焦元素。v1.7 就绪态的状态簇走 sr-only，它已收不到
-  // 指针事件（见 TopBar 文件头），点它会一直超时；与 keyboard.spec 同一手法。
+  // 起点必须是 body——把焦点从就绪态的自动聚焦手里收回（等自动聚焦真的落过地，再点画面角落并确认
+  // 焦点已在 body；判据与理由见 flow.handFocusBackToBody，这条用例就是它修的那只 CI flake）。
+  // 之后 Tab：命令轨「设置」是 game 屏 DOM 里第一个可聚焦元素（状态簇在它之前，但就绪态的簇走
+  // sr-only、里面只有不可聚焦的文本；对话区/输入框那一簇排在命令轨之后）。
   // 走 mouse.click 发原始指针事件而不是 locator.click：全屏都是 fixed 定位，<body> 自身没有布局盒，
   // 后者会卡在 actionability 检查（element is not visible）超时
-  await page.mouse.click(4, 4);
+  await handFocusBackToBody(page);
   await page.keyboard.press("Tab");
   await expectFocusRing(page.getByTestId("settings"));
 });
