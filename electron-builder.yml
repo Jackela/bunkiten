@@ -47,9 +47,17 @@ win:
   target:
     - nsis
     - portable
-  # 只跳过签名，保留图标与版本元数据写入：若用 signAndEditExecutable:false，PE 资源编辑会一并跳过，
-  # 应用 exe 会留在 Electron 默认图标与「Electron」版本串（安装器图标仍是新的，容易漏检）
-  signExecutable: false
+  # 刻意不写 signExecutable（默认 true），也绝不写 signAndEditExecutable: false —— 两条路都成立（v26.15.3 源码实证）：
+  # - 没有证书 = 与「未签名」完全一致：WindowsSignToolManager.signFile() 在 cscInfo 为空且没有自定义 sign 钩子时
+  #   只打一条 debug「no signing info identified, signing is skipped」就 return false（不抛错；forceCodeSigning
+  #   默认 false 所以不会 fail），而 PE 资源编辑是**另一条**代码路径——signAndEditResources() 先
+  #   editWindowsResources()（图标/版本串/执行级别）再 signIf()，未签名构建照样写资源；
+  # - 有证书（WIN_CSC_LINK）= 真签：应用 exe、asar 外的 exe/dll、NSIS 安装器与卸载器（都走 packager.signIf()）
+  #   一并签名，并默认带 RFC3161 时间戳（http://timestamp.digicert.com，无需配置）。
+  # 为什么不再写 signExecutable: false（v1.6–v1.10 一直写着它）：那是**硬关**而不是「没证书就跳过」——
+  # signIf() 见到它就 return false，证书配齐也不会签，等于把条件化的路堵死（upstream 文档只把它当作
+  # 「想跳过签名但保留资源编辑」的手段，见 scheme 的 signAndEditExecutable 说明）。
+  # 开启步骤、验收命令与本地不签名跑法：docs/RELEASING.md。
 mac:
   target:
     - dmg
