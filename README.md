@@ -45,18 +45,20 @@ bunkiten/
 ├─ electron/
 │  ├─ main.js               # Electron 主进程：GAME_ROOT、PATH 补齐、启动 acp-server、开窗口、打包态查更新（electron-updater）
 │  └─ notarize.cjs          # afterSign 公证钩子：APPLE_* 三件套不齐直接 return（本地与未配 secrets 的构建照常成功）
-├─ server/                  # 本地 Node 服务（零依赖；v1.7 拆成入口 + 10 模块，v1.10 加 3 个凭据/出图模块，模块地图见入口文件头注释）
+├─ server/                  # 本地 Node 服务（零依赖；v1.7 拆成入口 + 10 模块，v1.10 加 3 个凭据/出图模块与 1 个服务目录模块，模块地图见入口文件头注释）
 │  ├─ acp-server.mjs        # 入口与装配：ACP 客户端 + HTTP/SSE 路由 + /img /audio 直服 + 资产落盘 + 世界线/快照/剧本导出包接口 + 引擎凭据端点
 │  ├─ credentials.mjs       # 引擎凭据（v1.10）：~/.bunkiten/credentials.json 的读写/脱敏/转引擎 env（纯函数，永不抛）
 │  ├─ credentials-probe.mjs # 「测试连接」（v1.10）：对话侧 /models（或退化最小 completion）、图片侧一次最小生成
-│  └─ media-mcp.mjs         # 自建出图 MCP server（v1.10，stdio JSON-RPC，零依赖）：把自备图片服务变成引擎可调用的 generate_image
+│  ├─ media-mcp.mjs         # 自建出图 MCP server（v1.10，stdio JSON-RPC，零依赖）：把自备图片服务变成引擎可调用的 generate_image
+│  └─ providers-catalog.mjs # 服务目录在线更新（v1.10，ADR-0020）：抓发布源 docs/providers.json → 校验 → 缓存 ~/.bunkiten/providers.json → 内置兜底
 ├─ shared/
 │  ├─ protocol.mjs          # 协议常量唯一真源（v1.7）：PROTOCOL_HEADS 9 头 / AUDIO_* 音频白名单与直服正则 / DIRECTIVE_PREFIX_RE 指令前缀（pickEffort 与 isMainTurn 共用）
 │  ├─ protocol.d.mts        # 手写类型声明（tsc -b 经 .mjs→.d.mts 解析；运行时直接吃 .mjs）
 │  ├─ providers.mjs         # 服务目录唯一真源（v1.10）：设置屏两个下拉与 server 侧校验共用（id/baseUrl/模型提示/说明）
 │  └─ providers.d.mts       # 同款手写类型声明
 ├─ scripts/
-│  └─ doctor.mjs            # 剧本体检查 CLI（npm run doctor，作者侧、不进 CI）：frontmatter/正文/封面/资产与音频命名/孤儿素材，退出码非 0 ⟺ 有 error
+│  ├─ doctor.mjs            # 剧本体检查 CLI（npm run doctor，作者侧、不进 CI）：frontmatter/正文/封面/资产与音频命名/孤儿素材，退出码非 0 ⟺ 有 error
+│  └─ export-providers.mjs  # 服务目录发布源生成（npm run providers:export）：shared/providers.mjs → docs/providers.json（只搬不改，契约 lint 断言深等）
 ├─ src/                     # React 前端
 │  ├─ App.tsx               # 屏幕切换 + SSE 接入 + 主题变量注入
 │  ├─ store/                # 全局状态机（zustand），按动作切片，共享一个模块级单例
@@ -111,11 +113,12 @@ bunkiten/
 │  │  ├─ fake-engine.mjs    # 最小 ACP 假引擎（按脚本队列回 session/update，可制造段切换）
 │  │  └─ *.test.ts          # 图片落盘与目录穿越防护 / 音频索引与逐轮快照 / 编译-落盘-事件管线 / 引擎凭据端点与 env 注入
 │  ├─ e2e/smoke.spec.ts     # 真引擎 E2E 冒烟（helpers/stack.mjs 起全栈）
-│  ├─ e2e-ui/               # 假引擎确定性 UI e2e（20 个 spec / 42 条用例，随 CI 跑）
+│  ├─ e2e-ui/               # 假引擎确定性 UI e2e（21 个 spec / 44 条用例，随 CI 跑）
 │  └─ e2e-packaged/         # 打包态冒烟（_electron 起 dist:mac:dir 的 .app；opt-in，不进 CI）
 ├─ docs/
 │  ├─ ARCHITECTURE.md       # 架构：ACP 契约、文本协议契约、资产与音频管线、打包与发布布局
-│  ├─ adr/                  # 裁决记录：0001-0017（kebab-case 编号递增）
+│  ├─ adr/                  # 裁决记录：0001-0021（kebab-case 编号递增）
+│  ├─ providers.json        # 服务目录发布源（npm run providers:export 生成）：服务端启动抓这份，服务商列表因此能随版本单独更新
 │  └─ releases/             # 发布说明：<tag>.md（release.yml 直接当作 GitHub Release notes）
 ├─ .github/workflows/
 │  ├─ ci.yml                # CI：npm ci + build + typecheck:server + test:coverage（单测/集成/契约 lint + 覆盖率阈值，替代 npm test 步骤）+ 假引擎 UI e2e
@@ -150,11 +153,12 @@ bunkiten/
 | `npm run dev:electron` | vite + Electron 并行开发 |
 | `npm run build` | `tsc -b && vite build`（类型检查 + 前端构建） |
 | `npm run typecheck:server` | server/shared/scripts 的 checkJs 门禁（`tsconfig.server.json` 对 `server/**/*.mjs` + `shared/*.mjs` + `scripts/doctor.mjs` 开 strict 检查，类型全靠 JSDoc；CI 也会跑） |
-| `npm test` | 单测 + 集成全量 506+ 例（含假引擎集成层，整体秒级；改协议字符串必须同步快照）。**用例数是下限口径**：唯一维护点是 `tests/contract.test.ts` 的 `CASE_GROUPS`/`CASE_TOTAL`——加用例不用改任何文档、删用例会在 lint 里红；同一文件另跑契约 lint（防漂移门禁：协议常量真源断言 + 双侧逐字比对，自身不计入合计下限） |
+| `npm test` | 单测 + 集成全量 560+ 例（含假引擎集成层，整体秒级；改协议字符串必须同步快照）。**用例数是下限口径**：唯一维护点是 `tests/contract.test.ts` 的 `CASE_GROUPS`/`CASE_TOTAL`——加用例不用改任何文档、删用例会在 lint 里红；同一文件另跑契约 lint（防漂移门禁：协议常量真源断言 + 双侧逐字比对，自身不计入合计下限） |
 | `npm run test:coverage` | 同一批测试 + 覆盖率仪表（`@vitest/coverage-v8`，量 `src`/`server`/`shared`/`scripts` 四棵树，配置在 `vitest.config.ts`）：thresholds 是**防下滑线**（2026-09 基线 - 2pp：lines 74 / branches 64 / functions 77 / statements 72）——实际余量 1.56-1.87pp（基线未取整），不是硬指标；CI 用它替代 `npm test` 步骤（同一套测试避免双跑）并上传 HTML 报告 artifact |
 | `npm run doctor` | 剧本体检查（作者侧工具，按需跑、不进 CI）：`node scripts/doctor.mjs` 校验 `presets/` 每个剧本的结构健康度——frontmatter 必填键与 id=目录名、theme 逐键回退预警、`# 主要角色` 与角色建议字段、封面、assets/audio 文件名契约、孤儿素材；输出 `[ok]`/`[warn]`/`[error]` 明细报告，**退出码非 0 当且仅当有 error**（warning 不影响——孤儿素材这类可解释项不拦你发布） |
+| `npm run providers:export` | 服务目录发布源生成：把唯一真源 `shared/providers.mjs` 的 `PROVIDERS` **只搬不改**地写成仓库里的 `docs/providers.json`（`{version, updatedAt, providers}`）——服务端启动抓的就是这份，玩家侧的服务下拉因此能随版本单独更新。**改了目录真源必须顺手跑一次并提交**（契约 lint 断言发布源与真源深等，忘跑或手改 JSON 都会红） |
 | `npm run test:e2e` | 真引擎 E2E 冒烟（2 回合；约 6–12 分钟，视模型与网络。前提：本机登录 grok CLI 且能出网到 x.ai——代理环境开 TUN 或给命令带 `https_proxy`，直连被墙的表现是回合 600s 超时） |
-| `npm run test:e2e:ui` | 假引擎确定性 UI e2e（`tests/e2e-ui/`，20 个 spec / 42 条用例，默认 chromium、不重试、整套约 4 分钟）：开局与同屏多立绘（两人同屏的双硬约束）/设置/**引擎与密钥（填 key → 掩码 → 刷新仍在 → 重启引擎 → 清空回落 + 明文泄漏哨兵）**/键盘/画廊/剧情图/世界线/回退/重掷/动效降级/焦点/角色面板/剧本导入导出/**章节循环（规划→制作中屏→开演→下一章）**/**创作模式（打磨→装配→新剧本入库 + 失败重试）**/**首启三态（未登录给「填自备密钥」入口 / 已配 key 直接开玩 / 连不上服务可重试）**/**音频可观测面（三行协议各自触发直服请求、元素在播与音量、换曲交叉淡入、静音归零）**/**耐久规模（60 幕长历史与 200 条快照、600 节点大树）**，进程由 `helpers/fake-stack.mjs` 编排（假引擎 + 真 acp-server + vite dev）；CI 也会跑（真引擎 e2e 仍只在本机） |
+| `npm run test:e2e:ui` | 假引擎确定性 UI e2e（`tests/e2e-ui/`，21 个 spec / 44 条用例，默认 chromium、不重试、整套约 4 分钟）：开局与同屏多立绘（两人同屏的双硬约束）/设置/**引擎与密钥（填 key → 掩码 → 刷新仍在 → 重启引擎 → 清空回落 + 明文泄漏哨兵）**/键盘/画廊/剧情图/世界线/回退/重掷/动效降级/焦点/角色面板/剧本导入导出/**章节循环（规划→制作中屏→开演→下一章）**/**创作模式（打磨→装配→新剧本入库 + 失败重试）**/**首启三态（未登录给「填自备密钥」入口 / 已配 key 直接开玩 / 连不上服务可重试）**/**音频可观测面（三行协议各自触发直服请求、元素在播与音量、换曲交叉淡入、静音归零）**/**耐久规模（60 幕长历史与 200 条快照、600 节点大树）**，进程由 `helpers/fake-stack.mjs` 编排（假引擎 + 真 acp-server + vite dev）；CI 也会跑（真引擎 e2e 仍只在本机） |
 | `npm run test:e2e:packaged` | **打包态冒烟（opt-in，不进 CI）**：用 Playwright 的 `_electron` 起 `npm run dist:mac:dir` 产出的 `.app`，断言窗口开、标题屏渲染、`/app` 静态托管与 `resources/game` 资源可达——唯一覆盖「打包布局 + asar + 主进程 + 资源路径」的路径（dev 与 UI e2e 都绕开了它）。前置：先跑 `npm run dist:mac:dir`（产物缺失时该 spec 自动 skip）；平台相关，只在 mac 上跑 |
 | `npm run dist:win` | build 后打 Windows x64 包（nsis + portable，不签名） |
 | `npm run dist:mac` | build 后打 macOS 包（dmg + zip，arm64 + x64，不签名） |
@@ -186,7 +190,7 @@ npm run dev:electron
 
 - 想玩 / 装给朋友：[QUICKSTART.md](QUICKSTART.md)
 - 想改代码 / 写剧本 / 接手维护：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)（文本协议契约一节必读）
-- 想知道某个设计为什么这么做：[docs/adr/](docs/adr/)（0001–0017：剧情树骨架、全分支预生成、差分分层、表情由引擎驱动、缓存权威、世界线与分叉、剧情图、资产随故事走、逐轮快照与精确分叉、音频协议、打 tag 即发版、协议单一真源、server 模块化、删除进回收站、回合日志与质量守卫、剧本导出包、a11y 基线）
+- 想知道某个设计为什么这么做：[docs/adr/](docs/adr/)（0001–0021：剧情树骨架、全分支预生成、差分分层、表情由引擎驱动、缓存权威、世界线与分叉、剧情图、资产随故事走、逐轮快照与精确分叉、音频协议、打 tag 即发版、协议单一真源、server 模块化、删除进回收站、回合日志与质量守卫、剧本导出包、a11y 基线、世界线索引 schema 与启动迁移、引擎凭据与自备 key、服务目录随版本更新、引擎 skill 注入）
 - 词表（章节/节点/世界线/分叉/差分…）：[CONTEXT.md](CONTEXT.md)
 - AI 协作者从 [AGENTS.md](AGENTS.md) 进来
 
