@@ -101,7 +101,7 @@ LLM 互动 AVG（文字冒险 / 视觉小说）：Electron 壳 + React 前端 + 
 ## 深入材料
 
 - 动 ACP 会话、`/img` 与 `/audio` 解析顺序、资产/音频管线、世界线状态布局（含索引 schema 与启动迁移）、逐轮快照与精确回退、世界线导出包、引擎凭据与自备 key（v1.10，含第 0 步实证）、服务目录在线更新（ADR-0020）与引擎 skill 注入（ADR-0021）、打包布局与已知限制 → `docs/ARCHITECTURE.md` 对应章节
-- 想知道 `tests/ui.test.tsx` 里那几条因 jsdom 升级而变红的用例、以及 `package.json` 与 dependabot 里对应的版本钉死和复访条件（为什么卡在旧补丁、什么时候能放开）→ `tests/setup-react-act.mjs` 顶部注释
+- 测试环境垫片（React.act + jsdom 30.1 焦点语义回补，见 `tests/setup-react-act.mjs` 顶部）
 - 动引擎叙事行为（导演层、音频纪律、状态纪律、尺度、出图工具优先）→ `.grok/skills/bunkiten/SKILL.md`
 - 想知道某个设计被否决的备选方案（含「为什么不做 .env / 不引 SDK / 不加密 key / 不改 `~/.grok/config.toml`」）→ `docs/adr/0001-0021`；术语口径 → `CONTEXT.md`
 - 要开/验代码签名（买什么证书、加哪些 GitHub Secrets、`codesign`/`spctl`/`stapler`/`signtool` 验收命令、本地不签名跑法、以及「我们不做的事」）→ `docs/RELEASING.md`
