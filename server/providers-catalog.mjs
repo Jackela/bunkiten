@@ -4,6 +4,10 @@
 // 新服务、或某家改了 base_url / 模型示例，只有等下一个游戏版本才到得了玩家机器。把目录搬进仓库里的
 // docs/providers.json（发布源，由 scripts/export-providers.mjs 从真源生成），服务端启动时**非阻塞**地
 // 抓一次、校验后落 `~/.bunkiten/providers.json`，下一次启动就吃缓存——玩家不换版本也能拿到新目录。
+// 发布→可见的窗口由三层决定（ADR-0020 的「修订」段把这条算式钉死）：① 发布源各自的 CDN 缓存；
+// ② 本地缓存的 TTL 节流（CATALOG_TTL_MS）；③ 触发抓取的时机——启动一次 + 每个 `GET /api/providers`
+// 的**后台 revalidate**（revalidateCatalog，stale-while-revalidate：先回当前视图、再异步刷新）。
+// 所以「改了 docs/providers.json」到「长开着的应用下次开设置屏就吃到」不再需要重启。
 //
 // 铁律（安全面，任何调用方都不许越过）：
 //   · 远端**只喂下拉候选**：本模块只回答「目录里有哪些服务可选」，**绝不据此改写玩家已存的
@@ -26,18 +30,24 @@ export const CATALOG_FILENAME = "providers.json";
 /** 目录文档的结构版本（与 scripts/export-providers.mjs 写出的 version 对齐；不匹配即弃用远端） */
 export const CATALOG_VERSION = 1;
 
-/** 本地缓存的保鲜期（24h）：启动时若本地副本还在期内就不再打扰发布源，过了才重抓一次 */
-export const CATALOG_TTL_MS = 24 * 60 * 60 * 1000;
+/**
+ * 本地缓存的保鲜期（6h）：本地副本还在期内就不打扰发布源，过了才重抓一次。
+ * 为什么从 24h 收到 6h（ADR-0020 的「修订」段）：TTL 直接落进「发布→可见」的窗口算式里，
+ * 一天太长；6h 与常用 CDN 的边缘缓存量级相近，让本地这一层不再是窗口里的主导项。
+ */
+export const CATALOG_TTL_MS = 6 * 60 * 60 * 1000;
 
 /** 单次抓取的墙钟上限（照 credentials-probe.mjs 的 timeoutSignal 风格：连不上/被墙都不该拖住启动） */
 export const CATALOG_TIMEOUT_MS = 10_000;
 
 /**
- * 发布源：**固定这两个**，按序尝试（先主后备）。
- *   1. jsDelivr CDN —— `@main` 分支引用，吃边缘缓存、在 GitHub 直连不稳的地区也能到；
- *   2. GitHub raw —— 源站直出，CDN 抽风时兜底。
+ * 发布源：**固定这两个**，**并行都抓**，谁的分发路径先吐出新内容就用谁（见 pickNewest）。
+ *   1. jsDelivr CDN —— `@main` 分支引用，边缘缓存让它在 GitHub 直连不稳的地区也能到，代价是更新有缓存窗口；
+ *   2. GitHub raw —— 源站直出、缓存窗口是分钟级，CDN 抽风或滞后时更快拿到新内容。
  * 为什么不走「可配置的目录服务器」：这是一份公开的静态 JSON（纯内容分发，不是账号级接口），
- * 固定两个公开源最省；测试/镜像用 BUNKITEN_PROVIDERS_URL 覆盖（见 refreshCatalog）。
+ * 固定两个公开源最省；测试/镜像用 BUNKITEN_PROVIDERS_URL 覆盖（覆盖时保持单源语义，见 refreshCatalog）。
+ * 为什么不再「先主后备、首个有效即止」：那样只要主源可达（哪怕它正吐一份缓存的旧目录）就永远赢，
+ * 备源那条更快的路径被白等；两源都抓、在有效结果里取 updatedAt 最大的那份，才让可达性兜底不拖慢新鲜度。
  */
 export const CATALOG_URLS = Object.freeze([
   "https://cdn.jsdelivr.net/gh/Jackela/bunkiten@main/docs/providers.json",
@@ -292,40 +302,116 @@ async function fetchTextSafe(fetchImpl, url) {
 }
 
 /**
- * 抓一次发布源（先主后备）→ 校验 → 落盘 → 更新 memo。**失败静默**：不抛、不响——目录更新是尽力而为的
- * 后台动作，失败就继续用缓存/内置（调用点在启动路径，绝不能被一次网络抖动打断）。
+ * 取一份**有效**目录文档的 updatedAt 时刻（毫秒）。**缺失 / 非字符串 / 解析不出**一律当「最旧」
+ * （返回 -Infinity）：没有可信时间戳的发布物，不配在新旧比较里压过有戳的那份。
+ * @param {CatalogDocument} doc 已校验的目录文档
+ * @returns {number} 毫秒时刻；缺失/不可信为 -Infinity
+ */
+function catalogUpdatedAtMs(doc) {
+  const iso = str(doc.updatedAt);
+  if (!iso) return -Infinity;
+  const t = Date.parse(iso);
+  return Number.isFinite(t) ? t : -Infinity;
+}
+
+/**
+ * 抓一个源并校验：**永不抛**，任何一步失败（超时/非 2xx/坏 JSON/校验不过）都回 null。
+ * @param {typeof fetch} fetchImpl fetch 实现（可注入）
+ * @param {string} url 地址
+ * @returns {Promise<CatalogDocument | null>} 有效文档或 null
+ */
+async function fetchValidCatalog(fetchImpl, url) {
+  const text = await fetchTextSafe(fetchImpl, url);
+  if (text == null) return null;
+  /** @type {unknown} */
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const check = validateCatalogDocument(parsed);
+  return check.ok ? check.doc : null;
+}
+
+/**
+ * 在一组**已并行抓回**的有效候选里取「最新有效」那份：按 updatedAt 最大者胜；完全并列（含都没戳）
+ * 时按传入顺序取前者——顺序即 `CATALOG_URLS`（主源在前），因此主源在同新度时优先。
+ * @param {(CatalogDocument | null)[]} candidates 按 `CATALOG_URLS` 顺序排列的候选（无效为 null）
+ * @returns {CatalogDocument | null} 最新的一份；一份都没有则 null
+ */
+function pickNewest(candidates) {
+  /** @type {CatalogDocument | null} */
+  let best = null;
+  let bestMs = -Infinity;
+  for (const doc of candidates) {
+    if (!doc) continue;
+    const ms = catalogUpdatedAtMs(doc);
+    if (best === null || ms > bestMs) {
+      best = doc;
+      bestMs = ms;
+    }
+  }
+  return best;
+}
+
+/**
+ * 抓一次发布源（**两源并行、取最新有效**）→ 校验 → 落盘 → 更新 memo。**失败静默**：不抛、不响——
+ * 目录更新是尽力而为的后台动作，失败就继续用缓存/内置（调用点在启动路径与 GET 路径，绝不能被一次网络抖动打断）。
+ *
+ * 抓法（ADR-0020 的「修订」段）：`Promise.allSettled` 并行抓 `CATALOG_URLS`（各自 10s 上限），各自校验；
+ * 在**全部有效**结果里取 updatedAt 最大的一份（缺失/解析不出视为最旧、完全并列取靠前那个源）；
+ * 只有一份有效就用它；全无效 → `{ok:false}`。为什么不是「先主后备、首个有效即止」：raw 的 CDN 缓存是
+ * 分钟级、jsDelivr 可达性好但缓存长——「取最新」让可达性兜底不再拖慢新鲜度。
+ * `BUNKITEN_PROVIDERS_URL` 覆盖时**保持单源语义不变**（只打覆盖的那一个，测试/镜像要的就是确定性）。
  *
  * 两个兼容开关（与 electron-updater 的既有做法同款，见 electron/main.js 的 `BUNKITEN_DISABLE_UPDATE`）：
  *   · `BUNKITEN_DISABLE_UPDATE=1` → 直接跳过（打包冒烟用它保证不联网）；
  *   · `BUNKITEN_PROVIDERS_URL=<url>` → 覆盖发布源（测试/镜像指到本地 mock，只打这一个）。
  *
- * TTL 语义：本地缓存还在 24h 保鲜期内就不打扰发布源；没有缓存、缓存过期、或时间戳不可信才真的抓。
+ * TTL 语义：本地缓存还在 6h 保鲜期内就不打扰发布源；没有缓存、缓存过期、或时间戳不可信才真的抓。
  * @param {{root?: string, fetchImpl?: typeof fetch, env?: Record<string, string | undefined>, now?: number}} [opts]
  * @returns {Promise<{ok: boolean}>} 抓取并落盘成功为 true；跳过（开关/TTL）或全源失败为 false
  */
 export async function refreshCatalog({ root = os.homedir(), fetchImpl = fetch, env = process.env, now = Date.now() } = {}) {
   if (env.BUNKITEN_DISABLE_UPDATE === "1") return { ok: false };
   const state = catalogState(root, now);
-  // 本地副本还新鲜：不打扰发布源（TTL 是「最多一天拉一次」的节流，不是缓存有效期的上限）
+  // 本地副本还新鲜：不打扰发布源（TTL 是「最多 6h 拉一次」的节流，不是缓存有效期的上限）
   if (state.source !== "bundled" && state.fetchedAt && now - state.at < CATALOG_TTL_MS) return { ok: false };
   const override = str(env.BUNKITEN_PROVIDERS_URL);
   const urls = override ? [override] : CATALOG_URLS;
-  for (const url of urls) {
-    const text = await fetchTextSafe(fetchImpl, url);
-    if (text == null) continue;
-    /** @type {unknown} */
-    let parsed;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      continue;
-    }
-    const check = validateCatalogDocument(parsed);
-    if (!check.ok) continue;
-    const fetchedAt = new Date(now).toISOString();
-    writeCatalogCache(root, check.doc, fetchedAt);
-    memo = { providers: check.doc.providers, source: "remote", fetchedAt, at: now };
-    return { ok: true };
-  }
-  return { ok: false };
+  // 并行抓、一起等：两源各自的 10s 上限照旧，最坏情形仍是「一个 10s 窗口」而不是顺序相加。
+  const settled = await Promise.allSettled(urls.map((url) => fetchValidCatalog(fetchImpl, url)));
+  const candidates = settled.map((r) => (r.status === "fulfilled" ? r.value : null));
+  const best = pickNewest(candidates);
+  if (!best) return { ok: false };
+  const fetchedAt = new Date(now).toISOString();
+  writeCatalogCache(root, best, fetchedAt);
+  memo = { providers: best.providers, source: "remote", fetchedAt, at: now };
+  return { ok: true };
+}
+
+/** 进程内在途的 revalidate（单飞：一条在途 Promise 被所有调用方复用，见 revalidateCatalog） @type {Promise<{ok: boolean}> | null} */
+let revalidateInFlight = null;
+
+/**
+ * 读路径上的**后台刷新**（stale-while-revalidate）：给 `/api/providers` 的读取路径 fire-and-forget 用。
+ * 语义与纪律：
+ *   · **永不抛**——返回的 Promise 永不 reject（refreshCatalog 本就不抛，这里再兜一层）；
+ *   · **非阻塞**——调用方（`providersView`）不 await 它：先立即回当前 `loadCatalog()` 的结果，刷新在后台跑；
+ *   · **单飞**——进程内一条在途 Promise 被所有调用方复用（一串并发的 GET 只发一轮抓取），落地后清零；
+ *   · TTL/开关守卫**照用**——它只是 refreshCatalog 的一次包装，新鲜（未过期）或 `BUNKITEN_DISABLE_UPDATE=1` 时
+ *     直接 `{ok:false}`、**一次网络请求都不发**。
+ * 效果：长开着的应用在下次设置屏 GET 时就会后台刷新，不必等重启（发布→可见的窗口第 ③ 项）。
+ * @param {{root?: string, fetchImpl?: typeof fetch, env?: Record<string, string | undefined>, now?: number}} [opts]
+ * @returns {Promise<{ok: boolean}>} 刷新结果；跳过或失败为 `{ok:false}`（**不 reject**）
+ */
+export function revalidateCatalog({ root = os.homedir(), fetchImpl = fetch, env = process.env, now = Date.now() } = {}) {
+  if (revalidateInFlight) return revalidateInFlight;
+  const run = refreshCatalog({ root, fetchImpl, env, now }).catch(() => ({ ok: false }));
+  const tracked = run.finally(() => {
+    revalidateInFlight = null;
+  });
+  revalidateInFlight = tracked;
+  return tracked;
 }

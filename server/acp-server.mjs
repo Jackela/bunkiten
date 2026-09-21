@@ -45,7 +45,7 @@ import { readWorldsIndex, presetFromStateFile, worldChapterNo, migrateLegacyStat
 import { createAcpSession } from "./acp.mjs";
 import { readCredentials, writeCredentials, mergeCredentials, validateCredentialsPatch, publicView, credentialsToEnv, secretsOf, sanitizeErrorMessage } from "./credentials.mjs";
 import { testLlm, testImage } from "./credentials-probe.mjs";
-import { loadCatalog, refreshCatalog } from "./providers-catalog.mjs";
+import { loadCatalog, refreshCatalog, revalidateCatalog } from "./providers-catalog.mjs";
 import { mediaMcpServers } from "./media-mcp.mjs";
 import { createRequestHandler } from "./routes.mjs";
 
@@ -140,6 +140,7 @@ export {
   writeCatalogCache,
   loadCatalog,
   refreshCatalog,
+  revalidateCatalog,
   __resetCatalogMemo, // 测试探针（仅 tests/providers-catalog.test.ts 清进程内 memo 用，不是对外 API）
 } from "./providers-catalog.mjs";
 export { MEDIA_MCP_NAME, MEDIA_TOOL_NAME, TOOL_DEFINITION, DEFAULT_SIZES, GENERATE_TIMEOUT_MS, imageSizeFor, imagesEndpoint, resolveOutputPath, pickImagePayload, requestImage, generateImage, mediaMcpPath, mediaMcpServers, handleMcpMessage } from "./media-mcp.mjs";
@@ -344,10 +345,15 @@ export function startServer() {
   /**
    * 服务目录候选（GET /api/providers 的响应主体）。只读视图：GUI 拿它画下拉，
    * **绝不据此改写玩家已存的 baseUrl / key**（见 server/providers-catalog.mjs 的铁律）。
+   * 顺带做 stale-while-revalidate（ADR-0020 的「修订」段）：先**立即**回当前 `loadCatalog()` 的结果，
+   * 再 fire-and-forget 触发一次后台刷新（`revalidateCatalog`——永不抛、非阻塞、进程内单飞、TTL/开关守卫照用）。
+   * 效果：长开着的应用下次设置屏 GET 就会后台刷新，不必等重启（发布→可见的窗口第 ③ 项）。
    * @returns {{providers: object[], source: string, fetchedAt: string|null}} source = remote/cache/bundled
    */
   function providersView() {
-    return loadCatalog({ root: os.homedir() });
+    const view = loadCatalog({ root: os.homedir() });
+    void revalidateCatalog({ root: os.homedir() });
+    return view;
   }
 
   /**
@@ -742,8 +748,9 @@ export function startServer() {
     console.log("[acp] state/worlds/index.json 已升级：裸数组 → {schema: 1, worlds}");
   }
 
-  // 服务目录更新（v1.10，docs/adr/0020）：非阻塞抓一次发布源（先主后备）→ 校验 → 落 `~/.bunkiten/providers.json`。
+  // 服务目录更新（v1.10，docs/adr/0020）：非阻塞抓一次发布源（两源并行、取最新有效）→ 校验 → 落 `~/.bunkiten/providers.json`。
   // `void` 掉：启动不被网络拖住，失败静默（refreshCatalog 永不抛），抓不到就继续用缓存/内置兜底。
+  // 会话期内的刷新不靠重启：`GET /api/providers`（闭包 providersView）会 stale-while-revalidate 再抓一次。
   // 两个开关：`BUNKITEN_DISABLE_UPDATE=1` 直接跳过（打包冒烟用，与 electron-updater 同款）；`BUNKITEN_PROVIDERS_URL` 覆盖源（测试/镜像）。
   void refreshCatalog({ root: os.homedir() });
 
