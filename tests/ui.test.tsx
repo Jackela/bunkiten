@@ -1269,6 +1269,11 @@ describe("AudioManager：索引、交叉淡入与静默降级（v1.6）", () => 
 
     for (let i = 0; i < MAX_SFX; i++) audioManager.handle({ kind: "音效", name: "门响" });
     expect(played).toHaveLength(MAX_SFX);
+    // jsdom ≥30.1 把 volumechange 改成排一个媒体任务（内部走 setImmediate，见 30.1.0 发行说明
+    // "Fixed volumechange and ratechange events to fire asynchronously"）：audio.ts 每次 setVolume
+    // 都会顺带排一条，它也进 vi.getTimerCount()。先排空这类任务（0ms，碰不到 8000ms 的兜底超时），
+    // 剩下的才是每条音效各挂的那一条。
+    vi.advanceTimersByTime(0);
     expect(vi.getTimerCount()).toBe(MAX_SFX); // 每条音效各挂一条兜底超时
     audioManager.handle({ kind: "音效", name: "门响" });
     expect(played).toHaveLength(MAX_SFX); // 槽满：第 5 条丢弃（ended/error/play 都没来）
@@ -1280,6 +1285,7 @@ describe("AudioManager：索引、交叉淡入与静默降级（v1.6）", () => 
 
     // ended 先到：立刻释放且撤掉兜底定时器（不会出现第二次释放），槽位随即可再用
     created.at(-1)!.dispatchEvent(new Event("ended"));
+    vi.advanceTimersByTime(0); // 同上：先排空第 5 条音效那份 volume 变更任务，才看得到「兜底定时器已被撤掉」
     expect(vi.getTimerCount()).toBe(0);
     audioManager.handle({ kind: "音效", name: "门响" });
     expect(played).toHaveLength(MAX_SFX + 2);
