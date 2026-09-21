@@ -38,7 +38,7 @@ jobs:
       # 覆盖率 HTML 报告留档（测试红也要能看到差多少；if: always() 覆盖阈值未过的场景）
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-report
           path: coverage/
