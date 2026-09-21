@@ -6,6 +6,8 @@ import { defineConfig } from "@playwright/test";
 //
 // 为什么单独一份 config：它会真起一个 Electron 应用（要窗口会话、平台相关、还要先有产物），
 // 与秒级的假引擎 UI e2e 完全不同的成本与前置，混在一起会拖慢 CI 的默认门禁。
+// 同目录的 real-image.spec.ts 更重（真 grok CLI + 真图片服务，真花一次对话与一张图，需自备凭据），
+// 同样 opt-in、不进 CI，前置与守门见该文件头；只想跑快冒烟时按文件名过滤排除它。
 // 用法：npm run test:e2e:packaged（前置：npm run dist:mac:dir，产物在 release/mac-<arch>/Bunkiten.app）
 export default defineConfig({
   testDir: "./tests/e2e-packaged",
