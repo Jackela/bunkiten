@@ -5,6 +5,7 @@
 //   · 盘上 0600 → 改 writeCredentials 的 mode 参数；
 //   · env 注入 → 改 acp.mjs 的 spawn env 或入口 buildAcp 的 credentialsToEnv 调用；
 //   · MCP 挂载 → 改 mediaMcpServers 的 byok 判定或 acp.mjs 传 mcpServers 的两处；
+//   · skill 注入 → 改 acp.mjs 的 spawn 参数（--plugin-dir <gameRoot>/.grok，ADR 0021）；
 //   · 重启 → 改 restartAcp（没真正重 spawn 就看不到第二条探针）；
 //   · media-mcp 的协议/落盘 → 改 server/media-mcp.mjs。
 import { afterEach, describe, expect, it } from "vitest";
@@ -256,6 +257,16 @@ describe("凭据 → 引擎子进程（env 与 MCP 挂载）", () => {
     const after = await s.getJSON("/api/credentials");
     expect(after.status).toBe(200);
     expect(s.stdout()).toContain("engine restarted");
+  });
+});
+
+describe("引擎 skill 注入（spawn 的 --plugin-dir，ADR 0021）", () => {
+  it("grok 参数含 --plugin-dir 且值 = <gameRoot>/.grok（未信托的会话也要宣告 bunkiten skill）", async () => {
+    const s = await stack({});
+    const start = s.engineProbeEntries().find((e: any) => e.kind === "start");
+    expect(start.argv).toContain("--plugin-dir");
+    const i = start.argv.indexOf("--plugin-dir");
+    expect(start.argv[i + 1]).toBe(path.join(s.root, ".grok"));
   });
 });
 
