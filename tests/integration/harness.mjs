@@ -255,6 +255,10 @@ async function httpOk(url) {
  * @param {"ok"|"missing"} [opts.auth] 是否写临时 HOME 的 `~/.grok/auth.json`（缺省 "ok"；"missing" 供 boot 屏未登录态用例）
  * @param {object} [opts.credentials] 写进临时 HOME 的 `~/.bunkiten/credentials.json`（0600）的凭据文档
  *   （验自备 key：真引擎侧看 fake-engine 的探针 JSONL，HTTP 侧打 /api/credentials）
+ * @param {object} [opts.extraEnv] 追加/覆盖给 acp-server 子进程的环境变量（服务目录更新用
+ *   `BUNKITEN_PROVIDERS_URL` 指向本地 mock、`BUNKITEN_DISABLE_UPDATE:"0"` 打开抓取）
+ * @param {string|null} [opts.homeDir] 复用已有的 HOME（跨多次 startStack 共享 `~/.bunkiten` 缓存；
+ *   给了就归调用方所有——stop() 只删临时目录、不动它）
  * @returns {Promise<object>} stack 句柄（root/home/events/waitFor/prompt/stop 等）
  */
 export async function startStack({
@@ -272,10 +276,12 @@ export async function startStack({
   legacyIndexArray = false,
   auth = "ok",
   credentials = null,
+  extraEnv = {},
+  homeDir = null,
 } = {}) {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "bunkiten-it-"));
   const root = path.join(tmp, "game");
-  const home = path.join(tmp, "home");
+  const home = homeDir ?? path.join(tmp, "home");
   const binDir = path.join(tmp, "bin");
   mkdirSync(root, { recursive: true });
   mkdirSync(home, { recursive: true });
@@ -320,6 +326,11 @@ export async function startStack({
     PORT: String(port),
     FAKE_ENGINE_TURNS: JSON.stringify(turns),
     FAKE_ENGINE_PROBE: engineProbe,
+    // 服务目录更新（v1.11，ADR-0020）：集成栈默认**离线**——启动时不打扰发布源，让这一层不被网络拖慢/拖红。
+    // 要测抓取通道（tests/integration/providers-catalog.test.ts）就在 extraEnv 里显式给它 "0" 并指到本地 mock。
+    // 与打包冒烟（tests/e2e-packaged/*.spec.ts）用的是同一个开关，语义见 electron/main.js 的 electron-updater 段。
+    BUNKITEN_DISABLE_UPDATE: "1",
+    ...extraEnv,
   };
 
   const proc = spawn(process.execPath, [SERVER], { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"] });

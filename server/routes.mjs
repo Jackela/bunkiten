@@ -36,6 +36,8 @@ import {
  * @property {(target: string) => Promise<{ok: boolean, status: number, ms: number, error?: string, detail?: string}>} testCredentials
  *   真连一次（LLM 走 /models 或最小 completion；图片走一次最小生成）
  * @property {() => Promise<{ok: boolean, error?: string}>} restartEngine 优雅重启引擎会话（保存 key 后一键生效）
+ * @property {() => {providers: object[], source: string, fetchedAt: string|null}} providersView 服务目录候选（设置屏下拉数据；
+ *   source 是本条 providers 的来源：remote/cache/bundled，见 server/providers-catalog.mjs 的 loadCatalog）
  */
 
 /**
@@ -209,7 +211,7 @@ export function createRequestHandler(ctx) {
       res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
       // 首页导览：把 v1.6 的新路由（音频列表/直服、历史快照、世界导出）一并列上，方便 curl 排查
       res.end(
-        "galgame acp-server running. API: /api/presets(GET,POST:import) /api/presets/export?id= /api/presets/check?id= /api/auth /api/assets?preset=(GET,POST删除) " +
+        "galgame acp-server running. API: /api/presets(GET,POST:import) /api/presets/export?id= /api/presets/check?id= /api/auth /api/providers /api/assets?preset=(GET,POST删除) " +
           "/api/audio?preset= /api/worlds(POST: create/fork/restore/update/delete/import) /api/worlds/export?worldId= /api/history?worldId=[&seq=] " +
           "/api/tree /api/state?worldId= /api/credentials(GET,POST) /api/credentials/test /api/engine/restart " +
           "/events(SSE) /prompt(POST) /img?p=&t=&n=&preset= /audio?p=. 打包前端见 /app。",
@@ -467,6 +469,14 @@ export function createRequestHandler(ctx) {
       // hasCredentials（v1.10）：LLM 侧配全了自备 key 时，boot 屏不必再要求终端登录（第三个态）
       const hasCredentials = llmReady(readCredentials());
       sendJSON(res, 200, { loggedIn, hasCredentials });
+      return;
+    }
+
+    // 服务目录（v1.11，docs/adr/0020）：给设置屏画下拉候选。`source` 是**本条响应里 providers 的来源**
+    //（启动期刚抓到远端是 "remote"、读本地缓存 "cache"、内置兜底 "bundled"）；`fetchedAt` 为抓取时刻或 null。
+    // 目录**只喂候选**：绝不据此改写玩家已存的 baseUrl / key（那些走 /api/credentials）。
+    if (req.method === "GET" && url.pathname === "/api/providers") {
+      sendJSON(res, 200, ctx.providersView());
       return;
     }
 

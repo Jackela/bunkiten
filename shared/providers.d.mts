@@ -28,6 +28,9 @@ export const PROVIDERS: readonly ProviderEntry[];
 /** 目录里的 id 集合（下拉渲染与 credentials 校验共用） */
 export const PROVIDER_IDS: readonly string[];
 
+/** 服务 id 的稳定键形态（kebab-case；读路径保留 / 写路径校验 / 发布源校验共用同一句） */
+export const PROVIDER_ID_RE: RegExp;
+
 /** 按用途筛出可选服务（kind 为 both 或该用途的条目） */
 export function providersFor(kind: "llm" | "image"): readonly ProviderEntry[];
 

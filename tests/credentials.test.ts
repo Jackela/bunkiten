@@ -26,7 +26,7 @@ import {
   validateCredentialsPatch,
   writeCredentials,
 } from "../server/credentials.mjs";
-import { providersFor, providerById } from "../shared/providers.mjs";
+import { PROVIDER_IDS, providersFor, providerById } from "../shared/providers.mjs";
 import {
   DEFAULT_SIZES,
   generateImage,
@@ -81,7 +81,7 @@ describe("credentials.mjs：出厂默认与容错读取", () => {
     expect(d.image).toEqual({ mode: "off", provider: "openai", baseUrl: "", apiKey: "", model: "", size: "", sizeBackground: "" });
   });
 
-  it("normalize：缺键/多余键/类型不对逐键回默认，未知 provider 回默认 provider", () => {
+  it("normalize：缺键/多余键/类型不对逐键回默认；provider 只要形态合法就保留（可能是目录新加的）", () => {
     const n = normalizeCredentials({
       version: 99,
       llm: { mode: "byok", provider: "no-such-provider", baseUrl: 42, apiKey: null, model: "m", extra: "x" },
@@ -89,9 +89,36 @@ describe("credentials.mjs：出厂默认与容错读取", () => {
       junk: true,
     });
     expect(n.version).toBe(CREDENTIALS_VERSION);
-    expect(n.llm).toMatchObject({ mode: "byok", provider: "openai", baseUrl: "", apiKey: "", model: "m" });
+    // provider 形态合法（kebab-case）→ 原样保留：它可能是服务目录更新里新加的服务，
+    // 读路径不能拿内置 PROVIDER_IDS 白名单把它改回默认（否则目录一次抓不到，玩家已存的远程 id 就被静默改写）
+    expect(n.llm).toMatchObject({ mode: "byok", provider: "no-such-provider", baseUrl: "", apiKey: "", model: "m" });
     expect(n.image.mode).toBe("off");
     expect(Object.keys(n)).toEqual(["version", "llm", "image"]); // 多余键被丢掉
+  });
+
+  it("normalize：provider 形态非法（空/空白/含空格/大写/下划线/前导横线）才回该组默认", () => {
+    for (const bad of ["", "   ", "No Such", "UPPER", "a_b", "-lead", "trail-", "a b"]) {
+      const n = normalizeCredentials({ llm: { provider: bad }, image: { provider: bad } });
+      expect(n.llm.provider, `provider「${bad}」应回默认`).toBe("openai");
+      expect(n.image.provider, `provider「${bad}」应回默认`).toBe("openai");
+    }
+  });
+
+  it("读路径不改写已存的远程 id（目录缺失/回落内置表时也保持）：normalize 与磁盘往返都不动它", () => {
+    // 不带任何目录上下文（正是「目录暂时抓不到 → bundled」那一态）：已存的远程 id 也必须原样回来
+    const remoteId = "newcomer-llm"; // 内置表里没有；形态合法
+    expect(PROVIDER_IDS).not.toContain(remoteId);
+    const raw = { llm: { mode: "byok", provider: remoteId, baseUrl: "https://newcomer.example/v1", apiKey: "sk-remote-key-4f2a" } };
+    expect(normalizeCredentials(raw).llm.provider).toBe(remoteId);
+
+    const home = tmpHome();
+    try {
+      const written = writeCredentials(home, mergeCredentials(defaultCredentials(), { llm: { mode: "byok", provider: remoteId } }));
+      expect(written.llm.provider).toBe(remoteId);
+      expect(readCredentials(home).llm.provider).toBe(remoteId);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("normalize：非法 mode 回该组默认、超长字段截断（不整份拒绝）", () => {
@@ -188,6 +215,19 @@ describe("credentials.mjs：merge / validate", () => {
     expect(validateCredentialsPatch({ image: { size: "auto" } }).ok).toBe(true);
     expect(validateCredentialsPatch({ image: { size: "" } }).ok).toBe(true);
     expect(validateCredentialsPatch({ image: { sizeBackground: "1536x1024" } }).ok).toBe(true);
+  });
+
+  it("validate：provider 白名单可注入——传入「内置表 ∪ 当前目录」后远程 id 被接受，默认仍只认内置表", () => {
+    // 默认（不传第三参）：目录里新增的远程 id 不在内置表 → 拒（写路径严校验，拦住拼错/抄错的 id）
+    expect(validateCredentialsPatch({ llm: { provider: "newcomer-llm" } }).ok).toBe(false);
+    // 调用点把「内置表 ∪ 当前目录」注入进来：目录里的远程 id 被接受（这正是目录更新的核心收益）
+    const allowed = new Set<string>([...PROVIDER_IDS, "newcomer-llm"]);
+    expect(validateCredentialsPatch({ llm: { provider: "newcomer-llm" } }, [], allowed).ok).toBe(true);
+    expect(validateCredentialsPatch({ image: { provider: "newcomer-llm" } }, [], allowed).ok).toBe(true);
+    // 不同样注入的 id 仍拒（严校验：形状合法但不在允许集合里也要拦）
+    expect(validateCredentialsPatch({ llm: { provider: "some-other-svc" } }, [], allowed).ok).toBe(false);
+    // 数组形态也认（Iterable）
+    expect(validateCredentialsPatch({ llm: { provider: "newcomer-llm" } }, [], [...PROVIDER_IDS, "newcomer-llm"]).ok).toBe(true);
   });
 });
 

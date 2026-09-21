@@ -8,19 +8,25 @@
 //   · 「测试连接」测的是**已保存**的配置（真连一次服务），失败原因来自服务端（已脱敏、已截断）；
 //   · 保存成功给一句人话提示 + 「立刻重启引擎」——引擎子进程的 env 只在启动时读一次。
 //
+// 服务目录（v1.11，docs/adr/0020）：下拉候选优先取服务端的在线目录（`/api/providers`），
+// 读不到就回落内置真源 `providersFor`（唯一的 id 表，别处不许再抄一份）。**目录只喂候选**：
+// 它到屏上只影响「有哪些服务可挑」，绝不改写玩家已存的地址/密钥/模型（保存仍只由玩家动作触发）。
+//
 // 文案纪律：不出现 env、变量名、配置文件路径这类内部词；说的是「服务地址 / 密钥 / 模型」。
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Eye, EyeOff, Plug, RotateCw, Trash2 } from "lucide-react";
 import {
   fetchCredentials,
+  fetchProviders,
   postCredentials,
   restartEngine,
   testCredentials,
   type CredentialProbe,
   type CredentialGroupView,
   type CredentialsView,
+  type ProviderCatalogView,
 } from "../lib/acp";
-import { providersFor, type ProviderEntry } from "../../shared/providers.mjs";
+import { providerById, providersFor, type ProviderEntry } from "../../shared/providers.mjs";
 
 /** 哪一组（对话 / 出图） */
 type GroupKey = "llm" | "image";
@@ -67,9 +73,29 @@ function draftOf(view: CredentialGroupView): Draft {
   return { mode: view.mode, provider: view.provider, baseUrl: view.baseUrl, model: view.model, size: view.size ?? "", sizeBackground: view.sizeBackground ?? "" };
 }
 
-/** 目录里某用途的可选项（kind 过滤在真源里） */
-function optionsFor(group: GroupKey): readonly ProviderEntry[] {
-  return providersFor(group === "llm" ? "llm" : "image");
+/**
+ * 某用途的可选项：优先**在线目录**（按 kind 过滤），没有就用内置真源 {@link providersFor} 兜底
+ * （契约 lint ⑦ 组钉的就是这一句调用：GUI 吃 shared 的目录真源，不许自带第二份 id 表）。
+ *
+ * 两处细节都有理由：
+ *   · 在线目录里这一组一条都没有时（远端只加了出图服务之类）**按组**回落内置表：宁可让这一组留着旧候选，
+ *     也不给玩家一个空下拉；
+ *   · 玩家已存的服务若不在候选里（目录撤了这条 / 改了 id），用内置表把它补在最前——目录更新只该改
+ *     「有哪些可挑」，不该让当前选着的那家从下拉里消失（那会让下拉显示成空的，玩家连自己选的哪家都看不到）。
+ *     补进去的条目只进候选，地址/密钥/模型仍照旧回显玩家存的值。
+ * @param group 哪一组
+ * @param catalog 服务端给的在线目录（null = 还没读到/读失败）
+ * @param current 当前已存的服务 id（补可见性用）
+ * @returns 该组的候选（顺序即下拉顺序）
+ */
+function optionsFor(group: GroupKey, catalog: ProviderEntry[] | null, current: string): readonly ProviderEntry[] {
+  const kind: "llm" | "image" = group === "llm" ? "llm" : "image";
+  const usable = (p: ProviderEntry) => p.kind === kind || p.kind === "both";
+  const online = (catalog ?? []).filter(usable);
+  const base = online.length > 0 ? online : providersFor(kind);
+  if (!current || base.some((p) => p.id === current)) return base;
+  const saved = providerById(current);
+  return saved && usable(saved) ? [saved, ...base] : base;
 }
 
 /**
@@ -94,6 +120,7 @@ const inputClass =
  * @param {object} props 组件属性
  * @param {GroupKey} props.group 组名
  * @param {CredentialGroupView} props.view 服务端的脱敏视图（掩码与 hasKey 的来源）
+ * @param {ProviderEntry[] | null} props.catalog 在线服务目录（null = 没读到，下拉回落内置表）
  * @param {(view: CredentialsView) => void} props.onView 保存成功后的最新视图（整份，父级统一落地）
  * @param {(text: string) => void} props.onSaved 保存成功（父级弹「重启后生效」提示）
  * @param {(err: string) => void} props.onError 保存失败
@@ -101,19 +128,23 @@ const inputClass =
 function GroupForm({
   group,
   view,
+  catalog,
   onView,
   onSaved,
   onError,
 }: {
   group: GroupKey;
   view: CredentialGroupView;
+  catalog: ProviderEntry[] | null;
   onView: (v: CredentialsView) => void;
   onSaved: () => void;
   onError: (msg: string) => void;
 }) {
   const meta = GROUP_META[group];
-  const options = optionsFor(group);
   const [draft, setDraft] = useState<Draft>(() => draftOf(view));
+  // 候选随「在线目录 + 当前选中的服务」变：目录到得比首次渲染晚，到货即换掉下拉选项（草稿里的
+  // provider 不动——玩家没选过就不改他存的值）
+  const options = optionsFor(group, catalog, draft.provider);
   const [apiKey, setApiKey] = useState(""); // 只在输入期间存在；提交后清空
   const [reveal, setReveal] = useState(false);
   const [probe, setProbe] = useState<{ state: "idle" | "running" | "done"; result?: CredentialProbe }>({ state: "idle" });
@@ -377,12 +408,16 @@ function GroupForm({
 /**
  * 设置屏的「引擎与密钥」整节：两份 GroupForm + 保存提示与重启按钮。
  * 取数失败走一句人话 + 重试（与设置屏其余部分不同：凭据在服务端，拉不到就画不出掩码）。
+ * 另外独立读一次在线服务目录（v1.11）：读到就用它画下拉、没读到就静默回落内置表（不占错误态）。
  */
 export default function EngineKeysSection() {
   const [view, setView] = useState<CredentialsView | null>(null);
   const [loadError, setLoadError] = useState("");
   const [notice, setNotice] = useState("");
   const [restart, setRestart] = useState<{ state: "idle" | "running" | "done" | "error"; error?: string }>({ state: "idle" });
+  // 在线服务目录（v1.11）：读到且里面有条目就换掉下拉候选（两组共用这一份），否则保持 null → 内置表。
+  // 读不到**不报错也不提示**——服务目录是候选的加分项，缺了就照旧用内置表，不该在屏上留一条玩家的红字。
+  const [catalog, setCatalog] = useState<ProviderCatalogView | null>(null);
 
   const load = useCallback(async () => {
     setLoadError("");
@@ -395,6 +430,21 @@ export default function EngineKeysSection() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // 目录只在挂载时读一次（跟凭据一起）：它和「玩家刚选了什么」无关，切屏回来重读也行，但不必要。
+  // 卸载即取消在途请求（关 overlay 时最可能撞上），拿到的空目录一律当「没有」
+  useEffect(() => {
+    const ctrl = new AbortController();
+    void (async () => {
+      try {
+        const got = await fetchProviders(ctrl.signal);
+        if (got.providers.length > 0) setCatalog(got);
+      } catch {
+        // 读不到就用内置表（providersFor）；连日志都不该有——这是正常回落，不是故障
+      }
+    })();
+    return () => ctrl.abort();
+  }, []);
 
   const onSaved = useCallback(() => {
     setNotice("已保存，重启引擎后生效");
@@ -429,10 +479,18 @@ export default function EngineKeysSection() {
         </div>
       ) : null}
 
+      {/* 用的是在线目录（新于内置表）时给一句人话说明：玩家话，不带任何内部标识；
+          同一句里点明「你已填的不会被改」——这正是目录更新最容易让人担心的那件事 */}
+      {catalog && catalog.source !== "bundled" ? (
+        <p data-testid="engine-catalog-online" className="mt-3 text-meta leading-relaxed text-ink-hint">
+          服务清单已是「在线目录」的最新一批（比你装游戏时多几条、地址也可能更准）。你已填的地址与密钥不会被它改动。
+        </p>
+      ) : null}
+
       {view ? (
         <div className="mt-4 grid gap-4 lg:grid-cols-2">
-          <GroupForm group="llm" view={view.llm} onView={setView} onSaved={onSaved} onError={setLoadError} />
-          <GroupForm group="image" view={view.image} onView={setView} onSaved={onSaved} onError={setLoadError} />
+          <GroupForm group="llm" view={view.llm} catalog={catalog?.providers ?? null} onView={setView} onSaved={onSaved} onError={setLoadError} />
+          <GroupForm group="image" view={view.image} catalog={catalog?.providers ?? null} onView={setView} onSaved={onSaved} onError={setLoadError} />
         </div>
       ) : null}
 

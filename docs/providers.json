@@ -1,0 +1,248 @@
+{
+  "version": 1,
+  "updatedAt": "2026-09-21T02:12:48.437Z",
+  "providers": [
+    {
+      "id": "openai",
+      "label": "OpenAI",
+      "kind": "both",
+      "baseUrl": "https://api.openai.com/v1",
+      "models": [],
+      "imageModels": [
+        "gpt-image-1"
+      ],
+      "note": "对话与出图同一把 key；对话模型 id 以平台当前文档为准（模型格可手填）。"
+    },
+    {
+      "id": "azure-openai",
+      "label": "Azure OpenAI",
+      "kind": "both",
+      "baseUrl": "",
+      "models": [],
+      "note": "地址形如 https://<资源名>.openai.azure.com/openai/deployments/<部署名>，需在查询串带上 api-version；模型格填部署名。"
+    },
+    {
+      "id": "gemini",
+      "label": "Google Gemini",
+      "kind": "both",
+      "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "models": [
+        "gemini-3.8-flash"
+      ],
+      "imageModels": [
+        "gemini-2.5-flash-image"
+      ],
+      "note": "用它的 OpenAI 兼容层（Google AI Studio 的 key 即可）；出图同样走 /images/generations。"
+    },
+    {
+      "id": "mistral",
+      "label": "Mistral AI",
+      "kind": "llm",
+      "baseUrl": "https://api.mistral.ai/v1",
+      "models": [],
+      "note": "模型 id 以平台当前文档为准（模型格可手填）。"
+    },
+    {
+      "id": "openrouter",
+      "label": "OpenRouter",
+      "kind": "llm",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "models": [],
+      "note": "聚合路由：一个 key 通多家模型，模型格填 vendor/model 形态的 id。"
+    },
+    {
+      "id": "deepseek",
+      "label": "DeepSeek",
+      "kind": "llm",
+      "baseUrl": "https://api.deepseek.com",
+      "models": [
+        "deepseek-chat",
+        "deepseek-reasoner"
+      ],
+      "note": "base_url 不带 /v1 也能用（服务端两种写法都认）。"
+    },
+    {
+      "id": "moonshot",
+      "label": "Moonshot / Kimi（国内）",
+      "kind": "llm",
+      "baseUrl": "https://api.moonshot.cn/v1",
+      "models": [],
+      "note": "国内站；全球账号用 api.moonshot.ai（见「Kimi（全球）」）。模型 id 参见平台当前文档。"
+    },
+    {
+      "id": "moonshot-global",
+      "label": "Kimi（全球）",
+      "kind": "llm",
+      "baseUrl": "https://api.moonshot.ai/v1",
+      "models": [],
+      "note": "Moonshot 的国际站；国内账号用 api.moonshot.cn（见「Moonshot / Kimi（国内）」）。"
+    },
+    {
+      "id": "zhipu",
+      "label": "智谱 GLM（国内）",
+      "kind": "both",
+      "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+      "models": [],
+      "imageModels": [],
+      "note": "对话与出图同一把 key；出图走 OpenAI 兼容的 /images/generations。"
+    },
+    {
+      "id": "dashscope",
+      "label": "阿里云百炼 / 通义（北京）",
+      "kind": "both",
+      "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "models": [],
+      "imageModels": [],
+      "note": "华北2（北京）的兼容模式地址；密钥按地域独立，海外账号请在目录里选「阿里云百炼（新加坡）」。"
+    },
+    {
+      "id": "dashscope-intl",
+      "label": "阿里云百炼（新加坡）",
+      "kind": "both",
+      "baseUrl": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+      "models": [],
+      "imageModels": [],
+      "note": "新加坡地域的兼容模式地址；国内账号请在目录里选「阿里云百炼 / 通义（北京）」（另有美国/香港等地域，见百炼「Base URL 总览」）。"
+    },
+    {
+      "id": "siliconflow",
+      "label": "SiliconFlow",
+      "kind": "both",
+      "baseUrl": "https://api.siliconflow.cn/v1",
+      "models": [],
+      "imageModels": [],
+      "note": "一个 key 通多家开源模型；出图走同一 base_url 的 /images/generations。"
+    },
+    {
+      "id": "volcengine",
+      "label": "火山方舟 / 豆包",
+      "kind": "both",
+      "baseUrl": "https://ark.cn-beijing.volces.com/api/v3",
+      "models": [],
+      "imageModels": [],
+      "note": "模型格填方舟的推理接入点 id 或模型 id（以控制台为准）。"
+    },
+    {
+      "id": "baidu-qianfan",
+      "label": "百度千帆 / 文心",
+      "kind": "llm",
+      "baseUrl": "https://qianfan.baidubce.com/v2",
+      "models": [],
+      "note": "用 V2 推理接口（只有 v2 兼容 OpenAI）；模型格填千帆模型列表里的 id。"
+    },
+    {
+      "id": "hunyuan",
+      "label": "腾讯混元",
+      "kind": "llm",
+      "baseUrl": "https://api.hunyuan.cloud.tencent.com/v1",
+      "models": [
+        "hunyuan-turbos-latest"
+      ],
+      "note": "腾讯云 API Key（控制台创建）；模型示例 hunyuan-turbos-latest。"
+    },
+    {
+      "id": "spark",
+      "label": "讯飞星火",
+      "kind": "llm",
+      "baseUrl": "https://spark-api-open.xf-yun.com/x2",
+      "models": [
+        "spark-x"
+      ],
+      "note": "X2 通道（模型填 spark-x）；密钥用控制台「HTTP 协议的 APIpassword」当 Bearer。"
+    },
+    {
+      "id": "minimax",
+      "label": "MiniMax（国内）",
+      "kind": "llm",
+      "baseUrl": "https://api.minimaxi.com/v1",
+      "models": [],
+      "note": "国内站（域名比国际站多一个 i）；全球账号请在目录里选「MiniMax（全球）」。密钥与站点必须配套，选错会 401。"
+    },
+    {
+      "id": "minimax-global",
+      "label": "MiniMax（全球）",
+      "kind": "llm",
+      "baseUrl": "https://api.minimax.io/v1",
+      "models": [],
+      "note": "国际站；国内账号用 api.minimaxi.com（见「MiniMax（国内）」）。"
+    },
+    {
+      "id": "groq",
+      "label": "Groq",
+      "kind": "llm",
+      "baseUrl": "https://api.groq.com/openai/v1",
+      "models": [],
+      "note": "模型 id 以平台当前文档为准。"
+    },
+    {
+      "id": "together",
+      "label": "Together AI",
+      "kind": "both",
+      "baseUrl": "https://api.together.xyz/v1",
+      "models": [],
+      "imageModels": [],
+      "note": "出图走同一 base_url 的 /images/generations。"
+    },
+    {
+      "id": "fireworks",
+      "label": "Fireworks AI",
+      "kind": "llm",
+      "baseUrl": "https://api.fireworks.ai/inference/v1",
+      "models": [],
+      "note": "模型格填 accounts/<账号>/models/<模型> 形态的 id（以平台为准）。"
+    },
+    {
+      "id": "xai",
+      "label": "xAI",
+      "kind": "both",
+      "baseUrl": "https://api.x.ai/v1",
+      "models": [
+        "grok-4.6"
+      ],
+      "imageModels": [
+        "grok-imagine-image-quality"
+      ],
+      "note": "用 API key 时无需终端登录；出图口径与 OpenAI 略有出入（尺寸参数可能被忽略）。"
+    },
+    {
+      "id": "ollama",
+      "label": "Ollama（本机）",
+      "kind": "llm",
+      "baseUrl": "http://localhost:11434/v1",
+      "models": [],
+      "note": "本机服务：先把模型拉下来（ollama pull <模型>），模型格填拉下来的名字。"
+    },
+    {
+      "id": "lmstudio",
+      "label": "LM Studio（本机）",
+      "kind": "llm",
+      "baseUrl": "http://localhost:1234/v1",
+      "models": [],
+      "note": "本机服务：在 LM Studio 里开启本地服务器后即用。"
+    },
+    {
+      "id": "vllm",
+      "label": "vLLM / 自建推理",
+      "kind": "llm",
+      "baseUrl": "",
+      "models": [],
+      "note": "自建服务的地址与模型名按你的部署填。"
+    },
+    {
+      "id": "gateway",
+      "label": "one-api / LiteLLM 网关",
+      "kind": "both",
+      "baseUrl": "",
+      "models": [],
+      "note": "把多家服务收在一个网关后面时用这里：地址与模型名按网关配置填。"
+    },
+    {
+      "id": "custom",
+      "label": "自定义（任意 OpenAI 兼容服务）",
+      "kind": "both",
+      "baseUrl": "",
+      "models": [],
+      "note": "按服务商文档填 base_url、key 与模型名。"
+    }
+  ]
+}

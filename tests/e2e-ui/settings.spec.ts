@@ -8,6 +8,11 @@
 //   ② 图片组与「测试连接」：本机假服务商给一条**确定性成功**路径（GET /models），图片组则指向必然拒连的端口
 //      拿**确定性失败**，两条探活结果都要在屏上读到（三态的第三态「测试中」由点击到结果出现之间的短暂窗口承担，
 //      不额外断言——它是过渡态，钉它只会引入时序脆弱）。
+// v1.11 续：③ 在线服务目录（docs/adr/0020）。这一条**真的**给服务端喂一份「在线目录」（本地 mock 发布源
+//   + BUNKITEN_PROVIDERS_URL），所以浏览器读到的候选与 POST 保存时服务端校验看到的是**同一份目录**：
+//   候选换成远端那份（含改名条目与新增条目）、地址按远端预填、屏上出现「在线目录」标注，并且**真的保存一个
+//   只存在于这份 mock 目录里的 provider**（旧实现只在浏览器侧替掉读接口，会掩盖「服务端白名单不认远程 id → 400」
+//   这个把目录核心收益挡死的问题）。服务端的抓取/缓存/校验通道另有单测与集成测试，不在这里重复。
 import { expect, test, type Page } from "@playwright/test";
 import http from "node:http";
 import { startUiStack, stopUiStack, type StartedStack } from "./stack";
@@ -75,6 +80,9 @@ test("引擎与密钥：填 key → 掩码 → 刷新后仍在 → 重启引擎�
     await page.goto(stack.pageUrl);
     await page.getByTestId("boot-credentials").click();
     await expect(page.getByTestId("engine-keys")).toBeVisible();
+    // 假栈离线（harness 默认 BUNKITEN_DISABLE_UPDATE=1）→ /api/providers 回内置表 → 不出现「在线目录」标注，
+    // 下面的下拉走的就是内置那份候选（v1.11 的在线目录分支见本文件第 ③ 条用例）
+    await expect(page.getByTestId("engine-catalog-online")).toHaveCount(0);
 
     // 切「自备密钥」→ 表单展开；换服务 → 地址按目录预填
     await page.getByTestId("engine-llm-mode-byok").click();
@@ -179,6 +187,79 @@ test("引擎与密钥 · 图片组与测试连接：两条探活路径（通过 
     });
   } finally {
     await new Promise<void>((r) => provider.close(() => r()));
+    await stopUiStack(page, stack);
+  }
+});
+
+test("引擎与密钥 · 在线目录：候选换成远端那份、地址按远端预填，并真的保存一个 mock 目录独有的 provider", async ({ browser }) => {
+  // 一份「在线目录」（形状与 GET /api/providers 的响应体一致）：一条已有 id 改名并换地址、一条全新 id、一条只在出图侧。
+  // 用本地 mock 发布源真的喂给服务端——这样保存时服务端校验看到的目录与浏览器读到的完全一致。
+  const mockCatalog = {
+    version: 1,
+    updatedAt: "2026-01-02T03:04:05.000Z",
+    providers: [
+      { id: "deepseek", label: "深海探路者", kind: "llm", baseUrl: "https://api.deepseek.com/online", models: ["deepseek-chat"] },
+      { id: "newcomer-llm", label: "新来的服务", kind: "llm", baseUrl: "https://newcomer.example/v1", models: [] },
+      { id: "newcomer-image", label: "新来的出图服务", kind: "image", baseUrl: "https://newcomer.example/img", models: [], imageModels: ["new-image-1"] },
+    ],
+  };
+  const catalog = http.createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(mockCatalog));
+  });
+  await new Promise<void>((r) => catalog.listen(0, "127.0.0.1", () => r()));
+  const catalogUrl = `http://127.0.0.1:${(catalog.address() as { port: number }).port}/providers.json`;
+
+  const { stack, page } = await startUiStack(browser, {
+    presets: ["demo"],
+    turns: [],
+    auth: "missing",
+    extraEnv: { BUNKITEN_DISABLE_UPDATE: "0", BUNKITEN_PROVIDERS_URL: catalogUrl },
+  });
+  try {
+    // 启动期抓取是异步的：先等 /api/providers 变成 remote（GUI 挂载时读到的才是这份远端目录）。
+    // 这不只是「屏上标注」的前置——保存走的是同一个服务端进程，它校验用的也是这份目录。
+    await expect
+      .poll(async () => (await (await page.request.get(`${stack.pageUrl}/api/providers`)).json()).source, { timeout: 10_000 })
+      .toBe("remote");
+
+    await page.goto(stack.pageUrl);
+    await page.getByTestId("boot-credentials").click();
+    await expect(page.getByTestId("engine-keys")).toBeVisible();
+
+    // 标注：来源不是内置表时才出现（一句玩家话，不带 env / 内部标识）
+    await expect(page.getByTestId("engine-catalog-online")).toContainText("在线目录");
+
+    await page.getByTestId("engine-llm-mode-byok").click();
+    const llm = page.getByTestId("engine-llm-provider");
+    // 下拉确实换成了远端那份：同名 id 显示远端给的新名字，内置表里别的服务（这里拿 Mistral 当探针）不在候选里
+    await expect(llm.locator('option[value="deepseek"]')).toHaveText("深海探路者");
+    await expect(llm.locator('option[value="mistral"]')).toHaveCount(0);
+
+    // 选改名那条 → 地址按**远端**预填（内置表那份是 https://api.deepseek.com）→ 真的存到服务端
+    await llm.selectOption("deepseek");
+    await expect(page.getByTestId("engine-llm-baseurl")).toHaveValue("https://api.deepseek.com/online");
+    await expect
+      .poll(async () => {
+        const view = await (await page.request.get(`${stack.pageUrl}/api/credentials`)).json();
+        return `${view.llm.provider}|${view.llm.baseUrl}`;
+      })
+      .toBe("deepseek|https://api.deepseek.com/online");
+
+    // 核心收益：选一个**只存在于这份在线目录里**的服务并真的保存成功（服务端写路径认得目录里的新 id）；
+    // 旧实现这里会被 400「不在服务目录里」挡住——正是那条通道存在的意义不可达。
+    await llm.selectOption("newcomer-llm");
+    await expect(page.getByTestId("engine-llm-baseurl")).toHaveValue("https://newcomer.example/v1");
+    await expect
+      .poll(async () => (await (await page.request.get(`${stack.pageUrl}/api/credentials`)).json()).llm.provider)
+      .toBe("newcomer-llm");
+    await expect(page.getByText("不在服务目录里")).toHaveCount(0); // 没有那条拒绝提示
+
+    // 出图组同样吃远端候选（新增的出图服务出现在它的下拉里）
+    await page.getByTestId("engine-image-mode-byok").click();
+    await expect(page.getByTestId("engine-image-provider").locator('option[value="newcomer-image"]')).toHaveText("新来的出图服务");
+  } finally {
+    await new Promise<void>((r) => catalog.close(() => r()));
     await stopUiStack(page, stack);
   }
 });
