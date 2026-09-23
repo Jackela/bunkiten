@@ -191,7 +191,7 @@ export default function SettingsScreen() {
           className="grid gap-8 lg:grid-cols-2"
         >
           {/* 音频 */}
-          <section className="shell-panel rounded-2xl p-6">
+          <section data-testid="settings-audio" className="shell-panel rounded-2xl p-6">
             <div className="flex items-center">
               <SectionTitle>音 频</SectionTitle>
               {/* 静音开关：真开关语义（role=switch + aria-checked），整块可点；轨道 h-5 w-9、滑块 h-4 w-4 平移 14px 对齐内沿 */}
@@ -267,7 +267,7 @@ export default function SettingsScreen() {
           </section>
 
           {/* 文本 */}
-          <section className="shell-panel rounded-2xl p-6">
+          <section data-testid="settings-text" className="shell-panel rounded-2xl p-6">
             <SectionTitle>文 本</SectionTitle>
 
             <div className="mt-4">

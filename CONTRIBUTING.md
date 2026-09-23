@@ -33,7 +33,7 @@ vite 会把 `/api`、`/img`、`/audio`、`/events` 代理到它（默认 `localh
 | `npm run build` | 任何改动（`tsc -b && vite build`） |
 | `npm run typecheck:server` | 动 `server/**`、`shared/**`、`scripts/**`（`tsconfig.server.json` 对这批 `.mjs` 开 strict checkJs，类型全靠 JSDoc） |
 | `npm test` | 任何改动 —— 单测 + 集成全量 560+ 例，秒级；含 **契约 lint**（防漂移门禁，见 §4） |
-| `npm run test:e2e:ui` | 动前端流程、文本协议或测试 harness —— 假引擎确定性 UI e2e（`tests/e2e-ui/`，21 个 spec），约 5 分钟；CI 也会跑 |
+| `npm run test:e2e:ui` | 动前端流程、文本协议或测试 harness —— 假引擎确定性 UI e2e（`tests/e2e-ui/`，22 个 spec），约 5 分钟；CI 也会跑 |
 | `npm run test:e2e:packaged` | 动 `electron-builder.yml` / 打包布局 / 主进程 —— 打包态冒烟（跨平台：mac 出 `.app`、Windows 出 `win-unpacked`，定位见 `tests/helpers/packaged-app.mjs`）；mac 侧本机 opt-in、arm64 only，Windows 侧由 CI 的 `packaged-win` job 真跑 |
 | `npm run test:e2e` | 动前端流程或协议时的真引擎冒烟 —— **会花真 token**：3 条（Grok 快速开局 + Grok 章节制作 + Codex 1 回合），Grok 两条约 6–12 分钟、Codex 一条约 3 分钟，视模型与网络。前置缺一即 **skip 而非失败**（`~/.grok/auth.json` / `~/.codex/auth.json`），`retries: 0` 不做静默重试 |
 | `npm run shots` | 改了界面（前端流程 / 版式 / 文案）—— 重出 README 与 QUICKSTART 里的界面截图（`tests/e2e-shots/`，假引擎栈 + 仓库真素材，约 10 秒、零 token；产出 `docs/images/*.jpg` 要一起提交）。作者侧工具，**不进 CI** |

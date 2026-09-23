@@ -872,6 +872,11 @@ MCP server 是被引擎拉起的**子进程**，子进程读不了 asar：`elect
 这一版把散在各屏的版面/字号/面板写法收成三处契约，改屏时按这三条走，别再各屏自创：
 
 - **壳层页框 `components/ShellPage.tsx`**：title / worlds / protagonist / crafting / settings / assets 这些非游戏舞台屏共用的外框——满幅主题底 + 宽栏 + 统一表头（eyebrow → 标题 + 短 accent 分隔线 → 右侧动作簇）+ 可选 ≥xl 右栏 + 可选页脚提示行。它约束的规则是：**壳层屏不再各屏自写居中窄栏**（旧屏的 `mx-auto max-w-3xl` 那类）。整屏只有 `ShellPage` 这一处定宽（`max-w-[84rem]`），屏内区块一律撑满可用宽度、靠栅格与多列组织信息；右栏只在 ≥xl 成列（`xl:grid-cols-[minmax(0,1fr)_360px]`），窄屏顺序排在正文之后、不做抽屉。
+- **断点契约（v1.13 起，与窗口最小尺寸配套）**：`electron/main.js` 的最小窗口是 **1024×640**，因此 Tailwind 的
+  `lg`(1024) 档**在任何合法窗口下恒真**（含 `styles/global.css` 的 `.portrait-reserve*` 立绘让位——此前最小窗口 960
+  落在 1024 断点之下，游戏主屏的让位在最窄窗口里是关掉的）；`xl`(1280) 档在 1024–1279 仍会塌陷（`ShellPage` 的右栏
+  落到正文之后），那一档**不保证并排**——只有「会挡路」的动作才单独兜底：捏人屏的两个开局入口在 <xl 走固定底栏
+  （`ProtagonistScreen`，`fixed` / `xl:static` 同一个 DOM）。改断点或改最小窗口时，这两个数要一起看。
 - **字号阶梯（`styles/global.css` 的 `@theme` 单源）**：`text-micro` 12（只给角标/徽章这类不承载细读信息的短标记）/ `text-meta` 13（**需要读的文字的下限**：提示、图例、元信息、说明句）/ `text-ui` 14（标签、按钮、次级正文）/ `text-body` 16（正文）/ `text-read` 17（对话框叙事正文）/ `text-lead` 18（强调正文）/ `text-title` 20（屏标题）/ `text-display` 28（封面与主标题）。**手写 `text-[Npx]` 一律不许**——取档位类，字号改动才只有一处（SVG 里随画布缩放的 `fontSize` 除外）。
 - **表面与遮罩 token + 两个 unlayered 类**：`bg-panel` / `bg-panel-strong` / `bg-scrim` / `bg-scrim-soft` 是暴露给 Tailwind 的底色（带透明度修饰符时用 color-mix 就地混）；`.shell-backdrop` 是壳层屏的主题满幅洗色（顶部 accent 光晕 + accent2 极淡冷调 + 底部压深，压住亮底图保证面板与文字的对比度稳定），`.shell-panel` 是面板三件套（底色 + `blur(14px)` + 一道 ink 发丝描边，圆角与内边距仍归组件）。两者**刻意写在级联层外**：优先级高于 Tailwind utilities，屏里随手写的渐变类盖不掉——壳层底是契约不是默认值，要改就改 token。
 - **游戏 HUD 的四处随之成形**：TopBar 正常态整个状态簇 `sr-only`、文案过 `playerStatus`（异常/忙碌态才画出来，见 `components/` 行）；章节过场卡 `<ChapterCard />` 挂在 `App` 根（~2.2s，`CHAPTER_CARD_MS`/`CHAPTER_CARD_FADE_MS` 导出给用例当时间真源，屏上无可聚焦元素也不拦点击）；对话框面板的 自动/快进 两个控件（自动走 `resumeAutoAdvance()`，与设置屏同一份设置）；`.portrait-reserve` 给立绘让出的右侧安全带（≥lg）。

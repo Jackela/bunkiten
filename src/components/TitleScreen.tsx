@@ -234,7 +234,7 @@ export default function TitleScreen() {
         <MotifLayer motif={theme.motif} />
       </div>
 
-      {/* 字标区：居中且收在上缘（卡带舞台落视口中线；最小窗口 960×640 下仍与卡顶留出余量） */}
+      {/* 字标区：居中且收在上缘（卡带舞台落视口中线；最小窗口 1024×640 下仍与卡顶留出余量） */}
       <header className="absolute inset-x-0 top-0 z-20 flex flex-col items-center pt-6 text-center">
         <h1
           data-testid="title-wordmark"
