@@ -43,6 +43,8 @@ import { RULES, SUPPLEMENT_PROMPT, parseArtLine, parseExpressionLine, parsePrese
 import { WORLD_ID_RE, parseTreePointer, readWorldFiles, writeSnapshot, writeTurnLog } from "./snapshots.mjs";
 import { readWorldsIndex, presetFromStateFile, worldChapterNo, migrateLegacyState, migrateWorldsSchema } from "./worlds.mjs";
 import { createAcpSession } from "./acp.mjs";
+import { engineFor, prepareSpawn } from "./engines.mjs";
+import { killPendingLogins, runLogout, startLogin } from "./engine-auth.mjs";
 import { readCredentials, writeCredentials, mergeCredentials, validateCredentialsPatch, publicView, credentialsToEnv, secretsOf, sanitizeErrorMessage } from "./credentials.mjs";
 import { testLlm, testImage } from "./credentials-probe.mjs";
 import { loadCatalog, refreshCatalog, revalidateCatalog } from "./providers-catalog.mjs";
@@ -95,6 +97,7 @@ export {
   forkWorld,
   restoreWorld,
   updateWorld,
+  labelSnapshot,
   exportWorld,
   importWorld,
   deleteWorld,
@@ -249,18 +252,27 @@ export function startServer() {
   // ACP 会话（spawn/JSON-RPC/sessionId/boot 都封装在 acp.mjs）：流式 chunk 与进度 label 回调进本闭包，
   // 这里才有 assetRegistry 与 SSE clients——标记扫描与 broadcast 因此留在入口（ingestChunkText/handleArtLine）。
   //
-  // 凭据在**每次 spawn 时**现读（v1.10，docs/adr/0019）：`credentialsToEnv` 的键覆盖继承来的同名 env
-  //（我们的值优先），`mediaMcpServers` 只在图片侧配了自备 key 时才挂 MCP 子进程。重启（restartAcp）
-  // 就是拿同一份逻辑再建一次会话——所以「保存 key → 立刻重启引擎」不需要再碰任何别的状态。
+  // 凭据在**每次 spawn 时**现读（v1.10，docs/adr/0019）：后端的 spawn 三件套（命令/参数/env）由
+  // server/engines.mjs 的描述符按当前 `creds.engine` 给出（v1.11，docs/adr/0022）——grok 注入 BYOK
+  // 四件套、codex 注入 CODEX_HOME 等；我们的值优先，覆盖继承来的同名 env。`mediaMcpServers` 只在图片侧
+  // 配了自备 key 时才挂 MCP 子进程（两引擎都走 ACP 的 mcpServers 字段）。重启（restartAcp）就是拿同一份
+  // 逻辑再建一次会话——所以「保存 key / 切引擎 → 立刻重启引擎」不需要再碰任何别的状态。
+  /** @type {import("./engines.mjs").EngineDescriptor} 当前会话的描述符（buildAcp 每次赋值） */
+  let engine = engineFor(undefined);
   /** @returns {ReturnType<typeof createAcpSession>} */
   function buildAcp() {
     const creds = readCredentials();
+    const plan = prepareSpawn({ creds, home: os.homedir(), gameRoot: GAME_ROOT, rules: RULES });
+    engine = plan.engine;
     return createAcpSession({
+      engine: plan.engine,
+      cmd: plan.spawn.cmd,
+      args: plan.spawn.args,
+      env: plan.spawn.env,
       gameRoot: GAME_ROOT,
       sessionFile: SESSION_FILE,
-      rules: RULES,
+      rules: plan.rules,
       effort: EFFORT,
-      env: credentialsToEnv(creds),
       mcpServers: mediaMcpServers(creds),
       onChunk: (text) => {
         ingestChunkText(text);
@@ -277,16 +289,17 @@ export function startServer() {
   // ---------- 引擎凭据的闭包面（v1.10，docs/adr/0019）：路由链只做转手，判定都在 credentials*.mjs ----------
 
   /**
-   * 优雅重启引擎会话（POST /api/engine/restart 的落地）：杀旧 grok 子进程 → 按**当前**凭据重建会话 → 重新握手。
-   * env 只在 spawn 时读一次，所以「保存 key 立刻生效」必须走这里。回合进行中拒绝——杀进程等于把这一回合
+   * 优雅重启引擎会话（POST /api/engine/restart 的落地）：杀旧引擎子进程 → 按**当前**凭据重建会话 → 重新握手。
+   * env 只在 spawn 时读一次，所以「保存 key / 切引擎立刻生效」必须走这里。回合进行中拒绝——杀进程等于把这一回合
    * 的推演连同落盘一起截断（客户端会停在「待重同步」态），宁可让玩家等这一回合结束。
+   * 切引擎时旧会话的存档（.shell-session.json 里的 sessionId）会因 engine 标记不匹配被 boot 跳过（走 session/new）。
    * @returns {Promise<{ok: boolean, error?: string}>}
    */
   async function restartAcp() {
     if (busy) return { ok: false, error: "正在演绎中，等这一回合结束再重启" };
     const old = acp;
     try { old.proc.kill(); } catch {}
-    // 等旧进程退出再拉新的：两个 grok 进程同时持同一会话目录会互相踩 session 文件
+    // 等旧进程退出再拉新的：两个引擎进程同时持同一会话目录会互相踩 session 文件
     await new Promise((resolve) => {
       if (old.proc.exitCode !== null || old.proc.signalCode !== null) return resolve(undefined);
       const t = setTimeout(() => { try { old.proc.kill("SIGKILL"); } catch {} resolve(undefined); }, 1500);
@@ -307,6 +320,25 @@ export function startServer() {
   /** @returns {object} 脱敏视图（永不回明文 key） */
   function credentialsView() {
     return publicView(readCredentials());
+  }
+
+  /**
+   * GUI 的「登录」按钮（POST /api/engine/login）：把**玩家自己**的 CLI 登录流程拉起来（grok → `grok login`、
+   * codex → 随包 codex 二进制的 `login`，都写在玩家自己的 home 里）。登录是长事务，这里只回执——
+   * 客户端轮询 /api/auth 看玩家 home 里的登录产物出现没有（见 server/engine-auth.mjs）。
+   * @returns {Promise<{ok: boolean, error?: string, hint?: string}>}
+   */
+  function startEngineLogin() {
+    return startLogin({ engine: engineFor(readCredentials().engine), home: os.homedir() });
+  }
+
+  /**
+   * GUI 的「登出」按钮（POST /api/engine/logout）：执行 CLI 自己的登出（**全局动作**——终端里那份也会没，
+   * GUI 已经先确认过），并把游戏侧的 codex 登录副本一并清掉。
+   * @returns {Promise<{ok: boolean, error?: string}>}
+   */
+  function logoutEngine() {
+    return runLogout({ engine: engineFor(readCredentials().engine), home: os.homedir() });
   }
 
   /**
@@ -619,10 +651,11 @@ export function startServer() {
   /** @param {string} effort 要生效的推理档位（显式值——质量守卫的追问直接给低档，不走 pickEffort） */
   async function applyEffortValue(effort) {
     if (effort === lastEffort) return;
+    // 下发形状按后端：grok 收 `{configId, value:{value}}`、codex 收 `{configId, value}`（docs/adr/0022 实证）
+    const option = engine.effortOption(effort);
+    if (!option) return;
     try {
-      await acp.request("session/set_config_option", {
-        sessionId: acp.sessionId, configId: "reasoning_effort", value: { value: effort },
-      });
+      await acp.request("session/set_config_option", { sessionId: acp.sessionId, ...option });
       lastEffort = effort;
       console.log(`[acp] reasoning_effort -> ${effort}`);
     } catch { /* 引擎不支持档位：静默，不阻断回合 */ }
@@ -645,6 +678,8 @@ export function startServer() {
 
   // 逐轮快照（CONTRACTS §2）：正戏回合结束后把当前世界三文件全文存一份 history/NNNN.json。
   // 调用点固定在 flushArtLines() 之后、busy=false 之前——此刻本轮所有落盘都已定型，内容不会再多变。
+  // v1.13 起条目带 prompt（可重演的玩家输入，docs/adr/0023）：与 files 同条目绑定，
+  // 重演（回退到前一条 turn 条目 + 重发该输入）不再依赖内存账本，刷新/重启后照样成立。
   /** @param {string} text 发给引擎的提示词原文 */
   function writeTurnSnapshot(text) {
     if (!isMainTurn(text)) return;
@@ -655,6 +690,9 @@ export function startServer() {
       kind: "turn",
       nodeId: parseTreePointer(files.tree),
       chapterNo: files.tree != null ? worldChapterNo(files.tree) : null,
+      // 只记玩家叙事输入：客户端的开局/续玩指令是 generated 的指令、不是玩家的话，回填空串——
+      // 重演入口对空输入给降级提示（既不回发「继续世界：」，也不假装有输入）；引擎侧原文仍在 logs 的 prompt
+      prompt: isDirectivePrompt(text) ? "" : text,
       files,
     });
     if (res.ok) console.log(`[acp] snapshot written: ${worldId}/history/${String(res.seq).padStart(4, "0")}.json`);
@@ -766,6 +804,8 @@ export function startServer() {
     updateCredentials,
     testCredentials,
     restartEngine: restartAcp,
+    startEngineLogin,
+    logoutEngine,
     providersView,
     get currentPresetId() { return currentPresetId; },
     get sessionId() { return acp.sessionId; },
@@ -815,6 +855,8 @@ export function startServer() {
     // 杀**当前**的引擎进程：重启过就可能是新拉起的那个（旧 handle.proc 只是启动时的快照）
     try { acp.proc.kill(); } catch {}
     setTimeout(() => { try { acp.proc.kill("SIGKILL"); } catch {} }, 1500).unref(); // SIGTERM 不退则强杀
+    // 在途的「登录」进程也一并收掉（登录是长事务：开浏览器等回调，可能挂着好几分钟）
+    killPendingLogins();
   };
 
   /** @param {string} sig 信号名（SIGINT/SIGTERM） */

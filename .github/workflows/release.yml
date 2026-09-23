@@ -100,7 +100,7 @@ jobs:
 
   build-mac:
     needs: guard
-    runs-on: macos-14 # arm64 runner：--mac --arm64 --x64 双架构产物
+    runs-on: macos-14 # arm64 runner：mac 只出 arm64（Apple Silicon；Intel 不在支持范围，见 ADR-0011 修订）
     steps:
       - uses: actions/checkout@v7
 
@@ -121,7 +121,7 @@ jobs:
       # 见到 CSC_LINK 存在就进入签名流程（`empty password will be used for code signing`），随后拿
       # 空路径失败（`⨯ … not a file`）——所以先把空值 unset 再打包。afterSign 钩子
       # （electron/notarize.cjs）在三件套不全时也直接 return，两条路径都能走通未签名构建。
-      - name: Package（mac dmg + zip，arm64 + x64）
+      - name: Package（mac dmg + zip，arm64）
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
@@ -135,7 +135,10 @@ jobs:
           if [ -z "$APPLE_ID" ]; then unset APPLE_ID; fi
           if [ -z "$APPLE_APP_SPECIFIC_PASSWORD" ]; then unset APPLE_APP_SPECIFIC_PASSWORD; fi
           if [ -z "$APPLE_TEAM_ID" ]; then unset APPLE_TEAM_ID; fi
-          npx electron-builder --mac --arm64 --x64 --publish never
+          # 先铺 codex-acp 的依赖闭包（含平台二进制）再打包：`--arch=arm64` 会触发架构自检，
+          # 目标架构与构建机不符时当场红（见 scripts/stage-codex-acp.mjs 的文件头）。
+          node scripts/stage-codex-acp.mjs --arch=arm64
+          npx electron-builder --mac --arm64 --publish never
 
       - name: Checksums（dmg/zip/exe/latest*.yml）
         run: |
@@ -202,6 +205,10 @@ jobs:
           } else {
             Write-Host "未签名路径：没有 WIN_CSC_LINK → 跳过签名，图标与版本元数据照写"
           }
+          # 先铺 codex-acp 的依赖闭包（含平台二进制）再打包：`--arch=x64` 会触发架构自检，
+          # 目标架构与构建机不符时当场红（见 scripts/stage-codex-acp.mjs 的文件头）。
+          node scripts/stage-codex-acp.mjs --arch=x64
+          if ($LASTEXITCODE -ne 0) { throw "stage-codex-acp 失败（Codex 后端缺失或架构不符）" }
           npx electron-builder --win --x64 --publish never
 
       - name: Checksums（exe/latest*.yml）

@@ -9,7 +9,11 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     setupFiles: ["tests/setup-react-act.mjs"],
-    exclude: ["node_modules/**", "tests/e2e*/**"],
+    // 排除：① 依赖树——`node_modules/**` 只盖根下那棵，`**/node_modules/**` 再兜住嵌套的（build/codex-acp
+    // 是 scripts/stage-codex-acp.mjs 铺出来的**第二棵 node_modules**：codex-acp 与 zod 的源码里带 *.test.ts，
+    // v1.11 实测被 vitest 收进来 11 个文件、全红——那是依赖自己的测试，不该算我们的口径）；
+    // ② build/**——打包铺场目录整体不入测试发现；③ e2e 三套（见下）。
+    exclude: ["node_modules/**", "**/node_modules/**", "build/**", "tests/e2e*/**"],
     // 显式钉 NODE_ENV=test：本机 shell 若导出 NODE_ENV=production，React 会解析生产构建，
     // 组件测试（@testing-library + act 垫片）行为随之漂移；测试环境必须自洽、不依赖外部 shell。
     env: { NODE_ENV: "test" },

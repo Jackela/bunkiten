@@ -1,9 +1,14 @@
-// 真引擎冒烟 ×2：
-// 1) 快速开局（跳过美术，无树路径）→ 首回合就绪 → 点选项 → 次回合就绪；
-// 2) 章节制作（制作美术路径）：待命 → 「规划：第 1 章。」→ 立即跳过 → 「开演。」→ 就绪。
-// 两 test 均断言对话窗正文不含「**行动**」选项段（v1.3 起选项段只由按钮呈现，不进打字机）。
-// 允许合计消耗约 5 个真实引擎回合。@slow 标记便于 grep 过滤。
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+// 真引擎冒烟 ×3（**会花真 token / 真图片额度**，一律不进 CI；跑之前先看前置，缺了就是 skip 而不是失败）：
+// 1) Grok · 快速开局（跳过美术，无树路径）→ 首回合就绪 → 点选项 → 次回合就绪；
+// 2) Grok · 章节制作（制作美术路径）：待命 → 「规划：第 1 章。」→ 立即跳过 → 「开演。」→ 就绪；
+// 3) Codex · 快速开局（v1.11）：真随包 codex-acp + 真 ChatGPT 登录态，临时 HOME 里跑一个真实回合
+//    ——不碰本机 ~/.codex 与 ~/.bunkiten（登录态是拷进临时 HOME 的副本）。
+// 两/三条均断言对话窗正文不含「**行动**」选项段（v1.3 起选项段只由按钮呈现，不进打字机）。
+// 回合预算：Grok 两条合计约 5 个真实回合；Codex 一条 1 个回合（省 token，够证明链路通）。
+// 前置（缺哪条就 skip 哪条）：Grok 要 PATH 上有 grok CLI + ~/.grok/auth.json；Codex 要 ~/.codex/auth.json。
+// @slow 标记便于 grep 过滤。
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Browser, type Page } from "@playwright/test";
@@ -13,6 +18,27 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 /** 本 spec 只玩《盛夏偏差值》：开局前删掉该剧本的世界线（不动其它剧本的存档），结束再清一次 */
 const E2E_PRESET = "campus-summer";
 const WORLDS_INDEX = path.join(ROOT, "state", "worlds", "index.json");
+
+/** PATH 上找一个可执行文件（与 server/engines.mjs 的 spawn 口径一致：真引擎就是按 PATH 找的） */
+function resolveOnPath(name: string): string | null {
+  for (const dir of String(process.env.PATH || "").split(path.delimiter).filter(Boolean)) {
+    if (existsSync(path.join(dir, name))) return path.join(dir, name);
+  }
+  return null;
+}
+
+/** Grok 冒烟的前置：CLI 在 PATH + 本机登录态。缺一条**那两条 Grok 用例**就 skip（Codex 用例有自己的前置）
+ *  ——「没登录的人跑 e2e」不该变成 120s 后的失败 */
+const GROK_SKIP_REASON = !resolveOnPath("grok")
+  ? "本机 PATH 上没有 grok CLI（真引擎冒烟需要它）：装好后重跑"
+  : !existsSync(path.join(os.homedir(), ".grok", "auth.json"))
+    ? "本机没有 grok 登录态（~/.grok/auth.json）：终端 `grok login` 后重跑"
+    : "";
+
+/** Codex 冒烟的前置：真 ChatGPT 登录态（随包运行时随 npm ci 就有，玩家不必装 CLI） */
+const CODEX_SKIP_REASON = existsSync(path.join(os.homedir(), ".codex", "auth.json"))
+  ? ""
+  : "本机没有 Codex 登录态（~/.codex/auth.json）：终端 `codex login`（或游戏里一键登录）后重跑";
 
 function dropPresetWorlds() {
   let raw: unknown;
@@ -47,6 +73,7 @@ let stack: Awaited<ReturnType<typeof startStack>>;
 let page: Page;
 
 test.beforeAll(async ({ browser }: { browser: Browser }) => {
+  if (GROK_SKIP_REASON) return; // 整组已 skip：不启动任何进程（否则会白等 120s 再失败）
   cleanArtifacts();
   stack = await startStack();
   page = await (await browser.newContext()).newPage();
@@ -58,31 +85,35 @@ test.afterAll(async () => {
   await stack?.stop();
 });
 
-/** 两 test 共用的开局前半：轮播切到《盛夏偏差值》插卡，点「快速开局」预设主角（停在开局入口按钮前） */
-async function openMidsummerQuickStart() {
+/**
+ * 两 test 共用的开局前半：轮播切到《盛夏偏差值》插卡，点「快速开局」预设主角（停在开局入口按钮前）。
+ * @param p 目标页（缺省 = 文件级真 Grok 页；Codex 用例把自己的页传进来）
+ */
+async function openMidsummerQuickStart(p: Page = page) {
   // 标题屏：卡带轮播加载完成（中央卡出现即 /api/presets 已就绪）
-  const centerCard = page.getByTestId("title-card-center");
+  const centerCard = p.getByTestId("title-card-center");
   await expect(centerCard).toBeVisible();
 
   // 轮播切卡契约：→ 切下一张中央卡换人，← 切回（步进是瞬时状态，spring 动画只影响位置）
-  await page.keyboard.press("ArrowRight");
+  await p.keyboard.press("ArrowRight");
   await expect(centerCard).not.toContainText("盛夏偏差值");
-  await page.keyboard.press("ArrowLeft");
+  await p.keyboard.press("ArrowLeft");
   await expect(centerCard).toContainText("盛夏偏差值");
 
   // 点中央卡「插卡」：插入动画（约 1s）后进世界线屏（v1.5 起选卡不再直接到捏人屏）
   await centerCard.click();
-  await expect(page.getByTestId("worlds-screen")).toBeVisible();
+  await expect(p.getByTestId("worlds-screen")).toBeVisible();
 
   // 开一条全新世界线（POST /api/worlds create → 分配 id → 进捏人屏）
-  await page.getByTestId("worlds-new").click();
-  await expect(page.getByRole("heading", { name: "盛夏偏差值" })).toBeVisible();
+  await p.getByTestId("worlds-new").click();
+  await expect(p.getByRole("heading", { name: "盛夏偏差值" })).toBeVisible();
 
   // 快速开局：用剧本 quick_start 预设主角
-  await page.getByRole("button", { name: /快速开局/ }).click();
+  await p.getByRole("button", { name: /快速开局/ }).click();
 }
 
 test("快速开局冒烟：两个真实引擎回合 @slow", async () => {
+  test.skip(Boolean(GROK_SKIP_REASON), GROK_SKIP_REASON);
   // 实测回合受 image_gen 失败重试影响可超 240s（server 的 /prompt 超时为 600s），放宽单测预算
   test.setTimeout(900_000);
   await page.goto(stack.pageUrl);
@@ -126,6 +157,7 @@ test("快速开局冒烟：两个真实引擎回合 @slow", async () => {
 });
 
 test("章节制作冒烟：规划第 1 章后跳过并开演 @slow", async () => {
+  test.skip(Boolean(GROK_SKIP_REASON), GROK_SKIP_REASON);
   // 三个引擎回合：待命确认（初始化）→ 规划（写剧情树+输出制作清单）→ 「开演。」开场。
   // 每回合 server /prompt 硬顶 600s，全程放宽单测预算。
   test.setTimeout(900_000);
@@ -165,6 +197,69 @@ test("章节制作冒烟：规划第 1 章后跳过并开演 @slow", async () =>
       message: async () => `options 为 0，对话区内容：${(await page.getByTestId("dialogue-text").innerText()).slice(0, 300)}`,
     })
     .toBeGreaterThanOrEqual(2);
-  // 选项段不进对话窗（同快速开局 test：显示层截断的回归断言）
-  await expect(page.getByTestId("dialogue-text")).not.toContainText("**行动**");
+});
+
+/**
+ * Codex 后端真跑一遍（v1.11）：真随包 codex-acp + 真 ChatGPT 登录态。
+ * 省 token 的取舍：**只跑一个回合**（跳过美术的快速开局）——够证明「链路通 + 协议行对 + 状态落盘」，
+ * 不想把每次冒烟都变成一次完整章节。
+ */
+test("Codex 后端冒烟：真随包 codex-acp + 真登录态，一个真实引擎回合 @slow", async ({ browser }: { browser: Browser }) => {
+  test.skip(Boolean(CODEX_SKIP_REASON), CODEX_SKIP_REASON);
+  test.setTimeout(900_000);
+
+  // 临时 HOME：把真登录态**拷**一份进来 + 写 engine=codex 的凭据——只读本机 ~/.codex 与 ~/.bunkiten，
+  // 绝不改写它们（与游戏里 CODEX_HOME 的隔离同一口径，见 docs/adr/0022）。
+  const home = mkdtempSync(path.join(os.tmpdir(), "bunkiten-e2e-codex-"));
+  mkdirSync(path.join(home, ".codex"), { recursive: true });
+  copyFileSync(path.join(os.homedir(), ".codex", "auth.json"), path.join(home, ".codex", "auth.json"));
+  cleanArtifacts(); // 与 Grok 两条同一块地：开跑前把本剧本的旧世界线清掉
+  const codexStack = await startStack({
+    homeDir: home,
+    credentials: {
+      version: 1,
+      engine: "codex",
+      llm: { mode: "session", provider: "openai", baseUrl: "", apiKey: "", model: "" },
+      image: { mode: "off", provider: "openai", baseUrl: "", apiKey: "", model: "", size: "" },
+    },
+  });
+  const codexPage = await (await browser.newContext()).newPage();
+  try {
+    // boot：codex 登录态在 → 直接放行进标题屏（顺带证明 /api/auth 的引擎分支与整条启动链）
+    await codexPage.goto(codexStack.pageUrl);
+    await expect(codexPage.getByTestId("title-card-center")).toBeVisible();
+
+    await openMidsummerQuickStart(codexPage);
+    // 跳过美术（省 token / 省出图额度）：引擎按 preset opening 开场
+    await codexPage.getByRole("button", { name: "跳过美术，直接开演" }).click();
+    await expect(codexPage.getByTestId("status")).toHaveText("就绪", { timeout: 600_000 });
+
+    // 协议行契约：正文出现 + 选项 ≥2（`**行动**` 段被解析成按钮、不进打字机）
+    await expect
+      .poll(async () => (await codexPage.getByTestId("dialogue-text").innerText()).length, { timeout: 120_000 })
+      .toBeGreaterThan(50);
+    await expect
+      .poll(async () => codexPage.getByTestId("options").locator("button").count(), {
+        timeout: 120_000,
+        message: async () => `options 为 0，对话区内容：${(await codexPage.getByTestId("dialogue-text").innerText()).slice(0, 300)}`,
+      })
+      .toBeGreaterThanOrEqual(2);
+    await expect(codexPage.getByTestId("dialogue-text")).not.toContainText("**行动**");
+
+    // SKILL 的状态纪律：引擎按世界线写了 state.md（「它真的在按 bunkiten 的规则演」的硬证据）
+    const worldsRoot = path.join(ROOT, "state", "worlds");
+    const stateTexts = readdirSync(worldsRoot, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => path.join(worldsRoot, d.name, "state.md"))
+      .filter((f) => existsSync(f))
+      .map((f) => readFileSync(f, "utf8"));
+    expect(
+      stateTexts.some((t) => t.includes(`- preset: ${E2E_PRESET}`)),
+      `引擎没按 SKILL 写 state.md（state/worlds/*/state.md 里没有 preset: ${E2E_PRESET}）`,
+    ).toBe(true);
+  } finally {
+    await codexPage.close().catch(() => {});
+    await codexStack.stop();
+    rmSync(home, { recursive: true, force: true });
+  }
 });

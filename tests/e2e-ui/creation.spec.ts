@@ -33,6 +33,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import { startUiStack, stopUiStack } from "./stack";
+import { openTitleMore } from "./flow";
+
 
 /** 装配产出的新剧本：id 必须与目录名一致（【新剧本】<id> → server 按它补落盘、客户端重拉 /api/presets） */
 const NEO_ID = "neo";
@@ -154,6 +156,7 @@ test("创作模式成功路径：标题屏「创作新剧本」→ 对话流与 
 
     // —— 标题屏：/api/presets 就绪（demo 一张卡、无切卡器）、角落簇有「创作新剧本」——
     await expect(page.getByTestId("title-card-center")).toBeVisible();
+    await openTitleMore(page);
     await expect(page.getByTestId("preset-export-demo")).toBeVisible();
     await expect(
       page.getByRole("button", { name: "下一张" }),
@@ -209,6 +212,7 @@ test("创作模式成功路径：标题屏「创作新剧本」→ 对话流与 
     await page.keyboard.press("ArrowRight");
     await expect(page.getByTestId("title-card-center")).toHaveAttribute("aria-label", /^雨夜侦探 /);
     // 导出锚点恒指向当前中央卡：换成 neo 的 id 才说明 store.presets 真的被 presetAdded 重取刷新过
+    await openTitleMore(page);
     await expect(page.getByTestId("preset-export-neo")).toBeVisible();
 
     // —— 能选中：点中央卡（插卡动画 ≈1s）→ 世界线屏，名册是 neo 的（空态、demo 的 w1 不在这里）——

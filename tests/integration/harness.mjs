@@ -85,8 +85,8 @@ function seedWorld(worldsRoot, worldId, preset, title, meta = {}) {
 //   · trees:      { worldId: "story-tree.md 全文" }     → 覆盖对应世界的树文件（须先有该世界）
 //   · stateFiles: { worldId: "state.md 全文" }         → 覆盖对应世界的状态文件（须先有该世界；角色面板 e2e 用）
 //   · worlds:     [{id, title?, preset?, forkedFrom?}] → 追加世界（复用 w1 三文件逻辑）
-//   · snapshots:  { worldId: [{seq,at?,kind,nodeId,chapterNo,files}] } → 写 state/worlds/<id>/history/NNNN.json
-//                 （条目形状与 server writeSnapshot 的磁盘格式一致：files = {state,summary,tree}）
+//   · snapshots:  { worldId: [{seq,at?,kind,nodeId,chapterNo,prompt?,files}] } → 写 state/worlds/<id>/history/NNNN.json
+//                 （条目形状与 server writeSnapshot 的磁盘格式一致：prompt = 可重演的玩家输入，files = {state,summary,tree}）
 //   · indexSchema: number        → 版本化索引的 schema 号（缺省 1 = 当前形态；2 = 未来版本，验「读到、不降级写回」）
 //   · indexExtra:  object        → 版本化索引里追加的未知顶层键（验读改写保留）
 //   · legacyIndexArray: boolean  → 写 v1.8 及以前的**裸数组**索引（验启动期 migrateWorldsSchema 真的升了它）
@@ -247,12 +247,14 @@ async function httpOk(url) {
  * @param {Record<string, string>} [opts.trees] 覆盖世界树：worldId → story-tree.md 全文
  * @param {Record<string, string>} [opts.stateFiles] 覆盖世界状态文件：worldId → state.md 全文（角色面板用）
  * @param {Array<{id: string, title?: string, preset?: string, forkedFrom?: string|null}>} [opts.worlds] 追加世界（复用 w1 三文件生成逻辑）
- * @param {Record<string, Array<{seq: number, at?: string, kind: "turn"|"backup", nodeId: string|null, chapterNo: number|null, files: {state: string|null, summary: string|null, tree: string|null}}>>} [opts.snapshots]
- *   预置逐轮快照：worldId → history/NNNN.json 条目（形状与 server writeSnapshot 落盘格式一致）
+ * @param {Record<string, Array<{seq: number, at?: string, kind: "turn"|"backup", nodeId: string|null, chapterNo: number|null, prompt?: string, files: {state: string|null, summary: string|null, tree: string|null}}>>} [opts.snapshots]
+ *   预置逐轮快照：worldId → history/NNNN.json 条目（形状与 server writeSnapshot 落盘格式一致；prompt 可省）
  * @param {number} [opts.indexSchema] 索引的 schema 号（缺省 1；2 = 未来版本，验不降级写回）
  * @param {Record<string, unknown>} [opts.indexExtra] 版本化索引里的未知顶层键（验读改写保留）
  * @param {boolean} [opts.legacyIndexArray] 写 v1.8 及以前的裸数组索引（验启动期 schema 迁移）
  * @param {"ok"|"missing"} [opts.auth] 是否写临时 HOME 的 `~/.grok/auth.json`（缺省 "ok"；"missing" 供 boot 屏未登录态用例）
+ * @param {"ok"|"missing"} [opts.codexAuth] 是否写临时 HOME 的 `~/.codex/auth.json`（v1.11；缺省 "missing"——只有
+ *   engine=codex 的用例需要它，且它同时是「沿用终端登录」的复用来源，见 server/engines.mjs 的 syncCodexAuth）
  * @param {object} [opts.credentials] 写进临时 HOME 的 `~/.bunkiten/credentials.json`（0600）的凭据文档
  *   （验自备 key：真引擎侧看 fake-engine 的探针 JSONL，HTTP 侧打 /api/credentials）
  * @param {object} [opts.extraEnv] 追加/覆盖给 acp-server 子进程的环境变量（服务目录更新用
@@ -275,6 +277,7 @@ export async function startStack({
   indexExtra = {},
   legacyIndexArray = false,
   auth = "ok",
+  codexAuth = "missing",
   credentials = null,
   extraEnv = {},
   homeDir = null,
@@ -292,6 +295,10 @@ export async function startStack({
   //（用例可以在中途把这个文件补上，验「重试」真的走通而不是只换个文案）。
   mkdirSync(path.join(home, ".grok"), { recursive: true });
   if (auth === "ok") writeFileSync(path.join(home, ".grok", "auth.json"), "{}\n");
+  // v1.11：codex 的登录态（玩家 `~/.codex/auth.json`，即「沿用终端登录」的来源）。
+  // codexAuth:"ok" 时才写；engine=codex 的栈靠它让 /api/auth 回 loggedIn=true，并由 prepare() 拷进 ~/.bunkiten/codex。
+  mkdirSync(path.join(home, ".codex"), { recursive: true });
+  if (codexAuth === "ok") writeFileSync(path.join(home, ".codex", "auth.json"), '{"token":"fake-codex"}\n', { mode: 0o600 });
   // 引擎凭据（v1.10）：预置进临时 HOME 的 ~/.bunkiten/credentials.json。mode 与真实写入一致（0600 / 目录 0700），
   // 这样「保存后的权限」与「读路径」在集成层是同一份行为，不必额外伪造。
   if (credentials) {
@@ -310,9 +317,16 @@ export async function startStack({
   };
   for (const [name, content] of Object.entries(sessionImages)) putSessionImage(name, content);
 
-  // PATH 垫片：bin/grok → exec <同一个 node> fake-engine.mjs "$@"
-  writeFileSync(path.join(binDir, "grok"), `#!/bin/sh\nexec ${shQuote(process.execPath)} ${shQuote(FAKE_ENGINE)} "$@"\n`);
+  // PATH 垫片：bin/grok → exec <同一个 node> fake-engine.mjs "$@"（FAKE_ENGINE_AS 告诉假引擎「你是哪家 CLI」，
+  // 它据此扮演同名的登录/登出——见 fake-engine.mjs 顶部）
+  writeFileSync(path.join(binDir, "grok"), `#!/bin/sh\nexec env FAKE_ENGINE_AS=grok ${shQuote(process.execPath)} ${shQuote(FAKE_ENGINE)} "$@"\n`);
   chmodSync(path.join(binDir, "grok"), 0o755);
+  // v1.11：codex 后端的垫片（engine=codex 的栈走它）——同一个假引擎，argv 为空（codex-acp 不带 CLI 参数）
+  writeFileSync(path.join(binDir, "codex-acp"), `#!/bin/sh\nexec env FAKE_ENGINE_AS=codex ${shQuote(process.execPath)} ${shQuote(FAKE_ENGINE)} "$@"\n`);
+  chmodSync(path.join(binDir, "codex-acp"), 0o755);
+  // v1.11 收尾：随包 codex **CLI** 的垫片（GUI 的「登录 Codex」按钮走它）——同样由假引擎扮演 login/logout
+  writeFileSync(path.join(binDir, "codex"), `#!/bin/sh\nexec env FAKE_ENGINE_AS=codex ${shQuote(process.execPath)} ${shQuote(FAKE_ENGINE)} "$@"\n`);
+  chmodSync(path.join(binDir, "codex"), 0o755);
 
   const port = 20000 + Math.floor(Math.random() * 40000); // 随机高位端口，避开开发中的 7800
   // 假引擎探针（v1.10）：每次被 spawn 追加一条 start（env），每条 session/load|new 追加一条 session（mcpServers）。
@@ -324,6 +338,11 @@ export async function startStack({
     HOME: home,
     GROK_GAME_ROOT: root,
     PORT: String(port),
+    // v1.11：codex 后端的入口走显式覆盖（PATH 名不再是首选——描述符会先看仓内 node_modules，
+    // 那是**真** codex-acp，会把假引擎盖掉；这里指到 bin/codex-acp 垫片，与 `grok` 的 PATH 垫片同款语义）；
+    // 随包 codex CLI（GUI 的「登录 Codex」）同理指到 bin/codex
+    BUNKITEN_CODEX_ACP: path.join(binDir, "codex-acp"),
+    BUNKITEN_CODEX_BIN: path.join(binDir, "codex"),
     FAKE_ENGINE_TURNS: JSON.stringify(turns),
     FAKE_ENGINE_PROBE: engineProbe,
     // 服务目录更新（v1.10，ADR-0020）：集成栈默认**离线**——启动时不打扰发布源，让这一层不被网络拖慢/拖红。
@@ -361,7 +380,8 @@ export async function startStack({
       stdoutLines.push(line);
       const m = /\[acp\]\s+http:\/\/localhost:(\d+)/.exec(line);
       if (m) resolvePort(Number(m[1]));
-      if (line.includes("grok session ready")) {
+      if (line.includes("session ready")) {
+        // v1.11：ready 行带引擎前缀（`grok session ready` / `codex session ready`），两种栈都吃这一条
         settled = true;
         resolveReady();
       } else if (line.includes("boot failed")) {
@@ -409,6 +429,8 @@ export async function startStack({
     sessionId: SESSION_ID,
     sessionImagesDir,
     putSessionImage,
+    /** v1.11：codex 的游戏管理 home（spawn 时 CODEX_HOME 指向它；prepare 在这里落 auth/config/skill） */
+    codexHome: path.join(home, ".bunkiten", "codex"),
     events,
     port: null,
     base: null,

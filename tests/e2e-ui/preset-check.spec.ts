@@ -7,6 +7,8 @@
 // 块里至少一行条目（严重度 chip + 行原文）。
 import { expect, test, type Page } from "@playwright/test";
 import { startUiStack, stopUiStack, type StartedStack } from "./stack";
+import { openTitleMore } from "./flow";
+
 
 let stack: StartedStack;
 let page: Page;
@@ -28,6 +30,7 @@ test("剧本体检：标题屏入口进屏 → 摘要 + 至少一组条目 → �
   await expect(page.getByTestId("title-card-center")).toBeVisible();
 
   // 角落入口（store 的 selected 此刻还是空，体检对象由这一击自己带进去）
+  await openTitleMore(page);
   await page.getByTestId("preset-check").click();
   await expect(page.getByTestId("preset-check-screen")).toBeVisible();
   await expect(page.getByRole("heading", { name: /剧\s*本\s*体\s*检/ })).toBeVisible();
@@ -50,6 +53,7 @@ test("剧本体检：标题屏入口进屏 → 摘要 + 至少一组条目 → �
   await expect(page.getByTestId("preset-check-screen")).toHaveCount(0);
 
   // 再进一次：Esc 走同一条关闭链（App 的 Esc 链里 screen === "check" → closeOverlay）
+  await openTitleMore(page);
   await page.getByTestId("preset-check").click();
   await expect(page.getByTestId("preset-check-screen")).toBeVisible();
   await page.keyboard.press("Escape");

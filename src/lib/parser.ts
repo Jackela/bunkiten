@@ -366,11 +366,21 @@ export function buildResumeCommand(worldId: string): string {
 
 /**
  * 剧情图自然语言编辑指令（v1.5 剧情图屏）：引擎改故事树、静默写回，回一句摘要 +【树】标记。
- * @param {string} text 玩家的一句话改动说明
- * @returns {string} 形如「剧情：把节点 3-1 的教堂分支改成酒馆。」的指令原文
+/**
+ * 剧情编辑指令（剧情图屏 → 引擎）：`剧情：<自然语言指令>`；**可带节点作用域**（v1.12）。
+ * 带作用域时客户端把目标拼在前面——`剧情：针对节点 <节点 id>：<指令>`，引擎按 SKILL【剧情编辑指令】
+ * 只改那个节点（与其直接相邻处），不再自行判断改动范围；玩家在节点详情里就地写的那句话走这条。
+ * 清洗与重绘同款：协议行是单行的，换行折空格（节点 id 与指令都不许把行劈开）。
+ * @param {string} text 自然语言指令
+ * @param {string} [nodeId] 作用节点 id（缺省 = 全树范围，与 v1.7 起的旧指令逐字一致）
+ * @returns {string} 指令原文；空指令返回空串
  */
-export function buildTreeEditCommand(text: string): string {
-  return `剧情：${text.trim()}`;
+export function buildTreeEditCommand(text: string, nodeId = ""): string {
+  const oneLine = (s: string) => s.replace(/\s*\n+\s*/g, " ").trim();
+  const body = oneLine(text);
+  if (!body) return "";
+  const scope = oneLine(nodeId);
+  return scope ? `剧情：针对节点 ${scope}：${body}` : `剧情：${body}`;
 }
 
 /**
@@ -420,14 +430,23 @@ export function assetNameMatches(
   return a === b || a.includes(b) || b.includes(a);
 }
 
+/** 玩家要求（重绘备注）的长度上限：一句人话足够，再长也只是噪声（引擎侧按原样吃进 prompt） */
+export const REGEN_NOTE_MAX = 200;
+
 /**
  * 素材重绘指令（画廊对单个已有素材的重新生成，管理操作）。
+ * v1.12 起可带**玩家要求**（一句人话，如「头发改成短发」）：`：` 之后的整段就是它，
+ * 引擎按 SKILL【素材重绘】把要求与身份锚点（`art_style` + 角色卡 `art_prompt`）融合。
+ * 清洗两件事——协议行是**单行**的，换行会把一条指令劈成两条（后续行还会被当成剧情正文），
+ * 所以换行折成空格；超长掐到 {@link REGEN_NOTE_MAX}（与输入框的 maxLength 同一个数）。
  * @param {ArtKind} type 立绘 / 背景 / 封面
  * @param {string} key 立绘=`角色名[-变体]`（如 `薇拉-微笑`）；背景=地点名；封面=preset id
- * @returns {string} 形如「美术：重绘 立绘 薇拉-微笑」的指令原文
+ * @param {string} [note] 玩家要求（可空/全空白 = 盲重绘，与 v1.3 起的旧行为逐字一致）
+ * @returns {string} 形如「美术：重绘 立绘 薇拉-微笑：把头发改成短发」的指令原文
  */
-export function buildRegenCommand(type: ArtKind, key: string): string {
-  return `美术：重绘 ${type} ${key}`;
+export function buildRegenCommand(type: ArtKind, key: string, note = ""): string {
+  const clean = note.replace(/\s*\n+\s*/g, " ").trim().slice(0, REGEN_NOTE_MAX);
+  return clean ? `美术：重绘 ${type} ${key}：${clean}` : `美术：重绘 ${type} ${key}`;
 }
 
 /** 创作模式进入指令原文（引擎 SKILL【剧本创作】入口，一字不差） */

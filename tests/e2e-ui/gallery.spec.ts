@@ -9,7 +9,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
 import { startUiStack, stopUiStack, type StartedStack } from "./stack";
-import { enterProtagonist, quickStartToGame } from "./flow";
+import { enterProtagonist, openRailGroup, quickStartToGame } from "./flow";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const rift = (name: string): Buffer => readFileSync(path.join(ROOT, "presets", "rift-mark", "assets", name));
@@ -52,7 +52,8 @@ test("画廊：分组清单→选择模式勾 2 项批量删除（两段确认�
   await enterProtagonist(page, "示例剧本");
   await quickStartToGame(page);
 
-  // TopBar 命令轨「画廊」进画廊 overlay
+  // TopBar 命令轨「图鉴 ▾ → 画廊」进画廊 overlay（v1.12：画廊收在「图鉴」菜单里）
+  await openRailGroup(page, "图鉴");
   await page.getByTestId("assets").click();
 
   // 清单：6 项（立绘组 薇拉×2 + 阿澈×1、背景×3），按 testid 点名存在
@@ -87,7 +88,13 @@ test("画廊：分组清单→选择模式勾 2 项批量删除（两段确认�
   await expect(page.getByTestId("assets-toolbar")).toHaveCount(0);
   await page.getByTestId("asset-card-薇拉").click();
   await expect(page.getByTestId("assets-preview")).toBeVisible();
+
+  // 素材级自然语言重绘（v1.12）：在预览里写一句要求，它必须**原样**到引擎（探针里那条 prompt 是铁证）
+  await page.getByTestId("assets-regen-note").fill("头发改成短发");
   await page.getByTestId("assets-preview-regen").click();
+  await expect
+    .poll(() => stack.stack.engineProbeEntries().filter((e) => e.kind === "prompt").map((e) => e.text))
+    .toContain("美术：重绘 立绘 薇拉：头发改成短发");
 
   // 重绘回合完成：批次提示 ok（|重绘 标记命中挂起项 → finishRegen(true)），画廊经 stamp 刷新
   await expect(page.getByTestId("assets-regen-notice")).toHaveAttribute("data-kind", "ok");

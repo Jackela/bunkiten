@@ -100,6 +100,8 @@ export interface RegenJob {
   type: ArtKind;
   key: string;
   matchName: string;
+  /** 玩家要求（一句人话，v1.12；空/缺省 = 盲重绘——批量重绘恒为盲重绘） */
+  note?: string;
 }
 
 export interface GameStore {
@@ -240,19 +242,16 @@ export interface GameStore {
    *  （重同步失败 vs 普通出错）；成功/失败收尾都复位，普通回合恒为 false。 */
   resyncing: boolean;
 
-  // —— 重掷本回合（reroll，会话内内存态，不持久化）——
-  /** 上一个成功玩家回合的输入（两个玩家入口记录、turn_end 定格）：重掷「重发同一输入」的数据源。
-   *  指令类发送（美术/规划/剧情/续档…）不走玩家入口，天然不更新它；resetRunState 清空。 */
-  lastTurnPrompt: string | null;
-  /** 本回合在途的玩家叙事输入（OptionList/FreeInput/自动前进在 send 前记录）：turn_end 成功定格进
-   *  lastTurnPrompt 后清空；投递失败或引擎出错即作废——没跑完的回合不许冒充「上一回合」。 */
-  pendingTurnPrompt: string | null;
-  /** 重掷的排队跟进：重同步回合成功收尾（pendingResync 清除）后要补发的玩家输入。重同步失败时保留，
-   *  玩家点「再同步」成功后照常跟进；玩家改发普通指令时随 pendingResync 一起静默作废（见 send 入口）。 */
+  // —— 重演（reroll，会话内内存态，不持久化）——
+  /** 重演的排队跟进：重同步回合成功收尾（pendingResync 清除）后要补发的玩家输入——点击时从目标幕
+   *  快照条目的 prompt 现取（v1.13 起输入在盘上，见 lib/replay 与 docs/adr/0023），这里只负责把它
+   *  带过 restore → 重同步 → turn_end 的窗口。重同步失败时保留，玩家点「再同步」成功后照常跟进；
+   *  玩家改发普通指令时随 pendingResync 一起静默作废（见 send 入口）。 */
   pendingRerollPrompt: string | null;
-  /** 当前世界已知的 `kind:"turn"` 快照数（重掷按钮的可见性判据）：null = 未知。建新世界置 0；
+  /** 当前世界已知的 `kind:"turn"` 快照数（游戏屏「重演这一幕」的可见性判据）：null = 未知。建新世界置 0；
    *  入场（resumeWorld）与「还不够两条」的回合收尾按需向 /api/history 补拉（见 context.refreshTurnSnapshots）。
-   *  判定口径：重掷要退到「次新」快照 = 至少两条 turn 快照；未知（null）时不藏功能，点击后再 fetch 判定。 */
+   *  判定口径：重演要退到目标幕之前的那条 turn 快照 = 至少两条 turn 快照；未知（null）时不藏功能，
+   *  点击后由重演解析内核取数判定并三级降级（找不到这一幕 / 第一幕无处可退 / 没有留下输入）。 */
   turnSnapshots: number | null;
 
   // —— v1.6 设置（settings overlay）——
@@ -322,7 +321,8 @@ export interface GameStore {
   /** 图屏选中节点（详情侧栏；null=收起） */
   setTreeFocus(nodeId: string | null): void;
   /** 图屏发送自然语言编辑指令（引擎忙时排队，复用创作屏排队模式） */
-  sendTreeEdit(text: string): void;
+  /** 剧情图编辑：v1.12 起可带节点作用域（选中节点后写的那句话只改那个节点） */
+  sendTreeEdit(text: string, nodeId?: string): void;
   /**
    * 在已走过节点上分叉（server 侧复制/精确重建，不推演任何内容）。
    * @param {string} nodeId 分叉点节点 id
@@ -345,13 +345,21 @@ export interface GameStore {
    */
   retryResync(): void;
   /**
-   * 重掷本回合（TopBar「重掷」按钮）：撤销刚结束的正戏回合并重发同一玩家输入。
-   * 时序：取快照索引里 kind:"turn" 的**次新**条目（= 上一回合结束态）→ 复用 restore 端点覆盖三文件
-   * （server 先写 backup）→ history 追加 reason:"reroll" 的分割线、置待重同步并发续档指令 →
-   * 重同步回合成功收尾后由 gameplay 的排队跟进自动重发 {@link lastTurnPrompt}（走玩家回合路径，可连掷）。
-   * turn 快照不足两条（本世界第一回合）或引擎忙时中止，经 status 反馈。
+   * 重演这一幕（TopBar「进度 ▾」菜单）：撤销刚结束的正戏回合并重发当时的玩家输入。
+   * 时序（v1.13 起输入取自盘上，见 docs/adr/0023）：fetchHistory + fetchSnapshot 解析出目标幕
+   * （= 最近一条**带玩家输入**的 turn 条目——刷新/重启后的续玩条目是空的，跳过它；见 REPLAY_PROBE_MAX）
+   * 与回退点（= 它之前最近的一条 turn 条目），输入取目标幕的 prompt → 复用 restore 端点覆盖三文件
+   *（server 先写 backup）→ history 追加 reason:"reroll" 的分割线、置待重同步并发续档指令 →
+   * 重同步回合成功收尾后由 gameplay 的排队跟进自动重发该输入（可连掷）。
+   * 三级降级（第一幕无处可退 / 旧档与续玩没有输入 / 找不到这一幕）与引擎忙都经 status 反馈，不静默。
    */
   rerollTurn(): Promise<void>;
+  /**
+   * 重演指定的一幕（剧情图屏「回到这一幕并重演」）：与 {@link rerollTurn} 同一解析内核、同一时序，
+   * 只是目标幕由参数给定（该存档点的快照序号），提示落 {@link treeNotice}（图屏没有顶栏状态位）。
+   * @param {number} seq 目标幕的快照序号（屏上「存档点 · 第 N 幕」的 N）
+   */
+  rerollAt(seq: number): Promise<void>;
   /**
    * 启动自动前进倒计时（选项上屏时由 OptionList 调；重复调用幂等）。
    * 拒绝启动：设置关闭（autoAdvance=0）、本回合已被交互取消、非游戏屏、引擎忙、
@@ -380,9 +388,9 @@ export interface GameStore {
   startGame(quick: boolean, preload: boolean): void;
   send(text: string): void;
   /**
-   * 玩家叙事输入的发送入口（OptionList 选项 / FreeInput 自由输入 / 自动前进代点）：
-   * 先把文本记进 {@link pendingTurnPrompt} 再走 send——turn_end 成功时定格为 {@link lastTurnPrompt}
-   * （重掷「重发同一玩家输入」的数据源）。指令类发送不走这里，天然不记录。
+   * 玩家叙事输入的发送入口（OptionList 选项 / FreeInput 自由输入 / 自动前进代点）：走 send。
+   * 服务端会把这次输入连同回合产物落进快照条目的 prompt（重演的数据源）；指令类发送不走这里，
+   * 服务端按 isDirectivePrompt 判掉、天然不记（v1.13，见 docs/adr/0023）。
    */
   sendPlayerTurn(text: string): void;
   skipPreload(): void;
@@ -408,7 +416,8 @@ export interface GameStore {
    * @param key 指令 key（立绘=名[-变体]、背景=地点、封面=preset id）
    * @param matchName 【图|重绘】标记里的名字（封面=剧本标题，与指令 key 不同）
    */
-  startRegen(type: ArtKind, key: string, matchName: string): void;
+  /** 单项重绘（v1.12 起可带玩家要求 `note`：一句人话，空 = 盲重绘） */
+  startRegen(type: ArtKind, key: string, matchName: string, note?: string): void;
   /**
    * 画廊批量重绘：把一串 job 建成顺序队列，逐条走 {@link startRegen} 同一条流水线
    * （一条收尾才派下一条；引擎忙/已有在跑的重绘时拒绝并落收尾提示位）。

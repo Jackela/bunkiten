@@ -25,9 +25,9 @@ export function createAssetsSlice(
       set({ assetsPreview: a });
     },
 
-    startRegen(type, key, matchName) {
+    startRegen(type, key, matchName, note) {
       // 单项重绘 = 只有一条的顺序队列（保持既有语义：忙时拒绝、挂起等待、标记解除）
-      get().startRegenBatch([{ type, key, matchName }]);
+      get().startRegenBatch([{ type, key, matchName, note }]);
     },
 
     startRegenBatch(jobs) {

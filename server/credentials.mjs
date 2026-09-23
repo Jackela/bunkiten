@@ -1,4 +1,5 @@
-// 引擎凭据（v1.10，docs/adr/0019）：GUI 里填的自备 key 落盘/读取/脱敏/转注入 env 的全部纯函数。
+// 引擎凭据（v1.10，docs/adr/0019；v1.11 加顶层 engine 字段，docs/adr/0022）：GUI 里填的自备 key 与
+// 引擎选择的落盘/读取/脱敏/转注入 env 的全部纯函数。
 // 磁盘位置固定 `~/.bunkiten/credentials.json`（目录 0700 / 文件 0600）——**不放 GAME_ROOT**：
 // 开发态 GAME_ROOT 等于仓库根，state/ 的 gitignore 规则不覆盖新文件，放那里迟早被 git 收走。
 //
@@ -15,6 +16,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { PROVIDER_IDS, PROVIDER_ID_RE } from "../shared/providers.mjs";
+import { DEFAULT_ENGINE_ID, ENGINE_IDS } from "../shared/engines.mjs";
 
 /** 凭据文件的当前结构版本（结构变更才升；读路径对未知版本仍然逐键容错） */
 export const CREDENTIALS_VERSION = 1;
@@ -53,14 +55,16 @@ const MAX_SIZE = 40;
  * 凭据文档（磁盘形状，version 1）。
  * @typedef {Object} Credentials
  * @property {number} version 结构版本
+ * @property {string} engine 叙事引擎后端 id（shared/engines.mjs 的 ENGINE_IDS 之一；缺省/未知值回落默认）
  * @property {CredentialGroup} llm LLM 组
  * @property {CredentialGroup} image 图片组
  */
 
-/** @returns {Credentials} 出厂默认（LLM 沿用 grok 登录态、图片不出图——与 v1.9 的行为完全一致） */
+/** @returns {Credentials} 出厂默认（引擎 grok、LLM 沿用登录态、图片不出图——与 v1.10 的行为完全一致） */
 export function defaultCredentials() {
   return {
     version: CREDENTIALS_VERSION,
+    engine: DEFAULT_ENGINE_ID,
     llm: { mode: "session", provider: "openai", baseUrl: "", apiKey: "", model: "" },
     image: { mode: "off", provider: "openai", baseUrl: "", apiKey: "", model: "", size: "", sizeBackground: "" },
   };
@@ -90,6 +94,10 @@ export function normalizeCredentials(raw) {
   const out = defaultCredentials();
   if (!raw || typeof raw !== "object") return out;
   const doc = /** @type {Record<string, any>} */ (raw);
+  // 引擎（v1.11，docs/adr/0022）：只认真源里的 id，其余回落默认——v1.10 及以前的凭据文件没有这个键，
+  // 读出来就是 grok，行为与升级前完全一致。
+  const engineId = field(doc.engine, 20);
+  out.engine = ENGINE_IDS.includes(engineId) ? engineId : DEFAULT_ENGINE_ID;
   /** @type {Array<{key: "llm"|"image", modes: readonly string[], defMode: string, hasSize: boolean}>} */
   const groups = [
     { key: "llm", modes: LLM_MODES, defMode: "session", hasSize: false },
@@ -165,18 +173,20 @@ export function writeCredentials(root, next) {
  * 局部更新：patch 里出现的键才动（空串=清该字段），clear 里的组整组回默认。
  * 纯函数（不碰磁盘）——路由读取→merge→write→回脱敏视图，四步各自可测。
  * @param {Credentials} current 当前凭据
- * @param {{llm?: Record<string, unknown>, image?: Record<string, unknown>}} [patch] 分组的局部字段
+ * @param {{engine?: string, llm?: Record<string, unknown>, image?: Record<string, unknown>}} [patch] 顶层标量（引擎）与分组的局部字段
  * @param {string[]} [clear] 要整组清空的组名（"llm" | "image"）
  * @returns {Credentials} 合并后的凭据（已 normalize）
  */
 export function mergeCredentials(current, patch = {}, clear = []) {
   const base = normalizeCredentials(current);
   /** @type {Record<string, any>} */
-  const next = { version: CREDENTIALS_VERSION, llm: { ...base.llm }, image: { ...base.image } };
+  const next = { version: CREDENTIALS_VERSION, engine: base.engine, llm: { ...base.llm }, image: { ...base.image } };
   for (const key of clear) {
     if (key === "llm" || key === "image") next[key] = defaultCredentials()[key];
   }
-  const patchOf = /** @type {Record<string, Record<string, unknown> | undefined>} */ (patch);
+  const patchOf = /** @type {Record<string, any>} */ (patch);
+  // 顶层标量：引擎（v1.11）。出现才动；非法值由写路径的校验先挡，这里只负责合并。
+  if (typeof patchOf.engine === "string") next.engine = patchOf.engine;
   for (const key of ["llm", "image"]) {
     const src = patchOf[key];
     if (!src || typeof src !== "object") continue;
@@ -198,7 +208,7 @@ export function mergeCredentials(current, patch = {}, clear = []) {
  * 而本模块**不能 import providers-catalog.mjs**（后者已 import 本模块的 CREDENTIALS_DIRNAME，反向会成环），
  * 所以白名单（内置表 ∪ 当前目录）从调用点注入：入口 acp-server.mjs 的 updateCredentials 闭包持有目录 memo。
  * 默认值仍是内置 PROVIDER_IDS：直测/无目录上下文时写路径照旧只认内置表（**严**校验，形状合法但不在集合里也拒）。
- * @param {{llm?: Record<string, unknown>, image?: Record<string, unknown>}} patch 待写入的局部字段
+ * @param {{engine?: string, llm?: Record<string, unknown>, image?: Record<string, unknown>}} patch 待写入的局部字段
  * @param {string[]} [clear] 要整组清空的组名
  * @param {Iterable<string>} [allowedProviderIds] 允许写入的 provider id 集合（Set 或数组；缺省内置 PROVIDER_IDS）
  * @returns {{ok: true} | {ok: false, error: string}} 校验结果
@@ -208,11 +218,16 @@ export function validateCredentialsPatch(patch = {}, clear = [], allowedProvider
   for (const key of clear) {
     if (key !== "llm" && key !== "image") return { ok: false, error: `未知的清除目标：${key}` };
   }
+  const patchOf = /** @type {Record<string, any>} */ (patch);
+  // 顶层标量：引擎（v1.11，docs/adr/0022）——只认 shared/engines.mjs 真源里的 id
+  if (patchOf.engine !== undefined) {
+    if (typeof patchOf.engine !== "string") return { ok: false, error: "engine 必须是字符串" };
+    if (!ENGINE_IDS.includes(str(patchOf.engine))) return { ok: false, error: `engine 只能是 ${ENGINE_IDS.join(" / ")}` };
+  }
   const specs = [
     { key: "llm", modes: LLM_MODES, fields: ["mode", "provider", "baseUrl", "apiKey", "model"] },
     { key: "image", modes: IMAGE_MODES, fields: ["mode", "provider", "baseUrl", "apiKey", "model", "size", "sizeBackground"] },
   ];
-  const patchOf = /** @type {Record<string, Record<string, unknown> | undefined>} */ (patch);
   for (const spec of specs) {
     const src = patchOf[spec.key];
     if (src === undefined) continue;
@@ -283,9 +298,9 @@ export function llmReady(creds) {
 
 /**
  * 脱敏视图（HTTP 出口的唯一形状）：**永不含明文**。
- * hasKey 让 GUI 画「已配置」；apiKeyMasked 让 key 格在失焦后显示 `sk-…4f2a`。
+ * hasKey 让 GUI 画「已配置」；apiKeyMasked 让 key 格在失焦后显示 `sk-…4f2a`；engine 让设置屏画引擎选择器。
  * @param {Credentials} creds 凭据
- * @returns {{version: number, llm: object, image: object}} 脱敏视图
+ * @returns {{version: number, engine: string, llm: object, image: object}} 脱敏视图
  */
 export function publicView(creds) {
   const group = (/** @type {CredentialGroup} */ g, /** @type {boolean} */ withSize) => ({
@@ -299,6 +314,7 @@ export function publicView(creds) {
   });
   return {
     version: CREDENTIALS_VERSION,
+    engine: creds.engine,
     llm: group(creds.llm, false),
     image: group(creds.image, true),
   };

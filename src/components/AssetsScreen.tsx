@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { RefreshCw, X } from "lucide-react";
 import { assetFileUrl, fetchAssets, type AssetEntry } from "../lib/acp";
-import { variantLabel } from "../lib/parser";
+import { variantLabel, REGEN_NOTE_MAX } from "../lib/parser";
 import { useFocusTrap } from "../lib/useFocusTrap";
 import { useGameStore, type RegenJob } from "../store/game";
 import { ScreenShell } from "./ScreenShell";
@@ -162,6 +162,8 @@ export default function AssetsScreen() {
   const [picked, setPicked] = useState<string[]>([]);
   /** 批量删除的两段式确认（与删除世界线同款：首点变确认按钮，二点才发） */
   const [confirmDelete, setConfirmDelete] = useState(false);
+  /** 预览模态里的「想怎么改？」（v1.12）：一句人话只作用于这一张图；换一张图就清空（见下方 effect） */
+  const [regenNote, setRegenNote] = useState("");
   /** 预览面板的关闭按钮（打开时聚焦它，键盘用户第一站就是「关掉」） */
   const closeRef = useRef<HTMLButtonElement | null>(null);
   /** 预览面板本体（焦点陷阱的容器：Tab 在面板里循环、关面板时把焦点还给开启前那张卡片） */
@@ -204,6 +206,11 @@ export default function AssetsScreen() {
   useEffect(() => {
     if (selected) closeRef.current?.focus();
   }, [selected]);
+
+  // 换一张图就清空「想怎么改？」（v1.12）：写了一半的话是针对上一张图说的，带到下一张会把要求发错对象
+  useEffect(() => {
+    setRegenNote("");
+  }, [selected?.file]);
 
   // 立绘按角色分组：组内基础在前、差分随后；背景与封面各自一组
   const portraitGroups = useMemo(() => {
@@ -556,12 +563,34 @@ export default function AssetsScreen() {
                 <p className="text-body text-ink">{assetLabel(selected)}</p>
                 <p className="mt-0.5 truncate text-meta text-ink-hint">{selected.file}</p>
               </div>
-              <div className="flex justify-end border-t border-white/[.06] px-1 pt-3">
+              {/* 改图指令（v1.12）：一句人话只作用**这一张**。留空 = 同设定换一张（v1.3 起的旧行为） */}
+              <div className="mx-1 border-t border-white/[.06] pt-3">
+                <label htmlFor="assets-regen-note" className="block text-meta text-ink-hint">
+                  想怎么改？（可留空——留空就换一张同设定的）
+                </label>
+                <input
+                  id="assets-regen-note"
+                  data-testid="assets-regen-note"
+                  value={regenNote}
+                  maxLength={REGEN_NOTE_MAX}
+                  onChange={(e) => setRegenNote(e.target.value)}
+                  onKeyDown={(e) => {
+                    // 中文输入法选词的 Enter 不算发送（与世界线改名编辑器同款）
+                    if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                      e.preventDefault();
+                      if (selectedTarget && !selectedBusy) startRegen(selectedTarget.type, selectedTarget.key, selectedTarget.matchName, regenNote);
+                    }
+                  }}
+                  placeholder="例：头发改成短发、换成夜景、正面特写"
+                  className="mt-1.5 w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-ui text-ink placeholder:text-ink-faint focus:border-gold/40 focus:outline-none"
+                />
+              </div>
+              <div className="flex justify-end px-1">
                 <button
                   type="button"
                   data-testid="assets-preview-regen"
                   disabled={!selectedTarget || selectedBusy}
-                  onClick={() => selectedTarget && startRegen(selectedTarget.type, selectedTarget.key, selectedTarget.matchName)}
+                  onClick={() => selectedTarget && startRegen(selectedTarget.type, selectedTarget.key, selectedTarget.matchName, regenNote)}
                   className={`flex items-center gap-1.5 rounded-lg border px-4 py-2 text-ui tracking-[.1em] transition-colors ${
                     !selectedTarget || selectedBusy
                       ? "cursor-not-allowed border-white/10 text-ink-hint"

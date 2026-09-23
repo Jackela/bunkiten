@@ -38,6 +38,9 @@ const WORLD_FILE_KEY = { "state.md": "state", "summary.md": "summary", [TREE_FIL
  * @property {"turn"|"backup"} kind
  * @property {string|null} nodeId
  * @property {number|null} chapterNo
+ * @property {string} prompt 可重演的玩家输入（v1.13，docs/adr/0023）：输入与其产生的状态同条目绑定。
+ *   只记玩家叙事输入——客户端的开局/续玩指令回填空串（它们是客户端生成的指令，不是玩家的话）、
+ *   backup 条目也没有；旧档没有该字段，normalize 统一为 ""（重演入口据此降级提示，不回填）
  * @property {SnapshotFiles} files
  */
 let warnedSnapshotOverflow = false; // 溢出告警只打一次（每回合都会触发判断，不去重会刷屏）
@@ -113,8 +116,8 @@ export function writeWorldFiles(dir, files) {
 }
 
 /**
- * 快照条目字段规范化（导出纯函数）：统一 seq 类型、at 默认当前时间、kind 归一、files 三键缺省 null。
- * 写盘与读取都走它，保证磁盘上的条目形状只有一个（导入校验也复用同一形状）。
+ * 快照条目字段规范化（导出纯函数）：统一 seq 类型、at 默认当前时间、kind 归一、prompt 缺省空串、
+ * files 三键缺省 null。写盘与读取都走它，保证磁盘上的条目形状只有一个（导入校验也复用同一形状）。
  * @param {Partial<SnapshotEntry>} [entry] 原始条目（可能是刚 JSON.parse 出来的任意形状）
  * @returns {SnapshotEntry}
  */
@@ -130,6 +133,7 @@ export function normalizeSnapshot(entry = {}) {
     kind: entry.kind === "backup" ? "backup" : "turn",
     nodeId: entry.nodeId == null ? null : String(entry.nodeId),
     chapterNo: entry.chapterNo == null ? null : Number(entry.chapterNo),
+    prompt: typeof entry.prompt === "string" ? entry.prompt : "",
     files: { state: str(files.state), summary: str(files.summary), tree: str(files.tree) },
   };
 }
@@ -146,6 +150,8 @@ export function isSnapshotEntry(obj) {
   if (obj.kind !== "turn" && obj.kind !== "backup") return false;
   if (obj.nodeId != null && typeof obj.nodeId !== "string") return false;
   if (obj.chapterNo != null && typeof obj.chapterNo !== "number") return false;
+  // 缺省合法：v1/v2 导出包与旧档没有 prompt 字段，照收（导入后 normalize 为 ""，重演入口降级提示）
+  if (obj.prompt != null && typeof obj.prompt !== "string") return false;
   const f = obj.files;
   if (!f || typeof f !== "object") return false;
   return WORLD_FILES.every((name) => f[WORLD_FILE_KEY[name]] === null || typeof f[WORLD_FILE_KEY[name]] === "string");
@@ -282,11 +288,14 @@ export function readSnapshot(worldId, seq, root = WORLDS_ROOT) {
 
 /**
  * 追加一条快照（seq = 上一条 + 1，起始 1）。
- * 去重：与上一条 files 全等则跳过（dedupe=false 时用于 backup——backup 必须落盘，否则恢复不了）。
+ * 去重：**没有新东西可说就跳过**——三文件与上一条全等，且这次没有新的玩家输入（prompt 为空，
+ * 或与上一条相同）。玩家输入永远落盘（files 相同也是新的一幕：「最新带输入的 turn 条目 ⟺ 最新一幕」
+ * 的重演不变量靠它，docs/adr/0023）；续玩/读档这类空输入回合只有真的改了文件才落盘。
+ * dedupe=false 时用于 backup——backup 必须落盘，否则恢复不了。
  * 溢出：seq 将 > 9999 时不再写并 warn once。
  * @param {string} root 世界根目录
  * @param {string} worldId 世界 id
- * @param {{kind?: "turn"|"backup", nodeId?: string|null, chapterNo?: number|null, files?: SnapshotFiles, at?: string, seq?: number}} entry 条目（seq 由本函数分配，忽略传入值）
+ * @param {{kind?: "turn"|"backup", nodeId?: string|null, chapterNo?: number|null, prompt?: string, files?: SnapshotFiles, at?: string, seq?: number}} entry 条目（seq 由本函数分配，忽略传入值）
  * @param {{dedupe?: boolean}} [opts]
  * @returns {{ok: true, seq: number, entry: SnapshotEntry}|{ok?: false, skipped: true, reason: string, seq: number|null}}
  *   失败分支的 ok 缺省（不是 false）：调用方一律按 `if (res.ok)` / `if (!res.ok)` 真值判定
@@ -300,8 +309,10 @@ export function writeSnapshot(root, worldId, entry, { dedupe = true } = {}) {
   const norm = normalizeSnapshot(entry);
   if (dedupe && last.seq >= 1 && last.file) {
     const lastEntry = readSnapshotFile(dir, last.file);
-    if (lastEntry && sameFiles(lastEntry.files, norm.files)) {
-      return { skipped: true, reason: "duplicate", seq: last.seq };
+    if (lastEntry) {
+      // lastEntry 经 normalizeSnapshot，prompt 恒为字符串——空输入（指令/续玩）只有内容也全等才跳过
+      const nothingNew = sameFiles(lastEntry.files, norm.files) && (norm.prompt === "" || lastEntry.prompt === norm.prompt);
+      if (nothingNew) return { skipped: true, reason: "duplicate", seq: last.seq };
     }
   }
   const seq = last.seq + 1;
@@ -321,7 +332,7 @@ export function writeSnapshot(root, worldId, entry, { dedupe = true } = {}) {
   return { ok: true, seq, entry: final };
 }
 
-// 三文件全文是否逐字相同（去重判定用；只看内容，不看 at/kind）
+// 三文件全文是否逐字相同（去重判定的一半；另一半是 prompt——只看内容，不看 at/kind）
 /** @param {SnapshotFiles} a @param {SnapshotFiles} b @returns {boolean} */
 function sameFiles(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);

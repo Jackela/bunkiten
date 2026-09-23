@@ -15,10 +15,13 @@
 //       ≥lg 时屏体分两栏（左画布/列表、右详情 380px sticky 自滚），<lg 保持上下堆叠；图例/缩放与操作
 //       提示包进 .shell-panel 带（压在底图上也读得清）；文案去引擎口吻（快照 #N → 存档点/第 N 幕）、
 //       字号一律走 global.css 的档位类。
+// v1.13：节点详情多一个「回到这一幕并重演」（该条是 turn 条目、且之前还有 turn 条目才出现）——
+//       与回退同一纪律（两段确认、忙碌禁用），退到这一幕开演前并重发当时的输入；输入随快照条目
+//       落盘（docs/adr/0023），旧档那几幕点击后由 store 给一句降级提示。
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import { motion } from "framer-motion";
 import { Maximize2, RefreshCw, ZoomIn, ZoomOut } from "lucide-react";
-import { fetchHistory, fetchSnapshot, fetchTree, type WorldSnapshotMeta } from "../lib/acp";
+import { fetchHistory, fetchSnapshot, fetchTree, postSnapshotLabel, type WorldSnapshotMeta } from "../lib/acp";
 import { diffLines, diffStats, type DiffRow } from "../lib/diff";
 import {
   parseStoryTree,
@@ -27,6 +30,7 @@ import {
   type TreeNode,
   type TreeNodeStatus,
 } from "../lib/parser";
+import { canReplaySnapshot } from "../lib/replay";
 import { truncate } from "../lib/text";
 import { fitView, layoutTree, panView, viewBoxOf, zoomViewAt, type LayoutNode, type TreeLayout, type TreeView } from "../lib/treeLayout";
 import { resolveWorldLabel } from "../lib/worlds";
@@ -51,6 +55,8 @@ const DRAG_SLOP = 4;
 interface SnapshotRef {
   seq: number;
   turn: number;
+  /** 玩家给这个存档点起的名字（v1.12；没起名是空串） */
+  label: string;
 }
 
 /** 节点状态 → 配色：已走过=主题金、可达=中性水墨、已剪枝=暗+虚线、嫁接=紫 */
@@ -140,7 +146,7 @@ export function earliestSnapshotByNode(snapshots: WorldSnapshotMeta[]): Map<stri
   for (const snap of [...snapshots].sort((a, b) => a.seq - b.seq)) {
     const id = snap.nodeId;
     if (!id || out.has(id)) continue;
-    out.set(id, { seq: snap.seq, turn: snapshotTurnNo(snapshots, snap.seq) });
+    out.set(id, { seq: snap.seq, turn: snapshotTurnNo(snapshots, snap.seq), label: snap.label ?? "" });
   }
   return out;
 }
@@ -633,8 +639,12 @@ function TreeDetail({
   snapshot,
   worldId,
   prevSeq,
+  canReplay,
   onFork,
   onRestore,
+  onReplay,
+  onEdit,
+  onLabel,
   onClose,
 }: {
   node: TreeNode;
@@ -644,12 +654,48 @@ function TreeDetail({
   worldId: string;
   /** 对比基线的 seq（seq 更小的最近一条，kind 不限）；没有更早快照时 null（不显示按钮） */
   prevSeq: number | null;
+  /** 这条快照能不能重演（是 turn 条目、且之前还有 turn 条目）；prompt 有无由 store 点击时判定 */
+  canReplay: boolean;
   onFork: (id: string, seq?: number) => void;
   onRestore: (seq: number) => void;
+  /** 回到这一条快照开演前、重发当时的输入（store 的 rerollAt；缺输入/无处可退会给降级提示） */
+  onReplay: (seq: number) => void;
+  /** 只改这个节点：把一句话（带节点作用域）发给引擎（v1.12） */
+  onEdit: (text: string) => void;
+  /** 给这个存档点起名（v1.12）：返回错误文案，成功返回 null（父层负责落库与刷新） */
+  onLabel: (seq: number, label: string) => Promise<string | null>;
   onClose: () => void;
 }) {
   const canFork = node.status === "已走过";
   const [confirming, setConfirming] = useState(false);
+  // 重演的两段确认（与回退的 confirming 互斥：一条动作行上不给两组确认同时开着）
+  const [confirmingReplay, setConfirmingReplay] = useState(false);
+  /** 节点级就地编辑的那句话（换节点时清空——写了一半的话是针对上一个节点说的） */
+  const [nodeNote, setNodeNote] = useState("");
+  useEffect(() => {
+    setNodeNote("");
+  }, [node.id]);
+
+  // 存档点命名（v1.12）：草稿跟着当前节点的那条快照走（换节点/名字被刷回来都重置）
+  const [labelDraft, setLabelDraft] = useState(snapshot?.label ?? "");
+  const [labelBusy, setLabelBusy] = useState(false);
+  const [labelError, setLabelError] = useState("");
+  useEffect(() => {
+    setLabelDraft(snapshot?.label ?? "");
+    setLabelError("");
+  }, [node.id, snapshot?.seq, snapshot?.label]);
+
+  /** 保存名字：成功即清错误、父层刷新后 label 会变（按钮随之回到禁用态） */
+  const sendLabel = () => {
+    if (!snapshot || labelBusy) return;
+    if (labelDraft === snapshot.label) return;
+    setLabelBusy(true);
+    setLabelError("");
+    void onLabel(snapshot.seq, labelDraft).then((err) => {
+      setLabelBusy(false);
+      if (err) setLabelError(err);
+    });
+  };
 
   // 快照对比面板的状态：rows 按 tab 键分桶；diffReqRef 让换节点/重开后的过期应答作废
   const [diffOpen, setDiffOpen] = useState(false);
@@ -690,6 +736,14 @@ function TreeDetail({
     setDiffError("");
     setDiffShowAll(false);
   }, [node.id]);
+
+  /** 把「只改这个节点」的那句话发出去（作用域由上层拼进指令；发完清空输入框） */
+  const sendNode = () => {
+    const text = nodeNote.trim();
+    if (!text) return;
+    setNodeNote("");
+    onEdit(text);
+  };
 
   /** 拉当前 + 基线两条快照全文并 diff 三文件（失败落在面板内的错误位，不打扰树本体） */
   const openDiff = () => {
@@ -736,10 +790,44 @@ function TreeDetail({
       </div>
 
       {snapshot && (
-        <p data-testid={`tree-snapshot-${node.id}`} className="mt-2 text-ui tracking-[.08em] text-gold/85">
-          存档点 · 第 {snapshot.seq} 幕
-        </p>
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          <p data-testid={`tree-snapshot-${node.id}`} className="text-ui tracking-[.08em] text-gold/85">
+            存档点 · 第 {snapshot.seq} 幕{snapshot.label ? ` · ${snapshot.label}` : ""}
+          </p>
+          {/* 命名：一句话给这个时间点起个名字（存在世界索引里，快照文件不动） */}
+          <div className="flex items-center gap-1.5">
+            <input
+              data-testid="snapshot-label-input"
+              value={labelDraft}
+              maxLength={40}
+              onChange={(e) => setLabelDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  sendLabel();
+                }
+              }}
+              placeholder="给这一刻起个名字…"
+              autoComplete="off"
+              className="w-40 rounded-md border border-white/10 bg-panel-sunken px-2 py-1 text-meta transition-colors focus:border-gold/35"
+            />
+            <button
+              type="button"
+              data-testid="snapshot-label-save"
+              disabled={labelBusy || labelDraft === snapshot.label}
+              onClick={sendLabel}
+              className="rounded-md border border-white/15 px-2.5 py-1 text-meta text-ink-hint transition-colors hover:border-gold/40 hover:text-ink disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink-faint"
+            >
+              {labelBusy ? "保存中…" : "命名"}
+            </button>
+          </div>
+        </div>
       )}
+      {labelError ? (
+        <p role="status" className="mt-1 text-meta text-ink-hint">
+          {labelError}
+        </p>
+      ) : null}
 
       {/* 有基线（seq 更小的最近一条）才给对比入口；全局最小的快照没有可比的对象 */}
       {snapshot && prevSeq !== null && !diffOpen && (
@@ -876,6 +964,44 @@ function TreeDetail({
         )}
       </div>
 
+      {/* 只改这个节点（v1.12）：底部那条是全树范围，这里的一句话**带着节点 id**发给引擎——
+          引擎按 SKILL【剧情编辑指令】的作用域规则只动这个节点，不再自行判断改哪儿 */}
+      <div className="mt-3 rounded-lg border border-white/[.06] bg-panel-soft p-3">
+        <label htmlFor="tree-node-note" className="block text-meta tracking-[.15em] text-ink-hint">
+          只改这个节点（例：把这里写得更紧张、加一段追逐）
+        </label>
+        <div className="mt-1.5 flex gap-2">
+          <input
+            id="tree-node-note"
+            data-testid="tree-node-note"
+            value={nodeNote}
+            onChange={(e) => setNodeNote(e.target.value)}
+            onKeyDown={(e) => {
+              // 中文输入法选词的 Enter 不算发送（与底部那条同款）
+              if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                sendNode();
+              }
+            }}
+            placeholder={`针对节点 ${node.id}…`}
+            autoComplete="off"
+            className="min-w-0 flex-1 rounded-lg border border-white/10 bg-panel-sunken px-3 py-2 text-ui tracking-[.02em] transition-colors focus:border-gold/35"
+          />
+          <button
+            type="button"
+            data-testid="tree-node-send"
+            disabled={nodeNote.trim().length === 0}
+            onClick={sendNode}
+            className="rounded-lg border border-gold/35 bg-gold/15 px-4 text-ui tracking-[.1em] text-gold transition-colors hover:bg-gold/30 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink-faint"
+          >
+            改这里
+          </button>
+        </div>
+        {engineBusy ? (
+          <p className="mt-1.5 text-meta text-ink-hint">忙碌中，就绪后自动发送</p>
+        ) : null}
+      </div>
+
       <div className="mt-4 flex flex-wrap items-center gap-3">
         {canFork && (
           <button
@@ -928,7 +1054,10 @@ function TreeDetail({
               type="button"
               data-testid={`tree-restore-${node.id}`}
               disabled={engineBusy}
-              onClick={() => setConfirming(true)}
+              onClick={() => {
+                setConfirmingReplay(false);
+                setConfirming(true);
+              }}
               className={`rounded-lg border px-4 py-2 text-ui tracking-[.1em] transition-colors ${
                 engineBusy
                   ? "cursor-not-allowed border-white/10 text-ink-hint"
@@ -939,8 +1068,62 @@ function TreeDetail({
             </button>
           ))}
 
+        {/* 回到这一幕并重演（v1.13）：与回退同一纪律（两段确认、忙碌禁用）；输入在盘上，
+            旧档那几幕点击后由 store 给降级提示，不静默（见 docs/adr/0023） */}
+        {snapshot &&
+          canReplay &&
+          (confirmingReplay ? (
+            <>
+              <button
+                type="button"
+                data-testid={`tree-replay-confirm-${node.id}`}
+                disabled={engineBusy}
+                onClick={() => {
+                  setConfirmingReplay(false);
+                  onReplay(snapshot.seq);
+                }}
+                className={`rounded-lg border px-4 py-2 text-ui tracking-[.1em] transition-colors ${
+                  engineBusy
+                    ? "cursor-not-allowed border-white/10 text-ink-hint"
+                    : "border-red-400/50 bg-red-400/15 text-red-300 hover:bg-red-400/25"
+                }`}
+              >
+                确认重演（退到这一幕开演前）
+              </button>
+              <button
+                type="button"
+                data-testid={`tree-replay-cancel-${node.id}`}
+                onClick={() => setConfirmingReplay(false)}
+                className="rounded-lg border border-white/10 px-3 py-2 text-ui tracking-[.1em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
+              >
+                取消
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              data-testid={`tree-replay-${node.id}`}
+              disabled={engineBusy}
+              onClick={() => {
+                setConfirming(false);
+                setConfirmingReplay(true);
+              }}
+              className={`rounded-lg border px-4 py-2 text-ui tracking-[.1em] transition-colors ${
+                engineBusy
+                  ? "cursor-not-allowed border-white/10 text-ink-hint"
+                  : "border-white/15 text-ink-body hover:border-gold/40 hover:text-ink"
+              }`}
+            >
+              回到这一幕并重演
+            </button>
+          ))}
+
         <span className="text-meta tracking-[.05em] text-ink-hint">
-          {snapshot ? "回退会先备份当前进度，再从这一刻重新开演" : "分叉会新建一条世界线，从这一幕继续"}
+          {!snapshot
+            ? "分叉会新建一条世界线，从这一幕继续"
+            : canReplay
+              ? "回退会先备份当前进度，再从这一刻重新开演；重演会退到这一幕开演前并重发当时的输入"
+              : "回退会先备份当前进度，再从这一刻重新开演"}
         </span>
       </div>
     </div>
@@ -963,6 +1146,7 @@ export default function StoryTreeScreen() {
   const sendTreeEdit = useGameStore((s) => s.sendTreeEdit);
   const forkAt = useGameStore((s) => s.forkAt);
   const restoreSnapshot = useGameStore((s) => s.restoreSnapshot);
+  const rerollAt = useGameStore((s) => s.rerollAt);
   const switchToFork = useGameStore((s) => s.switchToFork);
 
   const [markdown, setMarkdown] = useState<string | null>(null);
@@ -1077,6 +1261,9 @@ export default function StoryTreeScreen() {
   // 选中节点的快照引用与对比基线（快照对比按钮的出现条件：有快照且有更早的快照）
   const focusSnapshot = focusNode ? (snapshotOf.get(focusNode.id) ?? null) : null;
   const focusPrevSeq = focusSnapshot ? prevSnapshotSeq(snapshots, focusSnapshot.seq) : null;
+  // 重演入口的出现条件（v1.13）：这条是 turn 条目、且它之前还有 turn 条目（退到目标幕开演前才有意义）；
+  // prompt 有无不在这里判——列表形状刻意不带（单条才带，见 docs/adr/0023），点击后由 store 降级提示
+  const focusCanReplay = focusSnapshot !== null && canReplaySnapshot(snapshots, focusSnapshot.seq);
 
   /**
    * 切章：按章节键（章号-下标）选中并收掉节点焦点（详情里的节点已经不在这一章里了），
@@ -1086,6 +1273,20 @@ export default function StoryTreeScreen() {
     setChapterSel(key);
     setTreeFocus(null);
     setModePref(null);
+  };
+
+  /**
+   * 给存档点起名（v1.12）：写进世界索引后重取快照索引（刷新树屏的显示）。
+   * @param {number} seq 快照序号
+   * @param {string} label 名字（空串 = 清除）
+   * @returns {Promise<string | null>} 错误文案；成功 null
+   */
+  const labelSnapshotFor = async (seq: number, label: string): Promise<string | null> => {
+    if (!worldId) return "还没有世界线，命名无处可存";
+    const r = await postSnapshotLabel({ worldId, seq, label });
+    if (!r.ok) return r.error ?? "命名失败（服务端拒绝了这次改动）";
+    refreshTree(); // 与「编辑完成」同一条刷新路径（treeStamp 自增 → 重取树与快照索引）
+    return null;
   };
 
   const submit = () => {
@@ -1329,8 +1530,12 @@ export default function StoryTreeScreen() {
                   snapshot={focusSnapshot}
                   worldId={worldId}
                   prevSeq={focusPrevSeq}
+                  canReplay={focusCanReplay}
                   onFork={forkAt}
                   onRestore={(seq) => void restoreSnapshot(seq)}
+                  onReplay={(seq) => void rerollAt(seq)}
+                  onEdit={(text) => sendTreeEdit(text, focusNode?.id)}
+                  onLabel={labelSnapshotFor}
                   onClose={() => setTreeFocus(null)}
                 />
               </aside>

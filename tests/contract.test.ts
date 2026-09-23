@@ -16,6 +16,8 @@
 //     parseChapterMark/质量守卫豁免都消费）；server 与 theme.ts 的字体/对话框白名单与兜底主题同集
 //   ⑦ 引擎凭据（v1.10）：服务目录 shared/providers.mjs ↔ 设置屏渲染面（不许第二份 id 表）、MCP 出图工具名
 //     （media-mcp.mjs 常量 ↔ SKILL.md 的 `bunkiten-media__generate_image`）、凭据落点与环境变量名 ↔ 文档
+//   ⑧ 引擎后端（v1.11）：引擎真源 shared/engines.mjs ↔ 描述符表 server/engines.mjs ↔ 设置屏/启动屏（不许第二份
+//     id 表）、codex 的注入面与 CODEX_HOME 落点 ↔ 文档、打包铺场脚本与描述符算出同一个入口
 //
 // 纯 node：只读文件 + import 已导出的模块（不 spawn、不联网、不写盘），整体 <1s。
 // 注意：本文件自身也被 `npm test` 收录，但**不计入**文档声明的合计口径（数字以 CASE_TOTAL 为准；tests/e2e/** 同样不在口径内），见第 ④ 组。
@@ -27,6 +29,7 @@ import { fileURLToPath } from "node:url";
 import { AUDIO_KINDS, PROTOCOL_HEADS, isProtocolLine, parseChapterMark, parseManifest } from "../src/lib/parser";
 import { DIRECTIVE_PREFIX_RE as SHARED_DIRECTIVE_RE, PROTOCOL_HEADS as SHARED_HEADS, CHAPTER_MARK_RE as SHARED_CHAPTER_RE } from "../shared/protocol.mjs";
 import { PROVIDERS, PROVIDER_IDS, providersFor } from "../shared/providers.mjs";
+import { ENGINES as SHARED_ENGINES, ENGINE_IDS as SHARED_ENGINE_IDS } from "../shared/engines.mjs";
 import { SETTINGS_STORAGE_KEY } from "../src/lib/settings";
 
 /** 仓库根（本文件在 tests/ 下） */
@@ -52,6 +55,11 @@ function at(rel: string, text: string, index: number): string {
 /** server 模块（懒加载；模块以 invokedDirectly 守卫自启，import 不会起服务也不会 spawn 引擎） */
 function loadServer(): Promise<Record<string, unknown>> {
   return import("../server/acp-server.mjs") as unknown as Promise<Record<string, unknown>>;
+}
+
+/** 引擎描述符表（懒加载；server/engines.mjs 只有纯函数与常量，import 无副作用） */
+function loadEngines(): Promise<Record<string, unknown>> {
+  return import("../server/engines.mjs") as unknown as Promise<Record<string, unknown>>;
 }
 
 /** 递归列出 src/ 下的 .ts/.tsx 源码（相对路径） */
@@ -284,6 +292,18 @@ describe("③ 指令字符串双处存在：src/lib/parser.ts 源码 ↔ SKILL.m
       `${rel} 源码里找不到这些指令字符串（谁和谁不一致：客户端构造 ↔ SKILL.md 的指令契约；参数化指令放行 \${…} 插值形态）：\n${missing.map((s) => `  - 「${s}」`).join("\n")}`,
     ).toEqual([]);
   });
+
+  it("重绘可带玩家要求（v1.12）：`美术：重绘 …：<要求>` 的两端与长度口径都有（客户端构造 ↔ SKILL 规则）", () => {
+    const skill = read(".grok/skills/bunkiten/SKILL.md");
+    const parserSrc = read("src/lib/parser.ts");
+    // 客户端：模板里的 `：` 分隔符（少一个字符，引擎就会把玩家的要求当成名字的一部分）
+    expect(parserSrc, "parser.ts 里没有 `美术：重绘 <类型> <名>：<要求>` 的模板").toContain("美术：重绘 ${type} ${key}：${clean}");
+    // 引擎：格式说明 + 一条示例 + 长度口径（客户端掐到 REGEN_NOTE_MAX，SKILL 必须写出同一个数）
+    expect(skill, "SKILL【素材重绘】没给出带玩家要求的示例").toContain("美术：重绘 立绘 薇拉：头发改成短发");
+    expect(skill, "SKILL 的玩家要求长度口径与客户端不一致（REGEN_NOTE_MAX=200）").toContain("不超过 200 字");
+    // 有要求时不再追加 fresh take（那两个词会跟玩家的要求打架）——这条规则必须写在 SKILL 里
+    expect(skill).toContain("不再追加");
+  });
 });
 
 // ——————————————————————— ⑦ 引擎凭据（v1.10，ADR-0019） ———————————————————————
@@ -403,6 +423,95 @@ describe("⑦ 引擎凭据：服务目录 ↔ 设置屏 / MCP 工具名 ↔ SKIL
       `${rel} 的 providers 与 shared/providers.mjs 的 PROVIDERS 不一致（谁和谁不一致：发布源 ↔ 目录真源）——别手改 JSON，跑 \`npm run providers:export\` 重新生成`,
     ).toEqual(JSON.parse(JSON.stringify(PROVIDERS)));
     expect(typeof doc.updatedAt, `${rel} 缺 updatedAt（发布时刻）：跑 \`npm run providers:export\` 会补上`).toBe("string");
+  });
+});
+
+// ——————————————————————— ⑧ 引擎后端（v1.11） ———————————————————————
+
+/**
+ * Codex 后端的注入面（docs/adr/0022 的「第 0 步实证」）：CODEX_HOME 是游戏管理的 `~/.bunkiten/codex`，
+ * 另两个是会话模式与浏览器登录开关。名字写错 = 后端起不来（CODEX_HOME 指向不存在的路径时 codex-acp 直接
+ * 初始化失败），或起了个没开全自动的会话卡在审批上（INITIAL_AGENT_MODE）。
+ */
+const CODEX_ENV_NAMES = ["CODEX_HOME", "INITIAL_AGENT_MODE", "NO_BROWSER"];
+
+/** 引擎后端的文档锚点（同 CREDENTIALS_DOC：玩家/维护者问「怎么接的」时在这份里能查到） */
+const ENGINE_DOC = "docs/ARCHITECTURE.md";
+
+describe("⑧ 引擎后端：真源 ↔ 描述符表 / GUI / 文档 / 铺垫路径", () => {
+  it("引擎真源是唯一一份：ENGINE_IDS 由 ENGINES 派生；描述符表与它同键（两边各加一个引擎而漏改另一边会红）", async () => {
+    const rel = "shared/engines.mjs";
+    const src = read(rel);
+    expect(
+      src,
+      `${rel} 的 ENGINE_IDS 不再由 ENGINES 派生：选择器与服务端校验会分成两份清单`,
+    ).toMatch(/export const ENGINE_IDS = Object\.freeze\(ENGINES\.map\(/);
+    const ids = [...SHARED_ENGINE_IDS];
+    expect(ids.length, "引擎表里一个引擎都没有").toBeGreaterThan(1);
+    const engines = await loadEngines();
+    const table = engines.ENGINE_DESCRIPTORS as Map<string, unknown>;
+    expect(table instanceof Map, "server/engines.mjs 的 ENGINE_DESCRIPTORS 不再是 Map").toBe(true);
+    for (const id of ids) {
+      expect(
+        [...table.keys()],
+        `server/engines.mjs 的描述符表里没有引擎「${id}」（谁和谁不一致：shared/engines.mjs 的真源 ↔ server/engines.mjs 的描述符表）`,
+      ).toContain(id);
+    }
+    for (const e of SHARED_ENGINES) {
+      if (!e.byok) {
+        expect(e.byokNote.trim().length, `引擎「${e.id}」的 byok=false 却没给玩家话的原因（设置屏禁用按钮时要显示）`).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("GUI 吃真源、不带第二份 id 表：设置屏与启动屏都 import shared/engines.mjs，src/ 下没有引擎 id 字面量", () => {
+    const settings = read(GUI_PROVIDERS_FILE);
+    const boot = read("src/components/BootScreen.tsx");
+    expect(
+      settings,
+      `${GUI_PROVIDERS_FILE} 没有从 shared/engines.mjs import 引擎表：选择器会退化成手写清单`,
+    ).toContain('from "../../shared/engines.mjs"');
+    expect(settings, `${GUI_PROVIDERS_FILE} 没有渲染真源的 ENGINES`).toContain("ENGINES.map(");
+    expect(boot, `src/components/BootScreen.tsx 没有从 shared/engines.mjs import 引擎表：登录指引会写死一家`).toContain(
+      'from "../../shared/engines.mjs"',
+    );
+    expect(boot, `src/components/BootScreen.tsx 没有消费 engineById/loginHint（未登录文案按引擎分支）`).toContain("engineById(");
+    // 第二份 id 表的防漂移：引擎 id 不许在 src/ 下以字符串字面量出现（`"grok"` / `"codex"` 这种）
+    const offenders = srcFiles().filter((file) => /["'](grok|codex)["']/.test(read(file)));
+    expect(
+      offenders,
+      `src/ 下出现了引擎 id 的字符串字面量（谁和谁不一致：shared/engines.mjs 的真源 ↔ 客户端）：${offenders.join("、")}——引擎散在客户端各处就等着漂移`,
+    ).toEqual([]);
+  });
+
+  it("codex 的注入面与 CODEX_HOME 落点：server 源 ↔ 文档逐字一致", () => {
+    const rel = "server/engines.mjs";
+    const src = read(rel);
+    const doc = read(ENGINE_DOC);
+    for (const env of CODEX_ENV_NAMES) {
+      expect(src, `${rel} 里没有生成环境变量 ${env}（codex 后端的注入面）`).toContain(env);
+      expect(doc, `${ENGINE_DOC} 的「引擎后端」一节没有写 ${env}：注入面没有文档锚点`).toContain(env);
+    }
+    expect(doc, `${ENGINE_DOC} 里没有逐字写出 codex 的游戏 home 落点「.bunkiten/codex」`).toContain(".bunkiten/codex");
+  });
+
+  it("打包铺场脚本与描述符算出同一个入口（跑 npm run dist:* 时铺出来的树要真能被 spawn）", () => {
+    const stage = read("scripts/stage-codex-acp.mjs");
+    const src = read("server/engines.mjs");
+    const pkg = "@agentclientprotocol/codex-acp";
+    for (const [label, text] of [
+      ["scripts/stage-codex-acp.mjs", stage],
+      ["server/engines.mjs", src],
+    ] as const) {
+      expect(text, `${label} 里没有 ${pkg} 的包名（铺场与运行期会指向不同的包）`).toContain("codex-acp");
+      expect(text, `${label} 里没有 dist/index.js 的入口形态（两边的入口路径要一致）`).toContain("index.js");
+    }
+    // 覆盖开关（测试/打包态用）与描述符同名
+    expect(src, `server/engines.mjs 少了 BUNKITEN_CODEX_ACP 覆盖开关（harness 与打包冒烟靠它指到垫片）`).toContain("BUNKITEN_CODEX_ACP");
+    expect(read(ENGINE_DOC), `${ENGINE_DOC} 没写 BUNKITEN_CODEX_ACP 覆盖开关（排障时找不到入口）`).toContain("BUNKITEN_CODEX_ACP");
+    // grok 的模型覆盖旋钮（真引擎冒烟用便宜档跑）同理：源码与排障文档两处都要写
+    expect(src, `server/engines.mjs 少了 BUNKITEN_GROK_MODEL 覆盖开关（真引擎冒烟靠它换便宜模型）`).toContain("BUNKITEN_GROK_MODEL");
+    expect(read(ENGINE_DOC), `${ENGINE_DOC} 没写 BUNKITEN_GROK_MODEL 覆盖开关（排障时找不到入口）`).toContain("BUNKITEN_GROK_MODEL");
   });
 });
 

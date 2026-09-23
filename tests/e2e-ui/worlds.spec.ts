@@ -3,9 +3,9 @@
 // 导出内容断言 format:"bunkiten-world" / worldId / title / label；导入文件落在 test-results-ui/ 下。
 // v1.8 补三条：① 家谱画布的缩放/适应读数与 viewBox（工具条提示行的可见性一并钉住——它当初就是为了
 // 不被画布顶到屏脚才挪进工具条的）；② 行 ⋯ 菜单的**纯键盘**路径（Enter 开 → Tab 走项 → Esc 只收菜单、
-// 不退屏 → 重开时半截删除确认已复位）；③ 导出包 v2 的血缘（forkedFrom + fork.md 随包走，导入回来的
-// 分叉线在家谱里仍是子节点）——老包（v1）那条路走应用内的「导入」按钮，v2 包那条走真服务端的 HTTP 面
-// （客户端 parseWorldBundle 的版本闸本轮冻结未动，见下面「导入」段的注释）。
+// 不退屏 → 重开时半截删除确认已复位）；③ 导出包的血缘（forkedFrom + fork.md 随包走，导入回来的
+// 分叉线在家谱里仍是子节点）——**两次导入都走应用内的「导入」按钮**（v1.13 起客户端 parseWorldBundle
+// 的版本闸只要求正整数，v2/v3 包不再被本地挡下；以前 v2 包得绕真服务端 HTTP，见 docs/adr/0023）。
 // v1.9 补一条：行缩略图（ROADMAP §5）——两个剧本把两态摆在一起：demo 有 cover.jpg（手写真 jpg）、
 // no-cover 没有（本仓多数 preset 的常态）。断言「有封面时图真的解码上屏、src 是封面契约路径」、
 // 「缩略图不吃行的点击」、「没封面时图被 404 摘掉、只剩同尺寸占位块、行高逐像素不变」。
@@ -114,7 +114,7 @@ test("世界线管理：行内改名→导出→导入出重名副本 w2-2→两
 
   const bundle = JSON.parse(readFileSync(bundlePath, "utf8")) as Bundle;
   expect(bundle.format).toBe("bunkiten-world");
-  expect(bundle.version).toBe(2); // v1.8：v2 包（world 多两个血缘键）
+  expect(bundle.version).toBe(3); // v1.13：v3 包（v2 多两个血缘键之外，快照条目多一个 prompt）
   expect(bundle.world.worldId).toBe("w2");
   expect(bundle.world.title).toBe("示例剧本");
   expect(bundle.world.label).toBe("回廊之影");
@@ -122,23 +122,12 @@ test("世界线管理：行内改名→导出→导入出重名副本 w2-2→两
   expect(bundle.world.forkedFrom).toBe(null);
   expect(bundle.world.forkMd).toBe(null);
 
-  // —— 导入：**v1 形状**的副本走应用内的「导入」按钮 ——
-  // 客户端 parseWorldBundle 的版本闸（src/store/slices/world.ts）此刻只认 v1，本轮按约束没动 src/**：
-  // 直接把 v2 包喂给「导入」会被本地挡下（提示「不是有效的世界线导出包」）。所以这里拆两半——
-  // UI 走 v1 副本（钉住「老包仍能被导入」这条不许被顺手收紧），v2 包的导入走真服务端 HTTP（下一步），
-  // 家谱渲染两边都看。客户端闸落地后，这一步可以并回下面那个 v2 包。
-  const v1Bundle = { ...bundle, version: 1, world: { ...bundle.world } };
-  delete v1Bundle.world.forkedFrom;
-  delete v1Bundle.world.forkMd;
-  const v1Path = path.join(outDir, "w2-export-v1.world.json");
-  writeFileSync(v1Path, JSON.stringify(v1Bundle, null, 2));
-
-  // w2 已被占用 → server 落成 w2-2，提示与列表都可见
-  await page.getByTestId("worlds-import-input").setInputFiles(v1Path);
-  await expect(page.getByTestId("worlds-notice")).toContainText("w2-2");
+  // —— 导入：刚导出的包直接走应用内的「导入」按钮（v1.13 起版本闸只要求正整数，v3 包不被本地挡下）——
+  await page.getByTestId("worlds-import-input").setInputFiles(bundlePath);
+  await expect(page.getByTestId("worlds-notice")).toContainText("w2-2"); // w2 已被占用 → server 落成 w2-2
   await expect(page.getByTestId("world-row-w2-2")).toBeVisible();
   await expect(page.getByTestId("world-row-w2-2")).toContainText("回廊之影"); // label 随包迁移
-  // v1 包不带分叉说明：导入侧不许凭血缘凭空造一份 fork.md（否则引擎首个回合会读到一份空指令）
+  // w2 是根世界（forkMd = null）：导入侧不许凭空造一份 fork.md（否则引擎首个回合会读到一份空指令）
   expect(existsSync(path.join(stack.stack.root, "state", "worlds", "w2-2", "fork.md"))).toBe(false);
 
   // —— 两段确认删除副本：⋯ 菜单首点「删除」变确认按钮，二点才发；删除后原件仍在 ——
@@ -153,8 +142,8 @@ test("世界线管理：行内改名→导出→导入出重名副本 w2-2→两
   const trashDir = path.join(stack.stack.root, "state", "trash");
   expect(readdirSync(trashDir).filter((f) => f.endsWith("-w2-2")).length).toBe(1);
 
-  // —— 分叉世界的包：v2 的血缘与 fork.md 随包走 ——（w3 分叉自 w2@1-1，磁盘上有一份 fork.md）
-  // 包从同一个导出端点取（node 侧 HTTP，与浏览器里那个 `<a download>` 打的是同一个路由——下载路径本身
+  // —— 分叉世界的包：血缘与 fork.md 随包走 ——（w3 分叉自 w2@1-1，磁盘上有一份 fork.md）
+  // 包从导出端点取（node 侧 HTTP，与浏览器里那个 `<a download>` 打的是同一个路由——下载路径本身
   // 已由 w2 那一步钉住）。刻意不做第二次浏览器下载：这条断言要证的是「血缘与 fork.md 活过导出→导入，
   // 且家谱把导入回来的分叉线画在父线下面」，那半段只有浏览器能证；再叠一个下载只增加等待面。
   const forkExport = await stack.stack.getJSON("/api/worlds/export?worldId=w3");
@@ -162,16 +151,16 @@ test("世界线管理：行内改名→导出→导入出重名副本 w2-2→两
   expect(forkExport.headers.get("content-disposition")).toBe('attachment; filename="w3.world.json"'); // 下载文件名行为不变
   const forkBundle = forkExport.body as Bundle;
   expect(forkBundle.format).toBe("bunkiten-world");
-  expect(forkBundle.version).toBe(2);
+  expect(forkBundle.version).toBe(3);
   expect(forkBundle.world.worldId).toBe("w3");
   expect(forkBundle.world.forkedFrom).toEqual({ worldId: "w2", nodeId: "1-1" }); // v1 包在这里是 null（= 根）
   expect(forkBundle.world.forkMd).toBe(FORK_MD_W3); // 逐字（含分叉时间那一行）
 
-  // —— 导入 v2 包：走真服务端的 HTTP 面（浏览器侧只负责渲染结果）——
-  // 应用内「导入」按钮走 v2 要等客户端版本闸落地（见上面「导入」段的注释）。
-  const forkImport = await stack.stack.postJSON("/api/worlds", { action: "import", bundle: forkBundle });
-  expect(forkImport.status).toBe(200);
-  expect(forkImport.body.worldId).toBe("w3-2"); // 重名后缀
+  // —— 导入 v3 包（分叉世界）：同样走应用内的「导入」按钮，浏览器自己走完整条路 ——
+  const forkPath = path.join(outDir, "w3-export.world.json");
+  writeFileSync(forkPath, JSON.stringify(forkBundle, null, 2));
+  await page.getByTestId("worlds-import-input").setInputFiles(forkPath);
+  await expect(page.getByTestId("worlds-notice")).toContainText("w3-2"); // 重名后缀
   expect(readFileSync(path.join(stack.stack.root, "state", "worlds", "w3-2", "fork.md"), "utf8")).toBe(FORK_MD_W3); // 原样落盘
 
   // 家谱面：导入回来的 w3-2 仍挂在 w2 下（家谱只认 forkedFrom——v1 包的病灶就是这条线丢了）

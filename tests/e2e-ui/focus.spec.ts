@@ -7,7 +7,7 @@
 //      免去 :focus-visible rect 描边的备选方案）——focused 且 outline 生效即证明选型成立。
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { startUiStack, stopUiStack, type StartedStack } from "./stack";
-import { BOOT_TO_TITLE_MS, handFocusBackToBody } from "./flow";
+import { BOOT_TO_TITLE_MS, handFocusBackToBody, openRailGroup } from "./flow";
 
 /** w1 的三节点小树（进度指针 1-2，方向键可走 1-1↔1-3） */
 function smallTree(): string {
@@ -105,6 +105,7 @@ test("game 屏 Tab：首个焦点是命令轨「设置」，按钮出 :focus-vis
 test("剧情图方向键：SVG 节点 <g> 聚焦，outline 画在 g 上（无需 rect 描边备选）", async () => {
   await openWorlds(page);
   await continueWorld(page);
+  await openRailGroup(page, "图鉴");
   await page.getByTestId("tree").click();
   await expect(page.getByTestId("tree-canvas")).toBeVisible();
 

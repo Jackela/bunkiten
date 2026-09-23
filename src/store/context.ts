@@ -102,7 +102,7 @@ export interface StoreContext {
   applyMarkers(markers: Marker[], dedupe: boolean): void;
   resetTurnState(turnKey: number): void;
   resetRunState(patch: Partial<GameStore>): void;
-  /** 补齐「当前世界已有多少条 turn 快照」的已知值（重掷按钮的可见性判据）：拉一次 /api/history，
+  /** 补齐「当前世界已有多少条 turn 快照」的已知值（重演按钮的可见性判据）：拉一次 /api/history，
    *  仅在 worldId 未变时落库；失败静默（保持 null=未知，按钮退回「展示 + 点击时判定」的兜底路径） */
   refreshTurnSnapshots(): void;
   /** 发「开演。」（跳过剩余项/无清单回退都用它；幂等） */
@@ -170,7 +170,7 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
       return;
     }
     set({ regenQueue: rest, regenPending: `${next.type}|${next.matchName}` });
-    get().send(buildRegenCommand(next.type, next.key));
+    get().send(buildRegenCommand(next.type, next.key, next.note));
   }
 
   /**
@@ -276,7 +276,7 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
       return;
     }
     set({ autoAdvanceDeadline: null });
-    // 走玩家入口（同手点选项）：自动选中的这回合同样是「玩家叙事输入」，要进 lastTurnPrompt 的账
+    // 走玩家入口（同手点选项）：自动选中的这回合同样是「玩家叙事输入」，照常进快照条目的 prompt（可重演）
     get().sendPlayerTurn(first.t);
   }
 
@@ -405,8 +405,7 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
 
   /** 引擎报错/超时：制作中屏按阶段降级，不阻塞整体 */
   function onEngineError(message: string) {
-    // 回合没跑完：在途的玩家输入作废（没成功的回合不许在之后的收尾里定格成「上一回合」）
-    set({ status: `出错：${message}`, engineBusy: false, turnStartAt: null, pendingTurnPrompt: null });
+    set({ status: `出错：${message}`, engineBusy: false, turnStartAt: null });
     clearWatchdog();
     finishRegen(false); // 挂起中的重绘回合没了：未确认记账，解除挂起让按钮恢复并接队列下一条
     if (get().screen === "creation" && get().assembling) {
@@ -462,9 +461,7 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
       pendingResync: null,
       resyncFailed: false,
       resyncing: false,
-      // 重掷的三个记账同理会话内不跨玩法：换世界后「上一回合输入」与排队重发都属于旧世界
-      lastTurnPrompt: null,
-      pendingTurnPrompt: null,
+      // 重演的排队重发同理不跨玩法：换世界后它是旧世界的事（输入的来源是那条世界的快照，见 docs/adr/0023）
       pendingRerollPrompt: null,
       // 快照数同理不跨玩法：新世界从「未知」开始（建新世界由调用方置 0，入场时按需补拉）
       turnSnapshots: null,
@@ -490,7 +487,7 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
   }
 
   /**
-   * 刷新「当前世界有多少条 turn 快照」（重掷按钮的可见性判据）：只有服务端知道磁盘上的快照数，
+   * 刷新「当前世界有多少条 turn 快照」（重演按钮的可见性判据）：只有服务端知道磁盘上的快照数，
    * 客户端按需补拉一次 /api/history（服务端有列表缓存，代价小）。await 期间换世界/重开就丢弃结果。
    * 补拉失败**回落为未知（null）**：已知 0/1 的世界若一直拉不到，按钮会永久藏住一个可能可用的功能——
    * 回落未知后按钮照常展示，点击时由 rerollTurn 的 fetch 再判定；后续回合收尾还会继续重试补拉。

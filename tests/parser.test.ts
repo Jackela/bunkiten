@@ -7,6 +7,7 @@ import {
   BUILD_START,
   ENTER_CREATION,
   PROTOCOL_HEADS,
+  REGEN_NOTE_MAX,
   assetNameMatches,
   buildArtCommand,
   buildCustomOpening,
@@ -294,9 +295,23 @@ describe("世界线指令（v1.5 契约）", () => {
   });
 });
 
-describe("剧情编辑指令（v1.5 剧情图契约）", () => {
+describe("剧情编辑指令（v1.5 剧情图契约；v1.12 起可带节点作用域）", () => {
   it("buildTreeEditCommand：前缀「剧情：」原文，输入首尾空白剥掉", () => {
     expect(buildTreeEditCommand("  在节点 3-1 后加一个雨夜遇袭的节点  ")).toBe("剧情：在节点 3-1 后加一个雨夜遇袭的节点");
+  });
+
+  it("带节点作用域（v1.12）：`剧情：针对节点 <id>：<指令>`；缺省与旧指令逐字一致", () => {
+    expect(buildTreeEditCommand("把这里写得更紧张", "3-2")).toBe("剧情：针对节点 3-2：把这里写得更紧张");
+    expect(buildTreeEditCommand("  加一段追逐  ", "  3-2  ")).toBe("剧情：针对节点 3-2：加一段追逐");
+    // 没给节点（或给了空白）→ 全树范围，与 v1.7 起的旧形态一字不差
+    expect(buildTreeEditCommand("加一个雨夜遇袭的场景", "")).toBe("剧情：加一个雨夜遇袭的场景");
+    expect(buildTreeEditCommand("加一个雨夜遇袭的场景", "   ")).toBe("剧情：加一个雨夜遇袭的场景");
+  });
+
+  it("空指令返回空串（调用方据此不发），换行折空格（协议行不许被劈成两条）", () => {
+    expect(buildTreeEditCommand("", "3-2")).toBe("");
+    expect(buildTreeEditCommand("   \n  ", "3-2")).toBe("");
+    expect(buildTreeEditCommand("写紧张点\n加一段追逐", "3-2")).toBe("剧情：针对节点 3-2：写紧张点 加一段追逐");
   });
 });
 
@@ -465,11 +480,30 @@ describe("章节规划指令（v1.2 章间制作流程契约）", () => {
   });
 });
 
-describe("素材重绘指令（v1.3 画廊契约）", () => {
+describe("素材重绘指令（v1.3 画廊契约；v1.12 起可带玩家要求）", () => {
   it("buildRegenCommand：立绘（含差分）/背景/封面三种指令原文", () => {
     expect(buildRegenCommand("立绘", "薇拉-微笑")).toBe("美术：重绘 立绘 薇拉-微笑");
     expect(buildRegenCommand("背景", "太极殿")).toBe("美术：重绘 背景 太极殿");
     expect(buildRegenCommand("封面", "twilight-throne")).toBe("美术：重绘 封面 twilight-throne");
+  });
+
+  it("带玩家要求：`：` 之后原样带上（v1.12 素材级自然语言重绘）", () => {
+    expect(buildRegenCommand("立绘", "薇拉", "头发改成短发")).toBe("美术：重绘 立绘 薇拉：头发改成短发");
+    expect(buildRegenCommand("背景", "雨夜屋檐", "换成黄昏")).toBe("美术：重绘 背景 雨夜屋檐：换成黄昏");
+    // 要求里的空格与标点原样保留（引擎按原样并进 prompt），只 trim 两端
+    expect(buildRegenCommand("立绘", "薇拉", "  侧面、微笑  ")).toBe("美术：重绘 立绘 薇拉：侧面、微笑");
+  });
+
+  it("要求是**单行**协议的一部分：换行折成空格（否则一条指令会被劈成两条，后续行还会被当成剧情正文）", () => {
+    expect(buildRegenCommand("立绘", "薇拉", "头发改短\n眼睛更亮")).toBe("美术：重绘 立绘 薇拉：头发改短 眼睛更亮");
+    expect(buildRegenCommand("立绘", "薇拉", "换夜景\r\n\r\n加点雨")).toBe("美术：重绘 立绘 薇拉：换夜景 加点雨");
+  });
+
+  it("空白要求 = 盲重绘（与 v1.3 起的旧行为逐字一致）；超长掐到 REGEN_NOTE_MAX", () => {
+    expect(buildRegenCommand("立绘", "薇拉", "")).toBe("美术：重绘 立绘 薇拉");
+    expect(buildRegenCommand("立绘", "薇拉", "   \n  ")).toBe("美术：重绘 立绘 薇拉");
+    const long = buildRegenCommand("立绘", "薇拉", "改".repeat(REGEN_NOTE_MAX + 50));
+    expect(long).toBe(`美术：重绘 立绘 薇拉：${"改".repeat(REGEN_NOTE_MAX)}`);
   });
 
   it("buildArtCommand 直接支持差分清单项（队列按清单原文发送）", () => {

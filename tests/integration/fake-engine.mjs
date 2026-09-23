@@ -35,10 +35,29 @@
 // 默认（不设该 env）一切行为与从前逐字一致。
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { ART_KINDS } from "../../shared/protocol.mjs";
 import { MEDIA_TOOL_CATALOG_NAME } from "../../server/media-mcp.mjs";
+
+// 「登录 / 登出」形态（v1.11 收尾）：GUI 的按钮会让服务端去跑玩家自己的 CLI（grok / codex），
+// 垫片通过 FAKE_ENGINE_AS=grok|codex 告诉我们扮演谁，argv[2] 是 login/logout。行为与真 CLI 同构：
+// 登录写 `~/.<as>/auth.json`（HOME 已被 harness 指到临时目录）、登出删掉它，然后退出——不起 ACP 会话。
+const FAKE_AS = process.env.FAKE_ENGINE_AS || "";
+const authSub = process.argv[2];
+if (FAKE_AS && (authSub === "login" || authSub === "logout")) {
+  const authFile = path.join(os.homedir(), `.${FAKE_AS}`, "auth.json");
+  if (authSub === "login") {
+    fs.mkdirSync(path.dirname(authFile), { recursive: true });
+    fs.writeFileSync(authFile, '{"fake":"login"}\n', { mode: 0o600 });
+    console.log(`[fake-${FAKE_AS}] login: 已写入 ${authFile}`);
+  } else {
+    fs.rmSync(authFile, { force: true });
+    console.log(`[fake-${FAKE_AS}] logout: 已删除 ${authFile}`);
+  }
+  process.exit(0);
+}
 
 const probeFile = process.env.FAKE_ENGINE_PROBE || "";
 // FAKE_ENGINE_CALL_MCP=1：把「美术：重绘」回合真的走一遍 MCP tools/call（mock 出图链路）。
@@ -64,6 +83,10 @@ if (probeFile) {
           XAI_API_KEY: process.env.XAI_API_KEY ?? null,
           GROK_DEFAULT_MODEL: process.env.GROK_DEFAULT_MODEL ?? null,
           GROK_CONFIG: process.env.GROK_CONFIG ?? null,
+          // v1.11：codex 后端的注入面（engine=codex 的栈断言这三个；grok 栈里它们只可能是外面继承来的）
+          CODEX_HOME: process.env.CODEX_HOME ?? null,
+          INITIAL_AGENT_MODE: process.env.INITIAL_AGENT_MODE ?? null,
+          NO_BROWSER: process.env.NO_BROWSER ?? null,
         },
       }) + "\n",
     );
@@ -351,23 +374,28 @@ function playTurn(ops, id) {
 function handle(msg) {
   switch (msg.method) {
     case "initialize":
-      return reply(msg.id, { protocolVersion: 1 });
+      // 能力位与两个真后端一致（grok CLI 与 codex-acp 都宣告 loadSession=true；实测见 docs/adr/0022）——
+      // 客户端据此才会走「先 session/load、被拒再降级 session/new」这条确定路径。
+      return reply(msg.id, { protocolVersion: 1, agentCapabilities: { loadSession: true } });
     case "session/new": {
       sessionCwd = msg.params?.cwd ?? sessionCwd; // 会话 cwd = 引擎 GAME_ROOT：推 outRelPath 时用它
-      probe({ kind: "session", method: "session/new", mcpServers: msg.params?.mcpServers ?? null });
+      probe({ kind: "session", method: "session/new", mcpServers: msg.params?.mcpServers ?? null, meta: msg.params?._meta ?? null });
       if (SPAWN_MCP) for (const s of msg.params?.mcpServers ?? []) mcpReady = spawnAndProbeMcp(s);
       return reply(msg.id, { sessionId: "fake-session" });
     }
     case "session/load":
       // 固定拒绝：让 server 走「降级 session/new」这条确定路径（CONTRACTS §8）
       sessionCwd = msg.params?.cwd ?? sessionCwd;
-      probe({ kind: "session", method: "session/load", mcpServers: msg.params?.mcpServers ?? null });
+      probe({ kind: "session", method: "session/load", mcpServers: msg.params?.mcpServers ?? null, meta: msg.params?._meta ?? null });
       if (SPAWN_MCP) for (const s of msg.params?.mcpServers ?? []) mcpReady = spawnAndProbeMcp(s);
       return fail(msg.id, -32000, "no session");
     case "session/set_config_option":
       return reply(msg.id, {});
     case "session/prompt": {
       const text = msg.params?.prompt?.[0]?.text ?? "";
+      // 探针记一条 prompt 原文（v1.12）：e2e 用它验「玩家在屏上写的那句话真的原样到了引擎」——
+      // 例如画廊里对单张素材写的自然语言要求（`美术：重绘 立绘 薇拉：头发改成短发`）。
+      probe({ kind: "prompt", text: String(text) });
       // mock 出图链路（FAKE_ENGINE_CALL_MCP=1）：含「美术：重绘」的回合走真实 tools/call（异步，独立收尾）。
       // .catch 是最后兜底：万一它异步抛（正常路径不会），也要保证 session/prompt 一定有应答，别把回合挂死。
       if (CALL_MCP && text.includes("美术：重绘")) {

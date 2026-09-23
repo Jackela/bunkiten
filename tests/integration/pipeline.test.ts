@@ -368,7 +368,7 @@ describe("集成：回合原文日志 + 质量守卫（v1.7）", () => {
     expect(stack.stdout().includes("自动追问一次")).toBe(false);
   }, 15000);
 
-  it("⑫ 缺 **行动** 的正戏回合：同一 busy 窗口内自动追问一次补齐回合尾，log 记补全后全文；快照去重时 log 照写", async () => {
+  it("⑫ 缺 **行动** 的正戏回合：同一 busy 窗口内自动追问一次补齐回合尾，log 记补全后全文；快照与日志各自独立成群", async () => {
     const from = stack.events.length;
     const r = await stack.prompt("自由回合：凑近看她。");
     expect(r.status).toBe(200);
@@ -392,9 +392,11 @@ describe("集成：回合原文日志 + 质量守卫（v1.7）", () => {
     expect(entry.text).toContain("**行动**");
     expect(entry.text).toContain("递伞");
 
-    // 快照侧：三文件没变 → 去重跳过（history 仍只有 0001），log 照写（seq 独立递增到 2）
+    // 快照侧：三文件没变、但输入是新的 → 仍落一条（v1.13 去重是 files+prompt 全等，files 相同 ≠ 同一幕）；
+    // 与 log 各自独立递增（log 0002 记原文、快照 0002 记输入 + 三文件）
     const histDir = path.join(stack.root, "state", "worlds", "w1", "history");
-    expect(readdirSync(histDir)).toEqual(["0001.json"]);
+    expect(readdirSync(histDir)).toEqual(["0001.json", "0002.json"]);
+    expect(JSON.parse(readFileSync(path.join(histDir, "0002.json"), "utf8")).prompt).toBe("自由回合：凑近看她。");
   }, 15000);
 
   it("⑬ 指令回合（美术：…待命）不写 log；追问守卫也不触发", async () => {

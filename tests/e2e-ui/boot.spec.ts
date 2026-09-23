@@ -10,7 +10,7 @@
 // BOOT_FETCH_TIMEOUT_MS 的启动链上限，挂过点也会进同一个「连不上叙事服务。」错误态。所以那条用例
 // 必须把「502 分支」钉死（放行前仍是 checking、且断言 502 已落地才看错误态），否则它会悄悄
 // 退化成「超时 → 错误态」还在装绿。
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { BOOT_FETCH_TIMEOUT_MS } from "../../src/lib/acp";
@@ -63,6 +63,61 @@ test("未登录但已配好自备 key：不必终端登录，直接进标题屏"
     await page.goto(stack.pageUrl);
     await expect(page.getByTestId("title-card-center")).toBeVisible();
     await expect(page.getByTestId("boot-login")).toHaveCount(0);
+  } finally {
+    await stopUiStack(page, stack);
+  }
+});
+
+test("未登录（Codex 后端，v1.11）：指引写 `codex login`、设置入口换成「打开设置」；补上登录态后重试进标题屏", async ({ browser }) => {
+  const { stack, page } = await startUiStack(browser, {
+    presets: ["demo"],
+    turns: [],
+    codexAuth: "missing",
+    credentials: {
+      version: 1,
+      engine: "codex",
+      llm: { mode: "session", provider: "openai", baseUrl: "", apiKey: "", model: "" },
+      image: { mode: "off", provider: "openai", baseUrl: "", apiKey: "", model: "", size: "" },
+    },
+  });
+  try {
+    await page.goto(stack.pageUrl);
+    await expect(page.getByText("还没连上叙事引擎。")).toBeVisible();
+    // 文案按引擎分支：codex 走 `codex login`，且因为不支持自备密钥，措辞是「打开设置」而不是「填自备密钥」
+    await expect(page.getByText("codex login")).toBeVisible();
+    await expect(page.getByTestId("boot-credentials")).toHaveText(/打开设置/);
+    await expect(page.getByTestId("boot-retry")).toBeVisible();
+
+    // 模拟玩家在终端里 `codex login` 完成：server 的 /api/auth 看的是 ~/.codex/auth.json（登录态复用的来源）
+    writeFileSync(path.join(stack.stack.home, ".codex", "auth.json"), "{}\n");
+    await page.getByTestId("boot-retry").click();
+    await expect(page.getByTestId("title-card-center")).toBeVisible();
+  } finally {
+    await stopUiStack(page, stack);
+  }
+});
+
+test("未登录（Codex）：一键登录把 CLI 登录流程拉起来 → 自动进标题屏（不必再点一次）", async ({ browser }) => {
+  const { stack, page } = await startUiStack(browser, {
+    presets: ["demo"],
+    turns: [],
+    codexAuth: "missing",
+    credentials: {
+      version: 1,
+      engine: "codex",
+      llm: { mode: "session", provider: "openai", baseUrl: "", apiKey: "", model: "" },
+      image: { mode: "off", provider: "openai", baseUrl: "", apiKey: "", model: "", size: "" },
+    },
+  });
+  try {
+    await page.goto(stack.pageUrl);
+    await expect(page.getByTestId("boot-login")).toBeVisible();
+    // 点「登录 Codex」→ 服务端 spawn（垫片扮演的）CLI → 它写下 ~/.codex/auth.json → 客户端轮询到就自动继续
+    await page.getByTestId("boot-login-start").click();
+    await expect(page.getByTestId("boot-login-waiting")).toBeVisible();
+    await expect(page.getByTestId("title-card-center")).toBeVisible({ timeout: 20_000 });
+    // 登录产物在**玩家自己的** home 里（游戏侧只有那份隔离用的副本）
+    expect(existsSync(path.join(stack.stack.home, ".codex", "auth.json"))).toBe(true);
   } finally {
     await stopUiStack(page, stack);
   }

@@ -7,15 +7,17 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { AUDIO_MIME, AUDIO_REL_RE } from "../shared/protocol.mjs";
+import { engineById } from "../shared/engines.mjs";
 import { GAME_ROOT, BASE_PORT, WORLDS_ROOT } from "./config.mjs";
 import { isCrossSiteRequest, readBodyText, MIME, resolveAppDist } from "./http-util.mjs";
 import { PRESET_ID_RE, LEGACY_ASSET_RE, ASSET_DELETE_FILE_RE, presetIdFromPath, legacyAssetCandidates, resolvePersistPreset } from "./assets.mjs";
 import { parseFrontmatter, scanPresets, assetTargetFile, buildPresetBundle, importPresetBundle, PRESET_IMPORT_MAX_BYTES } from "./presets.mjs";
 import { scanPresetAudio } from "./audio.mjs";
 import { readCredentials, llmReady } from "./credentials.mjs";
+import { engineFor } from "./engines.mjs";
 import { WORLD_ID_RE, TREE_FILE, readSnapshot, readSnapshots } from "./snapshots.mjs";
 import {
-  moveToTrash, readWorldsIndex, listWorlds, createWorld, forkWorld, restoreWorld, updateWorld,
+  moveToTrash, readWorldsIndex, listWorlds, createWorld, forkWorld, restoreWorld, updateWorld, labelSnapshot,
   exportWorld, importWorld, deleteWorld, stateViewFor,
 } from "./worlds.mjs";
 
@@ -31,11 +33,15 @@ import {
  * @property {string} currentPresetId 嗅探出的当前剧本 id
  * @property {string|null} sessionId 当前 ACP 会话 id
  * @property {() => object} credentialsView 引擎凭据的脱敏视图（**永不含明文 key**）
- * @property {(patch: {llm?: Record<string, unknown>, image?: Record<string, unknown>}, clear: string[]) => {ok: boolean, error?: string, view?: object}} updateCredentials
+ * @property {(patch: {engine?: string, llm?: Record<string, unknown>, image?: Record<string, unknown>}, clear: string[]) => {ok: boolean, error?: string, view?: object}} updateCredentials
  *   局部更新凭据（校验 → 合并 → 原子落盘；空串=清该字段，clear 里的组整组回默认）
  * @property {(target: string) => Promise<{ok: boolean, status: number, ms: number, error?: string, detail?: string}>} testCredentials
  *   真连一次（LLM 走 /models 或最小 completion；图片走一次最小生成）
- * @property {() => Promise<{ok: boolean, error?: string}>} restartEngine 优雅重启引擎会话（保存 key 后一键生效）
+ * @property {() => Promise<{ok: boolean, error?: string}>} restartEngine 优雅重启引擎会话（保存 key / 切引擎后一键生效）
+ * @property {() => Promise<{ok: boolean, error?: string, hint?: string}>} startEngineLogin
+ *   把玩家自己的 CLI 登录流程拉起来（回执式；结果靠客户端轮询 `/api/auth`，见 server/engine-auth.mjs）
+ * @property {() => Promise<{ok: boolean, error?: string}>} logoutEngine
+ *   执行 CLI 自己的登出（**全局动作**：玩家终端里那份也会没；GUI 已先确认）
  * @property {() => {providers: object[], source: string, fetchedAt: string|null}} providersView 服务目录候选（设置屏下拉数据；
  *   source 是本条 providers 的来源：remote/cache/bundled，见 server/providers-catalog.mjs 的 loadCatalog）
  */
@@ -341,15 +347,19 @@ export function createRequestHandler(ctx) {
         res.end(JSON.stringify({ error: "缺少或非法的 worldId 参数" }));
         return;
       }
+      // 玩家给存档点起的名字（v1.12）住在索引的世界条目上，读的时候并进快照元信息——
+      // 快照文件本身保持 append-only 的引擎真相，名字只是展示层（与世界的 label/note 同层）
+      const snapLabels = readWorldsIndex(WORLDS_ROOT).find((e) => e.worldId === worldId)?.snapshotLabels ?? {};
       const seqParam = url.searchParams.get("seq");
       if (seqParam != null && seqParam !== "") {
         const one = readSnapshot(worldId, seqParam, WORLDS_ROOT);
         res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ worldId, snapshots: one ? [one] : [] }));
+        res.end(JSON.stringify({ worldId, snapshots: one ? [{ ...one, label: snapLabels[String(one.seq)] ?? "" }] : [] }));
         return;
       }
       const snapshots = readSnapshots(worldId, WORLDS_ROOT).map((s) => ({
         seq: s.seq, at: s.at, kind: s.kind, nodeId: s.nodeId, chapterNo: s.chapterNo,
+        label: snapLabels[String(s.seq)] ?? "",
       }));
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       res.end(JSON.stringify({ worldId, snapshots }));
@@ -411,6 +421,9 @@ export function createRequestHandler(ctx) {
           if ("label" in payload) patch.label = payload.label;
           if ("note" in payload) patch.note = payload.note;
           out = WORLD_ID_RE.test(worldId) ? updateWorld(WORLDS_ROOT, worldId, patch) : { error: "参数不合法" };
+        } else if (action === "labelSnapshot") {
+          // 给存档点起名（v1.12）：名字落在索引的世界条目上（snapshotLabels），不碰 append-only 的快照文件
+          out = labelSnapshot(WORLDS_ROOT, String(payload.worldId || ""), payload.seq, payload.label);
         } else if (action === "import") {
           out = importWorld(WORLDS_ROOT, payload.bundle);
         } else if (action === "delete") {
@@ -465,10 +478,17 @@ export function createRequestHandler(ctx) {
     }
 
     if (req.method === "GET" && url.pathname === "/api/auth") {
-      const loggedIn = fs.existsSync(path.join(os.homedir(), ".grok", "auth.json"));
-      // hasCredentials（v1.10）：LLM 侧配全了自备 key 时，boot 屏不必再要求终端登录（第三个态）
-      const hasCredentials = llmReady(readCredentials());
-      sendJSON(res, 200, { loggedIn, hasCredentials });
+      const creds = readCredentials();
+      const entry = engineById(creds.engine);
+      // 登录态探测按引擎（v1.11，docs/adr/0022）：grok 看 `~/.grok/auth.json`；codex 看玩家自己的
+      // `~/.codex/auth.json`——那正是「沿用终端登录」复用的来源（server/engines.mjs 的 loginFile）。
+      const loggedIn = fs.existsSync(engineFor(creds.engine).loginFile(os.homedir()));
+      // hasCredentials（v1.10/v1.11）：**该引擎支持**自备 key 且 LLM 侧配全时，boot 屏不必再要求终端登录
+      const hasCredentials = entry?.byok === true && llmReady(creds);
+      // canLogin（v1.11 收尾）：这个引擎的登录入口在不在（grok CLI 在不在 PATH / 随包 codex 在不在）——
+      // 启动屏与设置屏据此禁用按钮并给一句人话，而不是点了才报错
+      const canLogin = engineFor(creds.engine).authAvailable({ home: os.homedir() });
+      sendJSON(res, 200, { loggedIn, hasCredentials, engine: creds.engine, canLogin });
       return;
     }
 
@@ -490,11 +510,12 @@ export function createRequestHandler(ctx) {
     }
     if (req.method === "POST" && url.pathname === "/api/credentials") {
       readBodyText(req, res, (body) => {
-        // JSON.parse 边界：同 /api/presets，字段在 updateCredentials 里逐个校验（未知字段/非法值 → 400）
+        // JSON.parse 边界：同 /api/presets，字段在 updateCredentials 里逐个校验（未知字段/非法值 → 400）。
+        // engine（v1.11）是顶层标量，与两组字段同一批进校验/合并（docs/adr/0022）。
         let payload = /** @type {any} */ ({});
         try { payload = JSON.parse(body) || {}; } catch {}
         const clear = Array.isArray(payload.clear) ? /** @type {unknown[]} */ (payload.clear).map((c) => String(c)) : [];
-        const out = ctx.updateCredentials({ llm: payload.llm, image: payload.image }, clear);
+        const out = ctx.updateCredentials({ engine: payload.engine, llm: payload.llm, image: payload.image }, clear);
         if (!out.ok) { sendJSON(res, 400, { ok: false, error: out.error }); return; }
         sendJSON(res, 200, { ok: true, ...out.view });
       });
@@ -516,6 +537,23 @@ export function createRequestHandler(ctx) {
     if (req.method === "POST" && url.pathname === "/api/engine/restart") {
       readBodyText(req, res, async () => {
         const out = await ctx.restartEngine();
+        sendJSON(res, out.ok ? 200 : 409, out);
+      });
+      return;
+    }
+    // 登录 / 登出（v1.11 收尾，docs/adr/0022）：把**玩家自己**的 CLI 登录流程拉起来 / 把它清掉。
+    // 登录是长事务（开浏览器等回调）——端点立刻回执，客户端轮询 /api/auth 等结果；
+    // 登出是全局动作（终端里那份也会没），GUI 已经先确认过，服务端只负责执行。
+    if (req.method === "POST" && url.pathname === "/api/engine/login") {
+      readBodyText(req, res, async () => {
+        const out = await ctx.startEngineLogin();
+        sendJSON(res, out.ok ? 200 : 409, out);
+      });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/engine/logout") {
+      readBodyText(req, res, async () => {
+        const out = await ctx.logoutEngine();
         sendJSON(res, out.ok ? 200 : 409, out);
       });
       return;

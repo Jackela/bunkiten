@@ -4,6 +4,8 @@
 // 秘密默认折叠（aria-expanded=false 且正文不可见）→ 点击展开可见原文。
 import { expect, test, type Page } from "@playwright/test";
 import { startUiStack, stopUiStack, type StartedStack } from "./stack";
+import { openRailGroup } from "./flow";
+
 
 /** w1 的完整 state.md（SKILL「状态文件格式」样例形态；角色面板 /api/state 的数据源） */
 function fullStateMd(): string {
@@ -68,7 +70,8 @@ test("角色面板：开抽屉渲染角色卡与好感度，秘密默认折叠�
   await page.getByTestId("world-continue-w1").click();
   await expect(page.getByTestId("status")).toHaveText("就绪");
 
-  // 命令轨「角色」开面板（data-testid=characters）
+  // 命令轨「图鉴 ▾ → 角色」开面板（v1.12：10 项收成 5 个顶层，角色在「图鉴」菜单里）
+  await openRailGroup(page, "图鉴");
   await page.getByTestId("characters").click();
   const panel = page.getByTestId("characters-panel");
   await expect(panel).toBeVisible();

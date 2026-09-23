@@ -26,7 +26,7 @@ function getSpeechRecognition(): SpeechRecognitionCtor | undefined {
 
 /** 自由输入：文本框 + 语音（Chrome，zh-CN，说完自动发送，行为对齐旧版 #inputrow） */
 export default function FreeInput() {
-  // 玩家叙事入口：走 sendPlayerTurn 记录在途输入（重掷「重发同一输入」的数据源），不裸调 send
+  // 玩家叙事入口：走 sendPlayerTurn（服务端把这次输入随快照条目落盘，重演时可原样重发），不裸调 send
   const sendPlayerTurn = useGameStore((s) => s.sendPlayerTurn);
   const status = useGameStore((s) => s.status);
   const [value, setValue] = useState("");
