@@ -41,7 +41,7 @@ async function createWindow() {
   const win = new BrowserWindow({
     width: 1440,
     height: 900,
-    minWidth: 960,
+    minWidth: 1024,
     minHeight: 640,
     backgroundColor: "#07080c",
     title: "剧本",

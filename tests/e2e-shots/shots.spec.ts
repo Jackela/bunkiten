@@ -12,7 +12,7 @@
 // 为什么不用 tests/e2e-ui 的 flow.ts / stack.ts：那是 CI 门禁那套 spec 的内部样板（改它要连带看
 // 21 个 spec），截图是作者按需跑的工具，刻意各自独立；共用的只有 tests/helpers/fake-stack.mjs 这个
 // 「起栈」入口本身。
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, expect, type Page } from "@playwright/test";
@@ -174,6 +174,20 @@ test("六张界面图：标题屏 / 世界线屏 / 家谱 / 游戏屏 / 剧情�
     turns,
   });
 
+  // 世界线行的「相对时间」= max(索引里的 lastPlayed, 三文件 mtime)（`server/worlds.mjs` 的 `listWorlds`）——
+  // seed 的文件是刚写的，于是四条世界线全显示「刚刚」，而且**每次重跑产物都会漂**（今天「刚刚」、明天「1 天前」）。
+  // 这里按固定偏移把 mtime 回拨（相对本次跑的时刻算）：截图既稳定，画面里也真的出现几种不同的时间。
+  const harness = stack.stack;
+  const backdate = (worldId: string, hoursAgo: number) => {
+    const dir = path.join(harness.root, "state", "worlds", worldId);
+    const t = new Date(Date.now() - hoursAgo * HOUR);
+    for (const f of ["state.md", "summary.md", "story-tree.md"]) utimesSync(path.join(dir, f), t, t);
+  };
+  backdate("rift-mark-1", 1);
+  backdate("rift-mark-2", 26);
+  backdate("rift-mark-3", 3 * 24);
+  backdate("rift-mark-4", 5 * 24);
+
   const page = await (
     await browser.newContext({
       viewport: { width: 1440, height: 900 },
@@ -181,11 +195,33 @@ test("六张界面图：标题屏 / 世界线屏 / 家谱 / 游戏屏 / 剧情�
       reducedMotion: "reduce",
     })
   ).newPage();
-  const shot = (name: string) =>
-    page.screenshot({ path: path.join(OUT, `${name}.jpg`), type: "jpeg", quality: 82 });
+  /**
+   * 拍一张：**先等到画面真的不动**再落盘。
+   * 为什么要等：CSS 动画/过渡已由下面那条注入冻住（母题漂移、脉冲、剪影呼吸都是持续动画），
+   * WAAPI 与 CSS 动画另由 `animations:"disabled"` 快进到终态；但 framer 的**淡入是 JS 驱动**且在
+   * reduce 下刻意保留（`MotionConfig reducedMotion="user"` 只瞬时化位移）——不等就会出现「同一屏
+   * 两次跑字节不同、大小却一样」那种最难查的漂移（实测：静止前连拍三张三个哈希）。
+   * 判据是**连拍两张逐字节相同**（不是睡固定时长）：屏一静止等待就结束，最多等 ~3s 兜底。
+   */
+  const shot = async (name: string) => {
+    let frame = await page.screenshot({ type: "jpeg", quality: 82, animations: "disabled" });
+    for (let i = 0; i < 20; i++) {
+      await page.waitForTimeout(150);
+      const next = await page.screenshot({ type: "jpeg", quality: 82, animations: "disabled" });
+      if (frame.equals(next)) break;
+      frame = next;
+    }
+    writeFileSync(path.join(OUT, `${name}.jpg`), frame);
+  };
 
   try {
     await page.goto(stack.pageUrl);
+    // 冻住 CSS 动画与过渡：母题层（漂移/上浮）、脉冲光标、剪影呼吸这些是**持续**动画，
+    // 不冻的话每次截图都停在不同帧上（实测两次跑六个文件五个不同）。JS 驱动的动效另由
+    // reducedMotion=reduce 处理（位移瞬时化），淡入留给下面的 shot() 等。
+    await page.addStyleTag({
+      content: "*,*::before,*::after{animation:none !important;transition:none !important}",
+    });
 
     // ① 标题屏：卡带轮播（左手边那张是 twilight-throne 的半张卡，右边被中心卡压着）
     await expect(page.getByTestId("title-card-center")).toBeVisible({ timeout: 30_000 });

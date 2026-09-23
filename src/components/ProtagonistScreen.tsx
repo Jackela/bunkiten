@@ -28,9 +28,12 @@ function AnswerChips({ values }: { values: string[] }) {
 
 /**
  * 捏人屏：protagonist_card 逐问选 chip，确认后选择开局入口。
- * 版式（v1.8）：ShellPage 宽栏 + ≥xl 右栏——右栏 = 「主角卡」活体摘要（逐问作答 chip，未答「待定」）
- * 与两个开局入口（右栏即动作归宿；<xl 时随 ShellPage 顺序落到问题之后）；正文列只放
- * 「快速开局」开关与逐问 chip 区，收在 46rem 内不铺满宽栏。字号一律取 global.css 的字号阶梯档位。
+ * 版式（v1.8；v1.13 改窄屏动作落点）：ShellPage 宽栏 + ≥xl 右栏——右栏 = 「主角卡」活体摘要（逐问作答 chip，
+ * 未答「待定」）与两个开局入口；正文列只放「快速开局」开关与逐问 chip 区，收在 46rem 内不铺满宽栏。
+ * **<xl（含合法的 1024–1279 窗口）时右栏会落到正文之后**，两个开局入口若留在那里就要滚过全部问题才够得着——
+ * 所以这组动作在 <xl 走**固定底栏**（贴视口底，`xl:static` 回到右栏原位）：同一个 DOM、同一对 testid，
+ * 只是落点跟着断点走；滚动容器补底部内边距（见本组件 ScreenShell 的 pb-*），页脚不会被底栏盖住。
+ * 字号一律取 global.css 的字号阶梯档位。
  */
 export default function ProtagonistScreen() {
   const selected = useGameStore((s) => s.selected);
@@ -77,7 +80,9 @@ export default function ProtagonistScreen() {
         </dl>
       )}
 
-      <div className="mt-5 flex flex-col gap-2.5 border-t border-white/10 pt-5">
+      {/* 动作落点跟断点走：<xl = 固定底栏（右栏那时已落到正文之后，留给它就够不着）；
+          ≥xl = 右栏内常规块（v1.8 原样）。base 的 fixed 只改定位，不改 DOM 结构。 */}
+      <div className="fixed inset-x-0 bottom-0 z-20 flex flex-col gap-2.5 border-t border-white/10 bg-panel-strong px-6 py-4 xl:static xl:inset-x-auto xl:bottom-auto xl:mt-5 xl:bg-transparent xl:px-0 xl:pb-0 xl:pt-5">
         <button
           type="button"
           data-testid="protagonist-start"
@@ -101,7 +106,7 @@ export default function ProtagonistScreen() {
   );
 
   return (
-    <ScreenShell className="overflow-y-auto shell-backdrop">
+    <ScreenShell className="overflow-y-auto shell-backdrop pb-28 xl:pb-0">
       <div data-testid="protagonist-screen" className="min-h-full">
         <ShellPage
           eyebrow={selected.genre}
