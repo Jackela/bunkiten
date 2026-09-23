@@ -637,7 +637,7 @@ presets/<剧本 id>/audio/音效-门响.wav       # 一次性音效
 
 **Windows 上的 `.cmd`（npm 全局装的 grok）**：`child_process.spawn` 自 Node 18.20 / 20.12.2 / 21.7.3 起（CVE-2024-27980 的加固）对 `.cmd`/`.bat` 在 `shell: false` 下**直接抛 `EINVAL`**；而 `resolveOnPath` 会如实把 `grok.cmd` 解析出来（那正是它存在的理由——裸名 spawn 在 Windows 上不补 `.cmd`）。所以描述符给出的 spawn 面统一经 `server/engines.mjs` 的 `windowsSafeSpawn()` 收口：`.cmd`/`.bat` 换成「整条命令行 + `shell: true`」，可执行文件与含空格的参数由我们自己加引号（`shell: true` 时 Node 把 `cmd + args` 直接拼成一条命令行、**不做**逐参引号），其余情形（`.exe`、非 Windows）逐字返回。同一收口也盖 `authCmd`（登录/登出）。**这条是 `packaged-win` job 首次真跑时抓到的**：Windows 上引擎根本起不来 → 启动屏永远等不到标题屏。
 
-**测试/实验旋钮 `BUNKITEN_HOME`**（`server/config.mjs` 的 `gameHome()`）：显式给定即整体替换 `os.homedir()`——凭据、登录态探测、服务目录缓存、会话图片根全跟着走。打包态冒烟要把 home 指到临时目录，而 Windows 上 `os.homedir()` 读的是 `USERPROFILE`、改那个键会连 Chromium 一起拖下水（实测打包态启动后即崩 `0x80000003`），所以测试侧只动这一个变量（`HOME` 仍留给 POSIX 工具链）；不设时行为一字不变。
+**测试/实验旋钮 `BUNKITEN_HOME`**（`server/config.mjs` 的 `gameHome()`）：显式给定即整体替换 `os.homedir()`——凭据、登录态探测、服务目录缓存、会话图片根全跟着走；`electron/main.js` 的 PATH 前缀（`<home>/.grok/bin` 等，打包态 GUI 找不到 shell PATH 时的兜底）同样按它算。打包态冒烟要把 home 指到临时目录，而 Windows 上 `os.homedir()` 读的是 `USERPROFILE`、改那个键会连 Chromium 一起拖下水（实测打包态启动后即崩 `0x80000003`），所以测试侧只动这一个变量（`HOME` 仍留给 POSIX 工具链）；不设时行为一字不变。
 
 ### 选择与回落
 
