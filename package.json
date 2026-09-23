@@ -32,10 +32,10 @@
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test -c playwright.ui.config.ts",
     "test:e2e:packaged": "playwright test -c playwright.electron.config.ts",
-    "dist:win": "npm run build && node scripts/stage-codex-acp.mjs --arch=x64 && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win --x64 --publish never",
+    "dist:win": "npm run build && node scripts/stage-codex-acp.mjs --arch=x64 && electron-builder --win --x64 --publish never",
     "dist:mac": "npm run build && node scripts/stage-codex-acp.mjs --arch=arm64 && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --arm64 --publish never",
     "dist:mac:dir": "npm run build && node scripts/stage-codex-acp.mjs --arch=arm64 && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --arm64 --dir --publish never",
-    "dist:win:dir": "npm run build && node scripts/stage-codex-acp.mjs --arch=x64 && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win --x64 --dir --publish never"
+    "dist:win:dir": "npm run build && node scripts/stage-codex-acp.mjs --arch=x64 && electron-builder --win --x64 --dir --publish never"
   },
   "dependencies": {
     "@radix-ui/react-dropdown-menu": "^2.1.24",

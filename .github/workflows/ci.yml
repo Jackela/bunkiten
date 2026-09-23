@@ -74,7 +74,10 @@ jobs:
       - name: Install
         run: npm ci
 
-      # --dir 产物（release/win-unpacked/Bunkiten.exe）：不签名也不用 NSIS，跑冒烟足够了
+      # --dir 产物（release/win-unpacked/Bunkiten.exe）：不签名也不用 NSIS，跑冒烟足够了。
+      # 纪律：`dist:win*` 这两条 npm script 必须保持**跨 shell**——Windows 的 cmd/pwsh 不认 POSIX 的
+      # 内联环境变量前缀（`VAR=value cmd`），mac 专属的 `CSC_IDENTITY_AUTO_DISCOVERY=false` 只留在
+      # dist:mac* 里（Windows 上本就没有证书自动发现这条路）。这条 job 是它第一次被真跑时抓到的。
       - name: Packaged dir build（stage-codex-acp --arch=x64 + electron-builder --win --dir）
         run: npm run dist:win:dir
 
