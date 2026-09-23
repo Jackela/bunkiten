@@ -38,7 +38,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
-import { findPackagedApp, packagedSkipHint } from "../helpers/packaged-app.mjs";
+import { findPackagedApp, killTree, packagedSkipHint, rmTemp } from "../helpers/packaged-app.mjs";
 import { maskKey, normalizeCredentials, writeCredentials } from "../../server/credentials.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -123,12 +123,8 @@ async function closeApp(app: ElectronApplication): Promise<void> {
     new Promise<boolean>((r) => setTimeout(() => r(false), 15_000)),
   ]);
   if (!closed) {
-    try {
-      const pid = app.process().pid;
-      if (pid) process.kill(pid, "SIGKILL");
-    } catch {
-      /* 已经退了 */
-    }
+    // 杀整棵进程树（Windows 上只 kill 主进程会留下握管道的子进程，worker teardown 会一直等）
+    killTree(app.process());
   }
 }
 
@@ -344,6 +340,6 @@ test("打包态真出图：真 grok CLI + 真图片服务，画廊重绘落一�
         }
       }
     }
-    rmSync(tmp, { recursive: true, force: true });
+    rmTemp(tmp);
   }
 });

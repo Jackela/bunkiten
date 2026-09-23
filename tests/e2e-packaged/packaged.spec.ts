@@ -17,7 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { _electron as electron, expect, test, type ElectronApplication } from "@playwright/test";
-import { findPackagedApp, packagedSkipHint, writeCliShim } from "../helpers/packaged-app.mjs";
+import { findPackagedApp, homeEnv, killTree, packagedSkipHint, rmTemp, waitForExit, writeCliShim } from "../helpers/packaged-app.mjs";
 import { startMockImageServer } from "../helpers/mock-image-server.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -44,48 +44,8 @@ async function closeApp(app: ElectronApplication): Promise<void> {
     new Promise<boolean>((r) => setTimeout(() => r(false), 15_000)),
   ]);
   if (!closed) {
-    try {
-      const pid = app.process().pid;
-      if (pid) process.kill(pid, "SIGKILL");
-    } catch {
-      /* 已经退了 */
-    }
+    killTree(app.process());
   }
-}
-
-/**
- * 等子进程真的退出（Windows 上文件锁跟着进程走：KILL 之后还要等一拍，临时目录才删得掉）。
- * 超时就交给 rmTemp 的重试兜底，不在这里抛。
- * @param {ChildProcess | null} proc 目标进程 @param {number} [timeoutMs] 上限
- */
-async function waitForExit(proc: ChildProcess | null, timeoutMs = 5000): Promise<void> {
-  if (!proc || proc.exitCode !== null || proc.signalCode !== null) return;
-  await Promise.race([
-    new Promise<void>((r) => proc!.once("exit", () => r())),
-    new Promise<void>((r) => setTimeout(r, timeoutMs)),
-  ]);
-}
-
-/** 删临时目录：Windows 上进程刚退时文件锁可能还没放开——带重试（recursive 下 maxRetries 生效），清不掉就留给系统 */
-function rmTemp(dir: string): void {
-  try {
-    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
-  } catch {
-    /* 已经在系统临时目录里，删不掉不影响结论 */
-  }
-}
-
-/**
- * 临时 HOME 的环境变量（跨平台）：
- * - `BUNKITEN_HOME` 是**我们自己的旋钮**（`server/config.mjs` 的 `gameHome()`）——acp-server 的凭据、
- *   登录态探测、目录缓存全跟着它走，Windows 上也生效（服务端侧唯一需要的那一个）；
- * - `HOME` 给 POSIX 工具链（node 之外的子进程）用；
- * - **刻意不动 `USERPROFILE`**：Windows 的 `os.homedir()` 读它，但 Chromium 也读——改它会让打包态应用
- *   在启动后立刻崩（实测 exitCode 0x80000003），所以这条路上只动我们自己的变量。
- * @param {string} home 临时主目录 @returns {Record<string, string>} 追加进子进程 env 的键值
- */
-function homeEnv(home: string): Record<string, string> {
-  return { HOME: home, BUNKITEN_HOME: home };
 }
 
 test("打包态：codex-acp 资源树就位，且打包态可执行文件（ELECTRON_RUN_AS_NODE）能把它跑出 initialize", async () => {
@@ -126,7 +86,7 @@ test("打包态：codex-acp 资源树就位，且打包态可执行文件（ELEC
       proc.stderr.on("data", (d) => (stderr += d.toString()));
       proc.on("error", (e) => resolve({ ok: false, detail: `spawn 失败：${e.message}` }));
       const timer = setTimeout(() => {
-        try { proc.kill("SIGKILL"); } catch {}
+        killTree(proc);
         resolve({ ok: false, detail: `initialize 超时；stderr=${stderr.slice(0, 400)}` });
       }, 25_000);
       readline.createInterface({ input: proc.stdout }).on("line", (line) => {
@@ -134,7 +94,7 @@ test("打包态：codex-acp 资源树就位，且打包态可执行文件（ELEC
         try { msg = JSON.parse(line); } catch { return; }
         if (msg.id !== 1) return;
         clearTimeout(timer);
-        try { proc.kill("SIGKILL"); } catch {}
+        killTree(proc);
         if (msg.error) resolve({ ok: false, detail: `initialize 回错误：${msg.error.message ?? JSON.stringify(msg.error)}` });
         else resolve({ ok: true, detail: String(msg.result?.agentInfo?.name ?? "(无 agentInfo)") });
       });
