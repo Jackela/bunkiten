@@ -14,8 +14,12 @@ process.env.GROK_GAME_ROOT = GAME_ROOT;
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || "http://localhost:5173";
 
-// 打包后 GUI 启动不带 shell PATH，grok CLI 装在这些常见位置——必须先于 acp-server 的 spawn 生效
-const PATH_PREFIXES = [path.join(os.homedir(), ".grok", "bin"), "/usr/local/bin", "/opt/homebrew/bin"];
+// 打包后 GUI 启动不带 shell PATH，grok CLI 装在这些常见位置——必须先于 acp-server 的 spawn 生效。
+// 主目录口径与 server 侧一致（`server/config.mjs` 的 `gameHome()`）：`BUNKITEN_HOME` 显式给定即替换
+// `os.homedir()`——打包态 e2e 把整个 home 指到临时目录（PATH 前缀也得跟着走，否则临时 home 里的
+// `grok` 垫片不生效、引擎起不来；Windows 上不能改 `USERPROFILE`，那会把 Chromium 弄崩）。
+const HOME = process.env.BUNKITEN_HOME || os.homedir();
+const PATH_PREFIXES = [path.join(HOME, ".grok", "bin"), "/usr/local/bin", "/opt/homebrew/bin"];
 process.env.PATH = [...PATH_PREFIXES, process.env.PATH].filter(Boolean).join(path.delimiter);
 
 async function waitUntilReachable(url, timeoutMs = 30000) {

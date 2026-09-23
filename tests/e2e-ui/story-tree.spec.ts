@@ -9,6 +9,8 @@
 // 树文用 parseStoryTree 的容错格式构造（`## 第 N 章：标题` / `### 节点 N-M（拍点）` / `- 字段: 值`）。
 import { expect, test, type Page } from "@playwright/test";
 import { startUiStack, stopUiStack, type StartedStack } from "./stack";
+import { openRailGroup } from "./flow";
+
 
 /** w1 的三节点小树（1-1 → 1-2 → 1-3，进度指针在 1-2） */
 function smallTree(): string {
@@ -95,7 +97,8 @@ test.beforeAll(async ({ browser }) => {
     worlds: [{ id: "w2" }, { id: "w3" }, { id: "w4" }],
     trees: { w1: smallTree(), w2: bigTree(), w3: smallTree(), w4: multiChapterTree() },
     // 快照对比的 seed（w3）：#1 挂 1-1、#2 挂 1-2，state 各差一行好感度——节点 1-2 的
-    // 最早匹配是 #2、基线是 #1，diff 内容完全由 seed 决定（运行时回合只会追加 seq ≥ 3）
+    // 最早匹配是 #2、基线是 #1，diff 内容完全由 seed 决定（运行时回合只会追加 seq ≥ 3）；
+    // v1.13 起两条都带 prompt（可重演的玩家输入）：树屏「回到这一幕并重演」用它重发
     snapshots: {
       w3: [
         {
@@ -103,6 +106,7 @@ test.beforeAll(async ({ browser }) => {
           kind: "turn",
           nodeId: "1-1",
           chapterNo: 1,
+          prompt: "走进中殿。",
           files: { state: "# 剧情状态\n周目: 1\n好感度: 42\n", summary: "第 1 轮：门口初遇。", tree: smallTree() },
         },
         {
@@ -110,6 +114,7 @@ test.beforeAll(async ({ browser }) => {
           kind: "turn",
           nodeId: "1-2",
           chapterNo: 1,
+          prompt: "翻开那本账册。",
           files: { state: "# 剧情状态\n周目: 1\n好感度: 55\n", summary: "第 2 轮：中殿对话。", tree: smallTree() },
         },
       ],
@@ -120,6 +125,11 @@ test.beforeAll(async ({ browser }) => {
       { match: "继续世界：w2", ops: ["又是清晨，长廊尽头的灯还亮着。\n\n**行动**\n1. 往前走\n2. 回房\n"] },
       { match: "继续世界：w3", ops: ["中殿的烛火晃了一下。\n\n**行动**\n1. 追问账册\n2. 沉默\n"] },
       { match: "继续世界：w4", ops: ["烛火照到第二间书库的门口。\n\n**行动**\n1. 推门\n2. 退回去\n"] },
+      // v1.13 树屏重演：再进 w3 的一次续玩 + 重演要补发的续档指令 + 重发的那句输入（各用一条，不重复消费）
+      { match: "继续世界：w3", ops: ["又是中殿，烛火还亮着。\n\n**行动**\n1. 追问账册\n2. 沉默\n"] },
+      { match: "继续世界：w3", ops: ["重读档：烛火回到账册摊开的那一页。\n"] },
+      { match: "补充：", ops: ["**行动**\n1. 继续翻\n"] },
+      { match: "翻开那本账册", ops: ["账册重演：灰烬落在页角，字迹显出第二行。\n\n**行动**\n1. 继续翻\n"] },
     ],
   }));
 });
@@ -148,6 +158,7 @@ test("小树：SVG 树图可见，滚轮中心缩放与按住拖拽平移都改 
   await continueWorld(page, "w1");
 
   // 命令轨「剧情图」进 overlay：三个节点都画出来了
+  await openRailGroup(page, "图鉴");
   await page.getByTestId("tree").click();
   const canvas = page.getByTestId("tree-canvas");
   await expect(canvas).toBeVisible();
@@ -178,6 +189,7 @@ test("大树（45 节点）：默认降级为列表形态，SVG 画布不渲染"
   await openWorlds(page);
   await continueWorld(page, "w2");
 
+  await openRailGroup(page, "图鉴");
   await page.getByTestId("tree").click();
 
   // 降级提示行 + 列表可见 + 图形画布缺席；行数与节点数一致
@@ -197,6 +209,7 @@ test("快照对比：节点详情与上一快照 diff，remove/add 行可见（w
   await openWorlds(page);
   await continueWorld(page, "w3");
 
+  await openRailGroup(page, "图鉴");
   await page.getByTestId("tree").click();
 
   // 节点 1-2 的详情快照是 seed #2（最早匹配），基线是 #1 → 对比入口出现
@@ -219,10 +232,36 @@ test("快照对比：节点详情与上一快照 diff，remove/add 行可见（w
   await expect(page.getByTestId("snapshot-diff-tab-tree")).toContainText("无变化");
 });
 
+test("回到这一幕并重演：退到这一幕开演前并重发当时的输入（w3 seed 两条带 prompt 的快照）", async () => {
+  await openWorlds(page);
+  await continueWorld(page, "w3");
+
+  await openRailGroup(page, "图鉴");
+  await page.getByTestId("tree").click();
+
+  // #1 是第一条 turn：无处可退 → 不摆重演入口（回退入口照旧在）
+  await page.getByTestId("tree-node-1-1").click();
+  await expect(page.getByTestId("tree-replay-1-1")).toHaveCount(0);
+  await expect(page.getByTestId("tree-restore-1-1")).toBeVisible();
+
+  // 节点 1-2 的存档点是 #2（早于它的 turn 只有 #1）→ 入口出现；两段确认后触发重演
+  await page.getByTestId("tree-node-1-2").click();
+  await page.getByTestId("tree-replay-1-2").click();
+  await expect(page.getByTestId("tree-replay-confirm-1-2")).toBeVisible(); // 首点只进确认态
+  await page.getByTestId("tree-replay-confirm-1-2").click();
+
+  // 回退点 = #1；补发的续玩回合收尾后自动重发 #2 的 prompt（「翻开那本账册。」）→ 重演的一幕上屏
+  await expect(page.getByTestId("tree-notice")).toContainText("已回到第 1 幕");
+  await page.getByTestId("tree-back").click();
+  await expect(page.getByTestId("status")).toHaveText("就绪");
+  await expect(page.getByTestId("dialogue-text")).toContainText("账册重演");
+});
+
 test("章节切换器：每章一枚药丸（进度章标「当前」），切到第 2 章换掉画布上的节点", async () => {
   await openWorlds(page);
   await continueWorld(page, "w4");
 
+  await openRailGroup(page, "图鉴");
   await page.getByTestId("tree").click();
   const bar = page.getByTestId("tree-chapters");
   await expect(bar).toBeVisible();

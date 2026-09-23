@@ -74,6 +74,20 @@ function makeFetch(route: (url: string, init: any, call: number) => Reply) {
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
 
 describe("credentials.mjs：出厂默认与容错读取", () => {
+  it("BUNKITEN_HOME 覆盖主目录（打包态 e2e 的旋钮：Windows 上 os.homedir() 读 USERPROFILE，改它会把 Chromium 拖崩）；不设时回落 os.homedir()", () => {
+    const prev = process.env.BUNKITEN_HOME;
+    try {
+      process.env.BUNKITEN_HOME = path.join(os.tmpdir(), "bunkiten-home-probe");
+      expect(credentialsPath()).toBe(path.join(process.env.BUNKITEN_HOME, ".bunkiten", "credentials.json"));
+      expect(readCredentials().llm.mode).toBe("session"); // 该目录没有凭据文件 → 出厂默认（读路径永不抛）
+      delete process.env.BUNKITEN_HOME;
+      expect(credentialsPath()).toBe(path.join(os.homedir(), ".bunkiten", "credentials.json"));
+    } finally {
+      if (prev === undefined) delete process.env.BUNKITEN_HOME;
+      else process.env.BUNKITEN_HOME = prev;
+    }
+  });
+
   it("默认态是「沿用 grok 登录 + 不出图」——与 v1.9 行为一致", () => {
     const d = defaultCredentials();
     expect(d.version).toBe(CREDENTIALS_VERSION);
@@ -93,7 +107,7 @@ describe("credentials.mjs：出厂默认与容错读取", () => {
     // 读路径不能拿内置 PROVIDER_IDS 白名单把它改回默认（否则目录一次抓不到，玩家已存的远程 id 就被静默改写）
     expect(n.llm).toMatchObject({ mode: "byok", provider: "no-such-provider", baseUrl: "", apiKey: "", model: "m" });
     expect(n.image.mode).toBe("off");
-    expect(Object.keys(n)).toEqual(["version", "llm", "image"]); // 多余键被丢掉
+    expect(Object.keys(n)).toEqual(["version", "engine", "llm", "image"]); // 多余键被丢掉（engine 是 v1.11 新增的顶层键）
   });
 
   it("normalize：provider 形态非法（空/空白/含空格/大写/下划线/前导横线）才回该组默认", () => {
@@ -228,6 +242,53 @@ describe("credentials.mjs：merge / validate", () => {
     expect(validateCredentialsPatch({ llm: { provider: "some-other-svc" } }, [], allowed).ok).toBe(false);
     // 数组形态也认（Iterable）
     expect(validateCredentialsPatch({ llm: { provider: "newcomer-llm" } }, [], [...PROVIDER_IDS, "newcomer-llm"]).ok).toBe(true);
+  });
+});
+
+describe("credentials.mjs：engine 字段（v1.11，docs/adr/0022）", () => {
+  it("默认引擎是 grok；旧文件（没有 engine 键）读出来就是 grok——升级不动行为", () => {
+    expect(defaultCredentials().engine).toBe("grok");
+    expect(normalizeCredentials({ llm: { mode: "byok" } }).engine).toBe("grok");
+    expect(normalizeCredentials({ version: 1 }).engine).toBe("grok");
+  });
+
+  it("normalize：认得的 id 原样保留，未知/非法值回落默认（读路径永不抛）", () => {
+    expect(normalizeCredentials({ engine: "codex" }).engine).toBe("codex");
+    for (const bad of ["", "unknown-engine", 42, null, {}, "CODEX"]) {
+      expect(normalizeCredentials({ engine: bad }).engine).toBe("grok");
+    }
+  });
+
+  it("merge：patch.engine 出现才动；只给分组字段时引擎不变", () => {
+    const base = normalizeCredentials({ engine: "codex", llm: { model: "m1" } });
+    expect(mergeCredentials(base, { llm: { model: "m2" } }).engine).toBe("codex");
+    expect(mergeCredentials(base, { engine: "grok" }).engine).toBe("grok");
+    // clear 只清分组，不碰引擎
+    expect(mergeCredentials(base, {}, ["llm", "image"]).engine).toBe("codex");
+  });
+
+  it("validate：未知引擎 / 非字符串拒；两个真源里的 id 接受", () => {
+    expect(validateCredentialsPatch({ engine: "codex" }).ok).toBe(true);
+    expect(validateCredentialsPatch({ engine: "grok" }).ok).toBe(true);
+    expect(validateCredentialsPatch({ engine: "no-such-engine" }).ok).toBe(false);
+    expect(validateCredentialsPatch({ engine: 7 }).ok).toBe(false);
+    // 不给 engine 的旧请求照常通过（GUI 老版本 / 只改 key 的 patch）
+    expect(validateCredentialsPatch({ llm: { model: "m" } }).ok).toBe(true);
+  });
+
+  it("publicView 带上引擎（设置屏画选择器用），且不含明文", () => {
+    const view = publicView(normalizeCredentials({ engine: "codex", llm: { apiKey: "sk-secret-abcdef" } }));
+    expect(view.engine).toBe("codex");
+    expect(JSON.stringify(view)).not.toContain("sk-secret-abcdef");
+    expect(view.llm.apiKeyMasked).toBe("sk-…cdef");
+  });
+
+  it("磁盘往返：engine=codex 写下去读回来还是 codex", () => {
+    const home = tmpHome();
+    writeCredentials(home, normalizeCredentials({ engine: "codex", llm: { mode: "byok", baseUrl: "https://a.example/v1", apiKey: "sk-a-123456", model: "m" } }));
+    const back = readCredentials(home);
+    expect(back.engine).toBe("codex");
+    expect(back.llm.mode).toBe("byok");
   });
 });
 

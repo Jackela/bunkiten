@@ -90,6 +90,16 @@ base64 -w0 cert.p12
 
 ## 4. 怎么验一次发布
 
+### 两个平台都要先过的「打包态冒烟」（v1.12，CI 里已经在跑）
+
+签名解决的是「**系统**放不放行」，冒烟解决的是「**包本身**开不开得起来」——两件事别混：
+
+- mac 侧：`npm run dist:mac:dir` + `npm run test:e2e:packaged`（本机 opt-in）。
+- win 侧：`npm run dist:win:dir` + `npm run test:e2e:packaged`（**本机 macOS 出不了 win 产物**，
+  所以这条由 CI 的 `packaged-win` job（windows runner）跑：先 `--dir` 打包、再 `_electron` 真起一次，
+  断言窗口开、标题屏渲染、`/app` 与 `resources/game` 可达、codex-acp 资源树就位并能 initialize）。
+- 版本发布前的最低要求：**这两个 job 都绿**。签名只是让下载者少点两下，冒烟不过说明包本身有问题。
+
 ### macOS
 
 ```bash
@@ -125,7 +135,7 @@ Get-AuthenticodeSignature "Bunkiten <version>.exe" | Format-List Status,SignerCe
 ### 本地不签名跑法（现在就是这么跑的）
 
 ```bash
-npm run dist:mac      # dmg + zip，arm64 + x64
+npm run dist:mac      # dmg + zip，arm64 only（只支持 Apple Silicon；见 ADR-0011 修订）
 npm run dist:mac:dir  # 只出 .app 目录（不含 app-update.yml，不能用来验更新）
 npm run dist:win      # nsis + portable，x64
 ```

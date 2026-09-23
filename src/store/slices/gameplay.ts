@@ -146,23 +146,16 @@ export function createGameplaySlice(
         turnStartAt: null,
         history: clean ? [...s.history, { n: `第 ${s.turnNo + 1} 幕`, t: clean }] : s.history,
         turnNo: clean ? s.turnNo + 1 : s.turnNo,
-        // 本回合若由玩家叙事输入发起（OptionList/FreeInput/自动前进，见 sendPlayerTurn）：定格为
-        // lastTurnPrompt（重掷「重发同一输入」的数据源）并清在途标记；指令回合在途为空，
-        // lastTurnPrompt 保持上一个玩家回合的值——重绘/续档之后仍能重掷上一个玩家回合。
-        lastTurnPrompt: s.pendingTurnPrompt ?? s.lastTurnPrompt,
-        pendingTurnPrompt: null,
         // 回退后的第一个回合收尾 = 重同步成功：清徽章，提示条改写为「完成重同步」态。
         // 只有本轮发送的正是重同步指令（resyncing，restoreSnapshot/retryResync 置位）才认领这次收尾——
         // resume 投递失败后玩家自己发的普通指令成功时引擎并没有重读档，pendingResync 已在 send
         // 入口静默清掉，这里不许假称完成；非 resyncing 的回合一律不碰 pendingResync（零行为变化）。
         ...(s.resyncing
           ? {
+              // 重同步回合不携带玩家输入；重演入口的显隐与降级由快照数 + 点击时解析负责（v1.13 删内存
+              // 账本：普通回退后玩家点重演，解析到的是最新那条 turn 条目自己的输入——输入与它产生的
+              // 状态同条目绑定，不存在「回退前的旧输入叠在回退点之后」那条路，见 docs/adr/0023）
               resyncing: false,
-              // 重同步回合不携带玩家输入（上面的 `?? s.lastTurnPrompt` 会保留回退前的旧输入 X）：
-              // 图屏普通回退（reason:"restore"）完成后若不清空，玩家点重掷会 restore 到「已含 X 效果」
-              // 的次新快照——等于撤销回退再把 X 叠一遍。置 null 让按钮正确收起；重掷路径不受影响：
-              // 排队重发的回合会经 sendPlayerTurn 重新定格 lastTurnPrompt。
-              lastTurnPrompt: null,
               ...(s.pendingResync
                 ? {
                     pendingResync: null,
@@ -214,8 +207,8 @@ export function createGameplaySlice(
         set({ pendingTreeMessage: null, treeAsk: true, treeNotice: null });
         get().send(pendingTree);
       }
-      // 重掷的排队跟进：重同步回合成功收尾（上面的 resyncing 分支已清 pendingResync）后立即重发
-      // 玩家上一回合输入，走正常玩家回合路径（sendPlayerTurn 重新记录在途输入——连掷同理可用）。
+      // 重演的排队跟进：重同步回合成功收尾（上面的 resyncing 分支已清 pendingResync）后立即重发
+      // 那一刻解析出的玩家输入（点击时已从快照条目取好），走正常玩家回合路径（连掷同理可用）。
       // 认领条件用进入本事件时的 s.resyncing：普通回合即使残留 pendingRerollPrompt 也不跟进
       // （resync 失败后玩家改发普通指令的场景，send 入口已把它随 pendingResync 静默作废）；
       // 先清后发，事件重入也不会二次发送。resync 失败不走这里——排队的重发保留到
@@ -225,7 +218,7 @@ export function createGameplaySlice(
         set({ pendingRerollPrompt: null });
         get().sendPlayerTurn(rerollPrompt);
       }
-      // 重掷入口的可见性：按钮要「有前序快照」才出现（spec P3-T1），而快照数只有服务端知道——
+      // 重演入口的可见性：按钮要「有前序快照」才出现（spec P3-T1），而快照数只有服务端知道——
       // 只在还没数够（未知或 < 2）时补拉一次 /api/history（有列表缓存，代价小；数够即停，不再逐回合拉）
       const snaps = get().turnSnapshots;
       if (snaps === null || snaps < 2) ctx.refreshTurnSnapshots();
@@ -273,7 +266,7 @@ export function createGameplaySlice(
       // 玩家选择继续走，不假称「完成重同步」（引擎并没有重读档）：徽章、失败入口与图屏提示一并撤下
       //（treeNotice 不撤会在图屏留下「点「再同步」重试」的残影，而按钮已随徽章消失）；
       // resyncing 同步落回 false，免得本次普通指令的失败被 markResyncFailed 记到已放弃的重同步头上；
-      // 排队中的重掷跟进同理作废（档没退回去，重发就无从谈起）
+      // 排队中的重演跟进同理作废（档没退回去，重发就无从谈起）
       const pending = get().pendingResync;
       if (pending && t !== buildResumeCommand(pending.worldId)) {
         set({ pendingResync: null, resyncFailed: false, resyncing: false, pendingRerollPrompt: null, treeNotice: null });
@@ -291,15 +284,14 @@ export function createGameplaySlice(
         .then((r) => {
           // 回合没发出去（409 等）就不会有 turn 事件，engineBusy 需复位供制作中屏推进
           if (!r.ok) {
-            // 在途的玩家输入作废：这一回合没有开始，不许它在别的回合收尾时冒充「上一回合」
-            set({ status: `出错：${r.error}`, engineBusy: false, turnStartAt: null, pendingTurnPrompt: null });
+            set({ status: `出错：${r.error}`, engineBusy: false, turnStartAt: null });
             // 挂起中的画廊重绘没有对应回合了：记为未确认，解除挂起让按钮恢复并接队列下一条
             ctx.finishRegen(false);
             markResyncFailed(r.error);
           }
         })
         .catch((e: unknown) => {
-          set({ status: `出错：${String(e)}`, engineBusy: false, turnStartAt: null, pendingTurnPrompt: null });
+          set({ status: `出错：${String(e)}`, engineBusy: false, turnStartAt: null });
           ctx.finishRegen(false);
           markResyncFailed(String(e));
         });
@@ -308,9 +300,7 @@ export function createGameplaySlice(
     sendPlayerTurn(text) {
       const t = text.trim();
       if (!t) return;
-      // 玩家叙事输入的唯一记录点：turn_end 成功时定格为 lastTurnPrompt（重掷的数据源）。
-      // 指令类发送不经过这里——美术/规划/剧情/续档天然不进「上一回合输入」的账。
-      set({ pendingTurnPrompt: t });
+      // 输入随快照条目在服务端落盘（重演的数据源）——这里只剩 trim 守卫，不再有客户端账本（v1.13，见 docs/adr/0023）
       get().send(t);
     },
 

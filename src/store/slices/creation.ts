@@ -38,6 +38,10 @@ export function createCreationSlice(
     sendCreation(text) {
       const t = text.trim();
       if (!t) return;
+      // 双击防线（v1.11 收尾）：装配是不可逆的贵回合（真出封面与立绘，真花 token / 额度），而「开始装配」
+      // 按钮到 turn_start 之间有一小段 engineBusy 仍为 false 的窗口——第一发已**同步**置 assembling，
+      // 第二发在这里被挡掉。重试装配不受影响：turn_end/error 会把 assembling 清掉、置 assemblyStalled。
+      if (t === BUILD_ASSEMBLE && get().assembling) return;
       set({ creationMessages: [...get().creationMessages, { role: "player", text: t }] });
       if (t === BUILD_ASSEMBLE) set({ assembling: true, assemblyStalled: false });
       if (get().engineBusy) {

@@ -14,9 +14,11 @@
 //   只存在于这份 mock 目录里的 provider**（旧实现只在浏览器侧替掉读接口，会掩盖「服务端白名单不认远程 id → 400」
 //   这个把目录核心收益挡死的问题）。服务端的抓取/缓存/校验通道另有单测与集成测试，不在这里重复。
 import { expect, test, type Page } from "@playwright/test";
+import { existsSync } from "node:fs";
 import http from "node:http";
+import path from "node:path";
 import { startUiStack, stopUiStack, type StartedStack } from "./stack";
-import { enterProtagonist, quickStartToGame } from "./flow";
+import { enterProtagonist, openAdvancedSettings, quickStartToGame } from "./flow";
 
 const SETTINGS_KEY = "bunkiten.settings.v1";
 
@@ -105,6 +107,7 @@ test("引擎与密钥：填 key → 掩码 → 刷新后仍在 → 重启引擎�
     await enterProtagonist(page, "示例剧本");
     await quickStartToGame(page);
     await page.getByTestId("settings").click();
+    await openAdvancedSettings(page); // 引擎与密钥默认收起（v1.12），从 game 轨进来要先展开
     await expect(page.getByTestId("engine-keys")).toBeVisible();
     await expect(page.getByTestId("engine-llm-baseurl")).toHaveValue("https://api.deepseek.com");
     await expect(page.getByTestId("engine-llm-apikey")).toHaveAttribute("placeholder", "sk-…4f2a（已保存）");
@@ -264,6 +267,43 @@ test("引擎与密钥 · 在线目录：候选换成远端那份、地址按远�
   }
 });
 
+test("登录状态（v1.11 收尾）：设置屏看得见「已登录」；两段确认登出后状态翻回未登录、玩家文件被清", async ({ browser }) => {
+  // codexAuth:"ok" 造一个「已登录」的现场（codex 侧登录态 = 玩家 ~/.codex/auth.json 在）
+  const { stack, page } = await startUiStack(browser, {
+    presets: [{ id: "demo", title: "示例剧本" }],
+    turns: [{ match: "开局：", ops: ["夜色落定。\n\n**行动**\n1. 走过去\n2. 先回房\n"] }],
+    codexAuth: "ok",
+    credentials: {
+      version: 1,
+      engine: "codex",
+      llm: { mode: "session", provider: "openai", baseUrl: "", apiKey: "", model: "" },
+      image: { mode: "off", provider: "openai", baseUrl: "", apiKey: "", model: "", size: "" },
+    },
+  });
+  try {
+    await page.goto(stack.pageUrl);
+    await enterProtagonist(page, "示例剧本");
+    await quickStartToGame(page);
+    await page.getByTestId("settings").click();
+    await openAdvancedSettings(page); // 引擎与密钥默认收起（v1.12），从 game 轨进来要先展开
+    await expect(page.getByTestId("engine-keys")).toBeVisible();
+
+    await expect(page.getByTestId("engine-auth-status")).toHaveText("已登录");
+    await expect(page.getByTestId("engine-auth-login")).toHaveCount(0);
+
+    // 两段确认：首点只出确认条（并明说会连带终端登录），二点才真登出
+    await page.getByTestId("engine-auth-logout").click();
+    await expect(page.getByText(/会同时退出你在终端里的登录/)).toBeVisible();
+    await page.getByTestId("engine-auth-logout-confirm").click();
+    await expect(page.getByTestId("engine-auth-status")).toHaveText("未登录", { timeout: 15_000 });
+    await expect(page.getByTestId("engine-auth-note")).toContainText("已退出登录");
+    // 玩家自己的登录产物真的被 CLI 清掉了（不是屏上换个字）
+    expect(existsSync(path.join(stack.stack.home, ".codex", "auth.json"))).toBe(false);
+  } finally {
+    await stopUiStack(page, stack);
+  }
+});
+
 test("设置屏：改主音量与文本速度→localStorage 落盘→刷新后保持", async () => {
   await page.goto(stack.pageUrl);
   await enterProtagonist(page, "示例剧本");
@@ -297,4 +337,44 @@ test("设置屏：改主音量与文本速度→localStorage 落盘→刷新后�
   await expect(page.getByTestId("settings-screen")).toBeVisible();
   await expect(page.getByTestId("settings-master")).toHaveValue("0.3");
   await expect(page.getByTestId("settings-textspeed-instant")).toHaveAttribute("aria-pressed", "true");
+});
+
+test("引擎选择（v1.11）：切到 Codex → 对话组的「自备密钥」被锁并给原因 → 重启引擎 → 选择落到磁盘", async ({ browser }) => {
+  // codexAuth:"ok" 让重启后的握手有一条可用的登录态（codex 侧不走自备 key）；auth:"missing" 从 boot 屏进设置屏
+  const { stack, page } = await startUiStack(browser, { presets: ["demo"], turns: [], auth: "missing", codexAuth: "ok" });
+  try {
+    await page.goto(stack.pageUrl);
+    await page.getByTestId("boot-credentials").click();
+    await expect(page.getByTestId("engine-keys")).toBeVisible();
+
+    // 缺省是 grok（旧凭据/新装都一样）：两枚都在、grok 按下、说明是 grok 的
+    await expect(page.getByTestId("engine-backend-grok")).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByTestId("engine-backend-codex")).toHaveAttribute("aria-pressed", "false");
+    await expect(page.getByTestId("engine-backend-note")).toContainText("Grok");
+
+    // 切到 Codex：立即保存（无「保存」按钮）——说明换掉、对话组的 byok 被锁住并给出玩家话的原因、
+    // 组内不再画自备表单（它本来也不会被转发给这个后端）；出图组两引擎通用，不受影响
+    await page.getByTestId("engine-backend-codex").click();
+    await expect(page.getByTestId("engine-backend-codex")).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByTestId("engine-backend-note")).toContainText("Codex");
+    await expect(page.getByTestId("engine-llm-mode-byok")).toBeDisabled();
+    await expect(page.getByTestId("engine-llm-byok-locked")).toBeVisible();
+    await expect(page.getByTestId("engine-llm-mode-session")).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByTestId("engine-llm-baseurl")).toHaveCount(0);
+    await expect(page.getByTestId("engine-image-mode-byok")).toBeEnabled();
+
+    // 「立刻重启引擎」：服务端真杀旧进程、按 codex 重新 spawn 并重新握手（ready 行换成 codex 的前缀）
+    await page.getByTestId("engine-restart").click();
+    await expect(page.getByTestId("engine-restart-note")).toHaveText("引擎已重启，新配置已生效");
+    await expect.poll(() => stack.stack.stdout().includes("codex session ready")).toBe(true);
+
+    // 选择落在 credentials.json（不是屏上的临时态）：直接问服务端要脱敏视图
+    const view = (await (await page.request.get(new URL("/api/credentials", stack.pageUrl).toString())).json()) as {
+      engine?: string;
+      llm?: { mode?: string };
+    };
+    expect(view.engine).toBe("codex");
+  } finally {
+    await stopUiStack(page, stack);
+  }
 });

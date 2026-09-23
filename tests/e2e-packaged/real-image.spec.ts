@@ -4,12 +4,14 @@
 // 自备图片服务 key）。dev / 假栈 / 集成层都验不到这条路：那三层要么走 vite、要么用假引擎垫片，
 // 要么不碰打包态 resources/game 下的资产落盘契约。
 //
-// 前置（缺一即干净跳过，见下方三个 test.skip）：
-//   ① 打包产物 release/mac-<arch>/Bunkiten.app（先跑 `npm run dist:mac:dir`）；
+// 前置（缺一即干净跳过，见下方 test.skip）：
+//   ① 打包产物（macOS：`npm run dist:mac:dir` 的 .app；Windows：`npm run dist:win:dir` 的 win-unpacked）；
 //   ② 可用图片服务凭据——优先 env `BUNKITEN_E2E_CREDENTIALS`（JSON 字符串，形状同 credentials.json），
 //      否则读真实 `~/.bunkiten/credentials.json`；要求 image 组 `mode=byok` 且 baseUrl/apiKey/model 齐全；
-//   ③ 本机真实 grok CLI（解析见 resolveRealGrok；**在改写 HOME 之前**用原始 PATH/家目录解析）。
-//   另外还需要**本机已登录 grok CLI**（引擎靠真登录态跑回合，见下方 GROK_HOME 说明）。
+//   ③ 本机真实 grok CLI（解析见 resolveRealGrok；**在改写 HOME 之前**用原始 PATH/家目录解析）
+//      且**本机已登录 grok CLI**（`~/.grok/auth.json` 在；引擎靠真登录态跑回合）；
+//   ④ **显式 opt-in**：`BUNKITEN_E2E_REAL_IMAGE=1`——这条会真花一次图片额度，默认**跳过**，
+//      免得每次 `npm run test:e2e:packaged` 都重复掏钱重复跑（要复跑就带上这个开关）。
 //
 // 网络：本机直连被挡时，用代理启动（`https_proxy=… all_proxy=… npx playwright test -c playwright.electron.config.ts
 // tests/e2e-packaged/real-image.spec.ts`）——launch env 铺开了 `...process.env`，代理变量会随 env 透传给
@@ -36,29 +38,16 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
+import { findPackagedApp, killTree, packagedSkipHint, rmTemp } from "../helpers/packaged-app.mjs";
 import { maskKey, normalizeCredentials, writeCredentials } from "../../server/credentials.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
-/** release/ 里的 .app（mac-arm64 / mac / mac-x64 都认；取 mtime 最新的一个）——与 packaged.spec 同款 */
-function findApp(): string | null {
-  const release = path.join(ROOT, "release");
-  if (!existsSync(release)) return null;
-  const candidates: { app: string; mtime: number }[] = [];
-  for (const dir of readdirSync(release, { withFileTypes: true })) {
-    if (!dir.isDirectory() || !dir.name.startsWith("mac")) continue;
-    const appDir = path.join(release, dir.name, "Bunkiten.app");
-    const bin = path.join(appDir, "Contents", "MacOS", "Bunkiten");
-    if (existsSync(bin)) candidates.push({ app: bin, mtime: statSync(bin).mtimeMs });
-  }
-  candidates.sort((a, b) => b.mtime - a.mtime);
-  return candidates[0]?.app ?? null;
-}
-
-const APP_BIN = findApp();
-/** Contents 目录（Bunkiten.app/Contents/MacOS/Bunkiten → 上两级）；打包态 GAME_ROOT 在它下面的 Resources/game */
-const APP_CONTENTS = APP_BIN ? path.resolve(APP_BIN, "..", "..") : null;
-const APP_GAME_ROOT = APP_CONTENTS ? path.join(APP_CONTENTS, "Resources", "game") : null;
+/** release/ 里的打包产物定位（跨平台，与 packaged.spec 同款：见 tests/helpers/packaged-app.mjs） */
+const APP = findPackagedApp(ROOT);
+const APP_BIN = APP?.exe ?? null;
+/** 打包态 GAME_ROOT（main.js 写死）：macOS 在 .app/Contents/Resources/game，Windows 在 win-unpacked/resources/game */
+const APP_GAME_ROOT = APP ? path.join(APP.resources, "game") : null;
 
 // ---- 真凭据：env 优先，其次真实 ~/.bunkiten/credentials.json（形状与 server/credentials.mjs 同口径） ----
 const REAL_HOME = os.homedir();
@@ -117,6 +106,10 @@ const REAL_GROK = findRealGrok();
 const SKIP_APP = APP_BIN === null;
 const SKIP_CREDS = !CREDS_OK;
 const SKIP_GROK = REAL_GROK === null;
+/** 真登录态：grok 靠 `~/.grok/auth.json` 跑回合；没有就当跳过（而不是跑到一半 boot 失败） */
+const SKIP_LOGIN = !existsSync(path.join(REAL_HOME, ".grok", "auth.json"));
+/** 显式 opt-in：这条真花钱（一次对话 + 至少一张图），默认跳过——「不要反复测试」就落在这个开关上 */
+const SKIP_OPT_IN = process.env.BUNKITEN_E2E_REAL_IMAGE !== "1";
 
 /**
  * 收尾：**先关窗口再 close**，close 卡住就 SIGKILL——SSE 长连接会让主进程的 will-quit 一直等下去
@@ -130,12 +123,8 @@ async function closeApp(app: ElectronApplication): Promise<void> {
     new Promise<boolean>((r) => setTimeout(() => r(false), 15_000)),
   ]);
   if (!closed) {
-    try {
-      const pid = app.process().pid;
-      if (pid) process.kill(pid, "SIGKILL");
-    } catch {
-      /* 已经退了 */
-    }
+    // 杀整棵进程树（Windows 上只 kill 主进程会留下握管道的子进程，worker teardown 会一直等）
+    killTree(app.process());
   }
 }
 
@@ -169,13 +158,19 @@ test("打包态真出图：真 grok CLI + 真图片服务，画廊重绘落一�
       `凭据来源=${CREDS_PICK.source}${CREDS_PICK.error ? `（${CREDS_PICK.error}）` : ""}` +
       `${CREDS_PICK.creds ? `；image.mode=${CREDS_PICK.creds.image.mode} key=${maskKey(CREDS_PICK.creds.image.apiKey) || "(空)"} model=${CREDS_PICK.creds.image.model || "(空)"}` : ""}`,
   );
-  test.skip(SKIP_APP, "未找到打包产物：先跑 `npm run dist:mac:dir`（产物在 release/mac-<arch>/Bunkiten.app）");
+  test.skip(
+    SKIP_OPT_IN,
+    "真出图会真花一次图片额度 + 一个真回合：默认跳过；要跑就带上 `BUNKITEN_E2E_REAL_IMAGE=1`" +
+      "（例如 `BUNKITEN_E2E_REAL_IMAGE=1 npm run test:e2e:packaged`）——跑过就不必反复跑",
+  );
+  test.skip(SKIP_APP, packagedSkipHint());
   test.skip(
     SKIP_CREDS,
     `无可用图片服务凭据（${CREDS_PICK.source}）：需要 image 组 mode=byok 且 baseUrl/apiKey/model 齐全` +
       "——可用 env BUNKITEN_E2E_CREDENTIALS 传 JSON，或配置真实 ~/.bunkiten/credentials.json",
   );
   test.skip(SKIP_GROK, "解析不到真 grok 二进制：本机需安装并登录 grok CLI（候选 ~/.grok/bin、/usr/local/bin、/opt/homebrew/bin）");
+  test.skip(SKIP_LOGIN, "本机没有 grok 登录态（~/.grok/auth.json）：终端 `grok login` 后重跑");
 
   const tmp = mkdtempSync(path.join(os.tmpdir(), "bunkiten-realimg-"));
   const home = path.join(tmp, "home");
@@ -345,6 +340,6 @@ test("打包态真出图：真 grok CLI + 真图片服务，画廊重绘落一�
         }
       }
     }
-    rmSync(tmp, { recursive: true, force: true });
+    rmTemp(tmp);
   }
 });

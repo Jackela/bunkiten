@@ -6,6 +6,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
 import { startUiStack, stopUiStack, type StartedStack } from "./stack";
+import { openTitleMore } from "./flow";
+
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -37,7 +39,10 @@ test("剧本分享：导出下载 .preset.json → 导入成新卡带（demo-cop
   // —— 导出：anchor 触发浏览器下载，存到 test-results-ui/ ——
   const [download] = await Promise.all([
     page.waitForEvent("download"),
-    page.getByTestId("preset-export-demo").click(),
+    (async () => {
+      await openTitleMore(page);
+      await page.getByTestId("preset-export-demo").click();
+    })(),
   ]);
   const outDir = path.join(ROOT, "test-results-ui");
   mkdirSync(outDir, { recursive: true });
@@ -68,8 +73,16 @@ test("剧本分享：导出下载 .preset.json → 导入成新卡带（demo-cop
   await page.getByTestId("preset-import-input").setInputFiles(bundlePath);
   await expect(page.getByTestId("title-notice")).toContainText("已导入为 demo-copy");
 
-  // —— 轮播刷新出新卡：目录名排序 demo → demo-copy，→ 切到新卡后导出按钮换成新 id ——
-  await page.keyboard.press("ArrowRight");
-  await expect(page.getByTestId("preset-export-demo-copy")).toBeVisible();
-  await expect(page.getByTestId("title-card-center")).toHaveAttribute("aria-label", "示例剧本 测试");
+  // —— 轮播刷新出新卡（目录名排序 demo → demo-copy）：导出的 id 跟着中心卡走 ——
+  // 这一段的起点正是 v1.12 修掉的那条：Radix 关菜单时会把焦点送回触发器，触发器若**无条件**吞 keydown，
+  // 「刚用完一次菜单」之后的 ← → 就再也切不动卡（本屏的切卡挂在 window 上）。现在它只吞菜单开着时、
+  // 以及它自己会吃的那几个键（Enter/Space/↑/↓）——所以下面这条 ArrowRight 必须在菜单收掉后仍然有效。
+  await openTitleMore(page);
+  await expect(page.getByTestId("preset-export-demo")).toBeVisible(); // 导入不改中心卡：还是旧卡
+  await page.getByTestId("title-more").click(); // 收菜单 → 焦点回触发器（要验的就是从这个起点继续按）
+  await page.keyboard.press("ArrowRight"); // → 新卡上台
+  await openTitleMore(page);
+  await expect(page.getByTestId("preset-export-demo-copy")).toBeVisible(); // 导出换成新 id
+  await expect(page.getByTestId("title-card-center")).toHaveAttribute("aria-label", /示例剧本/);
 });
+

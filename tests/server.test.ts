@@ -46,6 +46,7 @@ import {
   readWorldsIndex,
   resolvePersistPreset,
   restoreWorld,
+  labelSnapshot,
   scanPresetAudio,
   stateViewFor,
   scanPresets,
@@ -843,40 +844,55 @@ describe("server 快照子系统纯函数（CONTRACTS §2）", () => {
     expect(selectSnapshotForNode(null, "a")).toBeNull();
   });
 
-  it("normalizeSnapshot：统一字段类型与 files 三键（缺失 = null）", () => {
+  it("normalizeSnapshot：统一字段类型与 files 三键（缺失 = null）、prompt 缺省空串", () => {
     const e = normalizeSnapshot({ seq: "2", kind: "backup", nodeId: "1-1", chapterNo: "3", files: { state: "s" } }) as any;
-    expect(e).toMatchObject({ seq: 2, kind: "backup", nodeId: "1-1", chapterNo: 3 });
+    expect(e).toMatchObject({ seq: 2, kind: "backup", nodeId: "1-1", chapterNo: 3, prompt: "" });
     expect(e.files).toEqual({ state: "s", summary: null, tree: null });
     expect(typeof e.at).toBe("string");
     expect(e.at.length).toBeGreaterThan(0);
+    // prompt 是唯一形状入口对任意 JSON 的收敛结果：字符串留下、其余（缺失/类型不对）回落空串
+    expect((normalizeSnapshot({ seq: 1, prompt: "推门进去。" }) as any).prompt).toBe("推门进去。");
+    expect((normalizeSnapshot({ seq: 1, prompt: 42 }) as any).prompt).toBe("");
   });
 
-  it("isSnapshotEntry：结构校验（seq/kind/files 类型与取值域）", () => {
+  it("isSnapshotEntry：结构校验（seq/kind/files 类型与取值域；prompt 缺省合法）", () => {
     expect(isSnapshotEntry(normalizeSnapshot({ seq: 1, kind: "turn", nodeId: null, chapterNo: 1, files: {} }))).toBe(true);
     expect(isSnapshotEntry({ ...normalizeSnapshot({ seq: 1 }), files: { state: null, summary: null, tree: "t" } })).toBe(true);
     expect(isSnapshotEntry({ seq: 0, at: "x", kind: "turn", nodeId: null, chapterNo: null, files: {} })).toBe(false);
     expect(isSnapshotEntry({ seq: 1, at: "x", kind: "weird", nodeId: null, chapterNo: null, files: {} })).toBe(false);
     expect(isSnapshotEntry({ seq: 1, at: "", kind: "turn", nodeId: null, chapterNo: null, files: {} })).toBe(false);
     expect(isSnapshotEntry({ seq: 1, at: "x", kind: "turn", nodeId: null, chapterNo: null, files: { state: 1 } })).toBe(false);
+    // prompt（v1.13）：字符串与缺省都收（v1/v2 导出包没有该字段），其余类型拒
+    const okFiles = { state: null, summary: null, tree: null };
+    expect(isSnapshotEntry({ seq: 1, at: "x", kind: "turn", nodeId: null, chapterNo: null, files: okFiles, prompt: "推门。" })).toBe(true);
+    expect(isSnapshotEntry({ seq: 1, at: "x", kind: "turn", nodeId: null, chapterNo: null, files: okFiles })).toBe(true);
+    expect(isSnapshotEntry({ seq: 1, at: "x", kind: "turn", nodeId: null, chapterNo: null, files: okFiles, prompt: 42 })).toBe(false);
     expect(isSnapshotEntry(null)).toBe(false);
   });
 
-  it("writeSnapshot / readSnapshots：seq 从 1 递增、内容全等去重、dedupe=false 强制落盘", () => {
+  it("writeSnapshot / readSnapshots：seq 从 1 递增、无新内容才去重、dedupe=false 强制落盘", () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "snap-"));
     try {
       mkdirSync(path.join(root, "w1"), { recursive: true });
       const files = { state: "s", summary: "m", tree: "- 当前进度: 节点 1-1（已走 0 轮）\n" };
-      const a = writeSnapshot(root, "w1", { kind: "turn", nodeId: "1-1", chapterNo: 1, files }) as any;
+      const a = writeSnapshot(root, "w1", { kind: "turn", nodeId: "1-1", chapterNo: 1, prompt: "推门。", files }) as any;
       expect(a).toMatchObject({ ok: true, seq: 1 });
-      // 内容全等 → 跳过（不产生重复条目）
-      const dup = writeSnapshot(root, "w1", { kind: "turn", nodeId: "1-1", chapterNo: 1, files }) as any;
+      // 三文件与 prompt 全等 → 跳过（不产生重复条目）
+      const dup = writeSnapshot(root, "w1", { kind: "turn", nodeId: "1-1", chapterNo: 1, prompt: "推门。", files }) as any;
       expect(dup.skipped).toBe(true);
+      // files 相同但输入不同 = 新的一幕，必须落盘（「最新带输入的 turn 条目 ⟺ 最新一幕」的重演不变量）
+      const next = writeSnapshot(root, "w1", { kind: "turn", nodeId: "1-1", chapterNo: 1, prompt: "坐下。", files }) as any;
+      expect(next).toMatchObject({ ok: true, seq: 2 });
+      // 空输入（指令/续玩）且三文件也没变 → 跳过（读档回合不该留噪声条目）
+      const resume = writeSnapshot(root, "w1", { kind: "turn", nodeId: "1-1", chapterNo: 1, prompt: "", files }) as any;
+      expect(resume.skipped).toBe(true);
       // backup 必须能落盘（dedupe=false）
       const b = writeSnapshot(root, "w1", { kind: "backup", nodeId: "1-1", chapterNo: 1, files }, { dedupe: false }) as any;
-      expect(b).toMatchObject({ ok: true, seq: 2 });
+      expect(b).toMatchObject({ ok: true, seq: 3 });
       const snaps = readSnapshots("w1", root) as any[];
-      expect(snaps.map((s) => s.seq)).toEqual([1, 2]);
-      expect(snaps[1].kind).toBe("backup");
+      expect(snaps.map((s) => s.seq)).toEqual([1, 2, 3]);
+      expect(snaps.map((s) => s.prompt)).toEqual(["推门。", "坐下。", ""]); // backup 没有输入
+      expect(snaps[2].kind).toBe("backup");
       expect(snaps[0].files.state).toBe("s");
       expect(existsSync(path.join(root, "w1", "history", "0001.json"))).toBe(true);
     } finally {
@@ -1112,6 +1128,42 @@ describe("server pickEffort：推理档位分档（CONTRACTS §4）", () => {
   });
 });
 
+describe("server labelSnapshot：存档点命名（v1.12，临时 root）", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), "snap-label-"));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("写名字进世界条目（snapshotLabels，按 seq 字符串键）；空串清掉这一条、别的条目不受影响", () => {
+    const w = createWorld(root, "demo", "示例");
+    const r = labelSnapshot(root, w.worldId, 12, " 雨夜遇袭前 ") as any;
+    expect(r.labels).toEqual({ "12": "雨夜遇袭前" }); // 首尾空格 trim
+    labelSnapshot(root, w.worldId, 18, "进教堂");
+    expect((labelSnapshot(root, w.worldId, 12, "") as any).labels).toEqual({ "18": "进教堂" });
+
+    // 名字落在索引里（与世界的 label/note 同层），**不写进快照文件**——快照保持 append-only 的引擎真相
+    const entry = (readWorldsIndex(root) as any[]).find((e) => e.worldId === w.worldId);
+    expect(entry.snapshotLabels).toEqual({ "18": "进教堂" });
+  });
+
+  it("参数校验：非法 worldId / 非整数或 <1 的 seq / 超长名字 都回 error", () => {
+    const w = createWorld(root, "demo", "示例");
+    expect(labelSnapshot(root, "../etc", 1, "x")).toMatchObject({ error: "参数不合法" });
+    expect(labelSnapshot(root, w.worldId, 0, "x")).toMatchObject({ error: expect.stringContaining("seq") });
+    expect(labelSnapshot(root, w.worldId, 1.5, "x")).toMatchObject({ error: expect.stringContaining("seq") });
+    expect(labelSnapshot(root, w.worldId, 1, "字".repeat(41))).toMatchObject({ error: expect.stringContaining("名字") });
+    expect(labelSnapshot(root, "nope-1", 1, "x")).toMatchObject({ error: "世界不存在" });
+    // 越界长度不落盘
+    const entry = (readWorldsIndex(root) as any[]).find((e) => e.worldId === w.worldId);
+    expect(entry.snapshotLabels ?? {}).toEqual({});
+  });
+});
+
 describe("server updateWorld：label/note 参数校验（CONTRACTS §2，临时 root）", () => {
   let root: string;
 
@@ -1237,7 +1289,7 @@ describe("server importWorld：bundle 校验 / 重名后缀 / 快照与文件落
     expect((importWorld(root, bundleFor({ label: "字".repeat(60), note: "字".repeat(200) })) as any).worldId).toBe("w1");
   });
 
-  it("exportWorld：缺 worldId/不存在返回 error；合法世界给出 bundle 头与三文件", () => {
+  it("exportWorld：缺 worldId/不存在返回 error；合法世界给出 bundle 头、三文件与快照（含 prompt）", () => {
     const w = createWorld(root, "demo", "示例");
     writeFileSync(path.join(root, w.worldId, "state.md"), "# 状态\n- preset: demo\n");
     const out = exportWorld(root, w.worldId) as any;
@@ -1251,34 +1303,48 @@ describe("server importWorld：bundle 校验 / 重名后缀 / 快照与文件落
     expect(out.bundle.world.forkMd).toBe(null);
     expect(exportWorld(root, "../etc")).toMatchObject({ error: expect.any(String) });
     expect(exportWorld(root, "nope-1")).toMatchObject({ error: expect.any(String) });
+
+    // 有快照的世界：条目连 prompt 一起进包（输入随档走，换台机器也能重演——ADR-0023）
+    writeSnapshot(root, w.worldId, { kind: "turn", nodeId: "1-1", chapterNo: 1, prompt: "推门进去。", files: { state: "# 状态\n", summary: null, tree: null } });
+    const withSnaps = (exportWorld(root, w.worldId) as any).bundle;
+    expect(withSnaps.world.snapshots).toHaveLength(1);
+    expect(withSnaps.world.snapshots[0]).toMatchObject({ seq: 1, kind: "turn", prompt: "推门进去。" });
   });
 
-  it("exportWorld v2：分叉世界带 forkedFrom（含 seq）与 fork.md 全文，键序只追加两处", () => {
+  it("exportWorld：分叉世界带 forkedFrom（含 seq）与 fork.md 全文，键序只追加两个血缘键", () => {
     const origin = createWorld(root, "demo", "示例");
     const dir = path.join(root, origin.worldId);
     const snapFiles = { state: "# 状态\n", summary: "# 摘要\n", tree: "## 第 1 章：起点\n- 当前进度: 节点 1-1（已走 0 轮）\n" };
     writeFileSync(path.join(dir, "state.md"), "# 状态\n");
-    writeSnapshot(root, origin.worldId, { kind: "turn", nodeId: "1-1", chapterNo: 1, files: snapFiles });
+    writeSnapshot(root, origin.worldId, { kind: "turn", nodeId: "1-1", chapterNo: 1, prompt: "推门进去。", files: snapFiles });
     const f = forkWorld(root, origin.worldId, "1-1", 1) as any;
     const forkMd = readFileSync(path.join(root, f.worldId, "fork.md"), "utf8");
 
-    expect(WORLD_BUNDLE_VERSION).toBe(2); // 版本号本身是契约：v2 才保证下面两个键在
+    expect(WORLD_BUNDLE_VERSION).toBe(3); // 版本号本身是契约：v3 起快照条目带 prompt（v2 起带血缘两键）
     const bundle = (exportWorld(root, f.worldId) as any).bundle;
     expect(bundle.version).toBe(WORLD_BUNDLE_VERSION);
     expect(bundle.world.forkedFrom).toEqual({ worldId: origin.worldId, nodeId: "1-1", seq: 1 });
     expect(bundle.world.forkMd).toBe(forkMd); // 逐字（含「分叉时间」那一行的时间戳）
-    // 键序：v1 的九个键一个不动、两个新键插在血缘该在的位置（forkedFrom 归元数据、forkMd 归文件全文）
+    // 键序：v1 的九个键一个不动、两个血缘键插在血缘该在的位置（forkedFrom 归元数据、forkMd 归文件全文）；
+    // prompt 在**条目内部**，不影响 world 层键序
     expect(
       Object.keys(bundle.world),
-      `v2 的 world 键序变了：现在是 ${Object.keys(bundle.world).join(",")}——导出包体是跨机格式，键序与形状要稳住（老包只认 v1 那九个键）`,
+      `world 键序变了：现在是 ${Object.keys(bundle.world).join(",")}——导出包体是跨机格式，键序与形状要稳住（老包只认早先那九个键）`,
     ).toEqual(["worldId", "preset", "title", "label", "note", "chapterNo", "forkedFrom", "files", "snapshots", "forkMd"]);
   });
 
-  it("export↔import v2 往返：血缘（含 seq）与 fork.md 逐字回到索引与磁盘", () => {
+  it("export↔import v3 往返：血缘（含 seq）、fork.md 与快照 prompt 逐字回到索引与磁盘", () => {
     const origin = createWorld(root, "demo", "示例");
     const snapFiles = { state: "# 状态\n", summary: "# 摘要\n", tree: "## 第 1 章：起点\n- 当前进度: 节点 1-1（已走 0 轮）\n" };
     writeFileSync(path.join(root, origin.worldId, "state.md"), "# 状态\n");
-    writeSnapshot(root, origin.worldId, { kind: "turn", nodeId: "1-1", chapterNo: 1, files: snapFiles });
+    writeSnapshot(root, origin.worldId, { kind: "turn", nodeId: "1-1", chapterNo: 1, prompt: "推开吱呀的木门。", files: snapFiles });
+
+    // 源世界（含快照）先往返一次：prompt 活过导出→导入（读盘形状是 normalizeSnapshot 的产物）
+    const srcImp = importWorld(root, (exportWorld(root, origin.worldId) as any).bundle) as any;
+    const snap = JSON.parse(readFileSync(path.join(root, srcImp.worldId, "history", "0001.json"), "utf8"));
+    expect(snap.prompt).toBe("推开吱呀的木门。");
+
+    // 分叉世界的血缘（含 seq）与 fork.md 逐字往返（fork 不复制 history：这一段的 bundle 里没有快照条目）
     const forked = forkWorld(root, origin.worldId, "1-1", 1) as any;
     const forkMd = readFileSync(path.join(root, forked.worldId, "fork.md"), "utf8");
     const bundle = (exportWorld(root, forked.worldId) as any).bundle;

@@ -35,7 +35,7 @@
 // 真点空了/被吞了照样会红：下一回合的正文断言（10s expect 超时）就是这次点击的判定。
 import { expect, test, type Page } from "@playwright/test";
 import { startUiStack, stopUiStack, type StartedStack, type UiStackOptions } from "./stack";
-import { enterProtagonist, quickStartToGame } from "./flow";
+import { enterProtagonist, openRailGroup, quickStartToGame } from "./flow";
 
 /** 用例一跑多少个回合 = 回想抽屉里应该有几条 history-act（取舍见文件头） */
 const TURNS = 60;
@@ -223,6 +223,7 @@ test("回想抽屉 · 60 回合长历史：逐条渲染、最新一幕在最上�
   }
 
   // 命令轨「历史」开抽屉
+  await openRailGroup(page, "回顾");
   await page.getByTestId("history").click();
   const panel = page.getByTestId("history-panel");
   await expect(panel).toBeVisible();
@@ -248,6 +249,7 @@ test("回想抽屉 · 60 回合长历史：逐条渲染、最新一幕在最上�
 
 test("剧情图 · 600 节点大树：大章默认降级列表、切图形后 200 节点全可点、缩放读数跟着走", async () => {
   await openW1(page);
+  await openRailGroup(page, "图鉴");
   await page.getByTestId("tree").click();
 
   // 章节切换器列出全部 3 章；进度指针在第 1 章 → 第 1 章是选中章且带「当前」徽章，第 2 章两者都不是
@@ -308,6 +310,7 @@ test("剧情图 · 600 节点大树：大章默认降级列表、切图形后 20
 
 test("剧情图 · 200 条快照：列表行与节点详情都标「存档点」，与上一档对比出确定 diff", async () => {
   await openW1(page);
+  await openRailGroup(page, "图鉴");
   await page.getByTestId("tree").click();
 
   // 默认列表（第 1 章 200 节点）：挂着快照的行把幕号直接印在行上——seq 来自 /api/history 索引（200 条），不是猜的

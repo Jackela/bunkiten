@@ -12,8 +12,8 @@ import { motion } from "framer-motion";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Maximize2, ZoomIn, ZoomOut } from "lucide-react";
 import { coverUrl, fetchWorlds, postWorld, worldExportUrl, type WorldEntry } from "../lib/acp";
-import { focusableElements } from "../lib/focusTrap";
 import { genealogyStep, layoutGenealogy, type GenealogyLayout } from "../lib/genealogy";
+import { tabThroughMenu } from "../lib/menuTab";
 import { truncate } from "../lib/text";
 import { fitView, panView, viewBoxOf, zoomViewAt, type TreeView } from "../lib/treeLayout";
 import { isLegacyForkNote } from "../lib/worlds";
@@ -681,11 +681,7 @@ export default function WorldsScreen() {
   /**
    * 菜单内容区的键盘：Tab 在菜单项之间走位（本仓既有约定：Tab 走项、Esc 收菜单，见
    * tests/e2e-ui/worlds.spec.ts 的键盘用例；键位速查卡里也写着「Tab 行内按钮与 ⋯ 菜单」）。
-   * 为什么必须自己搬：Radix 的菜单项是 `tabIndex=-1`（焦点由 roving 组程序化驱动），而菜单内容
-   * 又会无条件 `preventDefault` 掉 Tab——不接手的话，Tab 在菜单里等于按了没反应。
-   * 走到两头就把 Tab 交还页面：把焦点搬到文档序里弹层之后（Tab）/ 之前（Shift+Tab）的第一个可聚焦元素上，
-   * 菜单随之由 DismissableLayer 的 focusOutside 收掉——与手写版同形（那时菜单项是普通 button/a，
-   * Tab 天然走到行外并把菜单带走）。刻意**不**回绕：菜单不该是键盘陷阱（WCAG 2.1.2）。
+   * 走位本体在 lib/menuTab（命令轨的分组菜单同样吃它，两个菜单的键位只有一套）；这里只剩组字让路。
    */
   const onMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.nativeEvent.isComposing) {
@@ -693,27 +689,7 @@ export default function WorldsScreen() {
       return;
     }
     if (event.key !== "Tab") return;
-    const popup = menuPopup;
-    const items = [...(popup?.querySelectorAll<HTMLElement>('[role="menuitem"]:not([aria-disabled="true"])') ?? [])];
-    // 焦点不在任何菜单项上（鼠标打开时 Radix 只聚焦弹层本身）：Tab 进首项、Shift+Tab 进末项
-    const at = items.indexOf(document.activeElement as HTMLElement);
-    const next = items[at < 0 ? (event.shiftKey ? items.length - 1 : 0) : at + (event.shiftKey ? -1 : 1)];
-    event.preventDefault(); // 焦点由下面两行决定；顺带让 Radix 的 Tab 处理让位（它只吞键、不搬焦点）
-    if (next) {
-      next.focus();
-      return;
-    }
-    // 「之后/之前的第一个可聚焦元素」要排除弹层自己的后代：菜单项是 button，compareDocumentPosition
-    // 对后代同样带 FOLLOWING 位，不过滤就会把自己再聚焦一遍
-    const outside = popup
-      ? focusableElements(document.body).filter(
-          (el) =>
-            !popup.contains(el) &&
-            popup.compareDocumentPosition(el) &
-              (event.shiftKey ? Node.DOCUMENT_POSITION_PRECEDING : Node.DOCUMENT_POSITION_FOLLOWING),
-        )
-      : [];
-    (event.shiftKey ? outside[outside.length - 1] : outside[0])?.focus();
+    tabThroughMenu(event.nativeEvent, event.currentTarget);
   };
 
   /** 弹层卸载时 Radix 默认把焦点送回触发器；玩家进的是行内编辑器时别抢（见 keepFocusOnCloseRef） */

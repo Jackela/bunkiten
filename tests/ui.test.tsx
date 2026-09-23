@@ -7,7 +7,9 @@
 // v1.6 第二段：剧情图快照标注/原地回退/分叉带 seq、>40 节点列表降级与缩放平移、节点 roving tabIndex、
 //      游戏键盘（数字键选选项 / 空格补全 / 自动前进倒计时标记）与 App 的状态播报区（aria-live）。
 // v1.7 新增主题深化：preset 声明字体族（--font-preset 系统字体栈）与对话框质感（dialog-* 类映射）。
-// v1.7 续：重掷本回合（reroll）——次新 turn 快照 restore、reason:"reroll" 分割线、重同步收尾后排队重发同一玩家输入。
+// v1.7 续：重演本回合（reroll）——restore + reason:"reroll" 分割线 + 重同步收尾后排队重发同一玩家输入。
+// v1.13 续：目标幕与回退点改从盘上解析（快照条目的 `prompt`；刷新/重启后照样可重演）、树屏「回到这一幕并重演」、
+//      内存账本 lastTurnPrompt/pendingTurnPrompt 删除——本文件的重演用例随之改 mock 单条查询。
 // v1.8 续：捏人屏主角卡摘要与两处开演入口（制作美术 / 跳过美术）、制作中屏美术槽位与剧情图入口、
 //      FreeInput 的发送与语音、世界线屏「继续上次」卡 / 键盘卡 / 加载失败重试 / 改名取消、ShellPage 页框与标题屏字标。
 // v1.9 续：四处浮层的背景收口（ROADMAP §3 最后一面）——抽屉打开时 GameStage 的舞台层整体 inert、
@@ -73,6 +75,35 @@ function jsonResponse(body: unknown, status = 200): Response {
  */
 function openRowMenu(worldId: string): void {
   fireEvent.pointerDown(screen.getByTestId(`world-menu-${worldId}`), { button: 0 });
+}
+
+/** 命令轨三个分组触发器的 testid（v1.12 菜单信息架构：游戏屏顶层只有 设置|回顾|图鉴|进度|帮助） */
+const RAIL_GROUPS = { 回顾: "rail-review", 图鉴: "rail-collection", 进度: "rail-progress" } as const;
+
+/**
+ * 打开命令轨的一个分组菜单（v1.12）：历史/前情/角色/画廊/剧情图/重演这一幕 这些叶子项默认**不在 DOM 里**
+ * ——它们现在是二级菜单项，与行 ⋯ 菜单同款「打开才渲染」。与 openRowMenu 同一手法（Radix 触发器
+ * **pointerdown** 就展开；键盘路径走 Enter/Space/↓，e2e 里另有用例）。
+ * @param {"回顾"|"图鉴"|"进度"} group 分组名（RAIL_GROUPS 的键）
+ * @returns {HTMLElement} 菜单内容节点（断言「菜单真的开了」用）
+ */
+function openRailGroup(group: keyof typeof RAIL_GROUPS): HTMLElement {
+  fireEvent.pointerDown(screen.getByTestId(RAIL_GROUPS[group]), { button: 0 });
+  return screen.getByTestId(`${RAIL_GROUPS[group]}-menu`);
+}
+
+/**
+ * 打开标题屏角落簇的「更多」菜单（v1.12）：导出当前卡 / 导入剧本 / 剧本体检 三项都在里面，
+ * 默认不在 DOM；导入用的隐藏 file input 仍留在角落簇（不在菜单内），所以它照旧随时可查。
+ */
+function openTitleMore(): HTMLElement {
+  fireEvent.pointerDown(screen.getByTestId("title-more"), { button: 0 });
+  return screen.getByTestId("title-more-menu");
+}
+
+/** 展开设置屏的「细分音量」披露（v1.12：曲/环境/音效三条滑杆默认不渲染，滑杆 testid 一个字没改） */
+function expandChannels(): void {
+  fireEvent.click(screen.getByTestId("settings-channels-toggle"));
 }
 
 /**
@@ -176,13 +207,198 @@ describe("TopBar：章节指示与回合耗时", () => {
     expect(screen.queryByTestId("world-label")).toBeNull();
   });
 
-  it("「剧情图」轨按钮打开剧情图 overlay（记住返回屏）", () => {
+  it("「剧情图」在「图鉴」菜单里：开菜单 → 点它打开剧情图 overlay（记住返回屏）", () => {
     useGameStore.setState({ screen: "game", screenReturn: null });
     render(<TopBar />);
+    // v1.12：剧情图从轨上挪进二级菜单——先开分组，叶子项才在 DOM 里
+    openRailGroup("图鉴");
     fireEvent.click(screen.getByTitle("剧情图"));
     const s = useGameStore.getState();
     expect(s.screen).toBe("tree");
     expect(s.screenReturn).toBe("game");
+  });
+});
+
+describe("TopBar：命令轨的分组菜单（v1.12 菜单信息架构）", () => {
+  /** POST /prompt 收到的指令（叶子的行为断言：直达项与菜单项发的是同一条指令） */
+  let prompts: string[];
+
+  beforeEach(() => {
+    prompts = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/prompt") {
+          prompts.push((JSON.parse(String(init?.body)) as { text: string }).text);
+          return jsonResponse({ ok: true });
+        }
+        return jsonResponse({}, 404);
+      }),
+    );
+    useGameStore.setState({
+      screen: "game",
+      screenReturn: null,
+      status: "就绪",
+      engineBusy: false,
+      worldId: "campus-summer-1",
+      turnSnapshots: null,
+      pendingResync: null,
+    });
+  });
+
+  it("顶层只剩 5 项，DOM 顺序即 设置｜回顾｜图鉴｜进度｜帮助，且「设置」仍是 game 屏第一个可聚焦元素", () => {
+    render(<TopBar />);
+    const nav = screen.getByRole("navigation");
+    expect([...nav.children].map((el) => el.getAttribute("data-testid"))).toEqual([
+      "settings",
+      "rail-review",
+      "rail-collection",
+      "rail-progress",
+      "help",
+    ]);
+    // 分组触发器用 aria-label 说清自己管什么（可见文案只有两个字，读屏要能独立读懂）
+    expect(screen.getByTestId("rail-review").getAttribute("aria-label")).toBe("回顾（历史与前情）");
+    expect(screen.getByTestId("rail-collection").getAttribute("aria-label")).toBe("图鉴（角色、画廊与剧情图）");
+    expect(screen.getByTestId("rail-progress").getAttribute("aria-label")).toBe("进度（重演、重开与换剧本）");
+    // 「设置」排在第一位不是随手写的：它是 game 屏 DOM 里第一个可聚焦元素（Tab 首个落点，
+    // tests/e2e-ui/focus.spec.ts 有一条用例盯着）。这条断言把它钉在 jsdom 这一侧，改顺序立刻红
+    expect(focusableElements(document.body)[0]).toBe(screen.getByTestId("settings"));
+  });
+
+  it("分组菜单：默认收起（叶子项不在 DOM）→ 开「回顾」出历史/前情（菜单语义 + 焦点进首项）→ 点前情发指令并收菜单", async () => {
+    render(<TopBar />);
+    // 收起态：叶子项一个都不在 DOM（与行 ⋯ 菜单同款）——顺带钉住「没有把两个分组混进同一个弹层」
+    for (const id of ["history", "recap", "characters", "assets", "tree", "reroll", "new-game", "presets"]) {
+      expect(screen.queryByTestId(id)).toBeNull();
+    }
+    const trigger = screen.getByTestId("rail-review");
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    expect(trigger.getAttribute("aria-haspopup")).toBe("menu");
+
+    const menu = openRailGroup("回顾");
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    expect(trigger.getAttribute("aria-controls")).toBe(menu.id);
+    expect(menu.getAttribute("role")).toBe("menu");
+    expect(menu.getAttribute("aria-labelledby")).toBe(trigger.id);
+    // 弹层朝左开（命令轨贴屏幕右缘）：布局在 jsdom 里量不出，但 side 的意图可以断言
+    expect(menu.getAttribute("data-side")).toBe("left");
+    expect(within(menu).getAllByRole("menuitem").map((el) => el.textContent)).toEqual(["历史", "前情"]);
+    // 开菜单把焦点送进弹层（鼠标路径：Radix 只聚焦弹层本身、不落到某一项，与行 ⋯ 菜单同款；
+    // 键盘用户接着按 Tab/↓ 走项，走位由下一条用例钉住）
+    await waitFor(() => expect(menu.contains(document.activeElement)).toBe(true));
+
+    // 叶子项沿用原 testid/aria（测试契约逐个保留）：前情发的是原样那条指令
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("recap"));
+    });
+    expect(prompts).toEqual(["/recap"]);
+    expect(screen.queryByTestId("rail-review-menu")).toBeNull(); // 选中即关
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    // 关菜单把焦点送回触发器（Radix 的 onCloseAutoFocus）：焦点不该丢回 body
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+  });
+
+  it("「图鉴」菜单三项各按原契约打开对应 overlay；「帮助」「重开」「换剧本」发原样的指令", async () => {
+    render(<TopBar />);
+
+    openRailGroup("图鉴");
+    fireEvent.click(screen.getByTestId("characters"));
+    expect(useGameStore.getState().charactersOpen).toBe(true);
+    act(() => useGameStore.setState({ charactersOpen: false }));
+
+    openRailGroup("图鉴");
+    fireEvent.click(screen.getByTestId("assets"));
+    expect(useGameStore.getState().screen).toBe("assets");
+
+    openRailGroup("图鉴");
+    fireEvent.click(screen.getByTestId("tree"));
+    expect(useGameStore.getState().screen).toBe("tree");
+
+    // 直达项（设置/帮助）仍在轨上：帮助与菜单项走同一套 send
+    useGameStore.setState({ screen: "game" });
+    fireEvent.click(screen.getByTestId("help"));
+    expect(prompts).toEqual(["/help"]);
+
+    openRailGroup("进度");
+    fireEvent.click(screen.getByTestId("new-game"));
+    expect(prompts.at(-1)).toBe("/new-game");
+
+    openRailGroup("进度");
+    fireEvent.click(screen.getByTestId("presets"));
+    expect(prompts.at(-1)).toBe("/presets");
+  });
+
+  it("分组菜单键盘：Esc 就地收菜单（不冒到 Esc 关闭链）、Tab 在项间走位、走到末项交还页面", async () => {
+    render(
+      <>
+        <TopBar />
+        {/* 命令轨之后的一个可聚焦元素：Tab 走到菜单末项时「交还页面」的落点（真实屏里是对话区那一簇） */}
+        <button type="button" data-testid="after-rail">
+          对话区
+        </button>
+      </>,
+    );
+    const trigger = screen.getByTestId("rail-review");
+    openRailGroup("回顾");
+    const history = screen.getByTestId("history");
+    const recap = screen.getByTestId("recap");
+    await waitFor(() => expect(screen.getByTestId("rail-review-menu").contains(document.activeElement)).toBe(true));
+
+    // Esc：就地关菜单。Radix 在 document 捕获阶段处理 Esc，本屏在它那一拍 stopPropagation——
+    // window 上的 Esc 关闭链（App）一声都听不到
+    const outer = vi.fn();
+    window.addEventListener("keydown", outer);
+    fireEvent.keyDown(recap, { key: "a" }); // 探针：没人拦的按键能冒到 window（证明下面不是空转）
+    expect(outer).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(recap, { key: "Escape" });
+    window.removeEventListener("keydown", outer);
+    expect(outer).toHaveBeenCalledTimes(1); // Esc 那一下被就地吃掉
+    expect(screen.queryByTestId("rail-review-menu")).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(trigger)); // 关菜单把焦点送回触发器
+
+    // Tab 走项（本仓既有约定，与行 ⋯ 菜单同一份实现 lib/menuTab）：菜单项 tabIndex=-1、
+    // 菜单内容又无条件吞掉 Tab —— 不接手的话 Tab 在菜单里等于按了没反应
+    // （上一段 Esc 已把弹层卸掉：这里起每一步都重新取节点，别拿旧的 history/recap 引用比）
+    openRailGroup("回顾");
+    const menu2 = screen.getByTestId("rail-review-menu");
+    await waitFor(() => expect(menu2.contains(document.activeElement)).toBe(true));
+    fireEvent.keyDown(menu2, { key: "Tab" }); // 从弹层起步（鼠标路径）→ 首项
+    expect(document.activeElement).toBe(screen.getByTestId("history"));
+    fireEvent.keyDown(screen.getByTestId("history"), { key: "Tab" });
+    expect(document.activeElement).toBe(screen.getByTestId("recap"));
+    // 走到末项：把 Tab 交还页面（焦点搬到文档序里弹层之后的第一个可聚焦元素），菜单随之被 focusOutside 收掉。
+    // 命令轨的弹层是**非 portal、就地**渲染在 nav 里的（紧跟触发器之后），所以「之后」正是下一枚 rail 触发器
+    // 「图鉴」——Tab 沿命令轨继续往下走，而不是飞出整个 nav（这正是我们要的行为）。
+    fireEvent.keyDown(screen.getByTestId("recap"), { key: "Tab" });
+    await waitFor(() => expect(screen.queryByTestId("rail-review-menu")).toBeNull());
+    expect(document.activeElement).toBe(screen.getByTestId("rail-collection"));
+
+    // 反方向：焦点不在任何菜单项上时（鼠标打开只聚焦弹层）Shift+Tab 进末项，再按一次回前一项
+    openRailGroup("回顾");
+    fireEvent.keyDown(screen.getByTestId("rail-review-menu"), { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(screen.getByTestId("recap"));
+    fireEvent.keyDown(screen.getByTestId("recap"), { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(screen.getByTestId("history"));
+  });
+
+  it("「重演这一幕」只在可重演时出现在「进度」菜单里（v1.13：判据只剩快照数，输入在盘上）", () => {
+    useGameStore.setState({ turnSnapshots: 2 });
+    render(<TopBar />);
+    openRailGroup("进度");
+    expect(screen.getByTestId("reroll")).toBeTruthy(); // 攒够两条 turn 快照：入口出现（输入有无由点击时解析）
+
+    act(() => useGameStore.setState({ turnSnapshots: 1 }));
+    expect(screen.queryByTestId("reroll")).toBeNull(); // 已知快照不足（首个回合）：不给
+
+    act(() => useGameStore.setState({ turnSnapshots: null }));
+    expect(screen.getByTestId("reroll")).toBeTruthy(); // 未知不藏功能：点击后由解析内核判定
+
+    act(() => useGameStore.setState({ pendingResync: { worldId: "campus-summer-1", seq: 2 } }));
+    expect(screen.queryByTestId("reroll")).toBeNull(); // 待重同步期间不重演（要覆盖的正是那几份正在变的文件）
+
+    act(() => useGameStore.setState({ pendingResync: null, status: "引擎演绎中…" }));
+    expect(screen.queryByTestId("reroll")).toBeNull(); // 非就绪态不给
   });
 });
 
@@ -253,8 +469,8 @@ describe("lib/status：引擎状态文案的玩家化映射（v1.6）", () => {
     expect(playerStatus("出错：HTTP 500")).toBe("出错了：HTTP 500");
     expect(playerStatus("出错：")).toBe("出错了："); // 前缀换成玩家口吻、尾巴原样保留
 
-    // 表外状态原样透传：制作屏的引擎口吻与重掷失败的提示都不许被硬翻
-    for (const s of ["清点既有美术…", "无法重掷：快照不足", "引擎演绎中"]) {
+    // 表外状态原样透传：制作屏的引擎口吻与重演失败的提示都不许被硬翻
+    for (const s of ["清点既有美术…", "无法重演：快照不足", "引擎演绎中"]) {
       expect(playerStatus(s)).toBe(s);
     }
   });
@@ -663,6 +879,26 @@ describe("StoryTreeScreen：树图、详情与编辑（v1.5）", () => {
     expect(input.value).toBe("");
   });
 
+  it("只改这个节点（v1.12）：节点详情里写的那句话**带节点作用域**发给引擎，换节点就清空", async () => {
+    render(<StoryTreeScreen />);
+    await waitFor(() => expect(screen.getByTestId("tree-canvas")).toBeTruthy());
+    // 选中一个节点（侧栏详情出现）——先点图上的节点
+    fireEvent.click(screen.getByTestId(/^tree-node-2-3$/));
+    const note = await waitFor(() => screen.getByTestId("tree-node-note") as HTMLInputElement);
+    expect(note.placeholder).toContain("2-3"); // 输入框自己说明作用对象
+
+    fireEvent.change(note, { target: { value: "把这里写得更紧张" } });
+    fireEvent.click(screen.getByTestId("tree-node-send"));
+    expect(prompts.at(-1)).toBe("剧情：针对节点 2-3：把这里写得更紧张");
+    expect(note.value).toBe(""); // 发完清空
+
+    // 换节点：写了一半的话是针对上一个节点说的，不能跟过去
+    fireEvent.change(note, { target: { value: "写了一半" } });
+    fireEvent.click(screen.getByTestId(/^tree-node-2-2$/));
+    await waitFor(() => expect(screen.getByTestId("tree-node-note").getAttribute("placeholder")).toContain("2-2"));
+    expect((screen.getByTestId("tree-node-note") as HTMLInputElement).value).toBe("");
+  });
+
   it("引擎忙：发送按钮禁用并提示排队", async () => {
     useGameStore.setState({ engineBusy: true });
     render(<StoryTreeScreen />);
@@ -868,6 +1104,14 @@ describe("SettingsScreen：设置项、持久化与入口（v1.6）", () => {
     expect(within(page).getByText("改动即时生效并保存在本机")).toBeTruthy();
     expect((screen.getByTestId("settings-master") as HTMLInputElement).value).toBe("1");
     expect(screen.getByTestId("settings-master-value").textContent).toBe("100");
+    // 细分音量（v1.12）：三条通道滑杆默认不渲染——顶层只留主音量 + 静音这两个玩家最常动的
+    const channels = screen.getByTestId("settings-channels-toggle");
+    expect(channels.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByTestId("settings-bgm")).toBeNull();
+    expect(screen.queryByTestId("settings-ambient")).toBeNull();
+    expect(screen.queryByTestId("settings-sfx")).toBeNull();
+    expandChannels();
+    expect(screen.getByTestId("settings-channels-toggle").getAttribute("aria-expanded")).toBe("true");
     expect((screen.getByTestId("settings-bgm") as HTMLInputElement).value).toBe("0.8");
     expect(screen.getByTestId("settings-bgm-value").textContent).toBe("80");
     expect(screen.getByTestId("settings-ambient-value").textContent).toBe("60");
@@ -890,11 +1134,74 @@ describe("SettingsScreen：设置项、持久化与入口（v1.6）", () => {
     expect(useGameStore.getState().settings.master).toBeCloseTo(0.3);
     expect(screen.getByTestId("settings-master-value").textContent).toBe("30");
 
+    // 细分音量里的滑杆同样即时生效（v1.12：先展开披露，滑杆的 testid/行为一个字没改）
+    expandChannels();
     fireEvent.change(screen.getByTestId("settings-sfx"), { target: { value: "0.5" } });
     const saved = JSON.parse(window.localStorage.getItem(SETTINGS_STORAGE_KEY)!) as Record<string, unknown>;
     expect(saved).toMatchObject({ master: 0.3, sfx: 0.5, textSpeed: "standard", autoAdvance: 0 });
     // 落盘形状能被 loadSettings 原样读回（逐键校验不改合法值）
     expect(loadSettings()).toEqual(useGameStore.getState().settings);
+  });
+
+  it("「引擎与密钥」披露区：从 game/标题屏进来默认收起、从 boot 屏进来默认展开；手动切过之后听玩家的", () => {
+    // 前置：从 game 屏进来（beforeEach 的 screenReturn="game"）——技术配置默认收起，玩家偏好先上屏
+    render(<SettingsScreen />);
+    const toggle = () => screen.getByTestId("settings-advanced-toggle");
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+    expect(toggle().getAttribute("aria-controls")).toBe("settings-advanced-toggle-panel");
+    expect(screen.queryByTestId("engine-keys")).toBeNull();
+    // 披露头自己说清「这是什么、不配也能玩」（读屏把标题与副行一起念出来）
+    expect(toggle().textContent).toContain("引擎与密钥");
+    expect(toggle().textContent).toContain("不配置也能玩");
+
+    // 手动展开 → 整节上屏；引擎与密钥在披露区里仍是一块独立面板（testid 原样）
+    fireEvent.click(toggle());
+    expect(toggle().getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByTestId("engine-keys")).toBeTruthy();
+
+    // 再收起 → 整节卸载（不是只藏起来：收起态不该留给 Tab 一串够不着的控件）
+    fireEvent.click(toggle());
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByTestId("engine-keys")).toBeNull();
+
+    // 从启动屏未登录态进来（boot 屏的「填自备密钥 / 打开设置」）：这一趟正是冲着它来的 → 默认展开
+    cleanup();
+    useGameStore.setState({ screen: "settings", screenReturn: "boot" });
+    render(<SettingsScreen />);
+    expect(screen.getByTestId("settings-advanced-toggle").getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByTestId("engine-keys")).toBeTruthy();
+
+    // 玩家手动收起后听玩家的（默认值只管「还没手动切过」的那一版）
+    fireEvent.click(screen.getByTestId("settings-advanced-toggle"));
+    expect(screen.getByTestId("settings-advanced-toggle").getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByTestId("engine-keys")).toBeNull();
+  });
+
+  it("细分音量披露：展开后三条滑杆出现且能改值（读数与落盘同步）", () => {
+    render(<SettingsScreen />);
+    const toggle = screen.getByTestId("settings-channels-toggle");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.getAttribute("aria-controls")).toBe("settings-channels-panel");
+    expect(screen.queryByTestId("settings-channels-panel")).toBeNull();
+
+    fireEvent.click(toggle);
+    expect(screen.getByTestId("settings-channels-panel")).toBeTruthy();
+    for (const [id, value, shown] of [
+      ["settings-bgm", "0.2", "20"],
+      ["settings-ambient", "0.4", "40"],
+      ["settings-sfx", "0.6", "60"],
+    ] as const) {
+      fireEvent.change(screen.getByTestId(id), { target: { value } });
+      expect(screen.getByTestId(`${id}-value`).textContent).toBe(shown);
+    }
+    expect(useGameStore.getState().settings).toMatchObject({ bgm: 0.2, ambient: 0.4, sfx: 0.6 });
+    expect(JSON.parse(window.localStorage.getItem(SETTINGS_STORAGE_KEY)!)).toMatchObject({ bgm: 0.2, ambient: 0.4, sfx: 0.6 });
+
+    // 主音量与静音**不在**披露里（顶层常驻）：收起细分音量后它们照旧在
+    fireEvent.click(toggle);
+    expect(screen.queryByTestId("settings-bgm")).toBeNull();
+    expect(screen.getByTestId("settings-master")).toBeTruthy();
+    expect(screen.getByTestId("settings-muted")).toBeTruthy();
   });
 
   it("静音开关与档位按钮：点击即落 store + 存档，可来回切", () => {
@@ -985,12 +1292,14 @@ describe("EngineKeysSection：服务目录候选（v1.10）", () => {
    */
   type View = {
     version: number;
+    engine: string;
     llm: Record<string, string | boolean>;
     image: Record<string, string | boolean>;
   };
   function defaultView(): View {
     return {
       version: 1,
+      engine: "grok",
       llm: { mode: "session", provider: "openai", baseUrl: "", model: "", hasKey: false, apiKeyMasked: "" },
       image: { mode: "off", provider: "openai", baseUrl: "", model: "", size: "", sizeBackground: "", hasKey: false, apiKeyMasked: "" },
     };
@@ -999,22 +1308,33 @@ describe("EngineKeysSection：服务目录候选（v1.10）", () => {
   let creds: View;
   /** GET /api/providers 的回包（null = 这条读不到：非 2xx） */
   let providersResp: unknown;
+  /** /api/auth 的登录态（v1.11 收尾：单元里可改「未登录 / 已登录 / 登录入口不可用」三态） */
+  let authState: { loggedIn: boolean; canLogin: boolean };
   let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     creds = defaultView();
     providersResp = null;
+    authState = { loggedIn: false, canLogin: true };
     fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(String(input), "http://localhost");
+      if (url.pathname === "/api/auth") {
+        return jsonResponse({ loggedIn: authState.loggedIn, hasCredentials: false, engine: creds.engine, canLogin: authState.canLogin });
+      }
+      if (url.pathname === "/api/engine/login") return jsonResponse({ ok: true });
+      if (url.pathname === "/api/engine/logout") {
+        authState = { ...authState, loggedIn: false };
+        return jsonResponse({ ok: true });
+      }
       if (url.pathname === "/api/credentials") {
         if (init?.method === "POST") {
-          const patch = JSON.parse(String(init.body)) as { llm?: Record<string, string>; image?: Record<string, string> };
+          const patch = JSON.parse(String(init.body)) as { engine?: string; llm?: Record<string, string>; image?: Record<string, string> };
           // key 不出现在视图里：只把它折成 hasKey（与 server 的 publicView 同一口径）
           const merge = (prev: Record<string, string | boolean>, next?: Record<string, string>) => {
             const { apiKey, ...rest } = next ?? {};
             return { ...prev, ...rest, ...(apiKey === undefined ? {} : { hasKey: apiKey !== "" }) };
           };
-          creds = { ...creds, llm: merge(creds.llm, patch.llm), image: merge(creds.image, patch.image) };
+          creds = { ...creds, engine: patch.engine ?? creds.engine, llm: merge(creds.llm, patch.llm), image: merge(creds.image, patch.image) };
         }
         return jsonResponse({ ok: true, ...creds });
       }
@@ -1131,6 +1451,86 @@ describe("EngineKeysSection：服务目录候选（v1.10）", () => {
     // 出图组：远端这条可用 → 用它画候选
     const image = await openGroup("image");
     expect(optionLabels(image)).toContain("新来的出图服务");
+  });
+
+  it("登录状态行（v1.11 收尾）：未登录给「登录 <引擎>」，点了就拉起 CLI 登录流程", async () => {
+    render(<EngineKeysSection />);
+    await waitFor(() => expect(screen.getByTestId("engine-auth-status").textContent).toBe("未登录"));
+    expect(screen.queryByTestId("engine-auth-logout")).toBeNull();
+    fireEvent.click(screen.getByTestId("engine-auth-login"));
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([input]) => String(input) === "/api/engine/login")).toBe(true),
+    );
+    // 拉起后给等待提示（玩家在浏览器里完成；完成后状态行自动刷新——轮询本身在 engine-login 的单测里钉）
+    await waitFor(() => expect(screen.getByTestId("engine-auth-note").textContent).toContain("已打开浏览器"));
+  });
+
+  it("登录状态行：已登录给「退出登录」，两段确认（登出是全局动作：终端里那份也一起清）", async () => {
+    authState = { loggedIn: true, canLogin: true };
+    render(<EngineKeysSection />);
+    await waitFor(() => expect(screen.getByTestId("engine-auth-status").textContent).toBe("已登录"));
+
+    // 首点只是展开确认条（世界线删除同款的两段式），并明说会连带终端登录
+    fireEvent.click(screen.getByTestId("engine-auth-logout"));
+    expect(screen.getByText(/会同时退出你在终端里的登录/)).toBeTruthy();
+    expect(fetchMock.mock.calls.some(([input]) => String(input) === "/api/engine/logout")).toBe(false);
+    // 取消 → 确认条收起，什么都没发生
+    fireEvent.click(screen.getByTestId("engine-auth-logout-cancel"));
+    expect(screen.queryByTestId("engine-auth-logout-confirm")).toBeNull();
+    expect(fetchMock.mock.calls.some(([input]) => String(input) === "/api/engine/logout")).toBe(false);
+
+    // 二点确认 → 真发登出，状态行翻回未登录
+    fireEvent.click(screen.getByTestId("engine-auth-logout"));
+    fireEvent.click(screen.getByTestId("engine-auth-logout-confirm"));
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([input]) => String(input) === "/api/engine/logout")).toBe(true),
+    );
+    await waitFor(() => expect(screen.getByTestId("engine-auth-status").textContent).toBe("未登录"));
+    expect(screen.getByTestId("engine-auth-note").textContent).toContain("已退出登录");
+  });
+
+  it("登录状态行：这台机器没有登录入口（canLogin=false）时不画按钮，改说一句人话", async () => {
+    authState = { loggedIn: false, canLogin: false };
+    render(<EngineKeysSection />);
+    await waitFor(() => expect(screen.getByTestId("engine-auth-unavailable")).toBeTruthy());
+    expect(screen.queryByTestId("engine-auth-login")).toBeNull();
+    expect(screen.getByTestId("engine-auth-unavailable").textContent).toContain("grok login");
+    expect(screen.getByTestId("engine-auth-unavailable").textContent).toContain("先装好 grok"); // unavailableNote 来自真源
+  });
+
+  it("引擎选择（v1.11）：默认 grok；切到 Codex 立即保存、说明换掉、对话组的「自备密钥」被锁、出图组不受影响", async () => {
+    render(<EngineKeysSection />);
+    const grokBtn = await waitFor(() => screen.getByTestId("engine-backend-grok") as HTMLButtonElement);
+    expect(grokBtn.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("engine-backend-codex").getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByTestId("engine-backend-note").textContent).toContain("Grok");
+
+    // 切引擎：与下拉/开关同款「立即保存」——POST 只带 engine 一个键
+    fireEvent.click(screen.getByTestId("engine-backend-codex"));
+    await waitFor(() => {
+      const post = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "POST");
+      expect(post).toBeTruthy();
+      expect(JSON.parse(String((post![1] as RequestInit).body))).toEqual({ engine: "codex" });
+    });
+
+    // 视图切过去：按钮态、说明换成 Codex 的、提示重启生效（会话 env 只在 spawn 时读一次）
+    await waitFor(() => expect(screen.getByTestId("engine-backend-codex").getAttribute("aria-pressed")).toBe("true"));
+    expect(screen.getByTestId("engine-backend-note").textContent).toContain("Codex");
+    expect(screen.getByTestId("engine-restart-note").textContent).toContain("重启");
+
+    // 对话组：Codex 不支持自备密钥 → 按钮禁用 + 一句原因；同组的自备表单不再画（已存的值留在盘上，不删）
+    expect((screen.getByTestId("engine-llm-mode-byok") as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId("engine-llm-byok-locked").textContent).toBeTruthy();
+    expect(screen.queryByTestId("engine-llm-baseurl")).toBeNull();
+    expect((screen.getByTestId("engine-llm-mode-session") as HTMLButtonElement).getAttribute("aria-pressed")).toBe("true");
+
+    // 出图组两引擎通用：自备照常可开、表单照常画
+    fireEvent.click(screen.getByTestId("engine-image-mode-byok"));
+    expect(screen.getByTestId("engine-image-baseurl")).toBeTruthy();
+
+    // 切回 grok：对话组恢复可点
+    fireEvent.click(screen.getByTestId("engine-backend-grok"));
+    await waitFor(() => expect((screen.getByTestId("engine-llm-mode-byok") as HTMLButtonElement).disabled).toBe(false));
   });
 });
 
@@ -1558,8 +1958,6 @@ describe("App：Esc 关闭链里的设置屏（v1.6）", () => {
       preloadPhase: "init",
       status: "就绪",
       engineBusy: false,
-      pendingTurnPrompt: null,
-      lastTurnPrompt: null,
     });
   });
 });
@@ -2314,6 +2712,37 @@ describe("AssetsScreen：选择模式、批量重绘与批量删除（v1.6）", 
     expect(screen.getByTestId("assets-regen-notice").textContent).toContain("重绘完成：2 项已换图");
   });
 
+  it("预览里的「想怎么改？」（v1.12）：一句人话随指令发给引擎；留空 = 盲重绘；换一张图就清空", async () => {
+    render(<AssetsScreen />);
+    await waitFor(() => expect(screen.getByTestId("asset-card-薇拉-微笑")).toBeTruthy());
+
+    fireEvent.click(screen.getByTestId("asset-card-薇拉-微笑"));
+    const note = screen.getByTestId("assets-regen-note") as HTMLInputElement;
+    expect(note.placeholder).toContain("头发改成短发"); // 给玩家的示例（教他能怎么说）
+    fireEvent.change(note, { target: { value: "头发改成短发" } });
+    fireEvent.click(screen.getByTestId("assets-preview-regen"));
+    expect(prompts).toEqual(["美术：重绘 立绘 薇拉-微笑：头发改成短发"]);
+    await engineTurn("【图】立绘|薇拉-微笑|presets/campus-summer/assets/立绘-薇拉-微笑.jpg|重绘\n");
+
+    // 换一张图：上一张的要求不能跟过来（那句话是针对上一张说的，带过去会把要求发错对象）
+    fireEvent.click(screen.getByTestId("assets-preview-close"));
+    fireEvent.click(screen.getByTestId("asset-card-薇拉"));
+    expect((screen.getByTestId("assets-regen-note") as HTMLInputElement).value).toBe("");
+
+    // 留空 = 盲重绘（v1.3 起的旧行为逐字不变）
+    fireEvent.click(screen.getByTestId("assets-preview-regen"));
+    expect(prompts[1]).toBe("美术：重绘 立绘 薇拉");
+    await engineTurn("【图】立绘|薇拉|presets/campus-summer/assets/立绘-薇拉.jpg|重绘\n");
+
+    // 下一张图：输入框里按 Enter 也能发（输入法组字中的 Enter 不算发送）
+    fireEvent.click(screen.getByTestId("assets-preview-close"));
+    fireEvent.click(screen.getByTestId("asset-card-薇拉-微笑"));
+    const note2 = screen.getByTestId("assets-regen-note");
+    fireEvent.change(note2, { target: { value: "换成夜景" } });
+    fireEvent.keyDown(note2, { key: "Enter", isComposing: false });
+    expect(prompts[2]).toBe("美术：重绘 立绘 薇拉-微笑：换成夜景");
+  });
+
   it("预览模态：role=dialog + aria-modal + 关闭按钮聚焦；单项重绘仍是同一条流水线（N=1）", async () => {
     const { container } = render(<AssetsScreen />);
     await waitFor(() => expect(screen.getByTestId("asset-card-薇拉-微笑")).toBeTruthy());
@@ -2341,9 +2770,9 @@ describe("AssetsScreen：选择模式、批量重绘与批量删除（v1.6）", 
     // 所以「焦点陷阱能把焦点送进来」与「背景已 inert」这两条必须同时成立——顺序错了这条会红
     await waitFor(() => expect(document.activeElement).toBe(close));
 
-    // 焦点陷阱（v1.9）：面板里可 Tab 到的是「关闭 + 重新生成」两枚；两端回绕，Tab 走不到画廊
+    // 焦点陷阱（v1.9）：面板里可 Tab 到的是「关闭 + 想怎么改？+ 重新生成」；两端回绕，Tab 走不到画廊
     const regen = screen.getByTestId("assets-preview-regen");
-    expect(focusableElements(dialog)).toEqual([close, regen]);
+    expect(focusableElements(dialog)).toEqual([close, screen.getByTestId("assets-regen-note"), regen]);
     regen.focus();
     pressTab(); // 末 → 首
     expect(document.activeElement).toBe(close);
@@ -2440,12 +2869,18 @@ describe("StoryTreeScreen：快照标注、原地回退与分叉带 seq（v1.6�
   let worldPosts: Record<string, unknown>[] = [];
   /** restore 的返回（单个用例可覆盖成失败） */
   let restoreResp: Record<string, unknown> = { ok: true, backupSeq: 12 };
+  /** seq → 单条查询带回的玩家输入（重演的数据源；默认空 = 旧档/续玩） */
+  let promptsBySeq: Record<number, string> = {};
+  /** POST /prompt 收到的指令（按顺序） */
+  let prompts: string[] = [];
 
   beforeEach(() => {
     snapshots = SNAPSHOTS;
     historyCalls = 0;
     worldPosts = [];
     restoreResp = { ok: true, backupSeq: 12 };
+    promptsBySeq = {};
+    prompts = [];
     useGameStore.setState({
       worldId: "campus-summer-1",
       worldLabel: "campus-summer-1",
@@ -2465,6 +2900,17 @@ describe("StoryTreeScreen：快照标注、原地回退与分叉带 seq（v1.6�
         if (url.pathname === "/api/tree") return jsonResponse({ worldId: "campus-summer-1", markdown: TREE_MD });
         if (url.pathname === "/api/history") {
           historyCalls += 1;
+          const seqParam = url.searchParams.get("seq");
+          if (seqParam !== null) {
+            // 单条才带 files 与 prompt（重演的解析内核在这里取输入；列表形状刻意不带，见 ADR-0023）
+            const seq = Number(seqParam);
+            const meta = snapshots.find((s) => s.seq === seq);
+            if (!meta) return jsonResponse({ worldId: "campus-summer-1", snapshots: [] });
+            return jsonResponse({
+              worldId: "campus-summer-1",
+              snapshots: [{ ...meta, files: { state: "# 状态\n", summary: null, tree: TREE_MD }, prompt: promptsBySeq[seq] ?? "" }],
+            });
+          }
           return jsonResponse({ worldId: "campus-summer-1", snapshots });
         }
         if (url.pathname === "/api/worlds" && init?.method === "POST") {
@@ -2474,8 +2920,36 @@ describe("StoryTreeScreen：快照标注、原地回退与分叉带 seq（v1.6�
           if (body.action === "restore") return jsonResponse(restoreResp, restoreResp.ok ? 200 : 400);
           return jsonResponse({ ok: true });
         }
-        if (url.pathname === "/prompt") return jsonResponse({ ok: true });
+        if (url.pathname === "/prompt") {
+          prompts.push((JSON.parse(String(init?.body)) as { text: string }).text);
+          return jsonResponse({ ok: true });
+        }
         return jsonResponse({}, 404);
+      }),
+    );
+  });
+
+  it("存档点命名（v1.12）：名字上屏、就地改名 → POST labelSnapshot（写索引，不碰快照文件）", async () => {
+    // 已有名字的存档点：显示在「存档点 · 第 N 幕」后面，输入框预填它
+    snapshots = [{ ...SNAPSHOTS[0], label: "雨夜遇袭前" }]; // SNAPSHOTS[0] = seq 3 / 节点 2-1
+    render(<StoryTreeScreen />);
+    await waitFor(() => expect(screen.getByTestId("tree-canvas")).toBeTruthy());
+    fireEvent.click(screen.getByTestId(/^tree-node-2-1$/));
+
+    await waitFor(() => expect(screen.getByTestId("tree-snapshot-2-1").textContent).toContain("雨夜遇袭前"));
+    const input = screen.getByTestId("snapshot-label-input") as HTMLInputElement;
+    expect(input.value).toBe("雨夜遇袭前");
+    expect((screen.getByTestId("snapshot-label-save") as HTMLButtonElement).disabled).toBe(true); // 没改就没什么可存
+
+    fireEvent.change(input, { target: { value: "改成进教堂之前" } });
+    fireEvent.click(screen.getByTestId("snapshot-label-save"));
+    // 名字落在**索引层**（labelSnapshot 动作），不是写进 append-only 的快照文件
+    await waitFor(() =>
+      expect(worldPosts).toContainEqual({
+        action: "labelSnapshot",
+        worldId: "campus-summer-1",
+        seq: 3,
+        label: "改成进教堂之前",
       }),
     );
   });
@@ -2497,6 +2971,41 @@ describe("StoryTreeScreen：快照标注、原地回退与分叉带 seq（v1.6�
     expect(screen.queryByTestId("tree-snapshot-2-4")).toBeNull();
     expect(screen.queryByTestId("tree-restore-2-4")).toBeNull();
     expect(screen.getByTestId("tree-fork-2-4")).toBeTruthy();
+  });
+
+  it("回到这一幕并重演（v1.13）：turn 条目且之前还有 turn 才出现；两段确认后 restore 回退点、排队重发该条 prompt", async () => {
+    promptsBySeq = { 7: "接过信。" };
+    render(<StoryTreeScreen />);
+    await waitFor(() => expect(screen.getByTestId("tree-canvas")).toBeTruthy());
+
+    // 2-1 的 #3 是第一条 turn：无处可退 → 不给重演入口（回退入口照旧在）
+    fireEvent.click(screen.getByTestId("tree-node-2-1"));
+    expect(screen.queryByTestId("tree-replay-2-1")).toBeNull();
+    expect(screen.getByTestId("tree-restore-2-1")).toBeTruthy();
+
+    // 2-2 的 #7 之前有 #3 → 入口出现；两段确认：首点只进确认态、不发请求
+    fireEvent.click(screen.getByTestId("tree-node-2-2"));
+    fireEvent.click(screen.getByTestId("tree-replay-2-2"));
+    expect(worldPosts).toEqual([]); // 破坏性动作：首点不落请求
+    expect(screen.getByTestId("tree-replay-confirm-2-2")).toBeTruthy();
+
+    // 取消回到未确认态；与回退的两组确认互斥（开一组即收另一组）
+    fireEvent.click(screen.getByTestId("tree-replay-cancel-2-2"));
+    expect(worldPosts).toEqual([]);
+    expect(screen.getByTestId("tree-replay-2-2")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("tree-restore-2-2"));
+    expect(screen.queryByTestId("tree-replay-confirm-2-2")).toBeNull();
+    fireEvent.click(screen.getByTestId("tree-restore-cancel-2-2"));
+
+    fireEvent.click(screen.getByTestId("tree-replay-2-2"));
+    fireEvent.click(screen.getByTestId("tree-replay-confirm-2-2"));
+
+    // 回退点 = #3（#7 之前最近的 turn；#9 backup 在 #7 之后、不参与）；输入 = #7 的 prompt（单条取，列表不带）
+    await waitFor(() => expect(worldPosts[0]).toMatchObject({ action: "restore", worldId: "campus-summer-1", seq: 3 }));
+    expect(prompts).toEqual(["继续世界：campus-summer-1。"]); // 重同步指令已补发
+    const s = useGameStore.getState();
+    expect(s.pendingRerollPrompt).toBe("接过信。"); // 排队重发：重同步收尾后送出（与顶栏重演同一条时序）
+    expect(s.treeNotice).toContain("已回到第 3 幕");
   });
 
   it("原地回退：两步确认（首点只进确认态），确认后 POST restore 并刷新树与快照索引", async () => {
@@ -2580,12 +3089,15 @@ describe("StoryTreeScreen：快照标注、原地回退与分叉带 seq（v1.6�
     expect(snapshotTurnNo(SNAPSHOTS, 11)).toBe(3);
 
     const map = earliestSnapshotByNode(SNAPSHOTS);
-    expect(map.get("2-1")).toEqual({ seq: 3, turn: 1 });
-    expect(map.get("2-2")).toEqual({ seq: 7, turn: 2 });
+    // label（v1.12 存档点命名）一并带出：没起名是空串，图屏据此显示「第 N 幕 · <名字>」
+    expect(map.get("2-1")).toEqual({ seq: 3, turn: 1, label: "" });
+    expect(map.get("2-2")).toEqual({ seq: 7, turn: 2, label: "" });
     expect(map.has("2-4")).toBe(false);
     expect([...map.keys()]).toEqual(["2-1", "2-2"]); // nodeId=null 的快照不入表
     // 乱序输入也按 seq 取最早
-    expect(earliestSnapshotByNode([SNAPSHOTS[1], SNAPSHOTS[0]]).get("2-1")).toEqual({ seq: 3, turn: 1 });
+    expect(earliestSnapshotByNode([SNAPSHOTS[1], SNAPSHOTS[0]]).get("2-1")).toEqual({ seq: 3, turn: 1, label: "" });
+    // 起了名就带出来
+    expect(earliestSnapshotByNode([{ ...SNAPSHOTS[0], label: "雨夜遇袭前" }]).get("2-1")?.label).toBe("雨夜遇袭前");
     expect(earliestSnapshotByNode([]).size).toBe(0);
   });
 });
@@ -2650,7 +3162,7 @@ describe("StoryTreeScreen：快照对比 diff 面板（v1.7）", () => {
             const files = FILES[seq];
             if (!files || snapshotFail) return jsonResponse({ error: "not found" }, 404);
             const meta = SNAPSHOTS.find((s) => s.seq === seq)!;
-            return jsonResponse({ worldId: "campus-summer-1", snapshots: [{ ...meta, files }] });
+            return jsonResponse({ worldId: "campus-summer-1", snapshots: [{ ...meta, files, prompt: "" }] });
           }
           return jsonResponse({ worldId: "campus-summer-1", snapshots: SNAPSHOTS });
         }
@@ -2948,11 +3460,13 @@ describe("StoryTreeScreen：大图降级、缩放平移与节点 roving（v1.6�
 
     const ev = new WheelEvent("wheel", { deltaY: -120, bubbles: true, cancelable: true });
     // 缩放走原生非 passive 监听（React 的 onWheel 是根上的被动监听，preventDefault 无效）；
-    // 原生事件在 act 之外不会自动冲刷，故这里显式 act 包一层
+    // 原生事件在 act 之外不会自动冲刷，故这里显式 act 包一层。**状态更新仍可能是异步冲刷的**
+    // （CI 的 Linux runner 慢一档时同步断言会闪红——本用例在 CI 上实测闪红过一次），
+    // 所以 viewBox 的变化用 waitFor 等一拍，preventDefault 是同步的、照旧立即断言。
     act(() => {
       canvas.dispatchEvent(ev);
     });
-    expect(canvas.getAttribute("viewBox")).not.toBe(fit);
+    await waitFor(() => expect(canvas.getAttribute("viewBox")).not.toBe(fit));
     expect(ev.defaultPrevented).toBe(true);
   });
 });
@@ -3083,9 +3597,8 @@ describe("游戏键盘：数字键选选项、空格补全、自动前进倒计�
     expect(prompts).toHaveLength(1);
     fireEvent.change(field, { target: { value: " 推门进去 " } });
     fireEvent.keyDown(field, { key: "Enter" });
-    expect(prompts.at(-1)).toBe("推门进去");
+    expect(prompts.at(-1)).toBe("推门进去"); // 收敛空白后原样发出（输入本身随服务端的快照条目落盘，客户端不再记账）
     expect(field.value).toBe("");
-    expect(useGameStore.getState().pendingTurnPrompt).toBe("推门进去"); // 重掷「重发同一输入」的数据源
     fireEvent.change(field, { target: { value: "半夜有人敲门" } });
     fireEvent.keyDown(field, { key: "Enter", isComposing: true }); // 中文输入法选词的 Enter 不算发送
     expect(prompts).toHaveLength(2);
@@ -3583,13 +4096,20 @@ describe("同屏多立绘：发言者高亮带名牌、非发言者压暗，让�
     act(() => useGameStore.getState().toggleDrawer());
     expect(stage.hasAttribute("inert")).toBe(true);
     expect(screen.getByTestId("dialogue-dock").closest("[inert]")).toBe(stage);
-    // 命令轨（TopBar）也在这一层里：这就是原先「Tab 逛出抽屉去点顶栏」的那个缺口
-    expect(screen.getByTestId("history").closest("[inert]")).toBe(stage);
     // 抽屉自己**不在** inert 子树里：它是这一层的兄弟，所以焦点陷阱还能把焦点送进去
     // （inert 子树里的元素连程序化 focus 都是 no-op——真被套进去，下面这条断言会红）
     const panel = screen.getByTestId("history-panel");
     expect(panel.closest("[inert]")).toBeNull();
     expect(document.activeElement).toBe(within(panel).getByRole("button", { name: "关闭回想" }));
+
+    // 命令轨（TopBar）也在这一层里：这就是原先「Tab 逛出抽屉去点顶栏」的那个缺口。
+    // v1.12 补：叶子项（历史）成了「回顾」菜单里的二级项，**菜单非 portal** → 展开的弹层同样落在这一层
+    // （改成 portal 它就会逃出 inert，下面两条会红）。放在焦点断言之后——开菜单会抢焦点（Radix 默认聚焦弹层）。
+    openRailGroup("回顾");
+    expect(screen.getByTestId("rail-review").closest("[inert]")).toBe(stage);
+    expect(screen.getByTestId("rail-review-menu").closest("[inert]")).toBe(stage);
+    expect(screen.getByTestId("history").closest("[inert]")).toBe(stage);
+    fireEvent.keyDown(screen.getByTestId("rail-review-menu"), { key: "Escape" }); // 收掉，不带进下面的断言
 
     // 关闭即摘掉（inert 跟着开关走，不留残值——留着的话命令轨就再也点不动了）
     act(() => useGameStore.getState().toggleDrawer());
@@ -3761,30 +4281,36 @@ describe("回退后玩家继续走：普通指令不冒充重同步（v1.7）", 
   });
 });
 
-// ————————————————————— 重掷本回合（v1.7） —————————————————————
+// ————————————————————— 重演（v1.7；v1.13 起输入随快照） —————————————————————
 
-describe("重掷本回合：次新 turn 快照 restore + 重同步收尾后重发同一玩家输入（v1.7）", () => {
+describe("重演这一幕：解析目标幕与回退点、重同步收尾后重发当时的玩家输入（v1.13，输入取自快照）", () => {
   /** POST /prompt 的返回开关（用例内切 false 制造 409 投递失败） */
   let promptOk: boolean;
   /** POST /prompt 收到的指令（按顺序） */
   let prompts: string[];
   /** POST /api/worlds 收到的动作 */
   let worldPosts: Record<string, unknown>[];
-  /** GET /api/history 返回的快照索引（用例内改写，模拟重掷后的新账本） */
+  /** GET /api/history 列表返回的快照索引（用例内改写，模拟重演后的新账本） */
   let historySnapshots: WorldSnapshotMeta[];
+  /** seq → 该条快照的玩家输入（只有单条查询带 prompt；列表形状刻意不带——ADR-0023 的分层） */
+  let promptsBySeq: Record<number, string>;
+  /** 单条查询请求过的 seq（按顺序）——证明重演的输入真的来自盘上，不是内存账本 */
+  let snapshotFetches: number[];
   /** GET /api/history 是否整体失败（快照数补拉失败的回落路径用） */
   let historyFails: boolean;
 
-  /** 一条快照元信息（nodeId/chapterNo 对重掷无意义，占位） */
-  const snap = (seq: number, kind: "turn" | "backup"): WorldSnapshotMeta => ({ seq, at: "2026-09-17T00:00:00.000Z", kind, nodeId: null, chapterNo: 1 });
+  /** 一条快照元信息（nodeId/chapterNo 对重演无意义，占位） */
+  const snap = (seq: number, kind: "turn" | "backup"): WorldSnapshotMeta => ({ seq, at: "2026-09-17T00:00:00.000Z", kind, nodeId: null, chapterNo: 1, label: "" });
 
   beforeEach(() => {
     promptOk = true;
     prompts = [];
     worldPosts = [];
+    snapshotFetches = [];
     historyFails = false;
-    // 升序三条：turn 2 / backup 3 / turn 5——重掷只认 kind:"turn"，最新 5 = 刚结束的本回合，次新 = 2
+    // 升序三条：turn 2 / backup 3 / turn 5——重演只认 kind:"turn"：目标幕 = 最新 5（刚结束的本回合）、回退点 = 2
     historySnapshots = [snap(2, "turn"), snap(3, "backup"), snap(5, "turn")];
+    promptsBySeq = { 2: "上一幕的输入", 5: "推门进去" };
     useGameStore.setState({
       worldId: "campus-summer-1",
       worldLabel: "campus-summer-1",
@@ -3800,8 +4326,6 @@ describe("重掷本回合：次新 turn 快照 restore + 重同步收尾后重�
       pendingResync: null,
       resyncFailed: false,
       resyncing: false,
-      lastTurnPrompt: "推门进去",
-      pendingTurnPrompt: null,
       pendingRerollPrompt: null,
       turnSnapshots: null,
       history: [{ n: "第 3 幕", t: "回合甲：门轴一声闷响。" }],
@@ -3821,7 +4345,16 @@ describe("重掷本回合：次新 turn 快照 restore + 重同步收尾后重�
         }
         if (url.pathname === "/api/history") {
           if (historyFails) return jsonResponse({ error: "boom" }, 500);
-          return jsonResponse({ worldId: "campus-summer-1", snapshots: historySnapshots });
+          const seqParam = url.searchParams.get("seq");
+          if (seqParam === null) return jsonResponse({ worldId: "campus-summer-1", snapshots: historySnapshots });
+          const seq = Number(seqParam);
+          snapshotFetches.push(seq);
+          const meta = historySnapshots.find((s) => s.seq === seq);
+          if (!meta) return jsonResponse({ worldId: "campus-summer-1", snapshots: [] });
+          return jsonResponse({
+            worldId: "campus-summer-1",
+            snapshots: [{ ...meta, files: { state: "# 状态\n", summary: null, tree: null }, prompt: promptsBySeq[seq] ?? "" }],
+          });
         }
         if (url.pathname === "/api/worlds" && init?.method === "POST") {
           const body = JSON.parse(String(init.body)) as { action: string };
@@ -3834,24 +4367,28 @@ describe("重掷本回合：次新 turn 快照 restore + 重同步收尾后重�
     );
   });
 
-  it("重掷全链：restore 取次新 turn 快照（backup 不算）、分割线标 reroll、重同步回合收尾后自动重发同一输入", async () => {
+  it("重演全链：目标幕 = 最新 turn（输入取自单条）、回退点 = 它之前最近的 turn（backup 不算）、分割线标 reroll", async () => {
     render(<TopBar />);
+    // v1.12：入口搬进了「进度」菜单——先开菜单（可达路径变了，行为和 aria 一个字没改）
+    openRailGroup("进度");
     const btn = screen.getByTestId("reroll");
     expect(btn.getAttribute("aria-label")).toBe("重演这一幕");
 
     await act(async () => {
       fireEvent.click(btn);
     });
-    // 次新 turn = seq 2（最新 turn 5 是刚结束的本回合；backup 3 不参与计数）
+    expect(snapshotFetches).toEqual([5]); // 输入来自目标幕那条的单条查询（列表刻意不带 prompt）
+    // 目标幕 = 最新 turn 5（刚结束的本回合）；回退点 = 它之前最近的 turn 2（backup 3 不参与）
     expect(worldPosts).toStrictEqual([{ action: "restore", worldId: "campus-summer-1", seq: 2 }]);
     expect(prompts).toEqual(["继续世界：campus-summer-1。"]);
     const s1 = useGameStore.getState();
     expect(s1.pendingResync).toEqual({ worldId: "campus-summer-1", seq: 2 });
     expect(s1.pendingRerollPrompt).toBe("推门进去");
     expect(s1.history[1]).toMatchObject({ kind: "rollback", seq: 2, reason: "reroll" });
-    expect(screen.queryByTestId("reroll")).toBeNull(); // 待重同步期间不显示重掷
+    openRailGroup("进度");
+    expect(screen.queryByTestId("reroll")).toBeNull(); // 待重同步期间不显示重演（重开菜单也不给）
 
-    // 重同步回合成功收尾 → 清徽章 + 排队跟进立即重发玩家输入（走玩家回合路径）
+    // 重同步回合成功收尾 → 清徽章 + 排队跟进立即重发那次输入（走玩家回合路径）
     act(() => {
       useGameStore.setState({ segs: { 0: "重读档完成" }, curSeg: 0 });
       useGameStore.getState().handleEvent({ type: "turn_end" });
@@ -3860,14 +4397,12 @@ describe("重掷本回合：次新 turn 快照 restore + 重同步收尾后重�
     expect(useGameStore.getState().pendingResync).toBeNull();
     expect(useGameStore.getState().pendingRerollPrompt).toBeNull();
 
-    // 重掷出的新回合（回合乙）收尾：lastTurnPrompt 定格为重发的输入——连掷的弹药还在
+    // 重演出的新回合（回合乙）收尾：状态回就绪（下一次重演会重新解析盘上的最新一条）
     act(() => {
       useGameStore.setState({ segs: { 0: "回合乙：这次门后传来脚步声。" }, curSeg: 0 });
       useGameStore.getState().handleEvent({ type: "turn_end" });
     });
-    const s2 = useGameStore.getState();
-    expect(s2.lastTurnPrompt).toBe("推门进去");
-    expect(s2.status).toBe("就绪");
+    expect(useGameStore.getState().status).toBe("就绪");
 
     // 分割线文案走 reroll 措辞；旧幕（回合甲）在分割线之前置灰、新幕正常
     useGameStore.setState({ drawerOpen: true });
@@ -3880,10 +4415,42 @@ describe("重掷本回合：次新 turn 快照 restore + 重同步收尾后重�
     expect(acts[acts.length - 1].className).toContain("opacity-50");
   });
 
-  it("快照数未知（尚未补拉到）：仍展示入口，点击后 status 反馈不可重掷", async () => {
-    historySnapshots = [snap(1, "turn"), snap(2, "backup")]; // turn 只有一条：没有「上一回合结束态」可回
+  it("最新条目是空的续玩回合（刷新/重启后的「继续世界线」）：回看到最近一条带输入的幕，重演它", async () => {
+    // 现实链：场景（#5，输入「推门进去」）→ 回退备份（#6）→ 读档续玩（#7，prompt 空）——刷新后正是这个样子
+    historySnapshots = [snap(3, "turn"), snap(5, "turn"), snap(6, "backup"), snap(7, "turn")];
+    promptsBySeq = { 3: "上一幕的输入", 5: "推门进去", 7: "" };
+    render(<TopBar />);
+    openRailGroup("进度");
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("reroll"));
+    });
+    expect(snapshotFetches).toEqual([7, 5]); // 先探最新（空）→ 再探最近带输入的那一幕
+    expect(worldPosts).toStrictEqual([{ action: "restore", worldId: "campus-summer-1", seq: 3 }]); // 回退点 = #5 之前最近的 turn
+    expect(prompts).toEqual(["继续世界：campus-summer-1。"]);
+    expect(useGameStore.getState().pendingRerollPrompt).toBe("推门进去");
+  });
+
+  it("旧档（整档都没有输入）：回看取完 → status 给降级提示，不发 restore、不静默", async () => {
+    historySnapshots = [snap(2, "turn"), snap(5, "turn")];
+    promptsBySeq = { 2: "", 5: "" }; // v1.13 之前的档：字段缺省收敛为空串，客户端分辨不了也不为此再加字段
+    render(<TopBar />);
+    openRailGroup("进度");
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("reroll"));
+    });
+    expect(snapshotFetches).toEqual([5, 2]); // 回看取完（本地单条查询）；REPLAY_PROBE_MAX 只兜极端链
+    expect(worldPosts).toEqual([]);
+    expect(prompts).toEqual([]);
+    expect(useGameStore.getState().status).toBe("无法重演：这一档没有留下当时的输入");
+    expect(useGameStore.getState().pendingRerollPrompt).toBeNull();
+  });
+
+  it("唯一带输入的幕就是第一条 turn：无处可退 → status 说清「这是第一幕」", async () => {
+    historySnapshots = [snap(1, "turn"), snap(2, "backup")]; // 有输入但没有更早的 turn 可退
+    promptsBySeq = { 1: "开场白。" };
     useGameStore.setState({ turnSnapshots: null }); // 未知：不藏功能，点击时再判定
     render(<TopBar />);
+    openRailGroup("进度");
     await act(async () => {
       fireEvent.click(screen.getByTestId("reroll"));
     });
@@ -3893,21 +4460,24 @@ describe("重掷本回合：次新 turn 快照 restore + 重同步收尾后重�
     expect(s.pendingResync).toBeNull();
     expect(s.pendingRerollPrompt).toBeNull();
     expect(s.history).toHaveLength(1); // 没有插分割线
-    expect(s.status).toContain("无法重掷");
+    expect(s.status).toBe("无法重演：这是第一幕，没有可回退的存档点");
+    openRailGroup("进度");
     expect(screen.queryByTestId("reroll")).toBeNull(); // 状态行已离开「就绪」：入口收起
   });
 
-  it("已知快照不足（turnSnapshots < 2）：重掷入口不渲染（spec：首个回合禁用按钮）", async () => {
+  it("已知快照不足（turnSnapshots < 2）：重演入口不渲染（spec：首个回合禁用按钮）", async () => {
     useGameStore.setState({ turnSnapshots: 1 }); // 已知只有一条 turn 快照：没有「上一回合结束态」可回
     render(<TopBar />);
+    openRailGroup("进度");
     expect(screen.queryByTestId("reroll")).toBeNull();
     act(() => useGameStore.setState({ turnSnapshots: 2 })); // 攒够两条：入口出现
     expect(screen.getByTestId("reroll")).toBeTruthy();
   });
 
-  it("回合收尾按需补拉快照数：未知 → 拉到两条后重掷入口仍在（不误藏）", async () => {
-    useGameStore.setState({ turnSnapshots: null, lastTurnPrompt: "推门进去", status: "就绪" });
+  it("回合收尾按需补拉快照数：未知 → 拉到两条后重演入口仍在（不误藏）", async () => {
+    useGameStore.setState({ turnSnapshots: null, status: "就绪" });
     render(<TopBar />);
+    openRailGroup("进度");
     expect(screen.getByTestId("reroll")).toBeTruthy(); // 未知态：先展示
     act(() => {
       useGameStore.setState({ segs: { 0: "回合正文" }, curSeg: 0 });
@@ -3919,8 +4489,9 @@ describe("重掷本回合：次新 turn 快照 restore + 重同步收尾后重�
 
   it("补拉失败：已知计数回落未知（不藏功能），后续回合会再试", async () => {
     historyFails = true; // GET /api/history 整体失败
-    useGameStore.setState({ turnSnapshots: 0, lastTurnPrompt: "推门进去", status: "就绪" });
+    useGameStore.setState({ turnSnapshots: 0, status: "就绪" });
     render(<TopBar />);
+    openRailGroup("进度");
     expect(screen.queryByTestId("reroll")).toBeNull(); // 前置：已知 0 → 入口不渲染
     await act(async () => {
       useGameStore.setState({ segs: { 0: "回合正文" }, curSeg: 0 });
@@ -3928,11 +4499,12 @@ describe("重掷本回合：次新 turn 快照 restore + 重同步收尾后重�
       await new Promise((r) => setTimeout(r, 0)); // 放行失败的补拉（catch 分支）
     });
     expect(useGameStore.getState().turnSnapshots).toBeNull(); // 回落未知：宁可展示 + 点击判定，不藏功能
-    expect(screen.getByTestId("reroll")).toBeTruthy();
+    expect(screen.getByTestId("reroll")).toBeTruthy(); // 菜单开着：条目随 store 变化就地长回来
   });
 
-  it("连掷：第一次重掷完整走完后，再点重掷取此刻账本的次新 turn 快照", async () => {
+  it("连掷：第一次重演走完后，再点按此刻盘上的最新一条重新解析（账本已删，输入仍在盘上）", async () => {
     render(<TopBar />);
+    openRailGroup("进度");
     await act(async () => {
       fireEvent.click(screen.getByTestId("reroll"));
     });
@@ -3942,17 +4514,20 @@ describe("重掷本回合：次新 turn 快照 restore + 重同步收尾后重�
       useGameStore.getState().handleEvent({ type: "turn_end" });
     });
     act(() => {
-      // 重掷出的回合乙收尾 → 就绪，重掷入口回来
+      // 重演出的回合乙收尾 → 就绪，重演入口回来
       useGameStore.setState({ segs: { 0: "回合乙正文" }, curSeg: 0 });
       useGameStore.getState().handleEvent({ type: "turn_end" });
     });
-    // 服务器侧的新账本：旧两条 turn + 第一次重掷的 backup(12) + 回合乙的 turn(14)
+    // 服务器侧的新账本：旧两条 turn + 第一次重演的 backup(12) + 回合乙的 turn(14)（输入 = 重发的那句）
     historySnapshots = [snap(2, "turn"), snap(3, "backup"), snap(5, "turn"), snap(12, "backup"), snap(14, "turn")];
+    promptsBySeq = { ...promptsBySeq, 14: "推门进去" };
+    openRailGroup("进度");
     const btn = screen.getByTestId("reroll");
     await act(async () => {
       fireEvent.click(btn);
     });
-    // turn 序列 [2,5,14]：最新 14 = 回合乙，次新 5 = 原回合甲——第二次重掷按新账本退到 5
+    // turn 序列 [2,5,14]：目标幕 = 14（回合乙）、回退点 = 5——第二次重演按新账本退到 5
+    expect(snapshotFetches).toEqual([5, 14]);
     expect(worldPosts).toStrictEqual([
       { action: "restore", worldId: "campus-summer-1", seq: 2 },
       { action: "restore", worldId: "campus-summer-1", seq: 5 },
@@ -3964,6 +4539,7 @@ describe("重掷本回合：次新 turn 快照 restore + 重同步收尾后重�
   it("重同步投递失败后玩家改发普通指令：排队重发作废，重发的玩家文本不出现第二次", async () => {
     promptOk = false; // restore 后补发的续档指令 409：进入「待重同步 + 已排队重发」态
     render(<TopBar />);
+    openRailGroup("进度");
     await act(async () => {
       fireEvent.click(screen.getByTestId("reroll"));
     });
@@ -3984,12 +4560,12 @@ describe("重掷本回合：次新 turn 快照 restore + 重同步收尾后重�
     expect(prompts.filter((p) => p === "推门进去")).toHaveLength(0);
     const s = useGameStore.getState();
     expect(s.pendingRerollPrompt).toBeNull();
-    expect(s.lastTurnPrompt).toBe("原地等待"); // 新的玩家输入照常定格
   });
 
   it("重同步投递失败后点「再同步」：成功收尾后玩家文本恰好重发一次", async () => {
     promptOk = false; // 续档指令 409：徽章 + 「再同步」入口
     render(<TopBar />);
+    openRailGroup("进度");
     await act(async () => {
       fireEvent.click(screen.getByTestId("reroll"));
     });
@@ -4010,50 +4586,32 @@ describe("重掷本回合：次新 turn 快照 restore + 重同步收尾后重�
     const s = useGameStore.getState();
     expect(s.pendingRerollPrompt).toBeNull();
     expect(s.pendingResync).toBeNull();
-    expect(s.lastTurnPrompt).toBeNull(); // 重同步回合不携带玩家输入（resyncing 分支清空）；重发回合收尾时会重新定格
   });
 
-  it("玩家入口记账：sendPlayerTurn 定格 lastTurnPrompt、指令回合不覆盖、投递失败即在途作废；无输入不渲染入口", async () => {
-    useGameStore.setState({ lastTurnPrompt: null });
+  it("玩家入口只留 trim 守卫；重演入口的显隐只看快照数（v1.13 删内存账本后不再有「按钮点了没反应」）", async () => {
     await act(async () => {
-      useGameStore.getState().sendPlayerTurn("推门进去");
+      useGameStore.getState().sendPlayerTurn(" 推门进去 ");
     });
-    expect(useGameStore.getState().pendingTurnPrompt).toBe("推门进去");
-    act(() => {
-      useGameStore.setState({ segs: { 0: "回合甲正文" }, curSeg: 0 });
-      useGameStore.getState().handleEvent({ type: "turn_end" });
-    });
-    expect(useGameStore.getState().lastTurnPrompt).toBe("推门进去");
-    expect(useGameStore.getState().pendingTurnPrompt).toBeNull();
+    expect(prompts).toEqual(["推门进去"]); // trim 守卫仍在：只发这一条
 
-    // 指令回合（画廊重绘类）收尾：lastTurnPrompt 保持上一个玩家回合的值
-    await act(async () => {
-      useGameStore.getState().send("美术：重绘 背景 中殿");
-    });
-    act(() => {
-      useGameStore.setState({ segs: { 0: "已重绘" }, curSeg: 0 });
-      useGameStore.getState().handleEvent({ type: "turn_end" });
-    });
-    expect(useGameStore.getState().lastTurnPrompt).toBe("推门进去");
-    expect(useGameStore.getState().pendingTurnPrompt).toBeNull();
-
-    // 投递失败（409）：回合没有开始，在途输入作废，不许污染 lastTurnPrompt
+    // 投递失败（409）不写任何账本（账本已删）：只剩状态文案
     promptOk = false;
     await act(async () => {
       useGameStore.getState().sendPlayerTurn("往前走");
     });
     await waitFor(() => expect(useGameStore.getState().status).toContain("出错"));
-    expect(useGameStore.getState().pendingTurnPrompt).toBeNull();
-    expect(useGameStore.getState().lastTurnPrompt).toBe("推门进去");
 
-    // TopBar：有上一回合输入才渲染重掷入口
+    // TopBar：可见性只看快照数；输入有无由点击时解析（刷新/重启后照样可重演）
     promptOk = true;
     cleanup();
-    useGameStore.setState({ status: "就绪" });
+    useGameStore.setState({ status: "就绪", turnSnapshots: 2 });
     render(<TopBar />);
+    openRailGroup("进度");
     expect(screen.getByTestId("reroll")).toBeTruthy();
-    act(() => useGameStore.setState({ lastTurnPrompt: null }));
-    expect(screen.queryByTestId("reroll")).toBeNull();
+    act(() => useGameStore.setState({ turnSnapshots: null }));
+    expect(screen.getByTestId("reroll")).toBeTruthy(); // 未知不藏功能
+    act(() => useGameStore.setState({ turnSnapshots: 1 }));
+    expect(screen.queryByTestId("reroll")).toBeNull(); // 已知不足：收起（菜单开着也即时跟 store 走）
   });
 });
 
@@ -4328,6 +4886,7 @@ describe("TitleScreen：剧本导出/导入（v1.7）", () => {
     expect(wordmark.tagName).toBe("H1");
     expect(wordmark.textContent).toBe("bunkiten");
 
+    openTitleMore(); // v1.12：导出入口收在角落簇的「更多 ▾」里
     const link = screen.getByTestId("preset-export-campus-summer") as HTMLAnchorElement;
     expect(link.getAttribute("href")).toBe("/api/presets/export?id=campus-summer");
     expect(link.getAttribute("download")).toBe("campus-summer.preset.json");
@@ -4363,9 +4922,11 @@ describe("TitleScreen：剧本导出/导入（v1.7）", () => {
     await waitFor(() => expect(presetGets).toBe(2)); // 成功后重取轮播
 
     // 轮播真的刷新了：新卡排在末尾，切到它（→ →）后导出按钮换成新 id
+    // （导出项在「更多」菜单里；菜单在切卡期间是开着的——导入那次 openTitleMore 之后没关过）
     await act(async () => {});
     fireEvent.keyDown(window, { key: "ArrowRight" });
     fireEvent.keyDown(window, { key: "ArrowRight" });
+    openTitleMore();
     await waitFor(() => expect(screen.getByTestId("preset-export-campus-summer-9")).toBeTruthy());
   });
 
@@ -5069,6 +5630,61 @@ describe("PresetCheckScreen：剧本体检（v1.9）", () => {
   });
 });
 
+describe("TitleScreen：角落簇的键盘守卫（v1.12 吞键规则）", () => {
+  const RIFT: Preset = { ...PRESET, id: "rift-mark", title: "裂痕纹章" };
+
+  beforeEach(() => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/api/presets") return jsonResponse({ presets: [PRESET, RIFT], errors: [] });
+        if (url.pathname === "/api/worlds") return jsonResponse({ worlds: [] });
+        return jsonResponse({}, 404);
+      }),
+    );
+    useGameStore.setState({ presets: [], screen: "title", screenReturn: null, engineBusy: false, titleNotice: null });
+  });
+
+  it("焦点停在角落簇按钮上时 ← → 照样切卡——按钮只对 Enter 让路", async () => {
+    render(<TitleScreen />);
+    const centerText = () => screen.getByTestId("title-card-center").textContent ?? "";
+    await waitFor(() => expect(centerText()).toContain("盛夏偏差值"));
+
+    // 焦点落在「素材」上（角落簇是 Tab 可达的一排）。按钮若**无条件**吞 keydown，焦点停在这里时
+    // ← → 就到不了 window 上的切卡监听——v1.12 修掉的正是这条（触发器那条更宽：Radix 关菜单还会
+    // 把焦点送回按钮，于是「用完一次菜单」之后键盘切卡整体失灵）
+    const assets = screen.getByRole("button", { name: "素材" });
+    assets.focus();
+    fireEvent.keyDown(assets, { key: "ArrowRight" });
+    await waitFor(() => expect(centerText()).toContain("裂痕纹章"));
+    fireEvent.keyDown(assets, { key: "ArrowLeft" });
+    await waitFor(() => expect(centerText()).toContain("盛夏偏差值"));
+  });
+
+  it("Enter 在角落簇按钮上只做按钮自己的事：不顺手把中心卡插了", async () => {
+    vi.useFakeTimers();
+    try {
+      render(<TitleScreen />);
+      await act(async () => {});
+      const creation = screen.getByRole("button", { name: "创作新剧本" });
+      creation.focus();
+      // 浏览器在按钮上按 Enter 会做两件事：把 keydown 冒泡上去（本屏 window 拿它当「插卡」）+
+      // 触发按钮自己的 click。jsdom 只发前者，所以 click 手动补一下，两条路一起验。
+      fireEvent.keyDown(creation, { key: "Enter" });
+      fireEvent.click(creation);
+      expect(useGameStore.getState().screen).toBe("creation"); // 按钮自己的动作照常
+
+      // 插卡走 selectPreset（1s 动画后切到世界线屏）。Enter 若没被按钮拦下，window 那一下会同时插卡——
+      // 把时间推过 INSERT_MS 就露馅：这才是「只拦 Enter」规则里「拦」的那半边的回归钉。
+      act(() => vi.advanceTimersByTime(2000));
+      expect(useGameStore.getState().screen).toBe("creation");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("TitleScreen：剧本体检入口（v1.9）", () => {
   let presetResp: Preset[];
   let fetchMock: ReturnType<typeof vi.fn>;
@@ -5095,8 +5711,20 @@ describe("TitleScreen：剧本体检入口（v1.9）", () => {
     });
   });
 
+  it("点标题屏角落簇的「设置」进设置屏（v1.11 收尾）：返回目标是标题屏，运行态不动", async () => {
+    render(<TitleScreen />);
+    const btn = await screen.findByTestId("title-settings");
+    fireEvent.click(btn);
+    const s = useGameStore.getState();
+    expect(s.screen).toBe("settings"); // overlay：进设置屏（引擎/登录/音量都在里面）
+    expect(s.screenReturn).toBe("title"); // 关掉回到标题屏，不必先开一局
+    expect(s.worldId).toBe("campus-summer-9"); // 运行态原样
+  });
+
   it("点「剧本体检」把当前中央卡带进体检屏（只落 selected），运行态原样；没有卡时禁用", async () => {
     render(<TitleScreen />);
+    await waitFor(() => expect(screen.getByTestId("title-card-center")).toBeTruthy());
+    openTitleMore(); // v1.12：剧本体检收在角落簇的「更多 ▾」里
     const btn = await screen.findByTestId("preset-check");
     expect((btn as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(btn);
@@ -5124,6 +5752,7 @@ describe("TitleScreen：剧本体检入口（v1.9）", () => {
     useGameStore.setState({ presets: [], screen: "title", screenReturn: null, selected: null, worldId: null });
     render(<TitleScreen />);
     await waitFor(() => expect(fetchMock.mock.calls.some((c) => String(c[0]) === "/api/presets")).toBe(true));
+    openTitleMore();
     const off = screen.getByTestId("preset-check") as HTMLButtonElement;
     expect(off.disabled).toBe(true);
     expect(off.getAttribute("title")).toBe("还没有可体检的剧本");
@@ -5145,6 +5774,64 @@ describe("TitleScreen：剧本体检入口（v1.9）", () => {
 //      一旦超时也被静默，玩家就又回到「永远转圈」了，所以这条必须断言到错误文案；
 //   4. 交给 fetch 的是**组合 signal（新对象）**：把自己的 signal 原样递下去，超时那一路就取消不了底层请求；
 //   5. 卸载优先——外部 signal abort 后立刻以 AbortError 落地（即便传输层不理 signal），
+describe("BootScreen：一键登录（v1.11 收尾）", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    useGameStore.setState({ presets: [], screen: "boot", screenReturn: null, selected: null, worldId: null, engineBusy: false });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("未登录 → 点「登录 Codex」→ 拉起 CLI 登录 → 轮询到登录态 → 自动进标题屏（不必再点一次）", async () => {
+    let loginStarted = false;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/engine/login") {
+        loginStarted = true;
+        return jsonResponse({ ok: true });
+      }
+      // 登录流程拉起来之后，玩家在浏览器里完成的那一刻由 /api/auth 反映出来
+      return jsonResponse({ loggedIn: loginStarted, hasCredentials: false, engine: "codex", canLogin: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<BootScreen />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0); // 自检落地
+    });
+    expect(screen.getByTestId("boot-login")).toBeTruthy();
+    expect(screen.getByText("codex login")).toBeTruthy(); // 引擎相关的终端指引
+    expect(screen.getByTestId("boot-login-start").textContent).toContain("登录 Codex");
+
+    fireEvent.click(screen.getByTestId("boot-login-start"));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50); // POST 落地
+    });
+    expect(screen.getByTestId("boot-login-waiting")).toBeTruthy();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000); // 第一次轮询：看到登录态
+    });
+    expect(useGameStore.getState().screen).toBe("title");
+  });
+
+  it("登录入口不可用（canLogin=false）时不画登录按钮，改说一句人话", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse({ loggedIn: false, hasCredentials: false, engine: "grok", canLogin: false })),
+    );
+    render(<BootScreen />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByTestId("boot-login")).toBeTruthy();
+    expect(screen.queryByTestId("boot-login-start")).toBeNull();
+    expect(screen.getByText(/没找到 Grok 的登录入口/)).toBeTruthy();
+  });
+});
+
 //      不再等到上限把卸载报成 TimeoutError、往已拆掉的屏里写错误态。
 describe("启动链超时：读接口挂住时落地到两屏既有的错误态（v1.10）", () => {
   /** 永不 settle 的 fetch：模拟「代理卡住」——既不响应也不失败，**且故意不理 signal**

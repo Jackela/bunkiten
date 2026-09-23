@@ -145,7 +145,7 @@ describe("集成：逐轮快照 + 世界线精确回退/导出导入（CONTRACTS
     await stack?.stop();
   });
 
-  it("④ 正戏回合落盘 history/0001.json（nodeId 正确）；规划回合不落盘；内容相同去重", async () => {
+  it("④ 正戏回合落盘 history/0001.json（nodeId 正确、续玩指令的 prompt 为空）；规划回合不落盘；files+prompt 全等才去重", async () => {
     const histDir = path.join(w1Dir(stack), "history");
     expect(existsSync(histDir)).toBe(false); // 开局前没有快照
 
@@ -156,29 +156,45 @@ describe("集成：逐轮快照 + 世界线精确回退/导出导入（CONTRACTS
     expect(readdirSync(histDir)).toEqual(["0001.json"]);
     const snap = JSON.parse(readFileSync(path.join(histDir, "0001.json"), "utf8"));
     expect(snap).toMatchObject({ seq: 1, kind: "turn", nodeId: "1-1", chapterNo: 1 });
+    // 续玩/开局是客户端生成的指令、不是玩家的话：prompt 回填空串（重演入口据此给降级提示，docs/adr/0023）
+    expect(snap.prompt).toBe("");
     expect(snap.files.tree).toContain("节点 1-1"); // 与世界磁盘一致
     expect(snap.files.state).toBe(readWorldFile(w1Dir(stack), "state.md"));
 
-    // 自由输入：世界段缺失 → 保持 currentWorldId=w1；三文件没变 → 内容全等去重
+    // 自由输入：世界段缺失 → 保持 currentWorldId=w1；三文件没变、但输入是新的 → 仍落一条
+    //（v1.13 去重是 files + prompt 全等：files 相同 ≠ 同一幕——这条不变量是重演的地基）
     from = stack.events.length;
     expect((await stack.prompt("看看四周。")).status).toBe(200);
     await stack.waitFor((ev: any[]) => ev.slice(from).some((e) => e.type === "turn_end"), { label: "turn_end(history-2)" });
-    expect(readdirSync(histDir)).toEqual(["0001.json"]); // 不产生重复条目
+    expect(readdirSync(histDir)).toEqual(["0001.json", "0002.json"]);
+    expect(JSON.parse(readFileSync(path.join(histDir, "0002.json"), "utf8")).prompt).toBe("看看四周。");
 
-    // /api/history：升序元信息；带 seq 附 files
+    // /api/history：升序元信息；带 seq 附 files 与 prompt，列表形态两样都不带
     const meta = await stack.getJSON("/api/history?worldId=w1");
     expect(meta.status).toBe(200);
-    expect(meta.body.snapshots.map((s: any) => s.seq)).toEqual([1]);
+    expect(meta.body.snapshots.map((s: any) => s.seq)).toEqual([1, 2]);
     expect(meta.body.snapshots[0].files).toBeUndefined();
-    const one = await stack.getJSON("/api/history?worldId=w1&seq=1");
+    expect(meta.body.snapshots[0].prompt).toBeUndefined();
+    const one = await stack.getJSON("/api/history?worldId=w1&seq=2");
     expect(one.body.snapshots[0].files.state).toBe(readWorldFile(w1Dir(stack), "state.md"));
+    expect(one.body.snapshots[0].prompt).toBe("看看四周。");
+
+    // 存档点命名（v1.12）：名字写进世界索引（snapshotLabels），**不碰快照文件**；/api/history 两条路都带出来
+    const before = readFileSync(path.join(histDir, "0001.json"), "utf8");
+    expect((await stack.postJSON("/api/worlds", { action: "labelSnapshot", worldId: "w1", seq: 1, label: "雨夜遇袭前" })).status).toBe(200);
+    expect(readFileSync(path.join(histDir, "0001.json"), "utf8")).toBe(before); // append-only 的引擎真相一字不动
+    expect((await stack.getJSON("/api/history?worldId=w1")).body.snapshots[0].label).toBe("雨夜遇袭前");
+    expect((await stack.getJSON("/api/history?worldId=w1&seq=1")).body.snapshots[0].label).toBe("雨夜遇袭前");
+    // 清除：空串 → 名字没了（快照本身仍在）
+    expect((await stack.postJSON("/api/worlds", { action: "labelSnapshot", worldId: "w1", seq: 1, label: "" })).status).toBe(200);
+    expect((await stack.getJSON("/api/history?worldId=w1")).body.snapshots[0].label).toBe("");
     expect((await stack.getJSON("/api/history?worldId=" + encodeURIComponent("../etc"))).status).toBe(400);
 
     // 规划回合 → 判定为非正戏，不落盘
     from = stack.events.length;
     expect((await stack.prompt("规划：第 2 章。")).status).toBe(200);
     await stack.waitFor((ev: any[]) => ev.slice(from).some((e) => e.type === "turn_end"), { label: "turn_end(history-3)" });
-    expect(readdirSync(histDir)).toEqual(["0001.json"]);
+    expect(readdirSync(histDir)).toEqual(["0001.json", "0002.json"]);
 
     // 档位分档（CONTRACTS §4）：规划回合切到 EFFORT_PLANNING（默认 low），正戏回合不动档
     expect(await until(() => stack.stdout().includes("reasoning_effort -> low"))).toBe(true);
@@ -209,12 +225,13 @@ describe("集成：逐轮快照 + 世界线精确回退/导出导入（CONTRACTS
     const before = readWorldFile(w1Dir(stack), "state.md");
     const r = await stack.postJSON("/api/worlds", { action: "restore", worldId: "w1", seq: 1 });
     expect(r.status).toBe(200);
-    expect(r.body).toEqual({ ok: true, backupSeq: 2 });
+    expect(r.body).toEqual({ ok: true, backupSeq: 3 });
 
     const files = readdirSync(histDir).sort();
-    expect(files).toEqual(["0001.json", "0002.json"]);
-    const backup = JSON.parse(readFileSync(path.join(histDir, "0002.json"), "utf8"));
-    expect(backup).toMatchObject({ seq: 2, kind: "backup" });
+    expect(files).toEqual(["0001.json", "0002.json", "0003.json"]);
+    const backup = JSON.parse(readFileSync(path.join(histDir, "0003.json"), "utf8"));
+    expect(backup).toMatchObject({ seq: 3, kind: "backup" });
+    expect(backup.prompt).toBe(""); // backup 没有输入（也不该被重演入口当一幕）
     expect(backup.files.state).toBe(before);
     expect(readWorldFile(w1Dir(stack), "state.md")).toBe(before); // 内容本就一致（覆盖无副作用）
 
@@ -222,18 +239,20 @@ describe("集成：逐轮快照 + 世界线精确回退/导出导入（CONTRACTS
     expect((await stack.postJSON("/api/worlds", { action: "restore", worldId: "w1", seq: 99 })).status).toBe(400);
   }, 15000);
 
-  it("⑦ export → import 往返一致（含重名后缀；v2 包带血缘与 fork.md，v1 包照收）", async () => {
+  it("⑦ export → import 往返一致（含重名后缀；v3 包带血缘、fork.md 与重演输入，v1 包照收）", async () => {
     const exp = await stack.getJSON("/api/worlds/export?worldId=w1");
     expect(exp.status).toBe(200);
     expect(exp.headers.get("content-disposition")).toBe('attachment; filename="w1.world.json"');
     const bundle = exp.body;
     expect(bundle.format).toBe("bunkiten-world");
-    expect(bundle.version).toBe(2); // v2（v1.8）：world 多两个血缘键，其余键序不变
+    expect(bundle.version).toBe(3); // v3（v1.13）：快照条目多一个 prompt，其余键序不变
     expect(bundle.world.worldId).toBe("w1");
     // w1 是根世界：两个键都在、值都是 null（缺键与 null 是两种意思，v1 包才是「缺键」）
     expect(bundle.world.forkedFrom).toBe(null);
     expect(bundle.world.forkMd).toBe(null);
-    expect(bundle.world.snapshots.map((s: any) => s.seq)).toEqual([1, 2]); // 含 ⑥ 的 backup
+    expect(bundle.world.snapshots.map((s: any) => s.seq)).toEqual([1, 2, 3]); // 含 ⑥ 的 backup
+    // 输入随包走（存档自洽：换台机器也能重演）；续玩条目与 backup 为空串
+    expect(bundle.world.snapshots.map((s: any) => s.prompt)).toEqual(["", "看看四周。", ""]);
 
     const imp = await stack.postJSON("/api/worlds", { action: "import", bundle });
     expect(imp.status).toBe(200);
@@ -241,7 +260,8 @@ describe("集成：逐轮快照 + 世界线精确回退/导出导入（CONTRACTS
     const idir = path.join(stack.root, "state", "worlds", "w1-2");
     expect(readWorldFile(idir, "state.md")).toBe(bundle.world.files.state);
     expect(readWorldFile(idir, "story-tree.md")).toBe(bundle.world.files.tree);
-    expect(readdirSync(path.join(idir, "history")).sort()).toEqual(["0001.json", "0002.json"]);
+    expect(readdirSync(path.join(idir, "history")).sort()).toEqual(["0001.json", "0002.json", "0003.json"]);
+    expect(JSON.parse(readFileSync(path.join(idir, "history", "0002.json"), "utf8")).prompt).toBe("看看四周。"); // prompt 活过导入
     expect(existsSync(path.join(idir, "fork.md"))).toBe(false); // 根世界没有分叉说明
     // 索引：note 追加「（导入）」
     const worlds = await stack.getJSON("/api/worlds");
@@ -259,7 +279,7 @@ describe("集成：逐轮快照 + 世界线精确回退/导出导入（CONTRACTS
     expect(fexp.status).toBe(200);
     // 下载文件名行为不变（还是 <worldId>.world.json）
     expect(fexp.headers.get("content-disposition")).toBe(`attachment; filename="${forked.worldId}.world.json"`);
-    expect(fexp.body.version).toBe(2);
+    expect(fexp.body.version).toBe(3);
     expect(fexp.body.world.forkedFrom).toEqual({ worldId: "w1", nodeId: "1-1", seq: 1 });
     expect(fexp.body.world.forkMd).toBe(forkMd); // 逐字（含分叉时间戳）
 
@@ -271,19 +291,33 @@ describe("集成：逐轮快照 + 世界线精确回退/导出导入（CONTRACTS
     // 家谱只读 forkedFrom：seq 一起回来，导入回来的分叉线才不会变成根
     expect(after.find((w) => w.worldId === fimp.body.worldId).forkedFrom).toEqual({ worldId: "w1", nodeId: "1-1", seq: 1 });
 
-    // v1 包（没有这两个键）照收：forkedFrom null、不落 fork.md——「接受旧版本」不许在下一次重构里被顺手收紧
+    // v1 包（没有血缘键、快照条目也没有 prompt 字段）照收：forkedFrom null、不落 fork.md、
+    // prompt normalize 为空串——「接受旧版本」不许在下一次重构里被顺手收紧
     const v1 = { ...fexp.body, version: 1, world: { ...fexp.body.world } };
     delete v1.world.forkedFrom;
     delete v1.world.forkMd;
+    v1.world.snapshots = v1.world.snapshots.map((s: any) => ({
+      seq: s.seq, at: s.at, kind: s.kind, nodeId: s.nodeId, chapterNo: s.chapterNo, files: s.files,
+    }));
     const v1imp = await stack.postJSON("/api/worlds", { action: "import", bundle: v1 });
     expect(v1imp.status).toBe(200);
     expect(existsSync(path.join(stack.root, "state", "worlds", v1imp.body.worldId, "fork.md"))).toBe(false);
     expect((await stack.getJSON("/api/worlds")).body.worlds.find((w: any) => w.worldId === v1imp.body.worldId).forkedFrom).toBe(null);
 
+    // v2 包（有快照、但条目没有 prompt 字段）同样照收：normalize 为空串（重演入口给降级提示）
+    const v2 = { ...bundle, version: 2, world: { ...bundle.world, snapshots: bundle.world.snapshots.map((s: any) => ({
+      seq: s.seq, at: s.at, kind: s.kind, nodeId: s.nodeId, chapterNo: s.chapterNo, files: s.files,
+    })) } };
+    const v2imp = await stack.postJSON("/api/worlds", { action: "import", bundle: v2 });
+    expect(v2imp.status).toBe(200);
+    const v2snap = JSON.parse(readFileSync(path.join(stack.root, "state", "worlds", v2imp.body.worldId, "history", "0002.json"), "utf8"));
+    expect(v2snap.prompt).toBe(""); // 缺字段 → 唯一形状入口收敛为空串
+
     // 非法 bundle → 400
     expect((await stack.postJSON("/api/worlds", { action: "import", bundle: { format: "x", version: 1, world: { worldId: "w1" } } })).status).toBe(400);
     expect((await stack.postJSON("/api/worlds", { action: "import", bundle: { format: "bunkiten-world", version: 1, world: { worldId: "../etc" } } })).status).toBe(400);
-    expect((await stack.postJSON("/api/worlds", { action: "import", bundle: { format: "bunkiten-world", version: 3, world: { worldId: "w1" } } })).status).toBe(400);
+    // 版本过新（> WORLD_BUNDLE_VERSION=3）→ 400（版本闸是唯一上限判据，客户端不许再抄一份）
+    expect((await stack.postJSON("/api/worlds", { action: "import", bundle: { format: "bunkiten-world", version: 4, world: { worldId: "w1" } } })).status).toBe(400);
   }, 15000);
 
   it("⑧ update（label/note 校验）与素材 delete（/api/assets 不再列出）", async () => {
@@ -326,15 +360,16 @@ describe("集成：逐轮快照 + 世界线精确回退/导出导入（CONTRACTS
 
   it("⑨ /api/history 列表连读两次逐字相等（v1.7 列表缓存：命中与重解析的出口形状必须一致）", async () => {
     // 探针在集成子进程里拿不到，这里只断言可观察行为：同一 worldId 连续两次列表响应体逐字相等，
-    // 且列表形态不回 files（缓存正确性——命中不出岔子——由 server.test.ts 的探针用例覆盖）。
+    // 且列表形态不回 files 与 prompt（缓存正确性——命中不出岔子——由 server.test.ts 的探针用例覆盖）。
     const first = await stack.getText("/api/history?worldId=w1");
     const second = await stack.getText("/api/history?worldId=w1");
     expect(first.status).toBe(200);
     expect(second.body).toBe(first.body);
     for (const r of [first, second]) {
       const meta = JSON.parse(r.body);
-      expect(meta.snapshots.length).toBeGreaterThan(0); // w1 此时已有 turn + backup 两条
+      expect(meta.snapshots.length).toBeGreaterThan(0); // w1 此时已有 turn + backup 数条
       expect(meta.snapshots.every((s: any) => s.files === undefined)).toBe(true);
+      expect(meta.snapshots.every((s: any) => s.prompt === undefined)).toBe(true);
     }
   }, 15000);
 });

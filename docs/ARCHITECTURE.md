@@ -156,7 +156,7 @@ SSE 事件全集（`/events`）：`turn_start` / `seg{seg,label}` / `chunk{seg,t
 - `开演。`：队列全部完成后发送。已规划本章剧情树时从树的当前节点演出（每章首次即第一个节点）；没有任何树（异常回退路径）时按剧本 `opening` 演出第一幕，随后走【每轮协议】。
 - 队列推进与容错在 `src/store/game.ts`（`init` → `planning` → `queue` → `starting` → `finished`）：init 确认待命后发章节规划指令；planning 解析制作清单并清点既有资产预过滤（见「资产管线」）；queue 逐项发指令，单项失败（error 事件 / 610s 看门狗超时 `WATCHDOG_MS`，需覆盖 server 600s 回合超时）标记 failed 不阻塞队列；规划回合失败或清单为空直接发 `开演。`（引擎按无树回退 opening）不卡死；「跳过剩余，立即开演」在 planning / queue 阶段可用，把 pending/running 全部置 skipped 后直接发 `开演。`。
 
-### 素材重绘指令（客户端 → 引擎，画廊，v1.3）
+### 素材重绘指令（客户端 → 引擎，画廊，v1.3；v1.12 起可带玩家要求）
 
 画廊里对单个已有素材的重新生成（管理操作，不是剧情指令）。由 `src/lib/parser.ts` 的 `buildRegenCommand` 构造：
 
@@ -164,11 +164,14 @@ SSE 事件全集（`/events`）：`turn_start` / `seg{seg,label}` / `chunk{seg,t
 美术：重绘 立绘 <角色名>[-<变体>]
 美术：重绘 背景 <地点名>
 美术：重绘 封面 <剧本id>
+美术：重绘 立绘 <角色名>：<玩家要求>     ← v1.12：一句人话，只作用这一张
 ```
 
-- 重绘是**唯一允许绕过生成前缓存检查的路径**：引擎收到即重新调用 `image_gen`，绝不因文件已存在而跳过。prompt 同源（立绘 = `art_style` + 角色卡 `art_prompt`，差分再叠加同人物后缀；背景 = `art_style` + 地点英文描述；封面 = 剧本题材 + `art_style`），一律追加 `, fresh take, different composition, same canonical design`。
+- **玩家要求**（v1.12 素材级自然语言重绘）：预览模态里那句「想怎么改？」（`assets-regen-note`）拼在名字之后、`：` 之后。构造侧保证它是**单行**（换行折空格——协议行是单行的，换行会把一条指令劈成两条、后续行还会被当成剧情正文）且不超过 `REGEN_NOTE_MAX`（200 字，输入框 `maxLength` 同源）；留空/全空白 ⇒ 与 v1.3 的旧指令逐字一致（盲重绘）。
+- 引擎侧（`SKILL.md`【素材重绘】）：**有玩家要求时要求优先**，身份锚点（`art_prompt` 与同人物后缀）一字不减，尾部只加 `, same canonical design` 而不再追加 `fresh take, different composition`（那两个词会与「正面特写」这类要求打架）；要求与剧本 `art_style` 冲突时以玩家要求为准，但保住人物可辨识度。
+- 重绘是**唯一允许绕过生成前缓存检查的路径**：引擎收到即重新调用 `image_gen`，绝不因文件已存在而跳过。**无**玩家要求时 prompt 同源（立绘 = `art_style` + 角色卡 `art_prompt`，差分再叠加同人物后缀；背景 = `art_style` + 地点英文描述；封面 = 剧本题材 + `art_style`），追加 `, fresh take, different composition, same canonical design`。
 - 引擎只回一行带第四段的标记 `【图】<类型>|<名>|<路径>|重绘` + 一句不超过 12 字的确认（如 `薇拉 · 重绘完成`），不产生任何剧情文字。封面标记的名是剧本标题（如 `【图】封面|末代天子|presets/twilight-throne/cover.jpg|重绘`）。
-- 客户端（`store/game.ts` `startRegen`/`finishRegen`）发指令时挂起 `regenPending = 类型|标记名`，收到对应重绘标记或回合结束即解除，`assetsStamp` 自增让画廊刷新并以 `v=` 破缓存换新图；引擎忙时按钮禁用（再挡一层 409）。
+- 客户端（`store/game.ts` `startRegen`/`finishRegen`；队列在 `store/context.ts` 的 `pumpRegenQueue`）发指令时挂起 `regenPending = 类型|标记名`，收到对应重绘标记或回合结束即解除，`assetsStamp` 自增让画廊刷新并以 `v=` 破缓存换新图；引擎忙时按钮禁用（再挡一层 409）。**批量重绘恒为盲重绘**（队列项不带要求）。
 
 ### 章节规划指令（客户端 → 引擎，v1.2 章间制作流程）
 
@@ -178,7 +181,7 @@ SSE 事件全集（`/events`）：`turn_start` / `seg{seg,label}` / `chunk{seg,t
 规划：第 N 章。
 ```
 
-- 引擎收到后生成本章完整剧情树写入 `state/worlds/<worldId>/story-tree.md`（见「章节与剧情树」），该回合的输出是且仅是制作清单（下节）。
+- 引擎收到后**先静默读该世界的 `story-tree.md`**：第 N 章的树已存在（含归档区）→ 复用其节点与大纲、不重写，只重出该章缺失素材的清单；不存在 → 才生成本章完整剧情树写入 `state/worlds/<worldId>/story-tree.md`（见「章节与剧情树」）。该回合的输出是且仅是制作清单（下节）。
 - 发送时机（`src/store/game.ts`）：开局待命回合确认后发第 1 章；game 屏收到【章】标记后自动发 `规划：第 N+1 章。`。
 
 ### 创作模式指令与【新剧本】（客户端 ↔ 引擎，v1.3）
@@ -195,15 +198,17 @@ SSE 事件全集（`/events`）：`turn_start` / `seg{seg,label}` / `chunk{seg,t
 - **完成**：引擎输出 `【新剧本】<preset-id>` 后退出创作模式、回到待命。server `parsePresetAddedLine` 把该行转成 `presetAdded` 事件 → 前端刷新 `/api/presets`（新卡带即时入轮播）、创作屏转成功态（`creationResult`），玩家点「去选它」回标题屏。
 - **容错**：装配回合结束仍没收到【新剧本】→ `assemblyStalled` 显示「重试装配」；错误/超时同样解除挂起。创作模式回合的正文不进游戏历史。
 
-### 剧情编辑指令与【树】行（客户端 ↔ 引擎，v1.5）
+### 剧情编辑指令与【树】行（客户端 ↔ 引擎，v1.5；v1.12 起可带节点作用域）
 
 剧情图屏（StoryTreeScreen）对已有剧情树的自然语言修改。指令由 `src/lib/parser.ts` 的 `buildTreeEditCommand` 构造：
 
 ```
-剧情：<自然语言指令>
+剧情：<自然语言指令>                     ← 底部输入框：全树范围
+剧情：针对节点 <节点 id>：<自然语言指令>   ← 节点详情里的「只改这个节点」：只动那个节点（v1.12）
 ```
 
-- 例：`剧情：把第 3 章通往教堂的分支改成通往酒馆`。引擎按【剧情编辑指令】改树并静默写回 `state/worlds/<worldId>/story-tree.md`；本轮不写剧情正文、不出选项，只回一句 ≤30 字修改摘要，随后单独成段输出一行 `【树】` 标记。
+- 例：`剧情：把第 3 章通往教堂的分支改成通往酒馆`、`剧情：针对节点 3-2：把这里写得更紧张`。引擎按【剧情编辑指令】改树并静默写回 `state/worlds/<worldId>/story-tree.md`；本轮不写剧情正文、不出选项，只回一句 ≤30 字修改摘要，随后单独成段输出一行 `【树】` 标记。
+- **作用域（v1.12）**：带 `针对节点 <id>：` 前缀时，引擎按 SKILL 的规则**只改那个节点**与其直接相邻处（找不到该 id 就按同章最接近的节点理解，并在摘要里说明实际改的是哪个）；没有前缀 = 全树范围，与 v1.5 起的旧指令逐字一致（构造侧保证单行：换行折空格）。
 - **【树】是协议行**：server `parseTreeLine` 命中流式完整行 → 广播 SSE `{ type: "treeEdited" }`（只转发、不落盘）；前端图屏据此重取 `/api/tree` 刷新。`isProtocolLine` 整行过滤【树】，不进正文与历史；编辑回合的可见摘要随 `turn_end` 落到剧情图屏提示条（`treeNotice`），同样不进历史。
 - 图屏解析用 `parseStoryTree`（容错）：解析不出结构时回退显示树文件原文；节点布局由 `src/lib/treeLayout.ts` 的 `layoutTree` 计算（纯函数，见「前端结构」）。
 
@@ -336,6 +341,7 @@ state/worlds/<worldId>/history/0001.json     # 4 位递增、append-only
   "kind": "turn",                        // turn=正戏回合自动快照；backup=回退前自动备份的当前状态
   "nodeId": "3-2",                       // 从 story-tree.md「- 当前进度: 节点 <id>（已走 X 轮）」解析，读不到为 null
   "chapterNo": 3,                        // 读 story-tree.md 的 `## 第 N 章`，读不到为 null
+  "prompt": "推门进去。",                 // 可重演的玩家输入（v1.13）：客户端指令（开局/续玩）与 backup 为空串
   "files": { "state": "…", "summary": "…", "tree": "…" }   // 三文件全文；当时不存在的文件为 null
 }
 ```
@@ -343,7 +349,8 @@ state/worlds/<worldId>/history/0001.json     # 4 位递增、append-only
 - **写入时机**：`sendPrompt` 内、`flushArtLines()` 之后、`busy = false` 之前（此刻本轮所有落盘都已定型）。
 - **只为正戏回合写**（`isMainTurn`）：prompt 不以 `规划：`/`美术：`/`剧情：`/`装配。`/`创作模式：` 开头（前缀正则 `DIRECTIVE_PREFIX_RE`，真源 `shared/protocol.mjs`、与 `pickEffort` 共用）、且不含 `待命：` 才算正戏；规划/美术/编辑/创作回合不产生快照。
 - **世界来源**：server 跟踪 `currentWorldId`（在 `sniffPreset` 里与剧本 id 一并落定；指令没给世界段时保持上次值）；世界 id 非法或尚未定下时不写。
-- **去重**：与上一条快照 `files` 逐字全等则跳过（不产生重复条目）；`dedupe: false` 只给 `backup` 用（备份必须落盘，否则恢复不可撤）。
+- **`prompt` 只记玩家输入**（v1.13，ADR-0023）：`isDirectivePrompt`（`开局：`/`继续世界：`）判掉的客户端指令回填空串——续玩回合本身是正戏回合、照写快照与日志，但它不是「一幕」，重演入口会跳过它。旧档没有该字段，`normalizeSnapshot` 统一收敛为空串（那几幕给降级提示，不回填）。
+- **去重**：与上一条**三文件全等、且这次没有新的玩家输入**（`prompt` 为空或与上一条相同）才跳过——玩家输入永远落盘（files 相同也是新的一幕），空输入的读档回合只有真改了文件才落盘。`dedupe: false` 只给 `backup` 用（备份必须落盘，否则恢复不可撤）。
 - **上限**：`seq > 9999` 不再写并 `warn once`（文件名保持 4 位）。
 - **读取**：`/^\d{1,4}\.json$/` 之外的文件名一律跳过，单条坏 JSON 只跳过该条（不让坏档拖垮回退界面）；`latestSnapshot` 只看文件名取最大 seq（O(1)，不再每回合全量 parse 整个 history 目录）。
 - **`writeWorldFiles` 的 null 语义**：字符串=写入；null/undefined=**删除该文件**（快照三键就是该时刻磁盘的真实状态，不能让「当时还不存在的 summary.md」在回退后留下后来的内容）。精确分叉、原地回退、导入三处共用这一条。
@@ -370,17 +377,24 @@ state/worlds/<worldId>/history/0001.json     # 4 位递增、append-only
 
 **引擎 error response 的传播**：`session/prompt` 若按 JSON-RPC 回 `error`（而非断流/超时），`sendPrompt` 显式抛错落进既有 catch——SSE 广播 `error` 事件、`busy` 复位、**不写快照**、`POST /prompt` 回 409。此前该形态被当成功回合处理（照写快照、广播 `turn_end`、HTTP 200）。
 
-### 重演本幕（reroll，v1.7）
+### 重演（reroll，v1.7；v1.13 起输入随快照落盘，见 ADR-0023）
 
-「重演」（内部仍叫 reroll/`rerollTurn`）= 撤销刚结束的正戏回合并重发同一玩家输入（TopBar 右侧「重演」按钮，`rerollTurn` 在 tree slice 里与 `restoreSnapshot` 共用「restore + 分割线 + 重同步」内核，同一套时序不复制）。完整五步：
+「重演」= 退到某一幕开演前、重发那一幕的玩家输入重新演绎（内部仍叫 reroll/`rerollTurn`）。两个入口共用同一解析内核（`src/store/slices/tree.ts` 的 `resolveReplay` + `rerollCore`）与同一套「restore + 分割线 + 重同步」时序（与 `restoreSnapshot` 共用，不复制）：
 
-1. **取目标**：`GET /api/history` 取 `kind:"turn"` 的快照，**次新**的那条 = 上一回合结束态（最新那条是刚结束的本回合；`backup` 不参与计数）。不足两条（本世界第一回合）→ status 反馈「无法重掷」并中止，不打扰服务端。**入口可见性**由 `turnSnapshots`（当前世界已知的 turn 快照数）决定：建新世界置 0（`beginNewWorld` 与开局 `startGame` 的 resetRunState 都带——后者会把前者的 0 清掉，所以两处都要）；入场（`resumeWorld`，含切分叉）与「未知或 <2」的回合收尾按需补拉一次 `/api/history`（`context.refreshTurnSnapshots`，数够即停；补拉失败把已知值回落为 null——宁可展示 + 点击判定，不永久藏住可能可用的功能）；已知 <2 → 按钮不渲染，null（未知）→ 仍展示、点击后再判定。
-2. **回退**：`POST /api/worlds {action:"restore", worldId, seq: <次新>}`——与剧情图回退同一端点，server 先写 `backup` 快照再覆盖三文件（server 侧零改动）。
-3. **重同步**：history 追加带 `reason:"reroll"` 的分割线（`HistoryRollbackMark.reason`；渲染为「—— 第 N 幕已重演 ——」，`restore`/缺省保持「—— 已回溯到第 N 幕 ——」）、置 `pendingResync`/`resyncing`、发 `继续世界：<worldId>。`——**不能只重发 prompt**：引擎会话记忆仍带着上一掷的叙事，必须让它重读档。
-4. **排队跟进**：重掷时把玩家输入存进 `pendingRerollPrompt`；重同步回合 `turn_end` 成功、清完 `pendingResync` 之后立即经 `sendPlayerTurn` 重发并清空（走正常玩家回合路径）。防重入：先清后发，且只有 `resyncing` 收尾的回合认领。重同步失败 → `pendingRerollPrompt` 保留，玩家点「再同步」成功后照常跟进；玩家改发普通指令 → 随 `pendingResync` 在 send 入口一并静默作废。
-5. **输入记账**：`lastTurnPrompt`（上一成功玩家回合的输入）由玩家叙事输入的两个入口（OptionList 选项、FreeInput 自由输入；自动前进代点同路径）在 send 前记进在途的 `pendingTurnPrompt`，`turn_end` 成功时定格；指令类发送（美术/规划/剧情/续档…）不经玩家入口，天然不记录。投递失败或引擎出错即在途作废。`resetRunState` 清空全部三个字段。
+- **游戏屏**：命令轨「进度 ▾」菜单的「重演这一幕」（`rerollTurn`）——目标幕 = 盘上**最近一条带玩家输入的 turn 条目**。最新一条常是 prompt 为空的续玩条目（刷新/重启后的「继续世界线」、回退后的重同步都落这种），要往回找（`REPLAY_PROBE_MAX`=8 条上限；回看是逐条本地单条查询，因为列表形状刻意不带 prompt）。找不到带输入的条目 → 降级提示，不静默。
+- **剧情图屏**：节点详情的「回到这一幕并重演」（`rerollAt(seq)`，两段确认、与回退同纪律）——目标幕 = 该存档点那一条。出现条件 = `canReplaySnapshot`（`src/lib/replay.ts` 纯函数）：该条是 `turn`、且它之前还有 `turn` 条目；prompt 有无不在这里判（列表不带），点击后由解析内核给降级提示。
 
-**连掷**：重掷出的新回合照常走玩家路径（`pendingTurnPrompt` 重新记录、`turn_end` 重新定格），回合结束即恢复重掷入口——再点一次就按**此刻**快照账本的次新 turn 快照重新走一遍五步。三个记账字段都是会话内内存态，理由同 `pendingResync`。
+完整五步：
+
+1. **解析**：`GET /api/history` 取索引 → 目标幕 K（见上）→ 回退点 T = K 之前最近的一条 `kind:"turn"` 条目（`prevTurnSnapshotSeq`，同样是 `src/lib/replay.ts` 的纯函数；backup 与续玩条目都可能夹在中间，只按 kind 认）→ 单条 `?seq=K` 取 K 的 `prompt`。三级降级都经提示出声、不静默：找不到这一幕（该 seq 不是 turn 条目）／这是第一幕（K 之前没有 turn 条目）／这一档没有留下当时的输入（v1.13 之前的旧档、或整档只有续玩条目）。
+2. **回退**：`POST /api/worlds {action:"restore", worldId, seq: T}`——与剧情图回退同一端点，server 先写 `backup` 快照再覆盖三文件（server 侧零改动）。
+3. **重同步**：history 追加带 `reason:"reroll"` 的分割线（`HistoryRollbackMark.reason`；渲染为「—— 第 T 幕已重演 ——」，`restore`/缺省保持「—— 已回溯到第 T 幕 ——」）、置 `pendingResync`/`resyncing`、发 `继续世界：<worldId>。`——**不能只重发 prompt**：引擎会话记忆仍带着原来的叙事，必须让它重读档。
+4. **排队跟进**：把 K 的输入存进 `pendingRerollPrompt`；重同步回合 `turn_end` 成功、清完 `pendingResync` 之后立即经 `sendPlayerTurn` 重发并清空（走正常玩家回合路径）。防重入：先清后发，且只有 `resyncing` 收尾的回合认领。重同步失败 → `pendingRerollPrompt` 保留，玩家点「再同步」成功后照常跟进；玩家改发普通指令 → 随 `pendingResync` 在 send 入口一并静默作废。
+5. **入口可见性**：游戏屏由 `turnSnapshots`（当前世界已知的 turn 快照数）决定：建新世界置 0（`beginNewWorld` 与开局 `startGame` 的 resetRunState 都带——后者会把前者的 0 清掉，所以两处都要）；入场（`resumeWorld`，含切分叉）与「未知或 <2」的回合收尾按需补拉一次 `/api/history`（`context.refreshTurnSnapshots`，数够即停；补拉失败把已知值回落为 null——宁可展示 + 点击判定，不永久藏住可能可用的功能）；已知 <2 → 按钮不渲染，null（未知）→ 仍展示、点击后再判定。**v1.13 起判据不再依赖内存账本**（`lastTurnPrompt`/`pendingTurnPrompt` 已删）：刷新/重启后照样可重演，输入从盘上取。
+
+**连掷**：重演出的新回合照常走玩家路径（`turn_end` 后入口回来），再点一次就按**此刻**盘上的最新条目重新解析一遍（不缓存上次的输入）。`pendingRerollPrompt` 仍是会话内内存态，理由同 `pendingResync`。
+
+**输入随条目（v1.13 / ADR-0023）**：`writeTurnSnapshot` 把该回合的玩家输入写进条目的 `prompt`（`isDirectivePrompt` 判掉客户端的开局/续玩指令 → 空串；引擎侧原文仍在 `logs` 的 `prompt`，两处口径不同、各有其用）。这样输入与其产生的状态同条目绑定，去重、backup、续玩、指令回合那堆 seq 错位都不再需要对齐——这正是「日志端点 + 猜对齐」方案被否的理由。
 
 ### 快照对比（diff，v1.7）
 
@@ -393,28 +407,29 @@ ADR-0007 许诺的「看两份存档差在哪」：剧情图节点详情在快�
 
 ### 世界线导出包（World Bundle）
 
-`GET /api/worlds/export?worldId=<id>` 回 `Content-Disposition: attachment; filename="<worldId>.world.json"`，体（**v2**，v1.8 起）：
+`GET /api/worlds/export?worldId=<id>` 回 `Content-Disposition: attachment; filename="<worldId>.world.json"`，体（**v3**，v1.13 起）：
 
 ```json
-{ "format": "bunkiten-world", "version": 2, "exportedAt": "<ISO>",
+{ "format": "bunkiten-world", "version": 3, "exportedAt": "<ISO>",
   "world": { "worldId": "…", "preset": "…", "title": "…", "label": "…", "note": "…", "chapterNo": 3,
              "forkedFrom": { "worldId": "…", "nodeId": "…", "seq": 1 },
              "files": { "state": "…", "summary": "…", "tree": "…" },
-             "snapshots": [ { "seq": 1, "at": "…", "kind": "turn", "nodeId": "…", "chapterNo": 1, "files": { … } } ],
+             "snapshots": [ { "seq": 1, "at": "…", "kind": "turn", "nodeId": "…", "chapterNo": 1, "prompt": "推门进去。", "files": { … } } ],
              "forkMd": "# 分叉说明\n…" } }
 ```
 
 - **血缘（v2 新增的两个键）**：`world.forkedFrom` 是索引条目里的原值（根世界 / 老索引 → `null`），`world.forkMd` 是 `fork.md` 全文（引擎处理完首个回合会自行删除该文件，没有它就是 `null`）。v1 包没有这两个键——少了它们，**导入回来的分叉线在家谱里会变成根**（家谱只认 `forkedFrom`），正好把 v1.8「血缘从 `note` 挪进 `forkedFrom`」那次收拾抵消掉。除这两个键外键序与形状与 v1 一致（`forkedFrom` 排在元数据段末、`forkMd` 跟在 `files`/`snapshots` 之后），**下载文件名不变**。
+- **重演输入（v3 唯一的变更）**：快照条目多一个 `prompt`（可重演的玩家输入，ADR-0023）——存档自洽：换台机器导入回来也能重演。`world` 层键序与形状一个字节不动（prompt 在条目内部）。缺 `prompt` 的老条目导入后 `normalizeSnapshot` 收敛为空串（那几幕的重演入口给降级提示，不回填）。
 - 版本常量 `WORLD_BUNDLE_VERSION`（`server/worlds.mjs`，命名与 `presets.mjs` 的 `PRESET_BUNDLE_VERSION` 同款）：**导出写它、导入接受 `1..它`**（下一条）。
 
 `POST /api/worlds {action:"import", bundle}` 的校验与落盘纪律：
 
-- `format === "bunkiten-world" && 1 ≤ version ≤ WORLD_BUNDLE_VERSION && WORLD_ID_RE.test(world.worldId)`——**版本闸是区间不是等值**：v1 包照收、按当前形状补齐（`forkedFrom` 为 `null`、不落 `fork.md`），这就是 ROADMAP §1「旧包 accept + upgrade」策略的落地样板（刻意先于通用迁移钩子做：改动局部、收益立刻可见）。`files.state` 必须是**非空字符串**（空 state 会导入出一个不可玩的世界，一律拒绝）；`label ≤ 60` / `note ≤ 200`（超限 400，绝不静默截断）。
+- `format === "bunkiten-world" && 1 ≤ version ≤ WORLD_BUNDLE_VERSION && WORLD_ID_RE.test(world.worldId)`——**版本闸是区间不是等值**：v1/v2 包照收、按当前形状补齐（`forkedFrom` 为 `null`、不落 `fork.md`、`prompt` 为 `""`），这就是 ROADMAP §1「旧包 accept + upgrade」策略的落地样板（刻意先于通用迁移钩子做：改动局部、收益立刻可见）。`files.state` 必须是**非空字符串**（空 state 会导入出一个不可玩的世界，一律拒绝）；`label ≤ 60` / `note ≤ 200`（超限 400，绝不静默截断）。
 - **血缘坏值降级，不整包拒绝**：`forkedFrom` 逐字段校验（`worldId` 过白名单、`nodeId` 非空字符串、`seq` 可选正整数），**任何一处不合形态整条降级为 `null`**——血缘只作家谱连线用，为它把玩家的整份档挡在门外不划算（与 `files.state` 的硬口径刻意相反）。`forkMd` 是非空字符串才逐字节原样落 `fork.md`（空串 = 「没有这个文件」，不落 0 字节文件）。
-- 快照逐条过 `isSnapshotEntry`（seq 1–9999 整数、at 非空字符串、kind ∈ turn|backup、nodeId/chapterNo 可空、files 三键为 string|null），不合法的条目被丢弃而非整包拒绝。
+- 快照逐条过 `isSnapshotEntry`（seq 1–9999 整数、at 非空字符串、kind ∈ turn|backup、nodeId/chapterNo 可空、`prompt` 可缺省但给了必须是字符串、files 三键为 string|null），不合法的条目被丢弃而非整包拒绝。
 - 重名（索引里有，**或磁盘上有目录但索引缺失**）→ `<id>-2`、`-3`…，绝不覆盖既有世界。
-- 落盘：三文件 + `fork.md`（包里有才写）+ 快照目录 + 索引条目（`note` 追加「（导入）」，`forkedFrom` = 包内血缘（v1 包与坏值都是 `null`），`lastPlayed: now`）。
-- 客户端侧 `parseWorldBundle` 只做最小校验（能 JSON.parse、format/version 对、`world.worldId` 非空）——重名改名与文件写入一律由服务端裁决，前端不替服务端预判。**它的版本闸当前仍只认 v1**（`src/store/slices/world.ts`）：放宽到 `1..2` 是服务端已就绪、客户端待同批落地的一步，在那之前应用内「导入」会本地挡下 v2 包（服务端 `POST /api/worlds` 已收）。
+- 落盘：三文件 + `fork.md`（包里有才写）+ 快照目录（条目经 `normalizeSnapshot` 落盘，`prompt` 一并保真）+ 索引条目（`note` 追加「（导入）」，`forkedFrom` = 包内血缘（v1 包与坏值都是 `null`），`lastPlayed: now`）。
+- 客户端侧 `parseWorldBundle` 只做最小校验（能 JSON.parse、format 对、**version 是正整数**、`world.worldId` 非空）——重名改名与文件写入一律由服务端裁决，前端不替服务端预判。**版本上限刻意不设**（v1.13 修正）：服务端按 `WORLD_BUNDLE_VERSION` 裁决并给出准确原因；客户端抄一份上限就会像 v1.8–v1.12 那样把新包悄悄挡在门外（那段时间应用内「导入」会本地拒掉 v2 包，服务端 `POST /api/worlds` 明明已收）。
 
 ### 剧本导出包（Preset Bundle，v1.7）
 
@@ -458,6 +473,7 @@ state/worlds/<worldId>/logs/NNNN.json     # 与 history/ 平级；4 位递增、
 - **seq 对齐**：正常路径与同回合快照同 seq（`writeSnapshot` 的返回，ok 与 duplicate 分支都带 seq——两边都从空起步、每回合同增，天然 1:1）。快照去重的回合（三文件全等、快照跳过）**日志照写**：日志记的是叙事原文，与三文件去重是两回事，此时对齐值追不上 logs 自己的进度，退回 logs 的 max+1——append-only 永不让步，任何路径都不覆盖既有文件。`restore` 的 `backup` 只进 history 不写日志，同样会让两边步进错位：logs 的定位是「按时间读原文」，不是 join key。
 - **溢出**：seq > 9999 与快照同款截断（warn once、不再写）。
 - **不进世界线导出包**：`exportWorld` 只读三文件与 `history/`——日志是本机排障面，不是可迁移的档（导入侧的引擎没有这段历史）。fork 也不复制 logs（新世界自己的回合自己记）。
+- **与快照 `prompt` 的口径差异**（v1.13）：日志的 `prompt` 是**本轮发出去的字**（含客户端的开局/续玩指令），快照的 `prompt` 只记**可重演的玩家输入**（客户端指令回填空串）。要「那一轮到底发了什么」看日志；要「重演这一幕」看快照——两者不互相替代，也不做 join（seq 对齐会因去重/backup/指令回合而错位，ADR-0023）。
 - **无读取端点**：日志只写不读（API 一览无变化），排查时直接看文件。
 
 ### 质量守卫（缺选项段自动追问一次）
@@ -495,7 +511,7 @@ state/worlds/<worldId>/logs/NNNN.json     # 与 history/ 平级；4 位递增、
 - 状态: 可达 | 已走过 | 已剪枝 | 嫁接
 ```
 
-规划纪律：先写约 300 字本章完整大纲（各分支走向与差异、本章在全局结构中的位置、章末落点），再据此展开节点；12–20 个节点、每节点 2–3 条出边、至少 2 个汇合点、恰好 1 个终章节点（id 固定 `finale`）；第 1 章的第一个节点衔接 preset `opening` 的拍点。规划时同时确定本章差分对象：恋爱线/高好感候选 2–3 人写进大纲一行（如「差分对象：薇拉、沈屿、程野」），最高好感线角色额外指定一个服装/姿势变体场景（如「薇拉 · 礼服」）——差分作为独立清单项输出（见「制作清单与章标记」）。本章角色与地点全集从树的节点里枚举（含玩家可能永远走不到的分支专属项）：新角色写入 `state/worlds/<worldId>/state.md` 角色卡（含 `art_prompt`），全部地点登记进「场景美术」清单（规划阶段只记地点名，路径待生成后回填）——这就是制作清单的来源。
+规划纪律（**仅在本章尚无树时**；已有树直接复用其节点与大纲，不重写、不重新展开）：先写约 300 字本章完整大纲（各分支走向与差异、本章在全局结构中的位置、章末落点），再据此展开节点；12–20 个节点、每节点 2–3 条出边、至少 2 个汇合点、恰好 1 个终章节点（id 固定 `finale`）；第 1 章的第一个节点衔接 preset `opening` 的拍点。规划时同时确定本章差分对象：恋爱线/高好感候选 2–3 人写进大纲一行（如「差分对象：薇拉、沈屿、程野」），最高好感线角色额外指定一个服装/姿势变体场景（如「薇拉 · 礼服」）——差分作为独立清单项输出（见「制作清单与章标记」）。本章角色与地点全集从树的节点里枚举（含玩家可能永远走不到的分支专属项）：新角色写入 `state/worlds/<worldId>/state.md` 角色卡（含 `art_prompt`），全部地点登记进「场景美术」清单（规划阶段只记地点名，路径待生成后回填）——这就是制作清单的来源。
 
 ### 骨架语义（ADR-0001：骨架非铁轨）
 
@@ -509,7 +525,7 @@ state/worlds/<worldId>/logs/NNNN.json     # 与 history/ 平级；4 位递增、
 
 ### 上下文注入策略
 
-每轮只在 thinking 里回忆「当前节点 + 其出边 + 本章大纲首段」，不整树复述（对抗上下文膨胀）；需要全貌时静默重读 `state/worlds/<worldId>/story-tree.md`。规划新章时，把旧章压缩为「大纲一行 + 已走过路径一行」移入文件头部归档区。
+每轮只在 thinking 里回忆「当前节点 + 其出边 + 本章大纲首段」，不整树复述（对抗上下文膨胀）；需要全貌时静默重读 `state/worlds/<worldId>/story-tree.md`（规划第 N 章前同理）。归档只在新章规划时写一次，且必须**由现有大纲派生**（照抄要点改写一行，不凭记忆重造）：把旧章压缩为「大纲一行 + 已走过路径一行」移入文件头部归档区。
 
 ### 与节拍表 / 事件池 / 导演层的关系
 
@@ -599,9 +615,67 @@ presets/<剧本 id>/audio/音效-门响.wav       # 一次性音效
 
 - **数据源与端点**：`GET /api/state?worldId=<id>` 读当前世界的 `state.md`（与引擎的 SSOT 同一份文件，不另建缓存）。路由判定收敛在纯函数 `stateViewFor(worldId, root)`（导出、root 可注入单测）：`worldId` 缺失或不过白名单 400、世界没有 `state.md` 404；`/` 首页 banner 也列了它。
 - **容错解析原则**（`parseStateFile(text)`，导出纯函数）：state.md 由引擎（LLM）维护，**小节可能缺、顺序可能乱、值可能越界**——解析绝不抛错，缺的静默缺省（字符串字段空串、数值 null）。逐条规则：`# 剧情状态` 的固定键 → `status`（preset/周目→playthrough/时间→time/场景→scene，缺 null）；`# 主角`/`# 导演手记` 的键值行原样收进 Record（引擎可自由加字段）；`# 角色卡` 的 `## <角色名>` 子节 → `characters`（身份→role、性格关键词→traits、口癖→catchphrase、好感度→favor、art_file→artFile、表情→expression、秘密→secret、最近互动→recentInteraction；好感度取行内整数**夹进 [0,100]**，非整数（如「很高」）为 null）；`# Flags` → 键值列表；`# 未回收伏笔` → 文本列表（行尾「埋于第 N 轮」拆出 `turn`，缺 null）。未知小节（场景美术等）与角色卡的未知键（`art_prompt`）忽略、不进响应。冒号全半角都认。
-- **客户端**（`lib/acp.ts` `fetchState`/`StateView` + `store/slices/characters.ts` + `components/game/CharactersDrawer.tsx`）：TopBar 命令轨「角色」入口（`data-testid="characters"`，面板容器 `characters-panel`）开右滑入抽屉，分块渲染剧情状态/主角/角色卡/幕后手记/线索·未了伏笔（后三块的标题是玩家侧说法，state.md 的 `# 导演手记` / `# Flags` / `# 未回收伏笔` 原样解析）。好感度用 ink 阶梯 + accent（数字与细进度条），不引入新颜色 token。
+- **客户端**（`lib/acp.ts` `fetchState`/`StateView` + `store/slices/characters.ts` + `components/game/CharactersDrawer.tsx`）：TopBar 命令轨「图鉴 ▾ → 角色」入口（`data-testid="characters"`，面板容器 `characters-panel`）开右滑入抽屉，分块渲染剧情状态/主角/角色卡/幕后手记/线索·未了伏笔（后三块的标题是玩家侧说法，state.md 的 `# 导演手记` / `# Flags` / `# 未回收伏笔` 原样解析）。好感度用 ink 阶梯 + accent（数字与细进度条），不引入新颜色 token。
 - **剧透折叠**：角色的「秘密」默认收起（按钮 `aria-expanded`，点击展开）；引擎写「无」或空串时不留折叠位。剧情图/面板都不替玩家预判剧透边界——折叠而非隐藏。
 - **刷新时机**：面板打开拉一次；`turn_end` 后面板开着自动重拉（好感度/导演手记/伏笔随回合变）；关着不拉。换世界/换本/新开局（`resetRunState`）收起面板并清空视图；请求失败（含 404 还没写过 state.md）保持 null → 面板显示占位说明文案。
+
+## 引擎后端（v1.11，ADR-0022：grok 与 Codex 可选）
+
+叙事引擎有两个**可切换的后端**，驱动器仍是同一套 ACP 客户端（`server/acp.mjs`）：默认 `grok`（本机 grok CLI），另一个是 `codex`（OpenAI Codex，经官方生态的 ACP 适配器 `@agentclientprotocol/codex-acp`）。工具层不变——`mcpServers` 是 ACP 标准字段，两个后端都支持客户端注入 MCP server，所以 `bunkiten-media__generate_image` 的出图管线两个引擎通用。
+
+**为什么是 ACP 而不是「让 Codex 当 MCP 服务端」或直连 App Server**：`codex mcp-server` 把 Codex 变成被调用的工具（控制流反转，游戏要自己做 agent loop）；直连 `codex app-server` 等于自维护一份专属客户端。`codex-acp` 是生态在维护的同一层（原 zed-industries 仓已归档、开发汇入 `agentclientprotocol` 组织），对我们就是「换一条 spawn 命令 + 几个注入点」。细节与第 0 步实证见 ADR-0022。
+
+| 面 | grok | codex |
+|---|---|---|
+| spawn | `grok agent --always-approve --plugin-dir <gameRoot>/.grok stdio` | `codex-acp`（开发态 PATH 名；打包态见下） |
+| 注入的 env | BYOK 四件套（`GROK_*`/`XAI_API_KEY`，见「引擎凭据与自备 key」） | `CODEX_HOME`、`INITIAL_AGENT_MODE=agent-full-access`（≈ `--always-approve`）、`NO_BROWSER=1` |
+| 规则注入 | `session/new`/`load` 的 `_meta:{yoloMode:true, rules}` | `config.toml` 的 `developer_instructions`（`_meta` 对 Codex 无意义） |
+| skill | `--plugin-dir <gameRoot>/.grok`（always-trusted，ADR-0021） | `CODEX_HOME/skills/bunkiten/SKILL.md`（照抄仓内那份，含 frontmatter）+ `skills.config` 指向它；规则里另给绝对路径兜底 |
+| 推理档位 | `session/set_config_option` `{configId:"reasoning_effort", value:{value}}` | 同方法、**裸字符串** `{configId:"reasoning_effort", value}`（第 0 步实证；两引擎的 configId 同名、形状不同） |
+| 会话图片根 | `~/.grok/sessions/<encode(gameRoot)>`（`/img` 的引擎自产图通道） | 无（`resolveImage` 一律 404；出图主路径是 media MCP） |
+| 登录探测 | `~/.grok/auth.json` | 玩家 `~/.codex/auth.json`（「沿用终端登录」的复用来源） |
+
+**Windows 上的 `.cmd`（npm 全局装的 grok）**：`child_process.spawn` 自 Node 18.20 / 20.12.2 / 21.7.3 起（CVE-2024-27980 的加固）对 `.cmd`/`.bat` 在 `shell: false` 下**直接抛 `EINVAL`**；而 `resolveOnPath` 会如实把 `grok.cmd` 解析出来（那正是它存在的理由——裸名 spawn 在 Windows 上不补 `.cmd`）。所以描述符给出的 spawn 面统一经 `server/engines.mjs` 的 `windowsSafeSpawn()` 收口：`.cmd`/`.bat` 换成「整条命令行 + `shell: true`」，可执行文件与含空格的参数由我们自己加引号（`shell: true` 时 Node 把 `cmd + args` 直接拼成一条命令行、**不做**逐参引号），其余情形（`.exe`、非 Windows）逐字返回。同一收口也盖 `authCmd`（登录/登出）。**这条是 `packaged-win` job 首次真跑时抓到的**：Windows 上引擎根本起不来 → 启动屏永远等不到标题屏。
+
+**测试/实验旋钮 `BUNKITEN_HOME`**（`server/config.mjs` 的 `gameHome()`）：显式给定即整体替换 `os.homedir()`——凭据、登录态探测、服务目录缓存、会话图片根全跟着走；`electron/main.js` 的 PATH 前缀（`<home>/.grok/bin` 等，打包态 GUI 找不到 shell PATH 时的兜底）同样按它算。打包态冒烟要把 home 指到临时目录，而 Windows 上 `os.homedir()` 读的是 `USERPROFILE`、改那个键会连 Chromium 一起拖下水（实测打包态启动后即崩 `0x80000003`），所以测试侧只动这一个变量（`HOME` 仍留给 POSIX 工具链）；不设时行为一字不变。
+
+### 选择与回落
+
+- 引擎选择存在 `~/.bunkiten/credentials.json` 的**顶层 `engine` 字段**（与凭据同一份文档、同一条「保存 → 立刻重启引擎」流程）；缺省/未知值回落 `grok`——v1.10 及以前的凭据文件读出来就是 grok，升级不动行为。
+- id/名字/说明的唯一真源是 `shared/engines.mjs`（GUI 只渲染）；**行为面**（spawn、env、skill、图片根、档位形状、登录/登出命令）在 `server/engines.mjs` 的描述符里，`server/acp.mjs` 不出现品牌字面量。
+- 换引擎后 `.shell-session.json` 里记的 `{engine, sessionId}` 与当前引擎不匹配 → 跳过 `session/load` 直接 `session/new`（两个后端的 sessionId 互不通用；旧文件没有 `engine` 键时按 grok 读）。
+- 自备密钥目前只有 grok 侧有（`byok` 标志在真源里）：Codex 的自定义模型端点只支持 Responses 协议（`model_providers.<id>.wire_api` 取值只有 `responses`），市面上的 OpenAI 兼容服务大多不适用——设置屏在 codex 下把「自备密钥」锁住并给一句人话说明，`/api/auth` 也不拿它放行。
+
+### 登录：状态看得见、按钮点得动（v1.11 收尾）
+
+**登录态始终是玩家的**——游戏不驱动登录流程、不存凭据、不改玩家的文件；它只做三件事，把「认知负荷」压到最低：
+
+| 面 | 状态判据 | 一键登录 | 登出 |
+|---|---|---|---|
+| grok | `~/.grok/auth.json` 在不在 | `grok login`（CLI 自带，OAuth 开浏览器） | `grok logout` |
+| codex | 玩家 `~/.codex/auth.json` 在不在 | **随包** codex 二进制的 `login`（玩家不必装 CLI；`CODEX_HOME` 显式指回玩家的 `~/.codex`，并摘掉 `NO_BROWSER` 让浏览器弹出来） | 随包 codex 的 `logout` |
+| 对话 / 出图自备 key | `hasKey` + `mode` | 设置屏填服务/密钥（已有） | 清空密钥 / 切回「沿用终端登录」 |
+
+- 命令面在描述符的 `authCmd(action, {home})`（返回 `null` = 该引擎没有可用入口）+ `authAvailable({home})`（`canLogin`，GUI 据此禁用按钮）；编排在 `server/engine-auth.mjs`（同一个引擎至多一个在途登录，重复点 = 换一个；`stopServer` 时收掉；输出尾巴只留 40 行、不含凭据）。
+- 客户端：启动屏未登录态多一个「登录 <引擎>」主按钮，设置屏「引擎与密钥」顶部是**登录状态行**（已登录/未登录 + 登录/退出登录）。两处都用 `lib/engine-login.ts` 的 `watchLogin` 轮询 `/api/auth`——玩家在浏览器里完成的那一刻自动继续（不必回来再点一下），5 分钟等不到就给一句人话。
+- **登出是全局动作**（玩家终端里那份也会被清），所以 GUI 是两段确认（与世界线删除同款）；服务端执行完顺手删掉游戏侧的 codex 副本（否则会出现「启动屏说未登录、引擎却能跑」）。
+
+### Codex 的游戏 home（`CODEX_HOME` = `~/.bunkiten/codex`）
+
+隔离玩家自己的 `~/.codex`（里面的全局 `AGENTS.md`、`config.toml` 与历史都不该渗进游戏会话），由 `server/engines.mjs` 的 prepare 在**每次 spawn 前**幂等准备（顺序要紧：`CODEX_HOME` 指到不存在的路径时 codex-acp 会直接初始化失败）：
+
+| 落点 | 内容 | 说明 |
+|---|---|---|
+| `auth.json` | 玩家 `~/.codex/auth.json` 的副本（0600） | 玩家文件更新（重新登录）时重拷、**消失（登出）时删掉**；这就是「沿用终端登录」的全部机制——游戏不驱动登录流程、不写玩家的文件（与 `grok login` 同款：登录归玩家） |
+| `config.toml` | `developer_instructions` = 注入规则；`project_doc_max_bytes = 0`；`[[skills.config]]` 指向落盘 skill | 游戏管理、每次 spawn 按当前规则重写——**不是**玩家的配置文件 |
+| `skills/bunkiten/SKILL.md` | 仓内 `.grok/skills/bunkiten/SKILL.md` 的逐字副本 | skill 单一真源不变；仓内那份已带 Codex 要求的 frontmatter |
+| （引擎自建） | `sessions/`、`*.sqlite`、`skills/.system/*`、`logs/` | 全在 `CODEX_HOME` 内，不碰玩家主目录 |
+
+`project_doc_max_bytes = 0` 是**实测过的关闭阀**：不关的话 Codex 会把「项目根 → cwd 链上的 `AGENTS.md`」读进上下文——开发态 cwd 是仓库根，本仓自己的 `AGENTS.md`（协作说明）就会进引擎上下文（`instructionSources` 由空变列出该文件，见 ADR-0022 第 0 步实证）。
+
+### 打包态的运行期 spawn
+
+Codex 后端随应用分发（玩家零安装）：`scripts/stage-codex-acp.mjs` 把 `@agentclientprotocol/codex-acp` 及其依赖闭包（19 个包，含平台二进制 `@openai/codex-<platform>`，darwin-arm64 实测 ~290MB）从本地 `node_modules` 按 `node_modules` 布局铺到 `build/codex-acp/`，`electron-builder.yml` 的 `extraResources` 原样搬进 `resources/codex-acp/node_modules`。运行期用与 media MCP 同款的配方拉起——`command: process.execPath` + `ELECTRON_RUN_AS_NODE=1` + `resources/codex-acp/node_modules/@agentclientprotocol/codex-acp/dist/index.js`（`server/engines.mjs` 的 `codexAcpCommand()`；开发态用**仓内 `node_modules` 里那份**同样的入口——`npm i` 装好即可、不必进 PATH；测试用 `BUNKITEN_CODEX_ACP` 覆盖，与 harness 的 `grok` 垫片同款约定）。grok 侧同款的**测试/实验旋钮**是 `BUNKITEN_GROK_MODEL`：显式给定才给 `grok agent` 传 `--model <id>`（真引擎冒烟 `npm run test:e2e` 用便宜档跑），缺省不传、默认模型仍由 CLI 决定。平台二进制跟着**构建机**走（npm 的 optionalDependencies），CI 的 mac/win 矩阵天然各带各的——在 mac 上 `dist:win` 的交叉打包会带上错平台的二进制，正式产物一律由 CI 矩阵出。
 
 ## 引擎凭据与自备 key（v1.10，ADR-0019）
 
@@ -722,20 +796,22 @@ MCP server 是被引擎拉起的**子进程**，子进程读不了 asar：`elect
 | `/api/presets` | POST | 剧本导入（v1.7）`{ action:"import", bundle }`：校验与落盘纪律见「剧本导出包」→ `{ ok:true, id }`（id = 实际落地的剧本 id，可能已重名改 `-2`）；任何校验失败 400 `{ ok:false, error }`。**body 上限例外 50MB**（其余 POST 仍是 5MB） |
 | `/api/presets/export?id=<id>` | GET | 导出剧本包（v1.7）：`Content-Disposition: attachment; filename="<id>.preset.json"`，体为 `{ format:"bunkiten-preset", version:1, id, title, exportedAt, presetMd, assets, audio }`（二进制 base64）；id 非法 400、剧本不存在 404 |
 | `/api/presets/check?id=<id>` | GET | 剧本体检（v1.8，见「剧本体检屏」）：把 `npm run doctor` 的判定直出给界面 → `{ ok, id, title, items: [{ level:"ok"\|"warn"\|"error", group, label }] }`。`items` 顺序与 doctor 的报告一致（同组的行连着）；`label` 是 doctor 的行原文（中文逐字不改）；`ok` 为 false ⟺ 至少一条 error。id 缺失/非法 400、剧本目录不存在 404、doctor 模块不可用 503（`scripts/` 不进打包 layout，见「已知限制」） |
-| `/api/auth` | GET | `{ loggedIn, hasCredentials }`（v1.10）：`loggedIn` = `~/.grok/auth.json` 存在性；`hasCredentials` = LLM 侧配全了自备 key（boot 屏据此放行，两者任一即可开玩）。**响应里不含任何 key** |
+| `/api/auth` | GET | `{ loggedIn, hasCredentials, engine, canLogin }`（v1.10；v1.11 加后两个）：`loggedIn` = 当前引擎的登录产物在不在（grok `~/.grok/auth.json` / codex 玩家 `~/.codex/auth.json`，见「引擎后端」的 `loginFile`）；`hasCredentials` = **该引擎支持**自备 key 且 LLM 侧配全（boot 屏据此放行，两者任一即可开玩）；`engine` = 当前引擎 id；`canLogin` = 该引擎的登录入口可用（grok CLI 在 PATH / 随包 codex 在）——GUI 据此禁用登录按钮并给一句人话。**响应里不含任何 key** |
 | `/api/providers` | GET | 服务目录候选（v1.10，ADR-0020）→ `{ providers, source:"bundled"\|"cache"\|"remote", fetchedAt }`：`source` 说的是**这一份目录是从哪来的**（本进程刚抓到远端 / 读的本地缓存 / 回落内置表），设置屏两个下拉吃它。**只读**——远端目录只喂下拉候选，绝不据此改写玩家已存的 `baseUrl`/`apiKey`/模型；服务端启动时非阻塞抓一次发布源（`docs/providers.json`），并在此端点每次 GET 时后台 revalidate（先回当前视图、刷新在后台跑）、6h TTL、失败静默（见「服务目录在线更新」） |
 | `/api/credentials` | GET | 引擎凭据的脱敏视图（v1.10，见「引擎凭据与自备 key」）→ `{ ok, version, llm, image }`，每组 `{ mode, provider, baseUrl, model, size?, hasKey, apiKeyMasked }`；**永不回明文** |
 | `/api/credentials` | POST | 局部更新凭据：`{ llm?, image?, clear?: ["llm"\|"image"] }`（空串=清该字段、`clear` 整组回默认）；逐字段校验，非法 400 `{ ok:false, error }`；成功 200 + 脱敏视图。body 上限走缺省 5MB |
 | `/api/credentials/test` | POST | 真连一次 `{ target: "llm"\|"image" }` → `{ ok, status, ms, error?, detail? }`（端点自身恒 200，「没通过」是业务结果；`error` 已脱敏截断）。target 非法 400 |
 | `/api/engine/restart` | POST | 优雅重启引擎会话（保存 key 后一键生效）：回合进行中 409 `{ ok:false, error }`，成功 200 `{ ok:true }` |
+| `/api/engine/login` | POST | 一键登录（v1.11 收尾）：把**玩家自己**的 CLI 登录流程拉起来（grok → `grok login`；codex → 随包 codex 二进制的 `login`，都开浏览器、都写进玩家自己的 home）→ 回执 `{ ok, hint? }`（`hint` = CLI 头几行输出，如手填链接）。**登录是长事务**：端点不等结果，客户端轮询 `/api/auth` 看登录产物出现没有（`lib/engine-login.ts` 的 `watchLogin` 就是这一步）。没有可用入口 409 `{ ok:false, error }` |
+| `/api/engine/logout` | POST | 登出（v1.11 收尾）：执行 CLI 自己的 `logout`（**全局动作**——玩家终端里那份登录也会被清，GUI 已先确认），并把游戏侧的 codex 登录副本一并删掉 → `{ ok, error? }`（失败原因来自 CLI 输出，已截断） |
 | `/api/assets?preset=<id>` | GET | **该剧本**的资产清单（画廊与制作中屏清点共用）：`preset` 必填且须匹配 `[A-Za-z0-9_-]+`，缺失或非法 → 400 `{ error }`（v1.5.1 起不再有全局池）；磁盘扫描 `presets/<id>/assets/` 与 `presets/<id>/cover.jpg`，registry 补充未落盘项；每条形如 `{ type, name, variant, file, ready, inUse, mtime }`——`variant` 从文件名拆差分、`inUse` **只扫该剧本的世界**（`index.json` 按 preset 过滤后，任一 `state.md` 文本含名字即「在用」）、`mtime` 供画廊破缓存 |
 | `/api/assets` | POST | 素材删除 `{ action:"delete", preset, file }`：只删 `presets/<id>/assets/` 下的**单层** `jpe?g`（`ASSET_DELETE_FILE_RE`；`cover.jpg`、子目录、非图片一律不受理）→ `{ ok:true, trashed:true }`（v1.7：文件挪进 `state/trash/<ts>-<rand4>-<原名>`，EXDEV 等 rename 失败回退直删则 `trashed:false`）；未知动作/参数不合法 400、文件不存在 404、其余删除失败 500 |
 | `/api/audio?preset=<id>` | GET | 音频清单 → `{ items: [{ kind, name, file, url }] }`（按文件名排序）；`preset` 必填且须过 `PRESET_ID_RE`，缺失或非法 400；**剧本没有 `audio/` 目录 = 空数组**（不是 404）。`url` 是服务端拼好的 `/audio?p=…`，文件名做了百分号编码（名字里可能有 `&`、空格） |
 | `/audio?p=<相对路径>` | GET | 音频直服（`<audio src>` 取它）：白名单 `AUDIO_REL_RE` + `path.resolve` 前缀校验两道闸，命中即整文件 200（按扩展名给 `AUDIO_MIME`，`cache-control: public, max-age=86400`）；**不做 Range**（音频文件小，客户端拉全量），未命中/穿越一律 404 |
-| `/api/history?worldId=<id>[&seq=<n>]` | GET | 逐轮快照索引：`worldId` 不合法 400；不带 `seq` 回 `{ worldId, snapshots: [{ seq, at, kind, nodeId, chapterNo }] }`（**只回元信息、不带 `files`**）；带 `seq` 只读那一个文件、只回那一条（含 `files`；不存在则 `snapshots: []`） |
+| `/api/history?worldId=<id>[&seq=<n>]` | GET | 逐轮快照索引：`worldId` 不合法 400；不带 `seq` 回 `{ worldId, snapshots: [{ seq, at, kind, nodeId, chapterNo, label }] }`（**只回元信息、不带 `files` 与 `prompt`**；`label` 是玩家给这个存档点起的名字，v1.12，没起名是空串）；带 `seq` 只读那一个文件、只回那一条（含 `files` 与 `prompt`——重演的输入从这条取；不存在则 `snapshots: []`） |
 | `/api/worlds` | GET | 世界线列表（可选 `?preset=<id>` 过滤）→ `{ worlds: [{ worldId, preset, title, label, note, chapterNo, lastPlayed, forkedFrom, exists }] }`；`label` 老索引补空串，`chapterNo` 读 story-tree.md、`lastPlayed` 取三文件最新 mtime（磁盘自愈），按最近游玩倒序 |
-| `/api/worlds` | POST | 世界线管理 `{ action }`：`create`（分配 id、写索引）/ `fork`（`{worldId,nodeId,seq?}` 复制三文件+回退+写 fork.md，不推演；带 `seq` 或该节点有快照时走精确快照）/ `restore`（`{worldId,seq}` 先写一条 backup 再覆盖三文件，回 `{ ok:true, backupSeq }`）/ `update`（`{worldId,label?,note?}` 显示名与备注，≤60/≤200，空串=清除）/ `import`（`{bundle}` 导入世界线包）/ `delete`（移索引 + 目录整体挪进 `state/trash/`，回 `{ ok:true, trashed:true }`，rename 失败回退直删标 `fallback:"purged"`）；未知动作或参数不合法 400 `{ ok:false, error }`，成功 200 `{ ok:true, … }` |
-| `/api/worlds/export?worldId=<id>` | GET | 导出世界线包（**v2**，v1.8 起）：`Content-Disposition: attachment; filename="<worldId>.world.json"`，体为 `{ format:"bunkiten-world", version:2, exportedAt, world:{ …, forkedFrom, files, snapshots, forkMd } }`（血缘随包走，导入回来仍是父线的子节点；v1 的两个血缘键是 `null`）；worldId 非法或不存在 400 `{ ok:false, error }` |
+| `/api/worlds` | POST | 世界线管理 `{ action }`：`create`（分配 id、写索引）/ `fork`（`{worldId,nodeId,seq?}` 复制三文件+回退+写 fork.md，不推演；带 `seq` 或该节点有快照时走精确快照）/ `restore`（`{worldId,seq}` 先写一条 backup 再覆盖三文件，回 `{ ok:true, backupSeq }`）/ `update`（`{worldId,label?,note?}` 显示名与备注，≤60/≤200，空串=清除）/ `labelSnapshot`（`{worldId,seq,label}` 给存档点起名，≤40，空串=清除——名字写进索引的世界条目 `snapshotLabels`，**不碰 append-only 的快照文件**，v1.12）/ `import`（`{bundle}` 导入世界线包）/ `delete`（移索引 + 目录整体挪进 `state/trash/`，回 `{ ok:true, trashed:true }`，rename 失败回退直删标 `fallback:"purged"`）；未知动作或参数不合法 400 `{ ok:false, error }`，成功 200 `{ ok:true, … }` |
+| `/api/worlds/export?worldId=<id>` | GET | 导出世界线包（**v3**，v1.13 起）：`Content-Disposition: attachment; filename="<worldId>.world.json"`，体为 `{ format:"bunkiten-world", version:3, exportedAt, world:{ …, forkedFrom, files, snapshots, forkMd } }`（血缘随包走，导入回来仍是父线的子节点；分叉与快照条目字段见「世界线导出包」段）；worldId 非法或不存在 400 `{ ok:false, error }` |
 | `/api/tree` | GET | 剧情树原文 `?worldId=`（缺省 `main`）→ `{ worldId, markdown }`；无树 404（剧情图屏 `parseStoryTree` 解析用） |
 | `/api/state?worldId=<id>` | GET | 角色面板数据（v1.7）：读该世界 `state.md` 容错解析 → `{ worldId, status, protagonist, director, characters, flags, foreshadowing }`；`worldId` 缺失或非法 400、世界没有 `state.md` 404（`stateViewFor` 纯函数，root 可注入单测）。解析原则见「角色面板」 |
 | `/img?p=&t=&n=&preset=` | GET | 图片服务（解析顺序见上：当前剧本永久命中 → 会话兜底 → 旧档 `assets/` 兼容 → 白名单直服） |
@@ -775,7 +851,7 @@ MCP server 是被引擎拉起的**子进程**，子进程读不了 asar：`elect
 | `lib/genealogy.ts` | 世界线家谱纯函数布局（v1.7）：forkedFrom 森林分层 + 孤儿（父线已删，`missingParent`）/fork 环容错 + 确定性整数坐标（`layoutGenealogy`/`GenealogyLayout`，层内 lastPlayed 降序）与圆角拐弯边路径，`genealogyStep` 给家谱键盘走位的确定性规则，WorldsScreen 家谱视图的 SVG 数据源，可被 node 单测直引 |
 | `lib/diff.ts` | 快照对比纯函数（v1.7）：行级 LCS `diffLines(a, b)`（O(n·m) DP，add=b 新增、remove=a 独有，替换块 remove 在前）与 `diffStats` 的 +N −M 摘要，空串/undefined 容错为 0 行，StoryTreeScreen 快照对比面板的数据源，可被 node 单测直引 |
 | `theme.ts` | 剧本主题：`getTheme` 逐键校验兜底（默认 aurora + serif + plain）、`themeVars` 注入 `--accent`/`--accent2`/`--font-preset`、`dialogClass` 映射对话框质感类、`FONT_STACKS` 系统字体栈（离线无 webfont） |
-| `components/` | 各屏与游戏 HUD：TitleScreen 封面卡带轮播与插卡动画（`CardCover` 404 回退渐变+motif）、CraftingScreen 制作中屏（planning「章节大纲」槽 → 清单美术网格两段进度，planning/queue 均可跳过；差分槽位显示「薇拉 · 微笑」）、AssetsScreen 画廊（按当前剧本取数 `GET /api/assets?preset=`，立绘按角色分组、背景/封面分组，大图预览与单项重绘；角标只标**异常**——`未使用`（在用是多数，标了等于没标），v1.6 增「管理素材」开关：勾选后批量重绘（顺序队列，进度「重绘中 i/N」）与批量删除（两段确认，逐条 `POST /api/assets`）——封面不在删除候选里，引擎忙一律禁用）、CreationScreen 创作模式（打磨对话流 → 装配清单逐项点亮 → 新剧本成功态/重试）、Atmosphere 全局胶片颗粒/暗角、TopBar（左上状态点/状态文字/世界名 chip——**章号已移出顶栏**，现在只在章节过场卡与回想抽屉标题上出现；正常态（`就绪`、不忙、无待重同步）整个状态簇走 `sr-only`，只有异常/忙碌态才画出来（VN 惯例：正常态不画 HUD），状态文案一律过 `playerStatus` 转玩家口吻、`待重同步` 徽章不变；右侧竖排轨按钮 设置/历史/角色/画廊/剧情图/重开/前情/重演（`重演这一幕`，只在就绪、有上一回合输入且不处于待重同步时出现）/换剧本/帮助）、CharactersDrawer 角色面板抽屉（v1.7，右滑入侧栏：剧情状态/主角/角色卡（好感度 accent 数字 + 细进度条、表情徽章、秘密 `aria-expanded` 折叠）/幕后手记/线索/未了伏笔——这是玩家侧的小节名，`state.md` 自己的标题照旧，见「角色面板」）、DialogueBox（打字机，间隔按设置里的文字速度档 `TEXT_SPEED_MS`，点击对话框立即补全全文；v1.8 面板右上角内联 自动/快进 两个控件——「自动」与设置屏的自动前进是同一份设置（开着时走 `resumeAutoAdvance()`：玩家的这一下点击是明确要求，不能被「交互即取消」吞掉），「快进」等价于点击补全、打字打完即置灰；系统开了「减少动态效果」时整段显示，见「动效降级」）、OptionList（选项上屏即起自动前进倒计时并显示「自动前进 · Ns」；1-9 与 Numpad 数字键选选项）/FreeInput 等 |
+| `components/` | 各屏与游戏 HUD：TitleScreen 封面卡带轮播与插卡动画（`CardCover` 404 回退渐变+motif）、CraftingScreen 制作中屏（planning「章节大纲」槽 → 清单美术网格两段进度，planning/queue 均可跳过；差分槽位显示「薇拉 · 微笑」）、AssetsScreen 画廊（按当前剧本取数 `GET /api/assets?preset=`，立绘按角色分组、背景/封面分组，大图预览与单项重绘；角标只标**异常**——`未使用`（在用是多数，标了等于没标），v1.6 增「管理素材」开关：勾选后批量重绘（顺序队列，进度「重绘中 i/N」）与批量删除（两段确认，逐条 `POST /api/assets`）——封面不在删除候选里，引擎忙一律禁用）、CreationScreen 创作模式（打磨对话流 → 装配清单逐项点亮 → 新剧本成功态/重试）、Atmosphere 全局胶片颗粒/暗角、TopBar（左上状态点/状态文字/世界名 chip——**章号已移出顶栏**，现在只在章节过场卡与回想抽屉标题上出现；正常态（`就绪`、不忙、无待重同步）整个状态簇走 `sr-only`，只有异常/忙碌态才画出来（VN 惯例：正常态不画 HUD），状态文案一律过 `playerStatus` 转玩家口吻、`待重同步` 徽章不变；右侧竖排轨 **5 个顶层**：设置（直达）｜回顾 ▾（历史/前情）｜图鉴 ▾（角色/画廊/剧情图）｜进度 ▾（重演这一幕（只在就绪、有上一回合输入且不处于待重同步时出现）/重开/换剧本）｜帮助（直达）——v1.12 按渐进式披露分组，叶子项 testid 与行为不变，菜单实现与非 portal 理由见 `components/game/TopBar.tsx` 的文件头与 `lib/menuTab.ts`）、CharactersDrawer 角色面板抽屉（v1.7，右滑入侧栏：剧情状态/主角/角色卡（好感度 accent 数字 + 细进度条、表情徽章、秘密 `aria-expanded` 折叠）/幕后手记/线索/未了伏笔——这是玩家侧的小节名，`state.md` 自己的标题照旧，见「角色面板」）、DialogueBox（打字机，间隔按设置里的文字速度档 `TEXT_SPEED_MS`，点击对话框立即补全全文；v1.8 面板右上角内联 自动/快进 两个控件——「自动」与设置屏的自动前进是同一份设置（开着时走 `resumeAutoAdvance()`：玩家的这一下点击是明确要求，不能被「交互即取消」吞掉），「快进」等价于点击补全、打字打完即置灰；系统开了「减少动态效果」时整段显示，见「动效降级」）、OptionList（选项上屏即起自动前进倒计时并显示「自动前进 · Ns」；1-9 与 Numpad 数字键选选项）/FreeInput 等 |
 | `components/WorldsScreen.tsx` | 世界线屏：`GET /api/worlds?preset=` 列表（继续 / 新世界线 / 两段确认删除 / 键盘导航）；`继续` 走 `resumeWorld`，`新世界线` 走 `POST /api/worlds {action:"create"}`，删除走 `{action:"delete"}`。v1.6：行内改名编辑器（`{action:"update"}` 写 `label`/`note`，留空=清除，Enter 保存 / Esc 取消；显示名按 `worldDisplayName` = `label → note → 所属剧本标题 → 「未命名世界线」` 回退（v1.8：旧版 server 自动写进索引的分叉备注按「没有备注」处理——`lib/worlds.ts` 的 `isLegacyForkNote`，免得把裸 worldId 端给玩家；血缘另有 `forkedFrom` 记着））、单条导出（`worldExportUrl` 交给浏览器下载）、打包导入（file input 读 `.world.json` 原文 → store `importWorldText` 校验后 POST）；导入/改名的成功与失败落在屏内提示位（`worldNotice`），列表补 listbox/option 与 roving tabIndex 语义。v1.7：列表/家谱视图切换（分段按钮）——家谱用 `lib/genealogy` 的 `layoutGenealogy` 画 forkedFrom 森林（孤儿 ⌫ 徽章、`genealogyStep` 方向键走位 + Enter 选中），选中节点的快捷条「继续」走行上同一个 `continueWorld`（内部 `resumeWorld`）、「查看」跳回列表聚焦对应行。v1.8：行上动作收成**一个主行动「继续」+ 一个 ⋯ 菜单**（改名/导出/删除，删除的两段确认收在菜单内、菜单一关即作废，Esc 与点外面都关菜单）；家谱画布补齐与剧情图同款的视图能力（滚轮锚点缩放 / 拖拽平移 / 双击复位 / ± 与「适应」/ `+ - 0`，复用 `lib/treeLayout` 的 `fitView`/`zoomViewAt`/`panView`/`viewBoxOf`，不另写一套几何），渲染宽度**只封上界**（`GEN_MAX_NODE_PX = 270`：小森林不再把节点撑到 ~490px，森林更宽时上界够不着、照旧铺满），鼠标/键盘提示留在画布工具条（不落屏脚，1440×900 不滚动即可见），选中详情条 `sticky` 吸底 |
 | `components/StoryTreeScreen.tsx` | 剧情图 overlay：`GET /api/tree` 取树原文 → `parseStoryTree` → `layoutTree` 出 SVG 节点图；节点详情、`剧情：` 自然语言编辑（`buildTreeEditCommand`，编辑回合不进历史）、「在此分叉」（`POST /api/worlds {action:"fork"}`）；`treeEdited` 事件、回退完成与手动刷新都让 `treeStamp` 自增触发重取。v1.6：并取快照索引（`GET /api/history`）在节点上标「存档点 · 第 N 幕」（v1.8 起是玩家侧文案：幕号 = 快照序号，与历史抽屉的「已回溯到第 N 幕」同源；`snapshotTurnNo` 仍在算「第几轮」但屏上不再印「轮」、也不印 `快照 #seq`）、详情侧栏给「回退到此节点（原地）」（两段确认 → `restoreSnapshot`），**有快照的节点「在此分叉」自动带该 seq**，无快照的旧世界不渲染这些控件（按现状降级）；图形模式支持缩放（指针锚点）/平移/适应与节点 roving tabIndex + 方向键，当前章节点 > 40 默认降为列表模式（可切回图形）。v1.7：节点详情「与上一个存档点对比」——基线取 seq 更小的最近一条（`prevSnapshotSeq`，kind 不限），拉两条快照全文过 `lib/diff` 渲染三 tab diff 面板（`当前状态 / 前情提要 / 剧情图`，详情区内嵌，equal 默认折叠 ±2 行上下文，见「快照对比」节）。v1.8：章节可达——正文顶部的章节切换器列出解析出的**每一章**（`chapterNoOf`/`chapterLabel`，进度章标「当前」，点谁画谁：重排 + 重适应 + 收掉节点焦点；从前只画进度指针那一章），`## 归档` 章只剩目录信息、点它给一句实话而不是静默；节点详情改为 **≥lg 的右侧栏**（`lg:grid-cols-[minmax(0,1fr)_380px]`，窄屏栈在画布下方） |
 | `components/game/PortraitLayer.tsx` | 立绘层：右下竖排名牌；`expression` 事件换差分只做交叉淡入（0.4s），差分图 404 两级回退（差分 → 基础 → 名牌），不重放浮入动画。v1.8：图片改成**真占版面的布局盒**——grid 单格堆叠（两张图 `col-start-1 row-start-1` 同格重叠，差分交叉淡化照旧）、行高显式 `1fr`；此前的 shrink-to-fit 包裹层宽度恒 0，`img` 的 `max-w-full` 就解析成 `max-width:0`，立绘从来没画出来过。e2e 因此断言「立绘 `boundingBox` 非空且渲染宽 > 0（真实解码）」与「对话框与立绘不重叠」两条。配套 `.portrait-reserve`（`styles/global.css`）：≥lg 给对话区的满宽外层预留 `min(40vw,420px)`，可用宽度因此收窄、居中区左移，对话框不再压住立绘（<lg 不预留，优先保证对话区可读宽度） |
@@ -845,6 +921,7 @@ theme:
 ├─ resources/
 │  ├─ app.asar            # electron/ + server/ + package.json（+ dist 冗余备份）
 │  ├─ app-dist/           # extraResources：dist 副本，acp-server /app 的托管目录
+│  ├─ codex-acp/          # extraResources（v1.11）：codex-acp 依赖闭包（node_modules 布局，含平台二进制 ~290MB）
 │  └─ game/               # extraResources：GROK_GAME_ROOT（可写数据必须在 asar 外）
 │     ├─ .grok/           # skills + commands（引擎）
 │     ├─ presets/         # 剧本 + 素材（presets/<id>/assets/ 与 cover.jpg；顶层 assets/ 已不存在）
@@ -854,8 +931,9 @@ theme:
 - productName `Bunkiten`（ASCII，规避 NSIS/非 UTF-8 终端对中文的兼容风险）。
 - **`presets/` 随包分发的不只是剧本文件**：立绘/背景（`presets/<id>/assets/`）、封面（`presets/<id>/cover.jpg`）与音频（`presets/<id>/audio/`，v1.6 起）都在里面——打包会把当前仓库的素材一起装进去；顶层 `assets/` 目录在 v1.5.1 已删除，打包配置里不再有它。
 - **`.grok/` 随包分发（引擎 skill 的唯一真源）**：`extraResources` 把仓库 `.grok/`（`skills/bunkiten/SKILL.md` + `commands/`）复制进 `resources/game/.grok`，而 `server/acp.mjs` 的 `--plugin-dir` 指的就是它（开发态指仓库根那份）——skill 是引擎纪律的全部真相，必须随包装进去才生效（v1.10，ADR-0021；为什么不是靠文件夹信任，见「ACP 契约」的传输一节）。**该目录只放 `commands/` 与 `skills/`**：`--plugin-dir` 会把它当 always trusted，往里加 hooks/MCP 等于对引擎无条件授予执行权。
+- **`codex-acp/` 随包分发（v1.11，ADR-0022）**：Codex 后端的适配器与其依赖闭包（含 ~290MB 的平台二进制）由 `scripts/stage-codex-acp.mjs` 在 `dist:*` 前铺到 `build/codex-acp/`，再经 `extraResources` 进 `resources/codex-acp/node_modules`；运行期由 `server/engines.mjs` 以 `process.execPath` + `ELECTRON_RUN_AS_NODE=1` 拉起（与 media MCP 同款配方，见「引擎后端」）。它**不进 asar**（原生二进制与子进程都读不了 asar）。
 - Windows：`npm run dist:win`（x64，`nsis` + `portable`）。**签名与 mac 同款条件化**——`electron-builder.yml` 的 `win` 段刻意不写 `signExecutable`（默认 `true`）：没有 `WIN_CSC_LINK` 时 electron-builder 只打一条 debug 就跳过签名，而图标/版本元数据走的是另一条路径（`signAndEditResources()` 先 `editWindowsResources()` 再 `signIf()`），所以未签名构建的产物与从前完全一致；有证书时应用 exe、asar 外 exe/dll、NSIS 安装器与卸载器一并签名（带默认时间戳）。注意 `signExecutable: false` 是**硬关**（证书配齐也不签），已不再使用；本地脚本另设 `CSC_IDENTITY_AUTO_DISCOVERY=false`（只对 mac 的 identity 自动发现有效）。开启步骤与验收命令见 [RELEASING.md](RELEASING.md)。
-- macOS：`npm run dist:mac`（`dmg` + `zip`，arm64 + x64）。**签名/公证是条件化的**——`electron-builder.yml` 不再写死 `identity: null`：`CSC_LINK` + `CSC_KEY_PASSWORD` 与 `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` 齐备时才自动发现证书签名，并由根级 `afterSign: electron/notarize.cjs` 钩子提交 notarytool 公证、成功后 `xcrun stapler staple` 把 ticket 钉进 `.app`（staple 是 best-effort，失败只告警不 fail 构建）；三件套不齐时钩子直接 return，本地 `dist:mac` / `dist:mac:dir` 显式 `CSC_IDENTITY_AUTO_DISCOVERY=false` 走未签名路径。`hardenedRuntime: true` 与 `build/entitlements.mac.plist` 是公证的前置条件。
+- macOS：`npm run dist:mac`（`dmg` + `zip`，**arm64 only**——Apple Silicon 是唯一支持目标，Intel 不在范围内；见 ADR-0011 的「修订」段）。**签名/公证是条件化的**——`electron-builder.yml` 不再写死 `identity: null`：`CSC_LINK` + `CSC_KEY_PASSWORD` 与 `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` 齐备时才自动发现证书签名，并由根级 `afterSign: electron/notarize.cjs` 钩子提交 notarytool 公证、成功后 `xcrun stapler staple` 把 ticket 钉进 `.app`（staple 是 best-effort，失败只告警不 fail 构建）；三件套不齐时钩子直接 return，本地 `dist:mac` / `dist:mac:dir` 显式 `CSC_IDENTITY_AUTO_DISCOVERY=false` 走未签名路径。`hardenedRuntime: true` 与 `build/entitlements.mac.plist` 是公证的前置条件。
 - `publish` 声明为 **github provider**（`Jackela/bunkiten`）：这是 `latest*.yml` / `app-update.yml` 与 `electron-updater` 的前提。实际发布只由 release job 做（打包一律 `--publish never`），这里只声明 update channel 的来源，避免 update-info 环节拿到 null channel 崩溃。
 - 产物在 `release/`。
 
@@ -866,8 +944,8 @@ theme:
 | job | 做什么 |
 |---|---|
 | `guard` | 唯一测试门禁，也是唯一跑测试的地方。先核对 **tag == `v<package.json version>`**（不等即秒级失败，避免产物名与 Release 标题不符），再跑全量 `npm test`（单测 + `tests/integration`，约 10s；e2e 不进 CI）。两个 build job 都 `needs: guard`——测试不过就不会产出任何可发布的包 |
-| `build-mac` | `macos-14`（arm64 runner）上 `npx electron-builder --mac --arm64 --x64 --publish never`；签名/公证全靠 secrets 条件化（`CSC_IDENTITY_AUTO_DISCOVERY` 由 `secrets.CSC_LINK != ''` 决定，缺 secrets 照样构建成功）；产物清单写 `SHA256SUMS-mac.txt`（`dmg`/`zip`/`latest*.yml`） |
-| `build-win` | `windows-latest` 上 `--win --x64 --publish never`；校验和用 PowerShell `Get-FileHash` 写 `SHA256SUMS-win.txt`（`-Encoding ascii`） |
+| `build-mac` | `macos-14`（arm64 runner）上 `node scripts/stage-codex-acp.mjs --arch=arm64` → `npx electron-builder --mac --arm64 --publish never`（**只出 arm64**：随包的 codex 平台二进制按构建机架构解析，单架构才自洽；铺场脚本会做架构自检，交叉打包当场红）。签名/公证全靠 secrets 条件化（`CSC_IDENTITY_AUTO_DISCOVERY` 由 `secrets.CSC_LINK != ''` 决定，缺 secrets 照样构建成功）；产物清单写 `SHA256SUMS-mac.txt`（`dmg`/`zip`/`latest*.yml`） |
+| `build-win` | `windows-latest` 上 `node scripts/stage-codex-acp.mjs --arch=x64` → `npx electron-builder --win --x64 --publish never`（同样是先铺 Codex 后端再打包，否则产物缺一个后端）；校验和用 PowerShell `Get-FileHash` 写 `SHA256SUMS-win.txt`（`-Encoding ascii`） |
 | `release` | `download-artifact`（`merge-multiple`）拉回两个平台的产物 → **合并校验和**：先剥掉每行的行尾 `\r`（Windows 侧是 CRLF，混进发布物会让 `shasum -a 256 -c` 对 `.exe` 那几行报 FAILED），合并后再断言结果**纯 LF 且非空** → `softprops/action-gh-release` 建/更新 Release 并上传产物。notes 优先取 `docs/releases/<tag>.md`，其次 `gh api` 的自动 notes，最后兜底文案 |
 
 - **两个 build job 都不发布**（`--publish never`）：发布只由 release job 做，否则 electron-builder 与 action 会争抢同一个 release。`permissions` 也按 job 收口——默认只读，只有 release job 提到 `contents: write`。
@@ -887,6 +965,9 @@ theme:
 - **image_gen 依赖账号套餐**（Imagine 额度）：不可用或限额时引擎静默跳过，游戏不受影响。**根本解法是 v1.10 的图片自备 key**（自建 MCP 工具，见「引擎凭据与自备 key」）——配了自备图片服务就不再经 xAI 的 Imagine 通道；没配的人仍受这条限制。
 - **自备 key 明文落盘（v1.10，刻意取舍）**：`~/.bunkiten/credentials.json` 是明文 + 0600——本机磁盘加密（FileVault/BitLocker）是这里的第一道防线，加密存储（keychain/密钥派生）留给后续版本（见 ADR-0019 的「被否决的备选」）。任何本机进程只要读得到这个文件就能拿到 key，这与「本机端点只挡跨站浏览器请求」是同一条前提：server 是单机服务，不是多租户边界。
 - **在线服务目录有窗口期（v1.10；窗口已收窄，ADR-0020 修订）**：目录更新是尽力而为的后台动作。窗口 = `min(各发布源 CDN 缓存) + TTL(6h) + 一次抓取延迟`，触发点是启动或过期后的下一次 `GET /api/providers`（**不必重启**）：两源并行取最新，raw 可达时其缓存是分钟级（`cache-control: max-age=300`），最坏 ≈ 6h 多；只有 raw 不可达、退到 jsDelivr 时才回到 ≤12h（其边端 `s-maxage=43200`）+ 6h。抓不到 / 缓存坏 / 校验不过就继续用内置表（`source:"bundled"`），**这不影响任何已存凭据**——远端只喂下拉候选，永不改写玩家已存的服务地址、密钥与模型（见「服务目录在线更新」）。
+- **Codex 后端没有自备密钥（v1.11，刻意）**：Codex 的自定义模型端点要求 Responses 协议（`model_providers.<id>.wire_api` 的取值只有 `responses`），服务目录里绝大多数（chat/completions 形态的）服务商不适用；所以 codex 下只支持「沿用终端登录」（`codex login`），设置屏把该组锁住并说明原因（见「引擎后端」与 ADR-0022）。玩家个人 skill 目录（`~/.agents/skills/*`）不受 `CODEX_HOME` 隔离、会进 Codex 的 skill 名录（只影响目录体积，不注入正文）。
+- **codex-acp 的版本与平台绑定（v1.11）**：适配器是生态项目（仓刚从 zed-industries 迁到 agentclientprotocol 组织），升级视为一次小型回归；平台二进制跟着**构建机**走，跨平台交叉打包会带错平台的二进制——`scripts/stage-codex-acp.mjs` 带 `--arch=` 自检，交叉打包当场红，正式产物一律由 CI 的 mac/win 矩阵出。
+- **mac 只支持 Apple Silicon（v1.11，ADR-0011 修订）**：发布产物只有 arm64 的 `dmg`/`zip`（Intel 不在支持范围——x64 既没收益，又与「平台二进制按构建机解析」的机制冲突）。Intel 用户只能跑开发态或自行改铺场脚本从源码打包。
 
 ## 修改指引
 

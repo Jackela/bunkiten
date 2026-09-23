@@ -9,6 +9,8 @@
 //（match 条目不重复消费，天然按序）。
 import { expect, test, type Page } from "@playwright/test";
 import { startUiStack, stopUiStack, type StartedStack } from "./stack";
+import { openRailGroup } from "./flow";
+
 
 /** w1 当前三节点树（进度指针 1-2；含快照 1 的节点 1-1，供点选回退） */
 function currentTree(): string {
@@ -147,6 +149,7 @@ test("回退到快照 #1：两段确认→已回退提示→补发续玩→画�
   await expect(page.getByTestId("status")).toHaveText("就绪");
 
   // 进剧情图，点快照 1 对应节点 1-1：详情出现并带快照标注
+  await openRailGroup(page, "图鉴");
   await page.getByTestId("tree").click();
   await expect(page.getByTestId("tree-canvas")).toBeVisible();
   await page.getByTestId("tree-node-1-1").click();
@@ -180,6 +183,7 @@ test("重同步失败与恢复：回退后首条续玩命中引擎 error → 徽
   await expect(page.getByTestId("resync-badge")).toHaveCount(0); // 还没回退：无徽章
 
   // 回退：两条「继续世界」队列里下一条是 {error} → 重同步失败
+  await openRailGroup(page, "图鉴");
   await page.getByTestId("tree").click();
   await page.getByTestId("tree-node-1-1").click();
   await page.getByTestId("tree-restore-1-1").click();

@@ -53,3 +53,34 @@ jobs:
 
       # 真引擎 e2e（npm run test:e2e）需要本机已登录的 grok CLI + 真引擎回合，只在开发机跑：
       #   npm run test:e2e
+
+  # Windows 打包态冒烟（v1.12）：本机 macOS 交叉出不了 win 产物，而 win 产物此前**从没被真跑过**
+  # ——「点开就能玩」在 Windows 上一直没有证据。这里在 win runner 上打一份 --dir 产物、再让打包态
+  # e2e 真起一次 _electron（tests/e2e-packaged/，跨平台定位见 tests/helpers/packaged-app.mjs）。
+  # 与 release.yml 的 win job 用同一个铺场脚本：产物架构自检、extraResources 与 asar 布局都走同一条路。
+  packaged-win:
+    runs-on: windows-latest
+    env:
+      # 打包态冒烟不联网查更新（main.js 认这个开关）；_electron 不需要浏览器下载
+      BUNKITEN_DISABLE_UPDATE: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # --dir 产物（release/win-unpacked/Bunkiten.exe）：不签名也不用 NSIS，跑冒烟足够了。
+      # 纪律：`dist:win*` 这两条 npm script 必须保持**跨 shell**——Windows 的 cmd/pwsh 不认 POSIX 的
+      # 内联环境变量前缀（`VAR=value cmd`），mac 专属的 `CSC_IDENTITY_AUTO_DISCOVERY=false` 只留在
+      # dist:mac* 里（Windows 上本就没有证书自动发现这条路）。这条 job 是它第一次被真跑时抓到的。
+      - name: Packaged dir build（stage-codex-acp --arch=x64 + electron-builder --win --dir）
+        run: npm run dist:win:dir
+
+      - name: Packaged smoke（打包布局 / asar / resources/game / codex-acp initialize）
+        run: npm run test:e2e:packaged
+

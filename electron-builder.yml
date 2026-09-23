@@ -43,6 +43,14 @@ extraResources:
     filter: ["README.md"] # 只带说明文件，绝不打包本地进度
   - from: dist
     to: app-dist # acp-server 的 /app 托管目录
+  # Codex 后端（v1.11，docs/adr/0022）：codex-acp + 它的依赖闭包（含平台二进制 @openai/codex-*，
+  # darwin-arm64 实测 ~290MB）由 scripts/stage-codex-acp.mjs 铺到 build/codex-acp/node_modules，
+  # 这里原样搬进 resources/codex-acp/node_modules——node 的向上查找靠这个布局解析它的兄弟依赖；
+  # 运行期由 server/engines.mjs 的 codexAcpCommand() 以 `process.execPath` + ELECTRON_RUN_AS_NODE=1 拉起。
+  # 平台二进制跟着**构建机**走（npm 的 optionalDependencies），CI 的 mac/win 矩阵天然各带各的，
+  # 跨平台交叉打包（在 mac 上 dist:win）会带上错平台的二进制——正式产物一律由 CI 矩阵出。
+  - from: build/codex-acp/node_modules
+    to: codex-acp/node_modules
 win:
   target:
     - nsis
@@ -64,7 +72,8 @@ mac:
     - zip
   # 不再写死 identity: null —— 让 electron-builder 按 CSC_LINK / CSC_IDENTITY_AUTO_DISCOVERY 决定：
   # 本地与未配 secrets 的 CI 用 CSC_IDENTITY_AUTO_DISCOVERY=false 显式走未签名路径（dist:mac / dist:mac:dir）；
-  # CI 里 CSC_LINK 存在时才自动发现证书并签名。arch 由 dist:mac 脚本 --arm64 --x64 传入。
+  # CI 里 CSC_LINK 存在时才自动发现证书并签名。arch 由 dist:mac 脚本传入（**只出 arm64**：
+  # 随包的 codex 平台二进制按构建机架构解析，单架构才自洽；见 ADR-0011 修订）。
   hardenedRuntime: true # 公证的前置条件
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist

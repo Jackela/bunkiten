@@ -8,10 +8,12 @@ import type { GameStore } from "../types";
 
 /**
  * 解析导入的世界线包原文（纯函数，导入动作与单测共用）。
- * 只做「敢原样回传服务端」的最小校验：JSON 能解析、format/version 对得上、world.worldId 有值；
+ * 只做「敢原样回传服务端」的最小校验：JSON 能解析、format 对得上、version 是正整数、world.worldId 有值；
+ * 版本**上限刻意不在这里设**——服务端按 WORLD_BUNDLE_VERSION 裁决并给出准确原因，客户端抄一份上限
+ * 就会像 v1.8–v1.12 那样把新包悄悄挡在门外（那段时间 v2 包在 UI 里根本导不进来，见 docs/adr/0023）；
  * 重名改名、文件写入等一律由服务端裁决（前端不替服务端预判世界 id 合法性）。
  * @param {string} text 文件原文（.world.json）
- * @returns {WorldBundle | null} 合法包；不是 JSON / 格式不符 / version 非 1 / 缺 worldId 时 null
+ * @returns {WorldBundle | null} 合法包；不是 JSON / 格式不符 / version 不是正整数 / 缺 worldId 时 null
  */
 export function parseWorldBundle(text: string): WorldBundle | null {
   let data: unknown;
@@ -22,7 +24,8 @@ export function parseWorldBundle(text: string): WorldBundle | null {
   }
   if (!data || typeof data !== "object") return null;
   const b = data as Partial<WorldBundle>;
-  if (b.format !== "bunkiten-world" || b.version !== 1) return null;
+  const version = b.version;
+  if (b.format !== "bunkiten-world" || typeof version !== "number" || !Number.isInteger(version) || version < 1) return null;
   const world = b.world as { worldId?: unknown } | undefined;
   if (!world || typeof world.worldId !== "string" || !world.worldId) return null;
   return b as WorldBundle;
@@ -36,7 +39,7 @@ export function createWorldSlice(
   return {
     beginNewWorld(worldId) {
       ctx.clearWatchdog();
-      // 服务端刚建出的世界快照数确定为 0：重掷按钮在攒够两条 turn 快照前不出现（spec P3-T1）。
+      // 服务端刚建出的世界快照数确定为 0：重演按钮在攒够两条 turn 快照前不出现（spec P3-T1）。
       // 显示名留空：新世界的 label 还没起，此时把 worldId 塞进去就是一条 slug 上屏（见 types.ts worldLabel）
       ctx.resetRunState({ worldId, worldLabel: "", screen: "protagonist", turnSnapshots: 0 });
     },
@@ -51,7 +54,7 @@ export function createWorldSlice(
         screen: "game",
       });
       get().send(buildResumeCommand(entry.worldId));
-      // 续玩的旧世界磁盘上可能已有快照：补拉一次快照数，重掷按钮据此决定是否出现（失败=未知，照常展示）
+      // 续玩的旧世界磁盘上可能已有快照：补拉一次快照数，重演按钮据此决定是否出现（失败=未知，照常展示）
       ctx.refreshTurnSnapshots();
     },
 

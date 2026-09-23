@@ -1,5 +1,15 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties } from "react";
+import {
+  Fragment,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { AnimatePresence, motion, type PanInfo } from "framer-motion";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { coverUrl, fetchPresets, fetchWorlds, presetExportUrl, type WorldEntry } from "../lib/acp";
 import { getTheme, themeVars } from "../theme";
 import { useGameStore } from "../store/game";
@@ -15,6 +25,32 @@ const DRAG_THRESHOLD = 60;
 const INSERT_MS = 1000;
 /** 邻卡不透明度：原 0.4 那档卡面糊成一团黑（读不出是什么本子），抬到这一档——仍明显低于中央卡的 1 */
 const SIDE_CARD_OPACITY = 0.64;
+
+/**
+ * 「只对 Enter 让路」的键盘守卫（v1.12 收成一处）。
+ *
+ * 本屏在 window 上挂着「← → 切卡 / Enter 插卡」，而角落簇、雪佛龙、「继续上次」这些控件自己也吃键盘。
+ * 两条相反的错误都出现过，别只防一头：
+ *  · 无条件 `stopPropagation`（原先角落簇三枚按钮就是这么写的）→ 焦点停在按钮上时 ← → 再也切不动卡
+ *    ——Radix 关菜单还会把焦点送回触发器，把窗口拉得更宽；
+ *  · 完全不拦 Enter → 按钮被 Enter 触发的同时，window 那一下也把中心卡插了。
+ * 所以规则只有一条：**只拦 Enter，方向键一律透传**（Enter 也是 `<button>` 的激活键，必须让按钮独占）。
+ * @param e 控件上的 keydown（React 合成事件）
+ */
+const swallowEnter = (e: ReactKeyboardEvent<HTMLElement>) => {
+  if (e.key === "Enter") e.stopPropagation();
+};
+
+/** 菜单项基类（与 WorldsScreen 的 ⋯ 菜单、命令轨的分组菜单逐字同款：弹层观感全仓只有一套） */
+const MENU_ITEM_CLS =
+  "w-full rounded-lg px-3 py-2 text-left text-ui text-ink-hint transition-colors hover:bg-white/[.06] hover:text-ink";
+
+/**
+ * 菜单项里「选中即关」的例外：导出要等下载派发完再关菜单。
+ * 浏览器要等事件派发走完才执行 `<a download>` 的默认动作，在同一拍里把菜单（连同锚点）卸载掉会把下载掐掉，
+ * 所以由 onClick 延后一拍收菜单，onSelect 这一下先拦掉 Radix 的「选中即关」。
+ */
+const KEEP_MENU_OPEN = (event: Event) => event.preventDefault();
 
 /** 卡带封面（presets/<id>/cover.jpg）：404/加载失败回退主题渐变+motif（不渲染即露出底渐变） */
 function CardCover({ id }: { id: string }) {
@@ -42,7 +78,18 @@ function ringOffset(i: number, current: number, n: number): number {
 /** 标题屏：老游戏机式的卡带轮播。← → 切卡，Enter/点中央卡「插卡」进入世界线屏（选卡后由那里落定世界）。
  *  v1.8 壳层化：产品字标（bunkiten / 分岐点）+ 左下「继续上次」直通入口 + 右下角落簇（导出当前卡 /
  *  导入剧本 / 素材 / 剧本体检 / 创作新剧本）；卡面按实体卡带分带（顶部标签带 / 磁带窗 / 底缘脊柱），文案字号走
- *  global.css 的档位类（不再手写 text-[Npx]）。 */
+ *  global.css 的档位类（不再手写 text-[Npx]）。
+ *  v1.11 角落簇补「设置」（引擎/登录/音量都在设置屏里，标题屏是「还没开玩」时最自然的入口）。
+ *  v1.12 角落簇按渐进式披露重排：**素材 / 创作新剧本 / 设置** 三枚可见（玩家真会用的），
+ *  导出当前卡 / 导入剧本 / 剧本体检 三枚收进「更多」菜单——它们是低频（一局一次）或作者向的动作，
+ *  原来与「素材/创作」同权重平铺在角落里，六项一样重反而没有重点。
+ *  菜单用法与 WorldsScreen 的行 ⋯ 菜单同源（Radix、**非 portal**：主题变量注入在 App 根而不是 `:root`，
+ *  portal 出去会掉回初始 accent）；导入用的隐藏 file input 仍是角落簇里的兄弟节点（不在菜单内），
+ *  菜单项只是替玩家点它——文件选择框与菜单的开合是两条独立的生命周期。
+ *  两处非显然的细节：
+ *  ① 菜单弹层与菜单项都 stopPropagation 掉 keydown：本屏 window 上挂着「← → 切卡 / Enter 插卡」的全局键盘，
+ *     菜单开着时方向键归 roving、Enter 归选项，不许冒上去顺手把卡也切了/插了；
+ *  ② 导出锚点走 onSelect 拦关 + onClick 延后一拍收菜单（见 KEEP_MENU_OPEN），与 WorldsScreen 的导出一致。 */
 export default function TitleScreen() {
   const selectPreset = useGameStore((s) => s.selectPreset);
   const setPresets = useGameStore((s) => s.setPresets);
@@ -50,6 +97,7 @@ export default function TitleScreen() {
   const clearTitleNotice = useGameStore((s) => s.clearTitleNotice);
   const titleNotice = useGameStore((s) => s.titleNotice);
   const openAssets = useGameStore((s) => s.openAssets);
+  const openSettings = useGameStore((s) => s.openSettings);
   const openCheck = useGameStore((s) => s.openCheck);
   const openCreation = useGameStore((s) => s.openCreation);
   const resumeWorld = useGameStore((s) => s.resumeWorld);
@@ -60,6 +108,8 @@ export default function TitleScreen() {
   const [loaded, setLoaded] = useState(false);
   const [index, setIndex] = useState(0);
   const [inserting, setInserting] = useState(false);
+  /** 角落簇「更多」菜单（受控：导出要延后一拍才收菜单，见 KEEP_MENU_OPEN） */
+  const [moreOpen, setMoreOpen] = useState(false);
   /** 最近游玩的世界线（挂载拉一次全量 /api/worlds，自己取 lastPlayed 最大的一条：与 WorldsScreen aside 同判据） */
   const [worlds, setWorlds] = useState<WorldEntry[]>([]);
   // 导入剧本（v1.7）：在途标志（按钮禁用）与文件读取失败的就近提示（POST 结果走 store 的 titleNotice）
@@ -219,9 +269,7 @@ export default function TitleScreen() {
           disabled={continueDisabled}
           title={!lastWorld.exists ? "目录缺失" : !resumePreset ? "剧本已移除" : engineBusy ? "忙碌中，稍后再试" : undefined}
           onClick={resumeLast}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") e.stopPropagation();
-          }}
+          onKeyDown={swallowEnter}
           className={`group absolute bottom-[4vh] left-6 z-20 w-[min(228px,40vw)] rounded-2xl border px-4 py-3 text-left backdrop-blur-md transition-colors ${
             continueDisabled
               ? "cursor-not-allowed border-white/10 bg-panel text-ink-hint"
@@ -246,39 +294,118 @@ export default function TitleScreen() {
         </button>
       )}
 
-      {/* 角落簇：导出当前卡 / 导入剧本 / 素材 / 创作新剧本。
-          「导出」从卡面（会压住封面）挪到这里，但目标恒为**当前中央卡**——
-          testid、href、download 与 v1.7 逐字一致（e2e 的下载断言照旧）。
-          各入口 stopPropagation 防 Enter 落到 window 上同时触发插卡 */}
+      {/* 角落簇（v1.12）：素材 / 创作新剧本 / 设置 三枚可见 + 「更多」菜单（导出当前卡 / 导入剧本 / 剧本体检）。
+          导出的对象恒为**当前中央卡**——testid、href、download 与 v1.7 逐字一致（e2e 的下载断言照旧）。
+          各项走 swallowEnter：只拦 Enter（防它落到 window 上顺手把中心卡插了），← → 一律透传
+          ——焦点停在这排按钮上时照样能切卡；菜单的 Content 整体再拦一次 keydown（见文件头 ①）：
+          菜单开着时方向键与 Enter 都归菜单自己 */}
       <div className="absolute bottom-[4vh] right-6 z-20 flex items-center gap-5 text-ui tracking-[.25em] text-ink-hint">
-        {current && !inserting && (
-          <a
-            href={presetExportUrl(current.id)}
-            download={`${current.id}.preset.json`}
-            data-testid={`preset-export-${current.id}`}
-            aria-label={`导出剧本 ${current.title}`}
-            onClick={(e) => e.stopPropagation()}
-            onKeyDown={(e) => {
-              // 只拦 Enter（防止同时触发插卡）；方向键放行——点击导出后焦点留在链接上，
-              // 全拦会把 ← → 切卡也吞掉，直到玩家点别处才恢复
-              if (e.key === "Enter") e.stopPropagation();
-            }}
-            className="transition-colors hover:text-[color:var(--accent)]"
-          >
-            导出
-          </a>
-        )}
         <button
           type="button"
-          data-testid="preset-import"
-          disabled={importing}
-          onClick={() => importRef.current?.click()}
-          onKeyDown={(e) => e.stopPropagation()}
-          className="transition-colors hover:text-[color:var(--accent)] disabled:cursor-not-allowed disabled:text-ink-faint"
+          onClick={() => openAssets(current)}
+          onKeyDown={swallowEnter}
+          className="transition-colors hover:text-[color:var(--accent)]"
         >
-          {importing ? "导入中…" : "导入剧本"}
+          素材
         </button>
-        {/* 导入收 .preset.json（.json 已覆盖它，双写只是让选择器对话框里更醒目） */}
+        <button
+          type="button"
+          onClick={openCreation}
+          onKeyDown={swallowEnter}
+          className="transition-colors hover:text-[color:var(--accent)]"
+        >
+          创作新剧本
+        </button>
+        {/* 设置（v1.11 收尾）：引擎选择 / 登录登出 / 音量都在设置屏里——标题屏是「还没开玩」时最自然的
+            入口（以前只从游戏内命令轨进得去，想换个引擎得先开一局）。关掉设置回到这里（screenReturn）。 */}
+        <button
+          type="button"
+          data-testid="title-settings"
+          onClick={openSettings}
+          onKeyDown={swallowEnter}
+          className="transition-colors hover:text-[color:var(--accent)]"
+        >
+          设置
+        </button>
+
+        <DropdownMenu.Root modal={false} open={moreOpen} onOpenChange={setMoreOpen}>
+          <DropdownMenu.Trigger
+            data-testid="title-more"
+            // 吞键要**分情况**（v1.12 修）：Radix 关菜单时会把焦点送回这枚触发器，无条件吞键等于
+            // 让「用完一次菜单」之后的 ← → 全部失灵（本屏的切卡挂在 window 上）。所以只拦两类：
+            // ① 菜单开着——整屏键盘都让位（roving 要 ↑↓/Enter/Space）；
+            // ② 菜单关着但按键是 Radix 在这枚触发器上会用的（Enter/Space/↑/↓：它们会开菜单，
+            //    放上去就会顺手把中心卡也插了）；← → 照常透传给本屏。
+            onKeyDown={(e) => {
+              const openKeys = e.key === "Enter" || e.key === " " || e.key === "ArrowUp" || e.key === "ArrowDown";
+              if (moreOpen || openKeys) e.stopPropagation();
+            }}
+            className="flex items-center gap-1 transition-colors hover:text-[color:var(--accent)]"
+          >
+            更多
+            {/* 纯视觉的「可展开」提示：括号里的字不该被读成一个字符（语义归 aria-haspopup/expanded） */}
+            <span aria-hidden className="text-micro opacity-70">
+              ▾
+            </span>
+          </DropdownMenu.Trigger>
+
+          {/* 向上开（角落簇贴在视口底边），右对齐到触发器；贴边翻面仍由 Radix 的 flip 兜底 */}
+          <DropdownMenu.Content
+            data-testid="title-more-menu"
+            side="top"
+            align="end"
+            sideOffset={6}
+            collisionPadding={8}
+            onKeyDown={(e) => e.stopPropagation()}
+            className="z-20 grid w-44 gap-0.5 shell-panel rounded-xl p-1"
+          >
+            {current && !inserting && (
+              <DropdownMenu.Item asChild onSelect={KEEP_MENU_OPEN}>
+                <a
+                  href={presetExportUrl(current.id)}
+                  download={`${current.id}.preset.json`}
+                  data-testid={`preset-export-${current.id}`}
+                  aria-label={`导出剧本 ${current.title}`}
+                  // 关菜单推迟一拍（见 KEEP_MENU_OPEN）：浏览器要等事件派发走完才执行 <a download> 的默认动作
+                  onClick={() => window.setTimeout(() => setMoreOpen(false), 0)}
+                  className={`${MENU_ITEM_CLS} block`}
+                >
+                  导出当前卡
+                </a>
+              </DropdownMenu.Item>
+            )}
+            <DropdownMenu.Item asChild>
+              <button
+                type="button"
+                data-testid="preset-import"
+                disabled={importing}
+                onClick={() => importRef.current?.click()}
+                className={`${MENU_ITEM_CLS} disabled:cursor-not-allowed disabled:text-ink-faint`}
+              >
+                {importing ? "导入中…" : "导入剧本"}
+              </button>
+            </DropdownMenu.Item>
+            {/* 剧本体检（v1.9）：对象恒为**当前中央卡**——标题屏还没「插卡」时 store 的 selected 可能还是空
+                或上一局的剧本，所以把卡带进 openCheck（只落 selected，不进世界线屏、不重置运行态）。
+                没有卡可检时禁用并说明原因，不留一个点了没反应的死按钮 */}
+            <DropdownMenu.Item asChild disabled={!current}>
+              <button
+                type="button"
+                data-testid="preset-check"
+                disabled={!current}
+                title={current ? `体检《${current.title}》` : "还没有可体检的剧本"}
+                onClick={() => current && openCheck(current)}
+                className={`${MENU_ITEM_CLS} disabled:cursor-not-allowed disabled:text-ink-faint`}
+              >
+                剧本体检
+              </button>
+            </DropdownMenu.Item>
+          </DropdownMenu.Content>
+        </DropdownMenu.Root>
+
+        {/* 导入收 .preset.json（.json 已覆盖它，双写只是让选择器对话框里更醒目）。
+            它留在菜单**外**（角落簇的兄弟节点）：菜单项只是替玩家点它——file input 与菜单的开合是
+            两条独立的生命周期，塞进菜单里会让「选文件」随菜单卸载一起悬空 */}
         <input
           ref={importRef}
           type="file"
@@ -287,36 +414,6 @@ export default function TitleScreen() {
           className="hidden"
           onChange={onImportPick}
         />
-        <button
-          type="button"
-          onClick={() => openAssets(current)}
-          onKeyDown={(e) => e.stopPropagation()}
-          className="transition-colors hover:text-[color:var(--accent)]"
-        >
-          素材
-        </button>
-        {/* 剧本体检（v1.9）：对象恒为**当前中央卡**——标题屏还没「插卡」时 store 的 selected 可能还是空
-            或上一局的剧本，所以把卡带进 openCheck（只落 selected，不进世界线屏、不重置运行态）。
-            没有卡可检时禁用并说明原因，不留一个点了没反应的死按钮 */}
-        <button
-          type="button"
-          data-testid="preset-check"
-          disabled={!current}
-          title={current ? `体检《${current.title}》` : "还没有可体检的剧本"}
-          onClick={() => current && openCheck(current)}
-          onKeyDown={(e) => e.stopPropagation()}
-          className="transition-colors hover:text-[color:var(--accent)] disabled:cursor-not-allowed disabled:text-ink-faint"
-        >
-          剧本体检
-        </button>
-        <button
-          type="button"
-          onClick={openCreation}
-          onKeyDown={(e) => e.stopPropagation()}
-          className="transition-colors hover:text-[color:var(--accent)]"
-        >
-          创作新剧本
-        </button>
       </div>
 
       {/* 左右半屏点击切卡（置于卡层之下）：宽命中区照旧留给拖拽/点击，里面加可见的雪佛龙
@@ -327,9 +424,7 @@ export default function TitleScreen() {
             type="button"
             aria-label="上一张"
             onClick={() => step(-1)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") e.stopPropagation();
-            }}
+            onKeyDown={swallowEnter}
             className="group absolute inset-y-0 left-0 z-[5] flex w-[18%] cursor-w-resize items-center justify-center"
           >
             <span
@@ -343,9 +438,7 @@ export default function TitleScreen() {
             type="button"
             aria-label="下一张"
             onClick={() => step(1)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") e.stopPropagation();
-            }}
+            onKeyDown={swallowEnter}
             className="group absolute inset-y-0 right-0 z-[5] flex w-[18%] cursor-e-resize items-center justify-center"
           >
             <span

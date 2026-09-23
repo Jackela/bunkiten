@@ -32,7 +32,7 @@ function useAutoAdvanceLeft(deadline: number | null): number {
 export default function OptionList() {
   const options = useGameStore((s) => s.options);
   const typingDone = useGameStore((s) => s.typingDone);
-  // 玩家叙事入口：走 sendPlayerTurn 记录在途输入（重掷「重发同一输入」的数据源），不裸调 send
+  // 玩家叙事入口：走 sendPlayerTurn（服务端把这次输入随快照条目落盘，重演时可原样重发），不裸调 send
   const sendPlayerTurn = useGameStore((s) => s.sendPlayerTurn);
   const autoAdvance = useGameStore((s) => s.settings.autoAdvance);
   const autoAdvanceDeadline = useGameStore((s) => s.autoAdvanceDeadline);

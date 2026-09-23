@@ -701,6 +701,26 @@ describe("表情切换与创作/画廊编排（v1.3 store 公共 API 驱动）",
     expect(last.text).toBe("剧本骨架 · 写入中");
   });
 
+  it("装配双击防线（v1.11 收尾）：turn_start 前第二次「装配。」不发——一次装配只花一个真回合", () => {
+    useGameStore.getState().openCreation();
+    const before = prompts.filter((p) => p === "装配。").length;
+    // 「开始装配」按钮只按 engineBusy 禁用，而 engineBusy 要等 turn_start SSE 才置真——那一小段窗口里
+    // 双击会发两遍。第一发已同步置 assembling，第二发必须被挡掉（连玩家气泡都不该多一条）。
+    useGameStore.getState().sendCreation("装配。");
+    useGameStore.getState().sendCreation("装配。");
+    expect(prompts.filter((p) => p === "装配。")).toHaveLength(before + 1);
+    expect(useGameStore.getState().creationMessages.filter((m) => m.text === "装配。")).toHaveLength(1);
+
+    // 装配回合失败（回合结束仍没收到【新剧本】）→ assembling 清掉、置可重试：此时重发必须放行
+    const s = useGameStore.getState();
+    s.handleEvent({ type: "turn_start" });
+    s.handleEvent({ type: "turn_end" });
+    expect(useGameStore.getState().assembling).toBe(false);
+    expect(useGameStore.getState().assemblyStalled).toBe(true);
+    useGameStore.getState().sendCreation("装配。");
+    expect(prompts.filter((p) => p === "装配。")).toHaveLength(before + 2);
+  });
+
   it("装配中的【图】标记：新剧本 id 揭示前不带 preset（不写进当前剧本目录），收到【新剧本】后带上", () => {
     useGameStore.getState().openCreation(); // 从正在玩的剧本（campus-summer）进创作屏
     const s = useGameStore.getState();
@@ -1234,7 +1254,7 @@ describe("v1.6 批量重绘 / 素材删除 / 世界线管理（store 公共 API 
   });
 
   it("世界线导入：非法原文本地挡下（不打服务端），提示说清「不是导出包」", async () => {
-    for (const text of ["{ 这不是 JSON", JSON.stringify({ format: "other", version: 1 }), JSON.stringify({ format: "bunkiten-world", version: 2 })]) {
+    for (const text of ["{ 这不是 JSON", JSON.stringify({ format: "other", version: 1 }), JSON.stringify({ format: "bunkiten-world", version: 0 })]) {
       const r = await useGameStore.getState().importWorldText(text);
       expect(r.ok).toBe(false);
       expect(useGameStore.getState().worldNotice?.kind).toBe("error");
@@ -1246,7 +1266,11 @@ describe("v1.6 批量重绘 / 素材删除 / 世界线管理（store 公共 API 
     expect(parseWorldBundle(JSON.stringify(BUNDLE))).toEqual(BUNDLE);
     expect(parseWorldBundle("不是 JSON")).toBeNull();
     expect(parseWorldBundle("[]")).toBeNull();
-    expect(parseWorldBundle(JSON.stringify({ ...BUNDLE, version: 2 }))).toBeNull();
+    // 版本只要求正整数：上限由服务端裁决（v1.8–v1.12 客户端抄成「只认 1」，把 v2/v3 包挡在门外）
+    expect(parseWorldBundle(JSON.stringify({ ...BUNDLE, version: 2 }))).toEqual({ ...BUNDLE, version: 2 });
+    expect(parseWorldBundle(JSON.stringify({ ...BUNDLE, version: 3 }))).toEqual({ ...BUNDLE, version: 3 });
+    expect(parseWorldBundle(JSON.stringify({ ...BUNDLE, version: 0 }))).toBeNull();
+    expect(parseWorldBundle(JSON.stringify({ ...BUNDLE, version: 1.5 }))).toBeNull();
     expect(parseWorldBundle(JSON.stringify({ format: "bunkiten-world", version: 1 }))).toBeNull();
     expect(parseWorldBundle(JSON.stringify({ ...BUNDLE, world: { ...BUNDLE.world, worldId: "" } }))).toBeNull();
   });

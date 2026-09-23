@@ -11,6 +11,9 @@ playwright-report/
 *.tsbuildinfo
 .DS_Store
 
+# codex-acp 的打包铺场（scripts/stage-codex-acp.mjs 生成，dist:* 时重建）
+build/codex-acp/
+
 # 运行时数据：引擎按世界线写入 state/worlds/<worldId>/，删除的世界线/素材先挪进 state/trash/（只保留说明文件）
 state/worlds/
 state/trash/

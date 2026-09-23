@@ -128,8 +128,6 @@ export const useGameStore = create<GameStore>()((set, get) => {
     pendingResync: null,
     resyncFailed: false,
     resyncing: false,
-    lastTurnPrompt: null,
-    pendingTurnPrompt: null,
     pendingRerollPrompt: null,
     turnSnapshots: null,
     settings: loadSettings(),

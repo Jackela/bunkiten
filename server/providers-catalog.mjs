@@ -19,7 +19,7 @@
 // 与目录真源的关系：内置兜底就是 shared/providers.mjs 的 PROVIDERS——本模块不抄第二份目录，只加
 // 「远端覆盖」这一层；发布源也从同一份真源生成（契约 lint ⑦ 组断言 docs/providers.json 与它深等）。
 import fs from "fs";
-import os from "os";
+import { gameHome } from "./config.mjs";
 import path from "path";
 import { PROVIDERS, PROVIDER_ID_RE } from "../shared/providers.mjs";
 import { CREDENTIALS_DIRNAME } from "./credentials.mjs";
@@ -180,10 +180,10 @@ export function validateCatalogDocument(doc) {
 
 /**
  * 目录缓存的绝对路径（复用凭据目录 `~/.bunkiten/`——CREDENTIALS_DIRNAME 只有一份）。
- * @param {string} [root] 用户主目录（缺省 os.homedir()；单测/harness 传临时 HOME）
+ * @param {string} [root] 用户主目录（缺省 gameHome()——`BUNKITEN_HOME` 可覆盖；单测/harness 传临时 HOME）
  * @returns {string} `~/.bunkiten/providers.json`
  */
-export function catalogCachePath(root = os.homedir()) {
+export function catalogCachePath(root = gameHome()) {
   return path.join(root, CREDENTIALS_DIRNAME, CATALOG_FILENAME);
 }
 
@@ -194,7 +194,7 @@ export function catalogCachePath(root = os.homedir()) {
  * @param {string} [root] 用户主目录
  * @returns {(CatalogDocument & {fetchedAt: string | null}) | null} 缓存文档或 null
  */
-export function readCatalogCache(root = os.homedir()) {
+export function readCatalogCache(root = gameHome()) {
   try {
     const file = catalogCachePath(root);
     if (!fs.existsSync(file)) return null;
@@ -271,10 +271,10 @@ function catalogState(root, now) {
  * 服务目录的可下发视图（`/api/providers` 的响应主体，也可直接给 GUI 画下拉）。
  * source 是**本条 providers 的来源**：刚抓到远端是 `"remote"`，读的本地缓存是 `"cache"`，
  * 缓存坏/缺、回落内置表是 `"bundled"`。**只读**：调用方拿它画候选，绝不据此改写玩家已存的值。
- * @param {{root?: string, now?: number}} [opts] root = 用户主目录（缺省 os.homedir()）；now = 墙钟（可注入）
+ * @param {{root?: string, now?: number}} [opts] root = 用户主目录（缺省 gameHome()）；now = 墙钟（可注入）
  * @returns {{providers: import("../shared/providers.mjs").ProviderEntry[], source: "remote" | "cache" | "bundled", fetchedAt: string | null}}
  */
-export function loadCatalog({ root = os.homedir(), now = Date.now() } = {}) {
+export function loadCatalog({ root = gameHome(), now = Date.now() } = {}) {
   const s = catalogState(root, now);
   return { providers: s.providers, source: s.source, fetchedAt: s.fetchedAt };
 }
@@ -373,7 +373,7 @@ function pickNewest(candidates) {
  * @param {{root?: string, fetchImpl?: typeof fetch, env?: Record<string, string | undefined>, now?: number}} [opts]
  * @returns {Promise<{ok: boolean}>} 抓取并落盘成功为 true；跳过（开关/TTL）或全源失败为 false
  */
-export async function refreshCatalog({ root = os.homedir(), fetchImpl = fetch, env = process.env, now = Date.now() } = {}) {
+export async function refreshCatalog({ root = gameHome(), fetchImpl = fetch, env = process.env, now = Date.now() } = {}) {
   if (env.BUNKITEN_DISABLE_UPDATE === "1") return { ok: false };
   const state = catalogState(root, now);
   // 本地副本还新鲜：不打扰发布源（TTL 是「最多 6h 拉一次」的节流，不是缓存有效期的上限）
@@ -406,7 +406,7 @@ let revalidateInFlight = null;
  * @param {{root?: string, fetchImpl?: typeof fetch, env?: Record<string, string | undefined>, now?: number}} [opts]
  * @returns {Promise<{ok: boolean}>} 刷新结果；跳过或失败为 `{ok:false}`（**不 reject**）
  */
-export function revalidateCatalog({ root = os.homedir(), fetchImpl = fetch, env = process.env, now = Date.now() } = {}) {
+export function revalidateCatalog({ root = gameHome(), fetchImpl = fetch, env = process.env, now = Date.now() } = {}) {
   if (revalidateInFlight) return revalidateInFlight;
   const run = refreshCatalog({ root, fetchImpl, env, now }).catch(() => ({ ok: false }));
   const tracked = run.finally(() => {

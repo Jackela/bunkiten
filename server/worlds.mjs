@@ -46,6 +46,8 @@ import {
  * @property {number} chapterNo
  * @property {number} lastPlayed
  * @property {{worldId: string, nodeId: string, seq?: number}|null} [forkedFrom]
+ * @property {Record<string, string>} [snapshotLabels] 玩家给存档点起的名字（v1.12，`{"<seq>": "<名字>"}`）——
+ *   索引层的展示元数据，不写进 append-only 的快照文件
  */
 
 // label：可选归属标注（素材删除传 presetId）——跨剧本同名文件在 trash 里靠它区分该挪回哪个剧本。
@@ -474,6 +476,35 @@ export function restoreWorld(root, worldId, seq) {
 }
 
 /**
+ * 给某个存档点起名（v1.12，剧情图的「存档点命名」）：名字存在世界条目上（`snapshotLabels`，
+ * `{"<seq>": "<名字>"}`），**不进快照文件本身**——快照是引擎进度的逐轮真相、append-only；
+ * 名字是玩家给时间点贴的标签，属于索引层的展示元数据（与 label/note 同层）。
+ * @param {string} root 世界根目录
+ * @param {string} worldId 世界 id
+ * @param {number|string} seq 快照序号
+ * @param {string} label 名字（空串 = 清除这一条）
+ * @returns {{ok?: true, labels?: Record<string, string>} | {error: string}} 结果或错误
+ */
+export function labelSnapshot(root, worldId, seq, label) {
+  if (!WORLD_ID_RE.test(String(worldId || ""))) return { error: "参数不合法" };
+  const n = Number(seq);
+  if (!Number.isInteger(n) || n < 1) return { error: "seq 不合法" };
+  const clean = String(label ?? "").replace(/\s*\n+\s*/g, " ").trim();
+  if (clean.length > 40) return { error: "名字过长（≤40）" };
+  const list = readWorldsIndex(root);
+  const idx = list.findIndex((e) => e.worldId === worldId);
+  if (idx === -1) return { error: "世界不存在" };
+  const entry = { ...list[idx] };
+  const labels = { ...(entry.snapshotLabels ?? {}) };
+  if (clean) labels[String(n)] = clean;
+  else delete labels[String(n)];
+  entry.snapshotLabels = labels;
+  list[idx] = entry;
+  writeWorldsIndex(root, list);
+  return { ok: true, labels };
+}
+
+/**
  * 更新世界索引里的展示字段：label(≤60) / note(≤200)，空串 = 清除。
  * patch 里**出现**该键才改（用 `in` 判定），没出现的键保持原值——避免把「没传」当成「清空」。
  * @param {string} root 世界根目录
@@ -502,16 +533,18 @@ export function updateWorld(root, worldId, patch = {}) {
   return { entry };
 }
 
-// ---------- 世界线导出包（v1.6 起，format:"bunkiten-world"；v2 起带血缘） ----------
+// ---------- 世界线导出包（v1.6 起，format:"bunkiten-world"；v2 起带血缘；v3 起快照带重演输入） ----------
 // 与剧本导出包（presets.mjs 的 buildPresetBundle/importPresetBundle）对称：导出 JSON + attachment 下载、
 // 导入先整体校验再重名加 -2/-3。v2 只加两个键，其余键序与形状一个字节不动：
 //   world.forkedFrom —— 索引里的血缘原值（老索引没有该字段 → null）。家谱连线只认它，v1 包丢了它就等于
 //                       把导入回来的分叉线变回根（v1.8 把血缘从 note 挪到 forkedFrom 之后的反向抵消）
 //   world.forkMd     —— 世界目录 fork.md 全文（引擎处理完首个回合会自行删除该文件，此时 → null）
+// v3 只加一个键：快照条目的 prompt（可重演的玩家输入，docs/adr/0023）——存档自洽（换台机器也能重演）；
+// 旧包（1/2）照收，缺 prompt 的条目 normalize 为 ""（那几幕的重演入口给「这一档没有留下当时的输入」）。
 // 导入侧接受 1..WORLD_BUNDLE_VERSION（老包照收、按当前形状补齐）——ROADMAP §1「旧包 accept + upgrade」的落地样板。
 const WORLD_BUNDLE_FORMAT = "bunkiten-world";
-/** 当前世界线导出包的版本（v2 起带 forkedFrom/forkMd）：导出写它，导入接受 1..它（见 importWorld 的版本闸） */
-export const WORLD_BUNDLE_VERSION = 2;
+/** 当前世界线导出包的版本（v2 起带 forkedFrom/forkMd、v3 起快照带 prompt）：导出写它，导入接受 1..它（见 importWorld 的版本闸） */
+export const WORLD_BUNDLE_VERSION = 3;
 /** 分叉说明文件名：forkWorld 写它、exportWorld 收它、importWorld 落它——三处必须同一个名字 */
 const FORK_FILE = "fork.md";
 
@@ -543,7 +576,7 @@ export function exportWorld(root, worldId) {
   if (!entry && !fs.existsSync(dir)) return { error: "世界不存在" };
   const files = readWorldFiles(dir);
   const snapshots = readSnapshots(worldId, root).map((s) => ({
-    seq: s.seq, at: s.at, kind: s.kind, nodeId: s.nodeId, chapterNo: s.chapterNo, files: s.files,
+    seq: s.seq, at: s.at, kind: s.kind, nodeId: s.nodeId, chapterNo: s.chapterNo, prompt: s.prompt, files: s.files,
   }));
   return {
     bundle: {

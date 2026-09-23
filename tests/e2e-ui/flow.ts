@@ -66,3 +66,43 @@ export async function handFocusBackToBody(page: Page): Promise<void> {
     })
     .toBe(true);
 }
+
+/** 命令轨分组菜单的触发器（v1.12：命令轨从 10 项平铺收成 5 个顶层，叶子项在各组菜单里） */
+const RAIL_GROUPS = { 回顾: "rail-review", 图鉴: "rail-collection", 进度: "rail-progress" } as const;
+
+/**
+ * 打开命令轨的分组菜单并等弹层出现。叶子项的 testid 不变（`history`/`characters`/`assets`/`tree`/`reroll`…），
+ * 但它们现在只在菜单展开时才渲染——点之前必须先开这一下。
+ * @example await openRailGroup(page, "图鉴"); await page.getByTestId("tree").click();
+ */
+export async function openRailGroup(page: Page, group: keyof typeof RAIL_GROUPS): Promise<void> {
+  const id = RAIL_GROUPS[group];
+  const menu = page.getByTestId(`${id}-menu`);
+  if (await menu.isVisible()) return; // 已经开着（同一用例里连着查两次是常态）：再点一次会把它收掉
+  await page.getByTestId(id).click();
+  await expect(menu, `「${group}」菜单没展开（触发器 ${id}）`).toBeVisible();
+}
+
+/** 标题屏角落簇的「更多 ▾」（导出当前卡 / 导入剧本 / 剧本体检 都收在里面，v1.12）。幂等：开着的就原样返回 */
+export async function openTitleMore(page: Page): Promise<void> {
+  const menu = page.getByTestId("title-more-menu");
+  if (await menu.isVisible()) return;
+  await page.getByTestId("title-more").click();
+  await expect(menu).toBeVisible();
+}
+
+/** 设置屏的「引擎与密钥」披露区（默认收起；从启动屏未登录态进来时自动展开，那时本函数是空操作） */
+export async function openAdvancedSettings(page: Page): Promise<void> {
+  const toggle = page.getByTestId("settings-advanced-toggle");
+  if ((await toggle.getAttribute("aria-expanded")) === "true") return;
+  await toggle.click();
+  await expect(page.getByTestId("engine-keys")).toBeVisible();
+}
+
+/** 设置屏音频区的「细分音量」披露（曲/环境/音效三条滑杆默认收起） */
+export async function expandChannels(page: Page): Promise<void> {
+  const toggle = page.getByTestId("settings-channels-toggle");
+  if ((await toggle.getAttribute("aria-expanded")) === "true") return;
+  await toggle.click();
+  await expect(page.getByTestId("settings-bgm")).toBeVisible();
+}

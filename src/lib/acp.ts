@@ -1,6 +1,7 @@
 // acp-server 的 HTTP/SSE 客户端。全部走相对路径：dev 由 vite 代理，生产由 /app 同源托管。
 import type { AudioKind } from "./parser";
 import type { ProviderEntry } from "../../shared/providers.mjs";
+import { DEFAULT_ENGINE_ID } from "../../shared/engines.mjs";
 
 /** 剧本主题（preset frontmatter 的 theme 字段；字段非法或缺省由 theme.ts 兜底） */
 export interface PresetTheme {
@@ -115,6 +116,8 @@ export interface WorldSnapshotMeta {
   nodeId: string | null;
   /** 该回合的章号（读不到为 null） */
   chapterNo: number | null;
+  /** 玩家给这个存档点起的名字（v1.12；没起名是空串）——存在世界索引里，不进快照文件 */
+  label: string;
 }
 
 /** 快照三文件（缺失文件为 null；带 seq 查询才返回本字段） */
@@ -124,9 +127,12 @@ export interface SnapshotFiles {
   tree: string | null;
 }
 
-/** 带全文的快照（GET /api/history?worldId=&seq= 附 files） */
+/** 带全文的快照（GET /api/history?worldId=&seq= 附 files 与 prompt） */
 export interface WorldSnapshot extends WorldSnapshotMeta {
   files: SnapshotFiles;
+  /** 可重演的玩家输入（v1.13）：只记玩家叙事输入，客户端指令（开局/续玩）与 backup 是空串；
+   *  旧档缺省为空串（那几幕的重演入口据此给降级提示）。重演 = 退到前一条 turn 快照 + 重发这句 */
+  prompt: string;
 }
 
 /** GET /api/history?worldId=<id> 的响应（snapshots 升序） */
@@ -210,12 +216,14 @@ export interface WorldBundle {
   };
 }
 
-/** POST /api/worlds 的动作（create=新建 / fork=在节点分叉 / delete=删除 / update=改标签 / restore=精确回退 / import=导入世界线） */
+/** POST /api/worlds 的动作（create=新建 / fork=在节点分叉 / delete=删除 / update=改标签 /
+ *  labelSnapshot=给存档点起名（v1.12）/ restore=精确回退 / import=导入世界线） */
 export type WorldAction =
   | { action: "create"; preset: string }
   | { action: "fork"; worldId: string; nodeId: string; seq?: number }
   | { action: "delete"; worldId: string }
   | { action: "update"; worldId: string; label?: string; note?: string }
+  | { action: "labelSnapshot"; worldId: string; seq: number; label: string }
   | { action: "restore"; worldId: string; seq: number }
   | { action: "import"; bundle: WorldBundle };
 
@@ -338,12 +346,51 @@ async function fetchBootJson<T>(url: string, external?: AbortSignal, httpLabel =
 
 /**
  * @param {AbortSignal} [signal] 组件卸载时取消（BootScreen 的 AbortController）
- * @returns {Promise<{loggedIn: boolean; hasCredentials: boolean}>} 登录态 + 是否已配好自备 key（v1.10；两者任一即可开玩）
+ * @returns {Promise<AuthView>} 登录态 + 是否已配好自备 key（v1.10；两者任一即可开玩）+ 当前引擎 id
+ *   （v1.11；未登录态的文案与登录入口按它分支，见 shared/engines.mjs）+ canLogin（这个引擎的登录入口在不在）
  * @throws HTTP 非 200 时抛错；挂住超过 {@link BOOT_FETCH_TIMEOUT_MS} 抛 TimeoutError（启动屏走错误态）
  */
-export async function fetchAuth(signal?: AbortSignal): Promise<{ loggedIn: boolean; hasCredentials: boolean }> {
-  const data = await fetchBootJson<{ loggedIn?: boolean; hasCredentials?: boolean }>("/api/auth", signal);
-  return { loggedIn: data.loggedIn === true, hasCredentials: data.hasCredentials === true };
+export async function fetchAuth(signal?: AbortSignal): Promise<AuthView> {
+  const data = await fetchBootJson<Partial<AuthView>>("/api/auth", signal);
+  return {
+    loggedIn: data.loggedIn === true,
+    hasCredentials: data.hasCredentials === true,
+    engine: typeof data.engine === "string" ? data.engine : DEFAULT_ENGINE_ID,
+    canLogin: data.canLogin === true,
+  };
+}
+
+/** GET /api/auth 的响应（v1.10；v1.11 加 engine 与 canLogin） */
+export interface AuthView {
+  /** 玩家在终端登录过（grok：`~/.grok/auth.json`；codex：`~/.codex/auth.json`） */
+  loggedIn: boolean;
+  /** 当前引擎支持自备 key 且已配全（可直接开玩，不必终端登录） */
+  hasCredentials: boolean;
+  /** 当前引擎 id（shared/engines.mjs） */
+  engine: string;
+  /** 当前引擎的登录入口可用（grok CLI 在 PATH / 随包 codex 在）——false 时 GUI 禁用登录按钮并说明 */
+  canLogin: boolean;
+}
+
+/**
+ * 把**玩家自己**的 CLI 登录流程拉起来（v1.11 收尾）：grok → `grok login`、codex → 随包 codex 的 `login`，
+ * 都在浏览器里完成、产物都落在玩家自己的 home。回执式——调用方轮询 {@link fetchAuth} 等结果。
+ * @returns {Promise<{ok: boolean, error?: string, hint?: string}>} `hint` 是 CLI 头几行输出（例如手填链接）
+ */
+export async function startEngineLogin(): Promise<{ ok: boolean; error?: string; hint?: string }> {
+  const r = await fetch("/api/engine/login", { method: "POST" });
+  const data = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string; hint?: string };
+  return { ok: r.ok && data.ok !== false, error: data.error, hint: data.hint };
+}
+
+/**
+ * 执行 CLI 自己的登出（**全局动作**：玩家终端里那份登录也会被清掉——GUI 必须先确认再调用）。
+ * @returns {Promise<{ok: boolean, error?: string}>} 结果（失败原因来自 CLI 输出，已截断）
+ */
+export async function engineLogout(): Promise<{ ok: boolean; error?: string }> {
+  const r = await fetch("/api/engine/logout", { method: "POST" });
+  const data = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+  return { ok: r.ok && data.ok !== false, error: data.error };
 }
 
 /**
@@ -402,15 +449,18 @@ export interface CredentialGroupView {
   apiKeyMasked: string;
 }
 
-/** GET /api/credentials 的响应体（v1.10） */
+/** GET /api/credentials 的响应体（v1.10；v1.11 加顶层 engine） */
 export interface CredentialsView {
   version: number;
+  /** 当前叙事引擎后端 id（shared/engines.mjs 的 ENGINE_IDS 之一；设置屏画选择器用） */
+  engine: string;
   llm: CredentialGroupView;
   image: CredentialGroupView;
 }
 
 /** POST /api/credentials 的请求体：只出现要改的键（空串=清该字段）；clear 里的组整组回默认 */
 export interface CredentialsPatch {
+  engine?: string;
   llm?: { mode?: string; provider?: string; baseUrl?: string; apiKey?: string; model?: string };
   image?: { mode?: string; provider?: string; baseUrl?: string; apiKey?: string; model?: string; size?: string; sizeBackground?: string };
   clear?: ("llm" | "image")[];
@@ -439,7 +489,7 @@ export async function fetchCredentials(signal?: AbortSignal): Promise<Credential
   const r = await fetch("/api/credentials", { signal });
   if (!r.ok) throw new Error(`GET /api/credentials -> HTTP ${r.status}`);
   const data = (await r.json()) as CredentialsView & { ok?: boolean };
-  return { version: data.version, llm: data.llm, image: data.image };
+  return { version: data.version, engine: data.engine, llm: data.llm, image: data.image };
 }
 
 /**
@@ -455,7 +505,7 @@ export async function postCredentials(patch: CredentialsPatch): Promise<{ ok: bo
   });
   const data = (await r.json().catch(() => ({}))) as Partial<CredentialsView> & { ok?: boolean; error?: string };
   if (!r.ok || data.ok === false) return { ok: false, error: data.error || `HTTP ${r.status}` };
-  return { ok: true, view: { version: data.version ?? 1, llm: data.llm as CredentialGroupView, image: data.image as CredentialGroupView } };
+  return { ok: true, view: { version: data.version ?? 1, engine: String(data.engine ?? DEFAULT_ENGINE_ID), llm: data.llm as CredentialGroupView, image: data.image as CredentialGroupView } };
 }
 
 /**
@@ -545,6 +595,15 @@ export async function postWorld(body: WorldAction): Promise<WorldPostResult> {
  */
 export async function postWorldUpdate(p: { worldId: string; label?: string; note?: string }): Promise<WorldPostResult> {
   return postWorld({ action: "update", ...p });
+}
+
+/**
+ * 给一个存档点起名（v1.12）：名字存在世界索引的条目上（`snapshotLabels`），快照文件本身不动。
+ * @param {{worldId: string, seq: number, label: string}} p 目标世界、快照序号与名字（空串 = 清除）
+ * @returns {Promise<WorldPostResult>} 服务端结果（名字过长等校验失败在 error 里）
+ */
+export async function postSnapshotLabel(p: { worldId: string; seq: number; label: string }): Promise<WorldPostResult> {
+  return postWorld({ action: "labelSnapshot", ...p });
 }
 
 /**

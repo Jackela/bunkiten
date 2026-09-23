@@ -1,3 +1,12 @@
 # 打 tag 即发版，版本一致与未签名路径都交给 CI 守卫
 
 v1.5.1 及之前发版靠在开发机手动 `npm run dist:mac` / `dist:win` 再上传产物：既容易漏步骤（忘记跑测试、忘记同步版本号），又必须凑齐两台机器，且没有可核验的产物清单。裁决：push `v*` tag（或手动 `workflow_dispatch`）即触发 `.github/workflows/release.yml`，打包与发布全由 CI 完成。三道约束收在独立的 guard job 里（独立 job 是为了在两个平台开始 GB 级打包**之前**就挡住流程）：tag 必须等于 `v<package.json version>`（产物名 `Bunkiten-<version>-*.dmg` 才会与 Release 标题对齐），且 `npm test`（单测 + 集成，秒级；e2e 不进 CI）必须绿——不过就不发版，两个 build job 因 `needs: guard` 根本不会启动。打包走双平台矩阵（macos-14 出 arm64 + x64 的 dmg/zip，windows-latest 出 nsis/portable），两边都 `--publish never`（发布只由 release job 的 `softprops/action-gh-release` 做，避免 electron-builder 与 action 争抢同一个 Release）。校验和分平台产出 `SHA256SUMS-<platform>.txt` 再合并为 `SHA256SUMS.txt`（同名文件会被 `download-artifact` 的 `merge-multiple` 互相覆盖），合并前统一剥 `\r`、合并后再断言一次纯 LF——Windows 侧 `Set-Content -Encoding ascii` 的 CRLF 会让 `.exe` 那几行 `shasum -a 256 -c` 报 FAILED。签名/公证全部条件化：`CSC_LINK` 存在才开启 identity 自动发现，secrets 缺失时 `CSC_IDENTITY_AUTO_DISCOVERY=false` 显式走未签名路径，`afterSign` 钩子（`electron/notarize.cjs`）在三件套不齐时直接 return，公证后的 `xcrun stapler staple` 失败也只打日志——**没有证书时构建必须照常成功**，否则开发者与 fork 都跑不动。自动更新走 GitHub Releases（`publish: github` provider + `electron-updater` 仅打包态查更新，`--dir` 预检产物没有 `app-update.yml` 时静默降级）。代价是未签名的 mac 包无法自动更新（Squirrel.Mac 要求签名一致，已记入 ARCHITECTURE「已知限制」），这类用户只能手动换包。被否决：继续手动本地打包（漏步骤、无校验和、不可复现）、无条件签名（会在没有证书的环境把构建打死）、只在本地发布（没有单一可下载来源，`app-update.yml` 与更新通道随之断裂）。
+
+## 修订（v1.11）：mac 只出 arm64，不再交叉打包
+
+原文里的「macos-14 出 arm64 + x64」作废：**mac 端只出 arm64（Apple Silicon）**，Intel 不在支持范围。两条理由，第二条是硬约束：
+
+1. 目标用户就是 Apple Silicon——x64 产物的实际收益接近于零，却让每个 Release 多背一份 GB 级 dmg/zip（含随包的游戏素材与引擎运行时）。
+2. **交叉打包会把错的二进制装进产物**：v1.11 起 `resources/codex-acp/` 里躺着一份**平台二进制**（`@openai/codex-<platform>-<arch>`，~290MB，由 npm 的 optionalDependencies 按**构建机**架构解析）。在 arm64 runner 上打 `--x64` 产物时，那份二进制仍是 arm64——App 装得上，Codex 后端一跑就废。`scripts/stage-codex-acp.mjs` 现在带 `--arch=` 并在「目标架构 ≠ 构建机架构」时**直接失败**（CI 两个 job 都先铺场再打包，铺场失败即 job 失败）。
+
+代价：Intel Mac 用户只能跑开发态（`npm run dev:electron`）或自行从源码打包，且第三条路（自己打 x64 包）会因为架构自检而失败——真要支持 Intel，得让铺场脚本按目标架构装依赖（第二棵 node_modules 或 `npm i --cpu=x64 --os=darwin` 的独立安装），那是另一件事，不在本轮范围。

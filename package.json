@@ -1,7 +1,7 @@
 {
   "name": "bunkiten",
   "private": true,
-  "version": "1.10.1",
+  "version": "1.13.0",
   "description": "bunkiten（分岐点）—— LLM 互动 AVG（文字冒险/视觉小说）脚手架：Electron 桌面壳 + React 前端 + ACP 叙事引擎",
   "engines": {
     "node": ">=23.6"
@@ -32,9 +32,10 @@
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test -c playwright.ui.config.ts",
     "test:e2e:packaged": "playwright test -c playwright.electron.config.ts",
-    "dist:win": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win --x64 --publish never",
-    "dist:mac": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --arm64 --x64 --publish never",
-    "dist:mac:dir": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --arm64 --dir --publish never"
+    "dist:win": "npm run build && node scripts/stage-codex-acp.mjs --arch=x64 && electron-builder --win --x64 --publish never",
+    "dist:mac": "npm run build && node scripts/stage-codex-acp.mjs --arch=arm64 && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --arm64 --publish never",
+    "dist:mac:dir": "npm run build && node scripts/stage-codex-acp.mjs --arch=arm64 && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --arm64 --dir --publish never",
+    "dist:win:dir": "npm run build && node scripts/stage-codex-acp.mjs --arch=x64 && electron-builder --win --x64 --dir --publish never"
   },
   "dependencies": {
     "@radix-ui/react-dropdown-menu": "^2.1.24",
@@ -46,6 +47,7 @@
     "zustand": "^5.0.15"
   },
   "devDependencies": {
+    "@agentclientprotocol/codex-acp": "^1.12.0",
     "@electron/notarize": "^3.1.1",
     "@playwright/test": "^1.63.0",
     "@tailwindcss/vite": "^4.3.3",

@@ -48,14 +48,19 @@ export interface UiStackOptions {
       kind: "turn" | "backup";
       nodeId: string | null;
       chapterNo: number | null;
+      /** 可重演的玩家输入（v1.13；缺省 = 旧档/续玩条目，重演入口给降级提示） */
+      prompt?: string;
       files: { state: string | null; summary: string | null; tree: string | null };
     }>
   >;
   /** 是否写临时 HOME 的 `~/.grok/auth.json`（缺省 "ok"；"missing" = boot 屏未登录态用例的前置） */
   auth?: "ok" | "missing";
-  /** 预置进临时 HOME 的 `~/.bunkiten/credentials.json`（v1.10；验「已配置自备 key 直接开玩」与设置屏掩码） */
+  /** 是否写临时 HOME 的 `~/.codex/auth.json`（v1.11；engine=codex 的用例用它造登录/未登录两态） */
+  codexAuth?: "ok" | "missing";
+  /** 预置进临时 HOME 的 `~/.bunkiten/credentials.json`（v1.10；v1.11 起可带顶层 engine） */
   credentials?: {
     version?: number;
+    engine?: string;
     llm?: { mode?: string; provider?: string; baseUrl?: string; apiKey?: string; model?: string };
     image?: { mode?: string; provider?: string; baseUrl?: string; apiKey?: string; model?: string; size?: string };
   } | null;
