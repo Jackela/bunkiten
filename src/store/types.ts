@@ -137,6 +137,11 @@ export interface GameStore {
   /** 制作中屏的美术队列（规划回合后由制作清单构建；空数组 = 尚在规划/非制作开局） */
   preload: PreloadItem[];
   preloadPhase: PreloadPhase;
+  /**
+   * 本批美术的起点时刻（建队列那一刻，ms；null = 没有在跑的批次）：屏上据此算「平均每张 / 约还需」。
+   * 只服务可预期性（v1.13）——不参与流程判定，失败/跳过项也不会写它。
+   */
+  preloadBatchStartedAt: number | null;
   /** 当前制作中的章号（开局=1；章标记后=N+1） */
   chapterNo: number;
   /** 玩家在 init/planning 期间按了跳过：该回合结束后直接「开演。」 */

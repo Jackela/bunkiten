@@ -348,6 +348,8 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
       set({
         preloadPhase: "queue",
         status: "清点既有美术…",
+        // 批次起点：屏上的「平均每张 / 约还需」都从这一刻算（纯展示，进不了任何判定）
+        preloadBatchStartedAt: Date.now(),
         preload: manifest.map((m) => {
           // 差分清单项（薇拉-微笑）拆出角色名与变体：指令/槽位用原名，槽位显示「薇拉 · 微笑」
           const { base, variant } = m.kind === "portrait" ? splitAssetVariant(m.name) : { base: m.name, variant: "" };
@@ -442,6 +444,7 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
       artReady: {},
       preload: [],
       preloadPhase: "finished",
+      preloadBatchStartedAt: null,
       chapterNo: 1,
       skipRequested: false,
       segs: { 0: "" },

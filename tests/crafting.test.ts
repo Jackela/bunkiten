@@ -143,7 +143,24 @@ describe("章节制作流水线（store 公共 API 驱动）", () => {
     expect(useGameStore.getState().status).toBe("撰写章节大纲…");
   });
 
-  it("规划回合：清单解析→过滤→队列正确；已就绪立绘与背景都跳过（v1.5 背景不再照发），未就绪不跳", async () => {
+  it("批次起点：建队列时落时刻（屏上「平均每张 / 约还需」的数据源），换局清零", async () => {
+    useGameStore.getState().startGame(true, true);
+    engineTurn(); // 待命确认
+    await vi.waitUntil(() => prompts.at(-1) === PLAN_CH1);
+    expect(useGameStore.getState().preloadBatchStartedAt).toBeNull(); // 规划回合还没建队列
+
+    const before = Date.now();
+    engineTurn(MANIFEST_CH1); // 规划回合回清单 → 建队列
+    const startedAt = useGameStore.getState().preloadBatchStartedAt;
+    expect(typeof startedAt, "建队列时应落批次起点").toBe("number");
+    expect(startedAt!).toBeGreaterThanOrEqual(before);
+
+    // 换一局（resetRunState 路径）：批次读数不该漂到新局上
+    useGameStore.getState().startGame(true, false);
+    expect(useGameStore.getState().preloadBatchStartedAt).toBeNull();
+  });
+
+  it("清单解析：按清单建队列、跳过已就绪项、顺序与指令逐字", async () => {
     // 程野基础已就绪可跳过；沈屿在清单里但 ready=false 必须照发；旧教学楼背景已就绪 → 同样跳过
     assets = [
       {
