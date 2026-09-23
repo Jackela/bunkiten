@@ -84,6 +84,7 @@ vite 会把 `/api`、`/img`、`/audio`、`/events` 代理到它（默认 `localh
 - 合并用 **squash**；提交信息里如实写测试结果，不写没跑过的命令。
 - 提交信息**不挂任何工具/agent 的署名尾行**——本仓库不绑定具体的 CLI、harness 或 agent 工具。
 - 不要提交：构建产物（`dist/`、`release/`、`test-results*/`）、运行时进度（`state/worlds/`）、本机凭据与 `.shell-session.json`，以及本机 agent 工具目录（`.commandcode/`、`.zcode/`，见 `.gitignore`）。
+- 测试与文档里的**假密钥**写成短、不像真 key 的形状（`sk-no-plaintext-4f2a` 这类）：仓库开了 secret scanning 与 push protection，48 位随机串那种形状会在推送前被拦下——而哨兵本来就是给人看的假值，越不像真的越好。
 
 ## 7. 文档与裁决
 
