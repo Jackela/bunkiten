@@ -5,9 +5,11 @@
 - `worlds/<worldId>/state.md` — 剧情状态（角色卡、好感度、Flags、伏笔、导演手记），每轮更新
 - `worlds/<worldId>/summary.md` — 滚动摘要，每 8-12 轮压缩追加
 - `worlds/<worldId>/story-tree.md` — 当前章剧情树（节点/出边/剪枝/嫁接/进度指针）
+- `worlds/<worldId>/history/NNNN.json` — **逐轮快照**（v1.6，append-only）：每个正戏回合一条，存该回合结束时的三份文件全文 + 可重演的玩家输入 `prompt`（v1.13）；剧情图的「存档点 · 第 N 幕」「回退到此节点」与「在此分叉（精确）」读的都是它
+- `worlds/<worldId>/logs/NNNN.json` — **回合原文日志**（v1.7，append-only）：`{seq, at, prompt, text}`，只写不读、仅作排障面，**不进世界线导出包**
 - `worlds/<worldId>/fork.md` — 分叉回退说明，只在该世界首次「继续」时存在，引擎校准 state/summary 后自动删除
 - `worlds/<worldId>/*.bak.md` — /new-game 重开后保留的上一周目存档（state.bak.md / summary.bak.md）
-- `worlds/index.json` — 世界线索引（worldId / preset / title / chapterNo / lastPlayed / note / forkedFrom）
+- `worlds/index.json` — 世界线索引：顶层是 `{ schema: 1, worlds: [...] }`（v1.9 起；更早的裸数组会在启动时自动升级，`schema` 比当前新时只读、不降级写回）。条目字段：`worldId` / `preset` / `title` / `label`（显示名，≤60）/ `note`（备注，≤200）/ `chapterNo` / `lastPlayed` / `forkedFrom`（血缘，`null` = 根）；顶层还有一个 `snapshotLabels`（存档点名字，v1.12——名字存索引、不动 append-only 的快照文件）
 
 删除某个世界目录 = 删掉那一局（正常玩法在世界线屏点「删除」即可）；整个 `worlds/` 删掉 = 重置全部进度（引擎会重新初始化）。v1.5 之前的旧扁平布局（本目录下的 `state.md` / `summary.md`）会在应用首次启动时由 server 一次性迁入 `worlds/main/`。
 
@@ -34,5 +36,6 @@
   ```
 
   重启应用（或重进世界线屏）即可看到并继续。索引不补的话目录会一直在但列表不显示。
+  （存档点名字在索引**顶层**的 `snapshotLabels` 里，形如 `"snapshotLabels": { "12": "雨夜遇袭前" }`；不补它不影响玩，只是那些存档点回到「第 N 幕」这样的默认标注。）
 - **手工找回素材**：把 `<ts>-xxx-<剧本id>-<文件名>` 挪回 `presets/<剧本 id>/assets/<文件名>`——注意剥掉 trash 前缀（含剧本 id 段），文件名必须还原成原名；剧本 id 就在前缀里。
 - **保留策略**：不自动清理、不设上限，玩家觉得没用了手动删 `state/trash/` 即可。

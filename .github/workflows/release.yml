@@ -83,7 +83,7 @@ jobs:
         run: |
           expected="v$(node -p "require('./package.json').version")"
           if [ "$TAG" != "$expected" ]; then
-            echo "tag ($TAG) != package.json version ($expected)：先 bump package.json（并同步 README 标语/版本沿革）再打 tag" >&2
+            echo "tag ($TAG) != package.json version ($expected)：先 bump package.json（并同步 README 标语与 CHANGELOG）再打 tag" >&2
             exit 1
           fi
           echo "版本号核对通过：$TAG"

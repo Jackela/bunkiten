@@ -58,7 +58,7 @@ body:
     attributes:
       label: 应用版本
       description: 见 [Releases](https://github.com/Jackela/bunkiten/releases) 的 tag，或安装包文件名；从源码运行则填 `package.json` 的 version + commit。
-      placeholder: 例：v1.5.1（或 1.5.1 + 9829a7a）
+      placeholder: 例：1.13.0（或 1.13.0 + 4d21bc3）
     validations:
       required: true
 
@@ -78,7 +78,7 @@ body:
     attributes:
       label: 日志
       description: |
-        请贴关键片段：启动 acp-server 的输出、grok CLI 报错、浏览器/Electron 控制台错误。
+        请贴关键片段：启动 acp-server 的输出、引擎（grok / Codex）报错、浏览器/Electron 控制台错误。
         ⚠️ 贴之前删掉 API key、token、绝对路径里的用户名等隐私信息。
       render: shell
     validations:
