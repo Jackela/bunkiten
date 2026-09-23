@@ -36,8 +36,9 @@ function answerPermission(params) {
  * 建 ACP 会话（工厂）。除「后端可换」外，行为与单后端时代逐字一致（日志/超时/JSON-RPC 错误回复都不变）。
  * @param {object} opts
  * @param {import("./engines.mjs").EngineDescriptor} opts.engine 后端描述符（server/engines.mjs）
- * @param {string} opts.cmd 引擎可执行文件（描述符 spawn 三件套之一）
+ * @param {string} opts.cmd 引擎可执行文件（描述符 spawn 三件套之一；Windows 的 .cmd 会被描述符换成整条命令行，见 engines.mjs 的 windowsSafeSpawn）
  * @param {string[]} opts.args 引擎参数
+ * @param {boolean} [opts.shell] 是否经平台 shell 起（Windows 的 .cmd/.bat 必须；由描述符给出）
  * @param {Record<string, string>} [opts.env] 额外注入子进程的 env（**我们的值优先**——展开顺序是
  *   `{...process.env, ...env}`，同名键由这里覆盖；各引擎的 env 由描述符的 spawn() 给出）
  * @param {string} opts.gameRoot 引擎 cwd（grok 的 `<gameRoot>/.grok` 插件目录与 codex 的 skill 源都在这里）
@@ -52,12 +53,12 @@ function answerPermission(params) {
  *   boot: () => Promise<void>, resolveImage: (name: string) => string|null, sessionId: string|null}} sessionId 是 getter——
  *   sendPrompt 与 /img 路由经它读当前会话；request 的 Promise resolve 整个响应 msg（result/error 都在）
  */
-export function createAcpSession({ engine, cmd, args, env = {}, gameRoot, sessionFile, rules, effort, onChunk, onSeg, mcpServers = [] }) {
+export function createAcpSession({ engine, cmd, args, env = {}, shell = false, gameRoot, sessionFile, rules, effort, onChunk, onSeg, mcpServers = [] }) {
   // 引擎 skill 注入（ADR 0021 的 grok 面）：grok CLI 把项目级 skill 按「文件夹信任」门控，`--plugin-dir
   // <gameRoot>/.grok` 是 session 级、always-trusted 的注入通道（参数在描述符里）。前提：该目录里只有
   // commands/ 与 skills/（无 hooks/MCP），而 plugin-dir 会 always-trust 其 hooks/MCP。
   // codex 面：规则进 config.toml 的 developer_instructions、skill 由描述符的 prepare() 落进 CODEX_HOME。
-  const proc = spawn(cmd, args, { cwd: gameRoot, env: { ...process.env, ...env } });
+  const proc = spawn(cmd, args, { cwd: gameRoot, env: { ...process.env, ...env }, shell });
   // spawn 失败（缺二进制、无执行权限）时 Node 在子进程对象上发 'error'：**没有监听器就是未捕获异常**，
   // 而 Electron 主进程没有 uncaughtException 兜底（冒泡即闪退）——v1.11 真链路实测过：PATH 里没有
   // codex-acp 时整个 server 直接退出。这里吞下来并记一笔，request() 据此立刻失败，boot 落回既有的

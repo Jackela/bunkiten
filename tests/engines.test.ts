@@ -10,7 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ENGINES, ENGINE_IDS, DEFAULT_ENGINE_ID, engineById } from "../shared/engines.mjs";
-import { CODEX_SKILL_NAME, ENGINE_DESCRIPTORS, codexHome, engineFor, prepareSpawn } from "../server/engines.mjs";
+import { CODEX_SKILL_NAME, ENGINE_DESCRIPTORS, codexHome, engineFor, prepareSpawn, windowsSafeSpawn } from "../server/engines.mjs";
 import { defaultCredentials } from "../server/credentials.mjs";
 
 /** 建一个临时的「用户主目录 + 游戏根」小世界，结束即删 */
@@ -118,6 +118,27 @@ describe("spawn 三件套", () => {
     }
   });
 
+  it("grok：windowsSafeSpawn —— Windows 上的 .cmd/.bat 换成「整条命令行 + shell:true」（带空格的路径要加引号）", () => {
+    const prev = process.platform;
+    const as = (platform: NodeJS.Platform) => Object.defineProperty(process, "platform", { value: platform, configurable: true });
+    try {
+      const plan = { cmd: "C:\\Users\\a b\\AppData\\Roaming\\npm\\grok.cmd", args: ["agent", "--plugin-dir", "C:\\g a m e\\.grok", "stdio"], env: {} };
+      // 非 Windows：逐字返回（产品路径一字不变）
+      as("darwin");
+      expect(windowsSafeSpawn(plan)).toEqual(plan);
+      // Windows + .cmd：整条命令行 + shell:true，可执行文件与带空格的参数都加引号
+      as("win32");
+      const win = windowsSafeSpawn(plan);
+      expect(win.shell).toBe(true);
+      expect(win.args).toEqual([]);
+      expect(win.cmd).toBe('"C:\\Users\\a b\\AppData\\Roaming\\npm\\grok.cmd" agent --plugin-dir "C:\\g a m e\\.grok" stdio');
+      // Windows + .exe：不换形态（原生可执行文件直接 spawn）
+      expect(windowsSafeSpawn({ ...plan, cmd: "C:\\tools\\grok.exe" })).toEqual({ ...plan, cmd: "C:\\tools\\grok.exe" });
+    } finally {
+      as(prev);
+    }
+  });
+
   it("grok：byok 凭据 → GROK_* 四件套进 env（我们的值优先，合并序在 acp.mjs）", () => {
     const creds = { ...defaultCredentials(), llm: { mode: "byok", provider: "openai", baseUrl: "https://x.example/v1", apiKey: "sk-k", model: "m-1" } };
     const plan = engineFor("grok").spawn({ creds, home: tmpDir("bunkiten-engines-home-"), gameRoot: makeGameRoot() });
@@ -186,10 +207,20 @@ describe("规则注入与会话扩展（grok 的 _meta ↔ codex 的 config.toml
 });
 
 describe("登录 / 登出命令（GUI 按钮的服务端面，v1.11 收尾）", () => {
-  it("grok：`grok login` / `grok logout`，不额外注入 env（登录态落在玩家自己的 ~/.grok）", () => {
-    const d = engineFor("grok");
-    expect(d.authCmd("login", { home: "/h" })).toEqual({ cmd: "grok", args: ["login"], env: {} });
-    expect(d.authCmd("logout", { home: "/h" })).toEqual({ cmd: "grok", args: ["logout"], env: {} });
+  it("grok：`grok login` / `grok logout` 的命令走 PATH 解析（与 spawn 同口径：Windows 上 npm 装的是 grok.cmd，裸名会 ENOENT），不额外注入 env", () => {
+    const prev = process.env.PATH;
+    const dir = tmpDir("bunkiten-engines-authcmd-");
+    try {
+      process.env.PATH = dir;
+      const d = engineFor("grok");
+      // PATH 里没有 CLI → 回落裸名（与 spawn 的兜底一致）
+      expect(d.authCmd("login", { home: "/h" })).toEqual({ cmd: "grok", args: ["login"], env: {} });
+      const shim = path.join(dir, "grok");
+      fs.writeFileSync(shim, "#!/bin/sh\n", { mode: 0o755 });
+      expect(d.authCmd("logout", { home: "/h" })).toEqual({ cmd: shim, args: ["logout"], env: {} });
+    } finally {
+      process.env.PATH = prev;
+    }
   });
 
   it("grok：authAvailable 跟着 PATH 走（找不到 CLI 时 GUI 禁用按钮，而不是点了才报错）", () => {

@@ -36,9 +36,11 @@ const CODEX_CLI_PACKAGE = ["@openai", "codex"];
  *
  * 一次 spawn 的完整描述（cmd/args/env 三件套；env 与 process.env 合并时**我们的值优先**）。
  * @typedef {Object} SpawnPlan
- * @property {string} cmd 可执行文件（PATH 名 / 绝对路径 / process.execPath）
+ * @property {string} cmd 可执行文件（PATH 名 / 绝对路径 / process.execPath；Windows 的 .cmd/.bat 会被
+ *   windowsSafeSpawn 换成「整条命令行 + shell:true」——见该函数）
  * @property {string[]} args 参数
  * @property {Record<string, string>} env 注入子进程的 env
+ * @property {boolean} [shell] 是否经平台 shell 起（Windows 的 .cmd/.bat 必须；其余情形不设）
  *
  * @typedef {Object} SpawnContext
  * @property {Credentials} creds 当前凭据（引擎选择 + 各组配置）
@@ -54,7 +56,7 @@ const CODEX_CLI_PACKAGE = ["@openai", "codex"];
  * @property {(ctx: {home: string, gameRoot: string, rules: string}) => void} prepare spawn 前的幂等准备（codex：建 home/同步登录态/写配置/落 skill；失败静默）
  * @property {(ctx: {home: string, gameRoot: string}) => string | null} sessionImagesRoot 引擎自产图的会话根目录（codex 无 → null，出图主路径是 media-mcp）
  * @property {(effort: string) => {configId: string, value: unknown} | null} effortOption 推理档位的下发形状（两引擎不同）
- * @property {(action: "login"|"logout", ctx: {home: string}) => {cmd: string, args: string[], env: Record<string, string>, unset?: string[]} | null} authCmd
+ * @property {(action: "login"|"logout", ctx: {home: string}) => {cmd: string, args: string[], env: Record<string, string>, shell?: boolean, unset?: string[]} | null} authCmd
  *   登录/登出命令（GUI 的按钮用；null = 该引擎没有可用入口）。**在玩家自己的 home 里跑 CLI 自己的登录流程**——
  *   游戏不碰凭据、不存任何东西（登出是全局的：会把玩家终端里那份一起清掉）
  * @property {(ctx: {home: string}) => boolean} authAvailable 登录入口是否可用（GUI 据此禁用按钮并说明，而不是点了才报错）
@@ -63,6 +65,27 @@ const CODEX_CLI_PACKAGE = ["@openai", "codex"];
 /** Codex 的游戏管理 home：`~/.bunkiten/codex`（与 credentials.json 同目录树下） @param {string} home 用户主目录 @returns {string} */
 export function codexHome(home) {
   return path.join(home, CREDENTIALS_DIRNAME, CODEX_HOME_DIRNAME);
+}
+
+/**
+ * Windows 上 `.cmd`/`.bat` 不能直接 spawn：Node 自 18.20 / 20.12.2 / 21.7.3 起（CVE-2024-27980 的加固）
+ * 对这类文件在 `shell: false` 下直接抛 `EINVAL`——而 npm 全局安装的 grok 正是 `grok.cmd`
+ *（`resolveOnPath` 如实取到它，见该函数注释）。这里统一改成经 cmd.exe 起：因为 `shell: true` 时
+ * Node 是把 `cmd + args` 用空格**直接拼**成一条命令行（`windowsVerbatimArguments`，不做逐参引号），
+ * 所以这里自己拼整条命令行、把可执行文件与含空格的参数都加上引号（`cmd /d /s /c "…"` 的外层引号由
+ * Node 加，`/s` 会剥掉它，内层引号原样交给 cmd 解析）。`%`/`!` 这类 cmd 会展开的字符在路径里极罕见——
+ * 真遇到也只是回到「起不来」，不会比现状差（现状是必然 EINVAL）。
+ * 其余情形（`.exe`、非 Windows）**逐字返回**，产品路径一字不变。
+ * @param {SpawnPlan} plan spawn 三件套
+ * @returns {SpawnPlan} 可能被换成「命令行 + shell:true」的三件套
+ */
+export function windowsSafeSpawn(plan) {
+  if (process.platform !== "win32" || !/\.(cmd|bat)$/i.test(plan.cmd)) return plan;
+  const quote = (/** @type {unknown} */ s) => {
+    const t = String(s);
+    return /[\s"]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+  };
+  return { ...plan, cmd: [quote(plan.cmd), ...plan.args.map(quote)].join(" "), args: [], shell: true };
 }
 
 /**
@@ -266,7 +289,9 @@ const GROK = {
   sessionImagesRoot: ({ home, gameRoot }) => path.join(home, ".grok", "sessions", encodeURIComponent(gameRoot)),
   effortOption: (effort) => ({ configId: "reasoning_effort", value: { value: effort } }),
   // grok CLI 自带 login/logout（登出清 `~/.grok/auth.json`）。默认 OAuth 走浏览器；CLI 不在 PATH 时按钮禁用。
-  authCmd: (action) => ({ cmd: "grok", args: [action], env: {} }),
+  // 命令用**解析后的路径**（与 spawn 同一口径：Windows 上可能是 `grok.cmd`，裸名 spawn 会 ENOENT），
+  // 并经 windowsSafeSpawn 换成 shell 形态（同上：.cmd 直启会 EINVAL）。
+  authCmd: (action) => windowsSafeSpawn({ cmd: grokCommand(), args: [action], env: {} }),
   authAvailable: () => resolveOnPath("grok") !== null,
 };
 
@@ -357,5 +382,6 @@ export function prepareSpawn({ creds, home, gameRoot, rules }) {
   const engine = engineFor(creds.engine);
   const resolved = engine.rulesFor(rules, { home, gameRoot });
   engine.prepare({ home, gameRoot, rules: resolved });
-  return { engine, rules: resolved, spawn: engine.spawn({ creds, home, gameRoot }) };
+  // windowsSafeSpawn 是**唯一**的跨平台收口：描述符只写「想跑什么」，要不要经 shell 由这里定
+  return { engine, rules: resolved, spawn: windowsSafeSpawn(engine.spawn({ creds, home, gameRoot })) };
 }

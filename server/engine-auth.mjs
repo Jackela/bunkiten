@@ -48,7 +48,8 @@ export async function startLogin({ engine, home }) {
   /** @type {import("child_process").ChildProcess} */
   let proc;
   try {
-    proc = spawn(spec.cmd, spec.args, { env, stdio: ["ignore", "pipe", "pipe"] });
+    // shell：描述符的 authCmd 已经过 windowsSafeSpawn（Windows 的 grok.cmd 必须经 shell，见 engines.mjs）
+    proc = spawn(spec.cmd, spec.args, { env, stdio: ["ignore", "pipe", "pipe"], shell: spec.shell === true });
   } catch (e) {
     return { ok: false, error: `没能启动登录：${/** @type {Error} */ (e).message}` };
   }
@@ -83,7 +84,7 @@ export async function runLogout({ engine, home }) {
     /** @type {import("child_process").ChildProcess} */
     let proc;
     try {
-      proc = spawn(spec.cmd, spec.args, { env, stdio: ["ignore", "pipe", "pipe"] });
+      proc = spawn(spec.cmd, spec.args, { env, stdio: ["ignore", "pipe", "pipe"], shell: spec.shell === true });
     } catch (e) {
       resolve({ code: -1, text: /** @type {Error} */ (e).message });
       return;

@@ -635,6 +635,8 @@ presets/<剧本 id>/audio/音效-门响.wav       # 一次性音效
 | 会话图片根 | `~/.grok/sessions/<encode(gameRoot)>`（`/img` 的引擎自产图通道） | 无（`resolveImage` 一律 404；出图主路径是 media MCP） |
 | 登录探测 | `~/.grok/auth.json` | 玩家 `~/.codex/auth.json`（「沿用终端登录」的复用来源） |
 
+**Windows 上的 `.cmd`（npm 全局装的 grok）**：`child_process.spawn` 自 Node 18.20 / 20.12.2 / 21.7.3 起（CVE-2024-27980 的加固）对 `.cmd`/`.bat` 在 `shell: false` 下**直接抛 `EINVAL`**；而 `resolveOnPath` 会如实把 `grok.cmd` 解析出来（那正是它存在的理由——裸名 spawn 在 Windows 上不补 `.cmd`）。所以描述符给出的 spawn 面统一经 `server/engines.mjs` 的 `windowsSafeSpawn()` 收口：`.cmd`/`.bat` 换成「整条命令行 + `shell: true`」，可执行文件与含空格的参数由我们自己加引号（`shell: true` 时 Node 把 `cmd + args` 直接拼成一条命令行、**不做**逐参引号），其余情形（`.exe`、非 Windows）逐字返回。同一收口也盖 `authCmd`（登录/登出）。**这条是 `packaged-win` job 首次真跑时抓到的**：Windows 上引擎根本起不来 → 启动屏永远等不到标题屏。
+
 ### 选择与回落
 
 - 引擎选择存在 `~/.bunkiten/credentials.json` 的**顶层 `engine` 字段**（与凭据同一份文档、同一条「保存 → 立刻重启引擎」流程）；缺省/未知值回落 `grok`——v1.10 及以前的凭据文件读出来就是 grok，升级不动行为。

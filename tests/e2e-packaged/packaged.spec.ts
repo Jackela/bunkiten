@@ -11,7 +11,7 @@
 // 已知副作用：打包态的 GAME_ROOT 是产物内的 resources/game（main.js 里写死，env 改不了），
 // 应用启动会往里写 state/worlds/（本 spec 只停在标题屏，不做世界线操作，写入量最小）。
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import readline from "node:readline";
 import os from "node:os";
 import path from "node:path";
@@ -53,6 +53,28 @@ async function closeApp(app: ElectronApplication): Promise<void> {
   }
 }
 
+/**
+ * 等子进程真的退出（Windows 上文件锁跟着进程走：KILL 之后还要等一拍，临时目录才删得掉）。
+ * 超时就交给 rmTemp 的重试兜底，不在这里抛。
+ * @param {ChildProcess | null} proc 目标进程 @param {number} [timeoutMs] 上限
+ */
+async function waitForExit(proc: ChildProcess | null, timeoutMs = 5000): Promise<void> {
+  if (!proc || proc.exitCode !== null || proc.signalCode !== null) return;
+  await Promise.race([
+    new Promise<void>((r) => proc!.once("exit", () => r())),
+    new Promise<void>((r) => setTimeout(r, timeoutMs)),
+  ]);
+}
+
+/** 删临时目录：Windows 上进程刚退时文件锁可能还没放开——带重试（recursive 下 maxRetries 生效），清不掉就留给系统 */
+function rmTemp(dir: string): void {
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  } catch {
+    /* 已经在系统临时目录里，删不掉不影响结论 */
+  }
+}
+
 test("打包态：codex-acp 资源树就位，且打包态可执行文件（ELECTRON_RUN_AS_NODE）能把它跑出 initialize", async () => {
   test.skip(APP_BIN === null, SKIP_HINT);
   const acpRoot = path.join(APP!.resources, "codex-acp", "node_modules");
@@ -79,12 +101,14 @@ test("打包态：codex-acp 资源树就位，且打包态可执行文件（ELEC
   const tmp = mkdtempSync(path.join(os.tmpdir(), "bunkiten-packaged-codex-"));
   const codexHome = path.join(tmp, "codex-home");
   mkdirSync(codexHome, { recursive: true });
+  let child: ChildProcess | null = null;
   try {
     const result = await new Promise<{ ok: boolean; detail: string }>((resolve) => {
       const proc = spawn(APP_BIN as string, [entry], {
         env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", CODEX_HOME: codexHome, NO_BROWSER: "1" },
         stdio: ["pipe", "pipe", "pipe"],
       });
+      child = proc;
       let stderr = "";
       proc.stderr.on("data", (d) => (stderr += d.toString()));
       proc.on("error", (e) => resolve({ ok: false, detail: `spawn 失败：${e.message}` }));
@@ -106,7 +130,9 @@ test("打包态：codex-acp 资源树就位，且打包态可执行文件（ELEC
     expect(result.ok, `codex-acp 入口跑不起来：${result.detail}`).toBe(true);
     expect(result.detail).toContain("codex-acp");
   } finally {
-    rmSync(tmp, { recursive: true, force: true });
+    // Windows 上文件锁跟着进程：SIGKILL 之后要等它真的退出，临时目录才删得掉（否则 EPERM）
+    await waitForExit(child);
+    rmTemp(tmp);
   }
 });
 
@@ -167,11 +193,13 @@ test("打包态：窗口能开、标题屏渲染、/app 与 resources/game 资�
         BrowserWindow.getAllWindows().map((w) => ({ visible: w.isVisible(), ...w.getBounds() })),
       );
     await expect.poll(async () => (await winState()).length).toBe(1);
-    // 宽度是 electron/main.js 里配置的 1440；高度会被 macOS 夹到屏幕**可用区**——Dock/菜单栏占位时
-    // 900 放不下（实测这台机器给出 800）。所以这里断言「不超过配置值、也没被压扁」而不是钉死 900：
-    // 钉死会让这条冒烟变成「取决于跑测试那台机器的 Dock 设置」，与它要验的东西（窗口真的按配置开出来）无关。
+    // 宽高都可能被屏幕**可用区**夹小：Windows runner 的虚拟屏只有 1024×768（实测宽度被夹成 1024），
+    // macOS 上 Dock/菜单栏也会吃掉高度（实测给出 800）。所以断言「不超过配置值、也没被压扁」，不钉死
+    // 1440/900——钉死会让这条冒烟变成「取决于跑测试那台机器的屏幕」，与它要验的东西（窗口真的按配置
+    // 开出来）无关。
     const bounds = (await winState())[0] as { width: number; height: number };
-    expect(bounds.width).toBe(1440);
+    expect(bounds.width).toBeLessThanOrEqual(1440);
+    expect(bounds.width).toBeGreaterThan(800);
     expect(bounds.height).toBeLessThanOrEqual(900);
     expect(bounds.height).toBeGreaterThan(600);
     await expect.poll(async () => (await winState())[0]?.visible).toBe(true);
@@ -273,7 +301,7 @@ test("打包态：窗口能开、标题屏渲染、/app 与 resources/game 资�
     expect(sessionEntry?.mcpServers?.map((s: any) => s.name)).toEqual(["bunkiten-media"]);
   } finally {
     await closeApp(app);
-    rmSync(tmp, { recursive: true, force: true });
+    rmTemp(tmp);
   }
 });
 
@@ -442,7 +470,7 @@ test("打包态 mock 出图：假引擎真发 tools/call + 本地假图片服务
         /* 删不掉就留着，已在报告里说明 */
       }
     }
-    rmSync(tmp, { recursive: true, force: true });
+    rmTemp(tmp);
     await mock.close();
   }
 });

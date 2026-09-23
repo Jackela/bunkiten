@@ -269,6 +269,8 @@ export function startServer() {
       cmd: plan.spawn.cmd,
       args: plan.spawn.args,
       env: plan.spawn.env,
+      // Windows 的 .cmd 引擎（npm 装的 grok）要经 shell 起——由描述符的 windowsSafeSpawn 决定（见 engines.mjs）
+      shell: plan.spawn.shell === true,
       gameRoot: GAME_ROOT,
       sessionFile: SESSION_FILE,
       rules: plan.rules,
