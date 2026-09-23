@@ -3455,6 +3455,12 @@ describe("StoryTreeScreen：大图降级、缩放平移与节点 roving（v1.6�
   it("滚轮以指针为锚点缩放（画布内滚一下即变 viewBox，且不滚页面）", async () => {
     render(<StoryTreeScreen />);
     await waitFor(() => expect(screen.getByTestId("tree-canvas")).toBeTruthy());
+    // 数据与 effect 落定再交互：树是在 fetch 的 promise 里落地的（act 之外），那一拍的被动 effect
+    // 还挂在队列里——此刻派发滚轮会落进「画布已可见、监听/状态尚未就绪」的窗口，事件静默无效。
+    // 负载高时这个窗口更宽（机器刚跑完 Playwright 套件时实测约 4 次里失手 1 次）。
+    // 等一个空的 act 把队列排干，交互就只发生在稳定态上。
+    await act(async () => {});
+
     const canvas = screen.getByTestId("tree-canvas");
     const fit = canvas.getAttribute("viewBox");
 
