@@ -178,7 +178,8 @@ describe("引擎凭据端点（GET/POST /api/credentials）", () => {
 
   it("GET/POST 的响应与 server stdout 都不含明文 key（脱敏面唯一）", async () => {
     const s = await stack({});
-    const key = "sk-plaintext-should-never-surface-9z8y";
+    // 哨兵形状：短、不像真 key（secret scanning 的 push protection 已开，别写成 48 位随机串那种形状）
+    const key = "sk-no-plaintext-4f2a";
     await s.postJSON("/api/credentials", { llm: { mode: "byok", baseUrl: "https://example.com/v1", apiKey: key, model: "m" } });
     const got = await s.getText("/api/credentials");
     expect(got.body).not.toContain(key);
