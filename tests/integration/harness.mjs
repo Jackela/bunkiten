@@ -71,6 +71,7 @@ function seedWorld(worldsRoot, worldId, preset, title, meta = {}) {
     worldId,
     preset,
     title,
+    label: meta.label ?? "",
     chapterNo: meta.chapterNo ?? 1,
     lastPlayed: meta.lastPlayed ?? 1_700_000_000_000,
     note: meta.note ?? "",
@@ -84,7 +85,7 @@ function seedWorld(worldsRoot, worldId, preset, title, meta = {}) {
 //   · audioFiles: { presetId: [{name, bytes}] }        → 写 presets/<id>/audio/<name>
 //   · trees:      { worldId: "story-tree.md 全文" }     → 覆盖对应世界的树文件（须先有该世界）
 //   · stateFiles: { worldId: "state.md 全文" }         → 覆盖对应世界的状态文件（须先有该世界；角色面板 e2e 用）
-//   · worlds:     [{id, title?, preset?, forkedFrom?}] → 追加世界（复用 w1 三文件逻辑）
+//   · worlds:     [{id, title?, preset?, label?, forkedFrom?}] → 追加世界（复用 w1 三文件逻辑；label = 显示名）
 //   · snapshots:  { worldId: [{seq,at?,kind,nodeId,chapterNo,prompt?,files}] } → 写 state/worlds/<id>/history/NNNN.json
 //                 （条目形状与 server writeSnapshot 的磁盘格式一致：prompt = 可重演的玩家输入，files = {state,summary,tree}）
 //   · indexSchema: number        → 版本化索引的 schema 号（缺省 1 = 当前形态；2 = 未来版本，验「读到、不降级写回」）
@@ -103,6 +104,8 @@ function seedStack(root, presets, extra = {}) {
     indexSchema = 1,
     indexExtra = {},
     legacyIndexArray = false,
+    presetMd = {},
+    covers = {},
     auth = "ok",
   } = extra;
   mkdirSync(path.join(root, "presets"), { recursive: true });
@@ -113,7 +116,11 @@ function seedStack(root, presets, extra = {}) {
     const dir = path.join(root, "presets", id);
     mkdirSync(path.join(dir, "assets"), { recursive: true });
     const title = presetTitleOf(p) ?? (id === "demo" ? "示例剧本" : "对照剧本");
-    writeFileSync(path.join(dir, "preset.md"), presetMarkdown(id, title, typeof p === "object" && p ? p.body : ""));
+    writeFileSync(
+      path.join(dir, "preset.md"),
+      presetMd[id] ?? presetMarkdown(id, title, typeof p === "object" && p ? p.body : ""),
+    );
+    if (covers[id]) writeFileSync(path.join(dir, "cover.jpg"), covers[id]);
     for (const f of assets[id] ?? []) writeFileSync(path.join(dir, "assets", f.name), f.bytes);
     if (audioFiles[id]?.length) {
       const audioDir = path.join(dir, "audio");
@@ -127,6 +134,7 @@ function seedStack(root, presets, extra = {}) {
     index.push(
       seedWorld(worldsRoot, w.id, w.preset ?? "demo", w.title ?? "示例剧本", {
         forkedFrom: w.forkedFrom,
+        label: w.label,
         chapterNo: w.chapterNo,
         lastPlayed: w.lastPlayed,
         note: w.note,
@@ -246,7 +254,7 @@ async function httpOk(url) {
  * @param {Record<string, Array<{name: string, bytes: Buffer}>>} [opts.audioFiles] 预置音频：presetId → presets/<id>/audio/ 下的文件
  * @param {Record<string, string>} [opts.trees] 覆盖世界树：worldId → story-tree.md 全文
  * @param {Record<string, string>} [opts.stateFiles] 覆盖世界状态文件：worldId → state.md 全文（角色面板用）
- * @param {Array<{id: string, title?: string, preset?: string, forkedFrom?: string|null}>} [opts.worlds] 追加世界（复用 w1 三文件生成逻辑）
+ * @param {Array<{id: string, title?: string, preset?: string, label?: string, forkedFrom?: string|null}>} [opts.worlds] 追加世界（复用 w1 三文件生成逻辑；label = 显示名）
  * @param {Record<string, Array<{seq: number, at?: string, kind: "turn"|"backup", nodeId: string|null, chapterNo: number|null, prompt?: string, files: {state: string|null, summary: string|null, tree: string|null}}>>} [opts.snapshots]
  *   预置逐轮快照：worldId → history/NNNN.json 条目（形状与 server writeSnapshot 落盘格式一致；prompt 可省）
  * @param {number} [opts.indexSchema] 索引的 schema 号（缺省 1；2 = 未来版本，验不降级写回）
@@ -255,6 +263,8 @@ async function httpOk(url) {
  * @param {"ok"|"missing"} [opts.auth] 是否写临时 HOME 的 `~/.grok/auth.json`（缺省 "ok"；"missing" 供 boot 屏未登录态用例）
  * @param {"ok"|"missing"} [opts.codexAuth] 是否写临时 HOME 的 `~/.codex/auth.json`（v1.11；缺省 "missing"——只有
  *   engine=codex 的用例需要它，且它同时是「沿用终端登录」的复用来源，见 server/engines.mjs 的 syncCodexAuth）
+ * @param {Record<string, string>} [opts.presetMd] 用**原文** preset.md 覆盖合成 frontmatter（截图管线用：真主题/真角色）
+ * @param {Record<string, Buffer>} [opts.covers] 写 presets/<id>/cover.jpg（截图管线用：标题屏卡带与世界线行缩略图）
  * @param {object} [opts.credentials] 写进临时 HOME 的 `~/.bunkiten/credentials.json`（0600）的凭据文档
  *   （验自备 key：真引擎侧看 fake-engine 的探针 JSONL，HTTP 侧打 /api/credentials）
  * @param {object} [opts.extraEnv] 追加/覆盖给 acp-server 子进程的环境变量（服务目录更新用
@@ -276,6 +286,8 @@ export async function startStack({
   indexSchema = 1,
   indexExtra = {},
   legacyIndexArray = false,
+  presetMd = {},
+  covers = {},
   auth = "ok",
   codexAuth = "missing",
   credentials = null,
@@ -306,7 +318,7 @@ export async function startStack({
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     writeFileSync(path.join(dir, "credentials.json"), JSON.stringify(credentials, null, 2) + "\n", { mode: 0o600 });
   }
-  seedStack(root, presets, { assets, audioFiles, trees, stateFiles, worlds, snapshots, indexSchema, indexExtra, legacyIndexArray, auth });
+  seedStack(root, presets, { assets, audioFiles, trees, stateFiles, worlds, snapshots, indexSchema, indexExtra, legacyIndexArray, presetMd, covers, auth });
 
   // 会话图片目录：server 用 os.homedir()（=HOME）+ encodeURIComponent(GAME_ROOT) + sessionId 拼接
   const sessionImagesDir = path.join(home, ".grok", "sessions", encodeURIComponent(root), SESSION_ID, "images");

@@ -34,6 +34,8 @@ export interface UiStackOptions {
     id: string;
     title?: string;
     preset?: string;
+    /** 显示名（索引的 label；世界线屏按它显示，空则回退剧本标题） */
+    label?: string;
     chapterNo?: number;
     lastPlayed?: number;
     note?: string;

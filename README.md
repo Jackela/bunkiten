@@ -24,6 +24,20 @@
 
 幕后一句话：`grok agent --always-approve --plugin-dir <gameRoot>/.grok stdio`（ACP 协议）做引擎（默认后端是 grok；另一个后端是随包分发的 `codex-acp`，跑在游戏自己的 `CODEX_HOME`，见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 的「引擎后端」），客户端只渲染正文通道（思考流与工具旁白被架构性过滤）；每会话注入 rules 让引擎输出文本选项，前端解析成按钮；`【图】立绘|角色|images/N.jpg` 标记驱动画面，`【立绘】角色|变体` 行随情绪切换差分立绘；`【曲】`/`【环境】`/`【音效】`三行切换音频（按名字映射到 `presets/<id>/audio/` 里的文件，缺失即静默）；回合推理档默认 medium 提速（`EFFORT` 可调）。
 
+三张实机截图（游戏屏 / 剧情图 / 设置屏），更多见 [docs/images/](docs/images/)：
+
+| ![游戏屏：背景 + 两张立绘 + 对话与选项](docs/images/game.jpg) |
+|---|
+| **游戏屏**：背景层 + 同屏两张立绘（发言者高亮带名牌、非发言者压暗）+ 打字机正文 + 【行动】选项 |
+
+| ![剧情图：章节切换器、存档点标注与节点详情](docs/images/tree.jpg) |
+|---|
+| **剧情图**：顶部章节切换器（进度章标「当前」）、节点上的「存档点 · 第 N 幕」、右栏详情（回退 / 回到这一幕并重演 / 只改这个节点） |
+
+| ![设置屏：音频与文本、引擎与密钥](docs/images/settings.jpg) |
+|---|
+| **设置屏**：音量与文本偏好 + 「引擎与密钥」（换引擎、登录登出、自备对话与出图服务） |
+
 ## 两种运行方式
 
 交付形态只有一种：Electron 桌面应用（MVP 期的终端 TUI 已删除）。下表两列是同一种形态的两种跑法。
@@ -87,7 +101,7 @@ bunkiten/
 ├─ state/               # 运行时进度（不入库）：按世界线分目录，含三文件、逐轮快照、回合日志与索引
 ├─ scripts/             # 作者侧工具：剧本体检查（doctor）与服务目录发布源生成
 ├─ tests/               # 单测 + 集成（vitest），以及三套 Playwright e2e（真引擎 / 假引擎 UI / 打包态）
-├─ docs/                # ARCHITECTURE.md、adr/（裁决）、releases/（发布说明）、providers.json（服务目录发布源）
+├─ docs/                # ARCHITECTURE.md、adr/（裁决）、releases/（发布说明）、images/（界面截图）、providers.json（发布源）
 ├─ build/               # 应用图标与 mac 公证 entitlements（electron-builder 的 buildResources）
 ├─ .github/             # CI 与发版 workflow、issue / PR 模板、dependabot
 ├─ AGENTS.md            # AI 协作者导航：项目地图 + 契约同步表 + 门禁
@@ -108,6 +122,7 @@ bunkiten/
 - **单测 + 集成全量 560+ 例**（`npm test`，vitest，秒级）：含假引擎集成层（假 ACP 引擎 + 真 acp-server 子进程）；同一套里还有**契约 lint**，钉住协议常量真源、`RULES` 与引擎 SKILL 的逐字副本、主题白名单与用例数下限——防的是两侧悄悄分叉。
 - **假引擎确定性 UI e2e，21 个 spec**（`npm run test:e2e:ui`，Playwright + 真 acp-server + vite，零 token、几十秒）；**打包态冒烟**跨平台（mac `.app` / Windows `win-unpacked`），另有一条 opt-in 的真出图链路。
 - **CI**：每次 push / PR 跑构建 + `typecheck:server` + 覆盖率仪器下的全量测试 + 假引擎 UI e2e；`main` 上另有一个 Windows job 真跑打包态冒烟（`packaged-win`）。真引擎冒烟要登录态与真 token，只在开发机按需跑。
+- 上面那几张界面图不是手截的：`npm run shots` 用假引擎栈（`tests/e2e-shots/`）按仓库真素材重出一遍，改完界面跑一次就能更新——零 token、不进 CI。
 - 要动代码：门禁与「改某句话要同批改哪些文件」见 [CONTRIBUTING.md](CONTRIBUTING.md) 与 [AGENTS.md](AGENTS.md)；每个设计决定为什么这么做见 [docs/adr/](docs/adr/)。
 
 ## 文档导航

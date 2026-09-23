@@ -36,6 +36,7 @@ vite 会把 `/api`、`/img`、`/audio`、`/events` 代理到它（默认 `localh
 | `npm run test:e2e:ui` | 动前端流程、文本协议或测试 harness —— 假引擎确定性 UI e2e（`tests/e2e-ui/`，21 个 spec），约 5 分钟；CI 也会跑 |
 | `npm run test:e2e:packaged` | 动 `electron-builder.yml` / 打包布局 / 主进程 —— 打包态冒烟（跨平台：mac 出 `.app`、Windows 出 `win-unpacked`，定位见 `tests/helpers/packaged-app.mjs`）；mac 侧本机 opt-in、arm64 only，Windows 侧由 CI 的 `packaged-win` job 真跑 |
 | `npm run test:e2e` | 动前端流程或协议时的真引擎冒烟 —— **会花真 token**：3 条（Grok 快速开局 + Grok 章节制作 + Codex 1 回合），Grok 两条约 6–12 分钟、Codex 一条约 3 分钟，视模型与网络。前置缺一即 **skip 而非失败**（`~/.grok/auth.json` / `~/.codex/auth.json`），`retries: 0` 不做静默重试 |
+| `npm run shots` | 改了界面（前端流程 / 版式 / 文案）—— 重出 README 与 QUICKSTART 里的界面截图（`tests/e2e-shots/`，假引擎栈 + 仓库真素材，约 10 秒、零 token；产出 `docs/images/*.jpg` 要一起提交）。作者侧工具，**不进 CI** |
 | `npm run test:coverage` | 可选 —— 同一批测试 + 覆盖率仪表（CI 用它替代 `npm test` 步骤并上传报告；阈值是「防下滑线」，配置在 `vitest.config.ts`） |
 | `npm run doctor` | 改了 preset 结构或新增了剧本 —— 剧本体检查（作者侧 CLI，退出码非 0 ⟺ 有 error；warning 不拦发布，**刻意不进 CI**） |
 | `npm run providers:export` | 改了 `shared/providers.mjs`（服务目录真源）—— 必须同批重生成并提交 `docs/providers.json`，契约 lint 断言两者深等 |
