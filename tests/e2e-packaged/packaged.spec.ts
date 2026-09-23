@@ -75,6 +75,16 @@ function rmTemp(dir: string): void {
   }
 }
 
+/**
+ * 临时 HOME 的环境变量（跨平台）：POSIX 认 `HOME`，**Windows 的 `os.homedir()` 读 `USERPROFILE`**
+ *（再回落 `HOMEDRIVE`+`HOMEPATH`）。只写 `HOME` 的话，打包态 acp-server 在 Windows 上会去读 runner 的
+ * 真实主目录——登录态与凭据全落空，应用永远停在启动屏（packaged-win 真跑时正是这么被抓到的）。
+ * @param {string} home 临时主目录 @returns {Record<string, string>} 追加进子进程 env 的键值
+ */
+function homeEnv(home: string): Record<string, string> {
+  return { HOME: home, USERPROFILE: home };
+}
+
 test("打包态：codex-acp 资源树就位，且打包态可执行文件（ELECTRON_RUN_AS_NODE）能把它跑出 initialize", async () => {
   test.skip(APP_BIN === null, SKIP_HINT);
   const acpRoot = path.join(APP!.resources, "codex-acp", "node_modules");
@@ -171,7 +181,7 @@ test("打包态：窗口能开、标题屏渲染、/app 与 resources/game 资�
     executablePath: APP_BIN as string,
     env: {
       ...process.env,
-      HOME: home,
+      ...homeEnv(home),
       PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
       FAKE_ENGINE_TURNS: "[]",
       FAKE_ENGINE_PROBE: probeFile,
@@ -219,8 +229,18 @@ test("打包态：窗口能开、标题屏渲染、/app 与 resources/game 资�
       }
     });
 
-    // 标题屏渲染（boot 自检通过 → title；剧本来自 resources/game/presets）
-    await expect(win.getByTestId("title-wordmark")).toBeVisible();
+    // 标题屏渲染（boot 自检通过 → title；剧本来自 resources/game/presets）。
+    // 失败时把「页面现在停在哪一屏」与主进程日志一并打出来——窗口开了、URL 也对，却停在启动屏这类问题
+    // 只有这些线索能定位（packaged-win 首次真跑就是这么找出来的：临时 HOME 没被 os.homedir() 读到）。
+    try {
+      await expect(win.getByTestId("title-wordmark")).toBeVisible({ timeout: 60_000 });
+    } catch (e) {
+      console.log("[packaged] url:", win.url());
+      console.log("[packaged] body:", (await win.evaluate(() => document.body.innerText)).slice(0, 600));
+      console.log("[packaged] bad resources:", JSON.stringify(bad));
+      console.log("[packaged] app logs:", appLogs.join("").slice(-3000));
+      throw e;
+    }
     await expect(win.getByTestId("title-card-center")).toBeVisible();
     expect(bad, "打包前端有关键资源 404（页面会是空白）：先查 /app 的尾斜杠与 resources/app-dist 布局").toEqual([]);
 
@@ -387,7 +407,7 @@ test("打包态 mock 出图：假引擎真发 tools/call + 本地假图片服务
       executablePath: APP_BIN as string,
       env: {
         ...process.env,
-        HOME: home,
+        ...homeEnv(home),
         PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
         FAKE_ENGINE_TURNS: "[]",
         FAKE_ENGINE_PROBE: probeFile,
@@ -400,7 +420,14 @@ test("打包态 mock 出图：假引擎真发 tools/call + 本地假图片服务
     app.process().stderr?.on("data", (d) => appLogs.push(String(d)));
 
     const win = await app.firstWindow();
-    await expect(win.getByTestId("title-wordmark")).toBeVisible({ timeout: 60_000 });
+    try {
+      await expect(win.getByTestId("title-wordmark")).toBeVisible({ timeout: 60_000 });
+    } catch (e) {
+      console.log("[packaged-mock] url:", win.url());
+      console.log("[packaged-mock] body:", (await win.evaluate(() => document.body.innerText)).slice(0, 600));
+      console.log("[packaged-mock] app logs:", appLogs.join("").slice(-3000));
+      throw e;
+    }
     const port = new URL(win.url()).port;
     const probeEntries = (): any[] =>
       existsSync(probeFile)
