@@ -169,4 +169,4 @@ listbox/option + roving tabIndex 语义、`data-testid` 一族（jsdom 与 e2e �
 - **覆盖率徽章**：需要外部服务或在 CI 里生成 badge 提交回仓库；本项目覆盖率阈值刻意是「防下滑线」而非硬指标，挂一个会漂移的硬数字徽章与那个口径相冲。测试与 CI 状态两枚徽章已经有了。
 - **`tests/contract.test.ts` 之外的文档门禁**：目前只有三份文档被钉（README / AGENTS / ARCHITECTURE）；QUICKSTART 与 CONTEXT 的漂移只能靠人工巡检（本轮就是这么发现的）。
 - **§3 的手写浮层**：抽屉 / 滑杆 / 弹窗维持自写 `focusTrap`（理由见该节「刻意不迁」），不为一致性迁原语。
-- **已知 flake（负载敏感）**：`tests/ui.test.tsx` 的「StoryTreeScreen 滚轮以指针为锚点缩放」——机器刚跑完 Playwright 套件、负载高时偶发（1s 的 `waitFor` 等不到 viewBox 变化），负载降下来连跑全绿、`origin/main` 同款。修法是给这条用例一个「等树数据落定」的显式判据，或让组件别在首帧后重置视图；属于测试基建的独立小改动。
+- ~~**已知 flake（负载敏感）**~~ —— **已修**：`tests/ui.test.tsx` 的「StoryTreeScreen 滚轮以指针为锚点缩放」在负载高时偶发（约 4 次 1 次），根因是用例在 `fetch` 落地（act 之外）的那一拍就派发滚轮，撞进「画布已可见、被动 effect/状态尚未就绪」的窗口。修法是交互前 `await act(async () => {})` 排干队列（测试侧一处等待，不动组件）；验收见 PR。**这条的教训留着**：组件里挂原生监听这类「提交阶段就该做完的事」，用 `useEffect` 会由调度器择机冲刷，`useLayoutEffect` 才是对的形状（本轮试过、因不是根因故未采纳，改别处时按这条走）。
