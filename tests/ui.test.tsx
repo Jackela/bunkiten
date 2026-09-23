@@ -3460,11 +3460,13 @@ describe("StoryTreeScreen：大图降级、缩放平移与节点 roving（v1.6�
 
     const ev = new WheelEvent("wheel", { deltaY: -120, bubbles: true, cancelable: true });
     // 缩放走原生非 passive 监听（React 的 onWheel 是根上的被动监听，preventDefault 无效）；
-    // 原生事件在 act 之外不会自动冲刷，故这里显式 act 包一层
+    // 原生事件在 act 之外不会自动冲刷，故这里显式 act 包一层。**状态更新仍可能是异步冲刷的**
+    // （CI 的 Linux runner 慢一档时同步断言会闪红——本用例在 CI 上实测闪红过一次），
+    // 所以 viewBox 的变化用 waitFor 等一拍，preventDefault 是同步的、照旧立即断言。
     act(() => {
       canvas.dispatchEvent(ev);
     });
-    expect(canvas.getAttribute("viewBox")).not.toBe(fit);
+    await waitFor(() => expect(canvas.getAttribute("viewBox")).not.toBe(fit));
     expect(ev.defaultPrevented).toBe(true);
   });
 });
