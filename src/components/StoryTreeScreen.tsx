@@ -18,9 +18,9 @@
 // v1.13：节点详情多一个「回到这一幕并重演」（该条是 turn 条目、且之前还有 turn 条目才出现）——
 //       与回退同一纪律（两段确认、忙碌禁用），退到这一幕开演前并重发当时的输入；输入随快照条目
 //       落盘（docs/adr/0023），旧档那几幕点击后由 store 给一句降级提示。
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { motion } from "framer-motion";
-import { Maximize2, RefreshCw, ZoomIn, ZoomOut } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import { fetchHistory, fetchSnapshot, fetchTree, postSnapshotLabel, type WorldSnapshotMeta } from "../lib/acp";
 import { diffLines, diffStats, type DiffRow } from "../lib/diff";
 import {
@@ -32,9 +32,11 @@ import {
 } from "../lib/parser";
 import { canReplaySnapshot } from "../lib/replay";
 import { truncate } from "../lib/text";
-import { fitView, layoutTree, panView, viewBoxOf, zoomViewAt, type LayoutNode, type TreeLayout, type TreeView } from "../lib/treeLayout";
+import { layoutTree, type LayoutNode, type TreeLayout } from "../lib/treeLayout";
 import { resolveWorldLabel } from "../lib/worlds";
 import { useGameStore } from "../store/game";
+import { CANVAS_ZOOM_STEP, useCanvasPanZoom } from "../lib/useCanvasPanZoom";
+import { CanvasZoomToolbar } from "./CanvasZoomToolbar";
 import { ScreenShell } from "./ScreenShell";
 
 /** 节点绘制尺寸：须与传给 layoutTree 的参数一致（布局定坐标、SVG 画矩形） */
@@ -43,12 +45,6 @@ const NODE_H = 74;
 
 /** 当前章节点超过这个数就默认列表模式（大图在小屏上连线糊成一团，先给可读的列表） */
 const BIG_GRAPH_NODES = 40;
-
-/** 每次缩放按钮/滚轮/快捷键的步进倍数 */
-const ZOOM_STEP = 1.25;
-
-/** 拖拽平移的死区（像素）：低于它视为点选，避免手抖把点击吃掉 */
-const DRAG_SLOP = 4;
 
 /** 节点上挂的快照引用：最早匹配快照的序号与「第几轮」。turn 仍由 {@link snapshotTurnNo} 算出（纯函数，
     单测在用），屏上只印「第 N 幕」（口径统一：幕号 = 快照序号，与历史抽屉的「已回溯到第 N 幕」同源）。 */
@@ -225,77 +221,8 @@ function TreeCanvas({
   onFocus: (id: string) => void;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
-  const svgRef = useRef<SVGSVGElement>(null);
-  const [view, setView] = useState<TreeView>(() => fitView(layout.width, layout.height));
-  /** 拖拽态：按下点 + 是否已越过死区；`draggedRef` 活到 click 之后（拖完那一下不该顺便开详情） */
-  const dragRef = useRef<{ x: number; y: number; moved: boolean } | null>(null);
-  const draggedRef = useRef(false);
-
-  // 布局换了（切章/切世界/改树）：回到「适应」，别让上一个图的缩放平移漂到新图上
-  useEffect(() => {
-    setView(fitView(layout.width, layout.height));
-  }, [layout.width, layout.height]);
-
-  const fit = useCallback(() => setView(fitView(layout.width, layout.height)), [layout.width, layout.height]);
-  const zoomBy = useCallback(
-    (factor: number, fx = 0.5, fy = 0.5) =>
-      setView((v) => zoomViewAt(v, factor, fx, fy, layout.width, layout.height)),
-    [layout.width, layout.height],
-  );
-
-  // 滚轮缩放：以指针为锚点。必须自己挂非 passive 监听（React 的 onWheel 在根上是被动的，preventDefault 无效）
-  useEffect(() => {
-    const el = svgRef.current;
-    if (!el) return;
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault(); // 图内滚轮 = 缩放，不滚页面
-      const rect = el.getBoundingClientRect();
-      // 指针在画布里的归一化落点；jsdom（rect 全 0）与旧浏览器退化为中心缩放
-      const fx = rect.width > 0 ? (e.clientX - rect.left) / rect.width : 0.5;
-      const fy = rect.height > 0 ? (e.clientY - rect.top) / rect.height : 0.5;
-      setView((v) => zoomViewAt(v, e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP, fx, fy, layout.width, layout.height));
-    };
-    el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
-  }, [layout.width, layout.height]);
-
-  /** 屏幕像素位移 → 布局坐标位移（viewBox 等比铺满，横竖同一个比例） */
-  const layoutDelta = (px: number): number => {
-    const rect = svgRef.current?.getBoundingClientRect();
-    if (!rect || rect.width === 0) return 0; // 量不到宽度就不平移，宁可不响应也不乱跳
-    return (px * layout.width) / view.zoom / rect.width;
-  };
-
-  const onPointerDown = (e: PointerEvent<SVGSVGElement>) => {
-    if (e.button !== 0) return;
-    draggedRef.current = false;
-    dragRef.current = { x: e.clientX, y: e.clientY, moved: false };
-  };
-
-  const onPointerMove = (e: PointerEvent<SVGSVGElement>) => {
-    const d = dragRef.current;
-    if (!d) return;
-    const dx = e.clientX - d.x;
-    const dy = e.clientY - d.y;
-    if (!d.moved) {
-      if (Math.abs(dx) + Math.abs(dy) < DRAG_SLOP) return; // 死区内：还是点选
-      d.moved = true;
-      // 指针捕获让手滑出画布也能继续拖（老环境不支持就退化为画布内拖）
-      try {
-        e.currentTarget.setPointerCapture(e.pointerId);
-      } catch {
-        // 指针已失效（pointerId 不存在）：这轮拖拽按画布内拖继续
-      }
-    }
-    setView((v) => panView(v, layoutDelta(dx), layoutDelta(dy), layout.width, layout.height));
-    d.x = e.clientX;
-    d.y = e.clientY;
-  };
-
-  const onPointerUp = () => {
-    draggedRef.current = dragRef.current?.moved ?? false;
-    dragRef.current = null;
-  };
+  // 视图 + 指针/滚轮/键盘缩放全在共享 hook 里（与家谱画布同一份实现，见 lib/useCanvasPanZoom.ts）
+  const canvas = useCanvasPanZoom(layout);
 
   const ids = useMemo(() => layout.nodes.map((n) => n.id), [layout.nodes]);
   // roving tabIndex：整图只有一个可 Tab 的节点（选中节点；没选中时落在当前进度/首个节点）
@@ -312,6 +239,7 @@ function TreeCanvas({
   };
 
   const onCanvasKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (canvas.onZoomKeyDown(e)) return; // + = - _ 0 归画布（含 preventDefault）
     switch (e.key) {
       case "ArrowRight":
       case "ArrowDown":
@@ -322,21 +250,6 @@ function TreeCanvas({
       case "ArrowUp":
         e.preventDefault();
         moveFocus(-1);
-        return;
-      // 「+」在不同键盘布局/主键盘区可能是 =，一起收
-      case "+":
-      case "=":
-        e.preventDefault();
-        zoomBy(ZOOM_STEP);
-        return;
-      case "-":
-      case "_":
-        e.preventDefault();
-        zoomBy(1 / ZOOM_STEP);
-        return;
-      case "0":
-        e.preventDefault();
-        fit();
         return;
       default:
         return;
@@ -377,37 +290,14 @@ function TreeCanvas({
           );
         })}
 
-        <span className="ml-auto flex items-center gap-1">
-          <button
-            type="button"
-            data-testid="tree-zoom-out"
-            aria-label="缩小"
-            onClick={() => zoomBy(1 / ZOOM_STEP)}
-            className="rounded-md border border-white/10 p-1.5 text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
-          >
-            <ZoomOut size={14} />
-          </button>
-          <button
-            type="button"
-            data-testid="tree-zoom-in"
-            aria-label="放大"
-            onClick={() => zoomBy(ZOOM_STEP)}
-            className="rounded-md border border-white/10 p-1.5 text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
-          >
-            <ZoomIn size={14} />
-          </button>
-          <button
-            type="button"
-            data-testid="tree-zoom-fit"
-            onClick={fit}
-            className="flex items-center gap-1 rounded-md border border-white/10 px-2.5 py-1.5 text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
-          >
-            <Maximize2 size={14} /> 适应
-          </button>
-          <span data-testid="tree-zoom-level" className="ml-1 w-12 text-right text-ink-hint">
-            {Math.round(view.zoom * 100)}%
-          </span>
-        </span>
+        <CanvasZoomToolbar
+          className="ml-auto"
+          testIdPrefix="tree"
+          zoomPct={canvas.zoomPct}
+          onZoomIn={() => canvas.zoomBy(CANVAS_ZOOM_STEP)}
+          onZoomOut={() => canvas.zoomBy(1 / CANVAS_ZOOM_STEP)}
+          onFit={canvas.fit}
+        />
       </div>
 
       {/* 操作提示：同样吃面板带（这行小字从前是屏上对比度最低的一处） */}
@@ -416,17 +306,17 @@ function TreeCanvas({
       </p>
 
       <svg
-        ref={svgRef}
+        ref={canvas.svgRef}
         data-testid="tree-canvas"
-        viewBox={viewBoxOf(view, layout.width, layout.height)}
+        viewBox={canvas.viewBox}
         preserveAspectRatio="xMidYMid meet"
         className="w-full cursor-grab touch-none rounded-xl border border-white/[.06] bg-panel-soft active:cursor-grabbing"
         style={{ height: "auto", aspectRatio: `${layout.width} / ${layout.height}` }}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-        onDoubleClick={fit}
+        onPointerDown={canvas.onPointerDown}
+        onPointerMove={canvas.onPointerMove}
+        onPointerUp={canvas.onPointerUp}
+        onPointerCancel={canvas.onPointerUp}
+        onDoubleClick={canvas.onDoubleClick}
       >
         <defs>
           <marker
@@ -469,10 +359,7 @@ function TreeCanvas({
               aria-current={isCurrent ? "step" : undefined}
               onClick={() => {
                 // 拖完手抬起那一下不算点选（否则平移顺手就把详情打开了）
-                if (draggedRef.current) {
-                  draggedRef.current = false;
-                  return;
-                }
+                if (canvas.consumeDragged()) return;
                 onFocus(ln.id);
               }}
               onKeyDown={activate(ln.id)}
