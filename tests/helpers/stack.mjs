@@ -143,7 +143,9 @@ export async function startStack({ homeDir = null, credentials = null, env = {} 
     stopped = true;
     await killGracefully(children);
   };
-  // 兜底：playwright 进程退出（含崩溃/中断）时同步杀掉子进程
+  // 兜底：playwright 进程退出（含崩溃/中断）时同步杀掉子进程。
+  // **信号路径必须显式接管**：Node 收到信号默认直接终止、**不触发 'exit'**——只挂 'exit' + SIGINT/SIGTERM
+  // 会漏掉关终端（SIGHUP）与 Ctrl-\（SIGQUIT）这两条（同源问题在 integration 栈上实测留下过孤儿进程）。
   const emergencyKill = () => {
     for (const p of children) {
       try {
@@ -152,8 +154,12 @@ export async function startStack({ homeDir = null, credentials = null, env = {} 
     }
   };
   process.on("exit", emergencyKill);
-  process.on("SIGINT", emergencyKill);
-  process.on("SIGTERM", emergencyKill);
+  for (const [sig, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129], ["SIGQUIT", 131]]) {
+    process.on(sig, () => {
+      emergencyKill();
+      process.exit(code);
+    });
+  }
 
   try {
     return await start(children, stop, { homeDir, credentials, env });

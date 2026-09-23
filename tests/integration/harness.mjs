@@ -399,18 +399,27 @@ export async function startStack({
   const sseController = new AbortController();
   let stopped = false;
 
-  // 兜底：测试进程异常退出时同步杀掉 server（正常路径走 stop()）
-  const onExit = () => {
+  // 兜底：测试进程异常退出时同步杀掉 server（正常路径走 stop()）。
+  // **信号路径必须显式接管**：Node 收到 SIGINT/SIGTERM/SIGHUP 默认直接终止、**不触发 'exit'**——
+  // 只挂 'exit' 等于漏掉 Ctrl-C、关终端（SIGHUP）、上层超时杀进程这三条路。实测留下过 3 只孤儿
+  // acp-server（临时根 `bunkiten-it-*`，各占一个端口）。这里先杀子进程再按惯例退出码退出。
+  const killServer = () => {
     try {
       proc.kill("SIGKILL");
     } catch {}
   };
-  process.once("exit", onExit);
+  process.once("exit", killServer);
+  for (const [sig, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129], ["SIGQUIT", 131]]) {
+    process.on(sig, () => {
+      killServer();
+      process.exit(code);
+    });
+  }
 
   const stop = async () => {
     if (stopped) return;
     stopped = true;
-    process.removeListener("exit", onExit);
+    process.removeListener("exit", killServer);
     try {
       sseController.abort();
     } catch {}
