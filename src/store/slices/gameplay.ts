@@ -137,13 +137,15 @@ export function createGameplaySlice(
       const craftingNoise =
         s.screen === "crafting" &&
         (s.preloadPhase === "init" || s.preloadPhase === "planning" || s.preloadPhase === "queue");
-      const clean = craftingNoise || s.screen === "creation" || s.treeAsk ? "" : cleanForHistory(finalText);
+      // 后台补画回合（v1.13 两段式）与 treeAsk 同款：确认句不进正文/历史
+      const clean = craftingNoise || s.screen === "creation" || s.treeAsk || s.artAsk ? "" : cleanForHistory(finalText);
       set({
         finalText,
         options: parseOptions(finalText),
         status: "就绪",
         engineBusy: false,
         turnStartAt: null,
+        artAsk: false, // 补画回合到此为止（下面的泵会给下一项置位）
         history: clean ? [...s.history, { n: `第 ${s.turnNo + 1} 幕`, t: clean }] : s.history,
         turnNo: clean ? s.turnNo + 1 : s.turnNo,
         // 回退后的第一个回合收尾 = 重同步成功：清徽章，提示条改写为「完成重同步」态。
@@ -217,6 +219,14 @@ export function createGameplaySlice(
       if (rerollPrompt && s.resyncing) {
         set({ pendingRerollPrompt: null });
         get().sendPlayerTurn(rerollPrompt);
+      }
+      // 两段式（v1.13）：玩家在补画期间的操作**优先**补发；没有才继续补下一张。两条都「先清后发」。
+      const queuedPrompt = get().pendingPlayerPrompt;
+      if (queuedPrompt) {
+        set({ pendingPlayerPrompt: null });
+        get().sendPlayerTurn(queuedPrompt);
+      } else {
+        ctx.pumpDeferredArt();
       }
       // 重演入口的可见性：按钮要「有前序快照」才出现（spec P3-T1），而快照数只有服务端知道——
       // 只在还没数够（未知或 < 2）时补拉一次 /api/history（有列表缓存，代价小；数够即停，不再逐回合拉）
@@ -301,6 +311,14 @@ export function createGameplaySlice(
       const t = text.trim();
       if (!t) return;
       // 输入随快照条目在服务端落盘（重演的数据源）——这里只剩 trim 守卫，不再有客户端账本（v1.13，见 docs/adr/0023）
+      // 例外：引擎正忙着「后台补画」（artAsk）时玩家的操作先排队，别去撞 409——回合收尾会优先补发它。
+      // 只拦 artAsk（不看 engineBusy）：补画指令发出到 turn_start 抵达之间还有一段网络窗口，
+      // 那一刻 engineBusy 仍是 false，只看它就会漏拦；artAsk 恰好覆盖整段（置位=已发、清除=该回合收尾）。
+      // 普通回合的抢发行为与 v1.12 逐字一致（服务端 409 + 既有出错路径）——这里不是给所有忙碌兜底。
+      if (get().artAsk) {
+        set({ pendingPlayerPrompt: t });
+        return;
+      }
       get().send(t);
     },
 

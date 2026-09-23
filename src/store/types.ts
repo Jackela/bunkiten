@@ -144,6 +144,22 @@ export interface GameStore {
   preloadBatchStartedAt: number | null;
   /** 当前制作中的章号（开局=1；章标记后=N+1） */
   chapterNo: number;
+  /**
+   * 延迟补画队列（v1.13 两段式）：规划后**没进开场子集**的清单项（差分、别的地点/角色…）。
+   * 开场后每次引擎空闲由 pumpDeferredArt 取一项补画；跨章保留（下一章的清单只列本章新增项，
+   * 不保留就永久丢），换世界线/换剧本/重开由 resetRunState 清零。
+   */
+  deferredArt: PreloadItem[];
+  /**
+   * 当前这回合是「后台补画」的指令回合（v1.13）：正文不进历史、标记不换画面（只记槽位），
+   * 玩家这一轮的操作进 pendingPlayerPrompt 排队。由 pumpDeferredArt 置位、turn_end 清除。
+   */
+  artAsk: boolean;
+  /**
+   * 玩家在补画期间（引擎忙且 artAsk）的输入：单槽、**后到覆盖**（玩家改主意比锁死第一次合理），
+   * turn_end 时**优先于补画**补发；换世界线/换剧本/重开随 resetRunState 清空。
+   */
+  pendingPlayerPrompt: string | null;
   /** 玩家在 init/planning 期间按了跳过：该回合结束后直接「开演。」 */
   skipRequested: boolean;
   /** 引擎回合进行中（turn_start→turn_end/error）；skip 时用来判断能否立即推进 */

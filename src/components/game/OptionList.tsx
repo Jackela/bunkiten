@@ -41,6 +41,7 @@ export default function OptionList() {
 
   // 与渲染条件同一个判断：选项真的可见（打字完成 + 有选项）才谈快捷键与倒计时
   const visible = typingDone && !!options && options.length > 0;
+  const pendingPlayerPrompt = useGameStore((s) => s.pendingPlayerPrompt);
   const left = useAutoAdvanceLeft(autoAdvanceDeadline);
 
   // 选项上屏 = 打字完成且选项就绪：启动自动前进倒计时（设置关/引擎忙/有排队指令由 store 拒绝）；
@@ -95,6 +96,13 @@ export default function OptionList() {
         </motion.button>
       ))}
       {/* 快捷键提示：低调到不妨碍阅读，但键盘玩家一眼能找到 */}
+      {/* 两段式（v1.13）：后台补画时点了选项/发了输入 → 输入在排队，等这一张画完就发出去。
+          不说这一句的话，玩家点了没反应会以为卡住了（那一下的等待是几十秒量级） */}
+      {pendingPlayerPrompt !== null && (
+        <p data-testid="pending-prompt-hint" className="mt-0.5 text-meta tracking-[.15em] text-gold/85">
+          已记下你的选择，画完这一张就发
+        </p>
+      )}
       <p data-testid="option-hints" className="mt-0.5 text-meta tracking-[.15em] text-ink-hint">
         1-9 选择 · 空格补全
       </p>

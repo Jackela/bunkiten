@@ -90,6 +90,158 @@ async function reachGame() {
   engineTurn(OPENING); // 开场正文
 }
 
+// 两段式（v1.13）的树 fixture：当前指针节点 1-2 的地点与在场——开场子集就按它挑。
+// 与 MANIFEST_CH1 对照：开场集 = 沈屿 + 程野 + 旧教学楼（3 项），延迟队列 = 教导主任·老蒋 + 天台（2 项）。
+const TREE_CH1 = [
+  "# 剧情树",
+  "## 第 1 章：盛夏偏差值",
+  "- 当前进度: 节点 1-2（已走 0 轮）",
+  "",
+  "### 节点 1-1（校门口）",
+  "- 地点: 校门口",
+  "- 在场: 沈屿",
+  "- 状态: 已走过",
+  "",
+  "### 节点 1-2（旧教学楼）",
+  "- 地点: 旧教学楼",
+  "- 在场: 沈屿、程野",
+  "- 状态: 可达",
+  "",
+].join("\n");
+
+/** 把 /api/tree 挂上（其余沿用本文件 beforeEach 的通用 stub） */
+function stubTree(markdown: string | null) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname === "/prompt") {
+        prompts.push(JSON.parse(String(init?.body)).text);
+        return jsonResponse({ ok: true });
+      }
+      if (url.pathname === "/api/assets") return jsonResponse(assets);
+      if (url.pathname === "/api/tree") {
+        return markdown === null ? jsonResponse({ error: "没树" }, 404) : jsonResponse({ worldId: "w1", markdown });
+      }
+      return jsonResponse({ error: `unexpected ${url.pathname}` }, 404);
+    }),
+  );
+}
+
+describe("两段式制作（v1.13）：开场子集 + 延迟补画泵", () => {
+  beforeEach(() => {
+    prompts = [];
+    assets = [];
+    stubTree(TREE_CH1);
+    useGameStore.getState().selectPreset(PRESET);
+    useGameStore.setState({ worldId: "w1" }); // 两段式要读本世界的树（没有 worldId 就退回全量）
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    useGameStore.getState().toTitle();
+    useGameStore.setState({ worldId: null });
+  });
+
+  it("树可判定：开场只画「当前节点的地点 + 在场角色的基础立绘」，其余进延迟队列", async () => {
+    useGameStore.getState().startGame(true, true);
+    engineTurn(); // 待命确认
+    await vi.waitUntil(() => prompts.at(-1) === PLAN_CH1);
+    engineTurn(MANIFEST_CH1); // 规划回合回清单 → 建两段队列（读树是异步的，等队列落地）
+    await vi.waitUntil(() => useGameStore.getState().preload.length > 0);
+
+    const s1 = useGameStore.getState();
+    expect(s1.preload.map((i) => i.name)).toEqual(["沈屿", "程野", "旧教学楼"]);
+    expect(s1.deferredArt.map((i) => i.name)).toEqual(["教导主任·老蒋", "天台"]);
+    expect(s1.artReady, "槽位仍覆盖整份清单（补画命中时要能点亮）").toHaveProperty("天台");
+
+    // 开场子集跑完就「开演。」——不等延迟队列
+    for (const cmd of [ART_SHENYU, ART_CHENGYE, ART_BG_JIAOXUELOU]) {
+      await vi.waitUntil(() => prompts.at(-1) === cmd);
+      engineTurn();
+    }
+    await vi.waitUntil(() => prompts.at(-1) === START);
+    expect(prompts, "延迟队列的两项不该在开演前发").not.toContain(ART_LAOJIANG);
+  });
+
+  it("判不了就退回全量：没有树（404）时与老流程逐字一致", async () => {
+    stubTree(null);
+    useGameStore.getState().startGame(true, true);
+    engineTurn();
+    await vi.waitUntil(() => prompts.at(-1) === PLAN_CH1);
+    engineTurn(MANIFEST_CH1);
+    await vi.waitUntil(() => useGameStore.getState().preload.length > 0);
+
+    const s1 = useGameStore.getState();
+    expect(s1.preload.map((i) => i.name)).toEqual(["沈屿", "程野", "教导主任·老蒋", "旧教学楼", "天台"]);
+    expect(s1.deferredArt).toEqual([]);
+  });
+
+  it("开演后逐张补画：每次空闲一项；补画回合正文不进历史、【图】不换画面", async () => {
+    useGameStore.getState().startGame(true, true);
+    engineTurn();
+    await vi.waitUntil(() => prompts.at(-1) === PLAN_CH1);
+    engineTurn(MANIFEST_CH1);
+    for (const cmd of [ART_SHENYU, ART_CHENGYE, ART_BG_JIAOXUELOU]) {
+      await vi.waitUntil(() => prompts.at(-1) === cmd);
+      engineTurn();
+    }
+    await vi.waitUntil(() => prompts.at(-1) === START);
+    engineTurn(OPENING); // 开演回合：正文进历史，屏切 game
+    expect(useGameStore.getState().screen).toBe("game");
+    const historyAfterOpening = useGameStore.getState().history.length;
+    const bgBefore = useGameStore.getState().bgUrl;
+
+    // 第一个正戏回合（玩家输入）收尾后，泵才动手——补画不与开场正文抢
+    engineTurn("她把书包放在桌上。");
+    await vi.waitUntil(() => prompts.at(-1) === ART_LAOJIANG);
+    expect(useGameStore.getState().artAsk, "补画回合要标 artAsk").toBe(true);
+
+    // 补画回合的确认句与【图】都不上玩家的屏：正文不进历史、背景不被换掉（只点亮槽位）
+    useGameStore.getState().handleEvent({ type: "chunk", seg: 0, text: "教导主任·老蒋 · 完成\n【图】背景|天台|images/9.jpg\n" });
+    engineTurn();
+    const s2 = useGameStore.getState();
+    expect(s2.history.length, "补画回合的确认句不该进历史").toBe(historyAfterOpening + 1);
+    expect(s2.bgUrl, "补画带来的【图】背景不该换掉玩家正在看的画面").toBe(bgBefore);
+    expect(s2.artReady["天台"], "但槽位该点亮（补画的意义就在这）").toContain("/img");
+  });
+
+  it("补画期间玩家操作排队；回合收尾优先补发它，再继续补画", async () => {
+    useGameStore.getState().startGame(true, true);
+    engineTurn();
+    await vi.waitUntil(() => prompts.at(-1) === PLAN_CH1);
+    engineTurn(MANIFEST_CH1);
+    for (const cmd of [ART_SHENYU, ART_CHENGYE, ART_BG_JIAOXUELOU]) {
+      await vi.waitUntil(() => prompts.at(-1) === cmd);
+      engineTurn();
+    }
+    await vi.waitUntil(() => prompts.at(-1) === START);
+    engineTurn(OPENING);
+    engineTurn("她把书包放在桌上。"); // 收尾时泵发第一项补画
+    await vi.waitUntil(() => prompts.at(-1) === ART_LAOJIANG);
+
+    // 补画回合进行中（引擎忙 + artAsk）：玩家的输入进排队，不撞 409
+    const count = prompts.length;
+    useGameStore.getState().sendPlayerTurn("我推开门");
+    expect(prompts.length, "补画期间不该再发新指令").toBe(count);
+    expect(useGameStore.getState().pendingPlayerPrompt).toBe("我推开门");
+
+    engineTurn(); // 补画回合收尾：优先补发排队的输入
+    await vi.waitUntil(() => prompts.at(-1) === "我推开门");
+    expect(useGameStore.getState().pendingPlayerPrompt).toBeNull();
+    expect(prompts, "玩家输入优先，补画要让位").not.toContain(ART_BG_TIANTAI);
+  });
+
+  it("换局清零：延迟队列、补画标记与排队的玩家输入都不跨玩法", async () => {
+    useGameStore.setState({ deferredArt: [], artAsk: false, pendingPlayerPrompt: null });
+    useGameStore.getState().startGame(true, false);
+    const s1 = useGameStore.getState();
+    expect(s1.deferredArt).toEqual([]);
+    expect(s1.artAsk).toBe(false);
+    expect(s1.pendingPlayerPrompt).toBeNull();
+  });
+});
+
 describe("章节制作流水线（store 公共 API 驱动）", () => {
   beforeEach(() => {
     prompts = [];
@@ -151,6 +303,8 @@ describe("章节制作流水线（store 公共 API 驱动）", () => {
 
     const before = Date.now();
     engineTurn(MANIFEST_CH1); // 规划回合回清单 → 建队列
+    // 建队列是异步的（两段式要读剧情树挑开场子集，v1.13）：等它落地再断言
+    await vi.waitUntil(() => useGameStore.getState().preloadBatchStartedAt !== null);
     const startedAt = useGameStore.getState().preloadBatchStartedAt;
     expect(typeof startedAt, "建队列时应落批次起点").toBe("number");
     expect(startedAt!).toBeGreaterThanOrEqual(before);

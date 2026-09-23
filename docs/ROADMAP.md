@@ -161,6 +161,15 @@ listbox/option + roving tabIndex 语义、`data-testid` 一族（jsdom 与 e2e �
 为 `inUse` 读该剧本**每个世界的整份 `state.md`** + 为封面标题再 `scanPresets()` 一次
 （`server/acp-server.mjs` 的 `listAssets`）——10~30 条世界线时是毫秒级（上表实测），上百条世界线时值得再量。
 
+## 已交付（v1.13 后的体验轮）
+
+- **最小窗口 1024**（`electron/main.js`）：让 lg 档在任何合法窗口下恒真（此前最小窗口落在断点之下，立绘让位在最窄窗口里是关掉的）；
+  1280 档的塌陷不保证并排，只有会挡路的动作用固定底栏兜住（捏人屏两个开局入口）。新增 `tests/e2e-ui/min-window.spec.ts` 钉住版面契约。
+- **画布胶水抽 hook**：`lib/useCanvasPanZoom.ts` + `components/CanvasZoomToolbar.tsx`，两块 SVG 画布（剧情图 / 家谱）的
+  视图/指针/滚轮/键盘缩放从两份手抄变一份共享。
+- **可预期性**：制作中屏给「平均每张 / 约还需」，创作屏把状态摆上屏（此前只有一颗灰点的 `title`）。
+- **两段式制作**：默认路径先画开场要用的那几张就开演，其余美术在玩的过程里自动补画（详见 ARCHITECTURE 的「两段式制作」）。
+
 ## 下一次候选（本轮明确不做，先记下以免反复讨论）
 
 - **双语 README / `README.en.md`**：产品、剧本、UI 全中文，双语在没有英文产品前只是维护税。真要做就做「中文主 README + 精简英文镜像（简介/安装/截图）」，别把中文那份的内容翻一遍——契约 lint 钉住的句子只在中文那份。
