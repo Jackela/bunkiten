@@ -160,3 +160,13 @@ listbox/option + roving tabIndex 语义、`data-testid` 一族（jsdom 与 e2e �
 **背景（上一轮列的候选测点，未测部分留作参考）**：`GET /api/assets` 每条素材 `mtimeOf` 一次 +
 为 `inUse` 读该剧本**每个世界的整份 `state.md`** + 为封面标题再 `scanPresets()` 一次
 （`server/acp-server.mjs` 的 `listAssets`）——10~30 条世界线时是毫秒级（上表实测），上百条世界线时值得再量。
+
+## 下一次候选（本轮明确不做，先记下以免反复讨论）
+
+- **双语 README / `README.en.md`**：产品、剧本、UI 全中文，双语在没有英文产品前只是维护税。真要做就做「中文主 README + 精简英文镜像（简介/安装/截图）」，别把中文那份的内容翻一遍——契约 lint 钉住的句子只在中文那份。
+- **分支保护（ruleset / required checks）**：现在是单人直接 push `main` 的效率选择，CI 已在每次 push/PR 上跑全量门禁；等有第二个人提交时再开。
+- **secret scanning 的 push protection**：仓库里有多处**假密钥哨兵**（e2e 与集成层的「响应体不含明文 key」断言），开启前要先确认它们不会被拦；`gh repo edit --enable-secret-scanning` 本身可以先开（只报不拦）。
+- **覆盖率徽章**：需要外部服务或在 CI 里生成 badge 提交回仓库；本项目覆盖率阈值刻意是「防下滑线」而非硬指标，挂一个会漂移的硬数字徽章与那个口径相冲。测试与 CI 状态两枚徽章已经有了。
+- **`tests/contract.test.ts` 之外的文档门禁**：目前只有三份文档被钉（README / AGENTS / ARCHITECTURE）；QUICKSTART 与 CONTEXT 的漂移只能靠人工巡检（本轮就是这么发现的）。
+- **§3 的手写浮层**：抽屉 / 滑杆 / 弹窗维持自写 `focusTrap`（理由见该节「刻意不迁」），不为一致性迁原语。
+- **已知 flake（负载敏感）**：`tests/ui.test.tsx` 的「StoryTreeScreen 滚轮以指针为锚点缩放」——机器刚跑完 Playwright 套件、负载高时偶发（1s 的 `waitFor` 等不到 viewBox 变化），负载降下来连跑全绿、`origin/main` 同款。修法是给这条用例一个「等树数据落定」的显式判据，或让组件别在首帧后重置视图；属于测试基建的独立小改动。
