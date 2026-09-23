@@ -20,14 +20,16 @@ import {
   buildPlanCommand,
   buildRegenCommand,
   parseManifest,
+  parseStoryTree,
   splitAssetVariant,
   variantLabel,
   type ArtKind,
   type Marker,
+  type TreeNode,
 } from "../lib/parser";
-import { fetchAssets, fetchHistory, imageUrl, assetFileUrl, assetPath, type Preset } from "../lib/acp";
+import { fetchAssets, fetchHistory, fetchTree, imageUrl, assetFileUrl, assetPath, type Preset } from "../lib/acp";
 import { applyExpression, normName } from "./portrait";
-import type { GameStore, PortraitState, Screen } from "./types";
+import type { GameStore, PortraitState, PreloadItem, Screen } from "./types";
 
 /** store 的 setState 类型（slice 里与原来逐字一致地调用 `set({...})`） */
 export type StoreSet = StoreApi<GameStore>["setState"];
@@ -105,6 +107,8 @@ export interface StoreContext {
   /** 补齐「当前世界已有多少条 turn 快照」的已知值（重演按钮的可见性判据）：拉一次 /api/history，
    *  仅在 worldId 未变时落库；失败静默（保持 null=未知，按钮退回「展示 + 点击时判定」的兜底路径） */
   refreshTurnSnapshots(): void;
+  /** 延迟补画泵（v1.13 两段式）：引擎空闲时取一项延迟队列发出去（每轮空闲一项），详见实现处注释 */
+  pumpDeferredArt(): void;
   /** 发「开演。」（跳过剩余项/无清单回退都用它；幂等） */
   sendStart(): void;
   /** 取下一个 pending 项开跑；没有则收尾发「开演。」 */
@@ -180,6 +184,8 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
    */
   function applyMarkers(markers: Marker[], dedupe: boolean) {
     const s = get();
+    // 后台补画回合（artAsk）：只记槽位、**不换画面**——否则一次补画会把玩家正在看的背景/立绘换掉
+    const silent = s.artAsk;
     const seen = new Set(s.seenMarkerKeys);
     const artReady = { ...s.artReady };
     // 当前剧本：/img 的 &preset=（直服与流式落盘都要它定位 presets/<id>/assets/）
@@ -203,7 +209,7 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
       // 标记里的 p 可能是会话路径（新生成）或 presets/<id>/assets/…（缓存命中），原样透传给服务端解析
       const url = m.kind === "cover" ? assetFileUrl(m.path) : imageUrl(m.path, m.kind, m.name, preset);
       if (m.kind === "background") {
-        patch.bgUrl = url;
+        if (!silent) patch.bgUrl = url;
         // 背景槽位名 = 清单地点名（旧开场场景槽已随 v1.2 清单化移除）
         const slotKey = m.name in artReady ? m.name : slotByNorm.get(norm(m.name));
         if (slotKey) artReady[slotKey] = url;
@@ -217,7 +223,7 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
         const isVariantSlot = s.preload.some(
           (i) => i.kind === "portrait" && i.variant && (i.name === m.name || norm(i.name) === norm(m.name)),
         );
-        if (!isVariantSlot) {
+        if (!silent && !isVariantSlot) {
           // 基础立绘标记 = 该角色上场（与【立绘】同一条入队规则：同名原地更新并移到队尾，
           // 超上限淘汰最早出场者）——【图】先上屏、【立绘】再点表情是引擎的常见顺序
           cast = applyExpression(cast, { name: m.name, variant: "", url, baseUrl: url });
@@ -293,6 +299,66 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
     get().send(BUILD_START);
   }
 
+  /**
+   * 开场马上要用的那几张（v1.13 两段式）：读本世界的剧情树，取「最后一章里带进度指针的那个节点」的
+   * 地点与在场，只挑与之匹配的**基础立绘 + 该地点背景**（差分不进开场集——首现用不到，缺了还有两级回退）。
+   * 判不了（没世界/拉不到树/没有指针节点/地点与在场都空）或一个都没匹配上，都返回全部：
+   * **不做猜测**——猜错的代价是开演那一刻引擎现场生图，把等待从「开演前」挪到「开演后」，比慢更糟。
+   * 依据：SKILL「开演。」的语义是「从当前节点演出（每章首次即树的第一个节点）」，与所选子集严格对应。
+   */
+  async function pickOpeningItems(items: PreloadItem[]): Promise<PreloadItem[]> {
+    const worldId = get().worldId;
+    if (!worldId) return items;
+    let node: TreeNode | null = null;
+    try {
+      const { markdown } = await fetchTree(worldId);
+      const chapters = parseStoryTree(markdown)?.chapters ?? [];
+      // 从最后一章往前找：带进度指针的那一章就是刚规划出来的这章
+      for (let i = chapters.length - 1; i >= 0 && !node; i--) {
+        const cur = chapters[i].current;
+        node = cur ? (chapters[i].nodes.find((n) => n.id === cur) ?? null) : null;
+      }
+    } catch {
+      return items; // 拉不到树（404/网络）：退回全量预载
+    }
+    if (!node) return items;
+    const bg = node.location.trim();
+    const cast = node.present
+      .split(/[、,，]/)
+      .map((x) => x.trim())
+      .filter(Boolean);
+    if (!bg && cast.length === 0) return items;
+    const picked = items.filter((i) => {
+      if (i.kind === "background") return bg !== "" && assetNameMatches({ name: i.name, variant: "" }, { name: bg, variant: "" });
+      if (i.variant) return false;
+      return cast.some((c) => assetNameMatches({ name: i.name, variant: "" }, { name: c, variant: "" }));
+    });
+    return picked.length > 0 ? picked : items;
+  }
+
+  /**
+   * 延迟补画泵（v1.13 两段式）：引擎空闲且没有别的排队指令时，从延迟队列取一项发出去。
+   * **每轮空闲只发一项**——发完就 busy，下一次 turn_end 再取，补画自然分摊在玩家读正文的空隙里。
+   * 补画回合是指令回合：artAsk 置位（正文不进历史、标记不换画面），玩家的操作进 pendingPlayerPrompt 排队。
+   */
+  function pumpDeferredArt() {
+    const s = get();
+    if (s.engineBusy || s.artAsk) return;
+    if (s.screen !== "game") return;
+    if (s.pendingCreationMessage || s.pendingTreeMessage || s.pendingRerollPrompt || s.pendingResync) return;
+    if (s.regenPending) return;
+    const next = s.deferredArt.find((i) => i.state === "pending");
+    if (!next) return;
+    set({
+      artAsk: true,
+      deferredArt: s.deferredArt.map((i) =>
+        i === next ? { ...i, state: "running" } : i.state === "running" ? { ...i, state: "done" } : i,
+      ),
+    });
+    armWatchdog();
+    get().send(next.command);
+  }
+
   /** 取下一个 pending 项开跑；没有则收尾发「开演。」 */
   function runNextPending() {
     const s = get();
@@ -344,25 +410,31 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
         sendStart();
         return;
       }
+      const allItems: PreloadItem[] = manifest.map((m) => {
+        // 差分清单项（薇拉-微笑）拆出角色名与变体：指令/槽位用原名，槽位显示「薇拉 · 微笑」
+        const { base, variant } = m.kind === "portrait" ? splitAssetVariant(m.name) : { base: m.name, variant: "" };
+        return {
+          kind: m.kind,
+          name: m.name,
+          variant,
+          label: variantLabel(base, variant),
+          command: buildArtCommand(ART_KIND[m.kind], m.name),
+          state: "pending" as const,
+          url: null,
+        };
+      });
+      // 两段式（v1.13）：先只画「开场马上要用的」（读剧情树的当前节点），其余进延迟队列、开演后补。
+      // 判不了就退回全量（见 pickOpeningItems），所以老流程在这里逐字兼容。
+      const opening = await pickOpeningItems(allItems);
+      const openingSet = new Set(opening);
       // 同步落队列与槽位再异步清点（期间玩家可跳过，跳过后这里直接返回）
       set({
         preloadPhase: "queue",
         status: "清点既有美术…",
         // 批次起点：屏上的「平均每张 / 约还需」都从这一刻算（纯展示，进不了任何判定）
         preloadBatchStartedAt: Date.now(),
-        preload: manifest.map((m) => {
-          // 差分清单项（薇拉-微笑）拆出角色名与变体：指令/槽位用原名，槽位显示「薇拉 · 微笑」
-          const { base, variant } = m.kind === "portrait" ? splitAssetVariant(m.name) : { base: m.name, variant: "" };
-          return {
-            kind: m.kind,
-            name: m.name,
-            variant,
-            label: variantLabel(base, variant),
-            command: buildArtCommand(ART_KIND[m.kind], m.name),
-            state: "pending" as const,
-            url: null,
-          };
-        }),
+        preload: opening,
+        deferredArt: allItems.filter((i) => !openingSet.has(i)),
         artReady: Object.fromEntries(manifest.map((m) => [m.name, ""])),
       });
       let assets: Awaited<ReturnType<typeof fetchAssets>> = [];
@@ -375,10 +447,10 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
       }
       const st = get();
       if (st.screen !== "crafting" || st.preloadPhase !== "queue") return; // 期间已跳过/推进
-      // 预过滤兜底（引擎侧规划已做缓存感知，正常应近空）：名字归一化匹配（trim / 互为包含，
-      // 纯函数在 parser.assetNameMatches 并有单测），立绘与背景一视同仁——命中的按落盘文件直服跳过生成
-      set({
-        preload: st.preload.map((i) => {
+      // 缓存命中的项直接置 done（按落盘文件直服）——开场子集与延迟队列**一视同仁**：
+      // 延迟队列里命中缓存的项也就不必再发指令了
+      const markCached = (items: PreloadItem[]): PreloadItem[] =>
+        items.map((i) => {
           if (i.state !== "pending") return i;
           const typeCn = i.kind === "portrait" ? "立绘" : "背景";
           // 差分项先拆出基础名（清单项 薇拉-微笑 → 薇拉）；背景名可能含连字符，不拆
@@ -390,11 +462,9 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
           // 已就绪项按落盘文件直服（差分同契约：presets/<id>/assets/立绘-薇拉-微笑.jpg）。
           // 路径与 sanitize 都交给 acp.assetPath——落盘名由服务端 sanitize，前端只有这一处实现
           const path = assetPath(typeCn, i.name, presetId);
-          return hit && path
-            ? { ...i, state: "done" as const, url: assetFileUrl(path) }
-            : i;
-        }),
-      });
+          return hit && path ? { ...i, state: "done" as const, url: assetFileUrl(path) } : i;
+        });
+      set({ preload: markCached(st.preload), deferredArt: markCached(st.deferredArt) });
       runNextPending();
     } else if (s.preloadPhase === "queue") {
       set({ preload: get().preload.map((i) => (i.state === "running" ? { ...i, state: "done" } : i)) });
@@ -407,7 +477,13 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
 
   /** 引擎报错/超时：制作中屏按阶段降级，不阻塞整体 */
   function onEngineError(message: string) {
+    const wasArtAsk = get().artAsk;
     set({ status: `出错：${message}`, engineBusy: false, turnStartAt: null });
+    if (wasArtAsk) {
+      // 补画回合失败：清标记（否则输入闸永远拦着，玩家再也发不出去）、在跑的那项记失败不再重试，
+      // 下一次引擎空闲由泵取下一项（失败不阻塞整体，与制作队列同款纪律）
+      set({ artAsk: false, deferredArt: get().deferredArt.map((i) => (i.state === "running" ? { ...i, state: "failed" } : i)) });
+    }
     clearWatchdog();
     finishRegen(false); // 挂起中的重绘回合没了：未确认记账，解除挂起让按钮恢复并接队列下一条
     if (get().screen === "creation" && get().assembling) {
@@ -460,6 +536,10 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
       turnStartAt: null,
       treeAsk: false,
       pendingTreeMessage: null,
+      // 两段式（v1.13）：延迟队列与「补画回合」标记不跨玩法；排队的玩家输入同理（那是上一局的语境）
+      deferredArt: [],
+      artAsk: false,
+      pendingPlayerPrompt: null,
       // 重同步是会话内状态：换世界/换本时旧世界的「待重同步」徽章没有意义，一并清掉
       pendingResync: null,
       resyncFailed: false,
@@ -551,6 +631,7 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
     clearAutoAdvanceTimer,
     finishRegen,
     pumpRegenQueue,
+    pumpDeferredArt,
     applyMarkers,
     resetTurnState,
     resetRunState,

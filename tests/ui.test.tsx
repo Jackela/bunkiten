@@ -748,6 +748,65 @@ describe("制作中屏与创作屏的可预期性读数（v1.13）", () => {
   });
 });
 
+describe("两段式制作的屏上痕迹（v1.13）", () => {
+  const PRESET = {
+    id: "demo",
+    title: "示例剧本",
+    tagline: "",
+    genre: "",
+    rating: "",
+    characters: [],
+    protagonist_card: [],
+  };
+  const item = (name: string, state: "pending" | "running" | "done") => ({
+    kind: "portrait" as const,
+    name,
+    variant: "",
+    label: name,
+    command: `美术：立绘 ${name}`,
+    state,
+    url: null,
+  });
+
+  it("CraftingScreen：先没选剧本、随后才落定——hook 顺序不许被打乱（v1.13 真踩过）", () => {
+    // 回归：deferredTotal 那个 useGameStore 曾写在 `if (!selected) return null` 之后，
+    // 于是「先空后满」的挂载路径会让两次渲染的 hook 数不同（React 直接抛 Rendered fewer hooks）——
+    // jsdom 本地常绿、CI 抓到。这条用例就钉这个顺序：先渲染空的，再把 selected 填上。
+    useGameStore.setState({ screen: "crafting", selected: null, preloadPhase: "queue", preload: [], deferredArt: [] });
+    const { rerender } = render(<CraftingScreen />);
+    act(() => {
+      useGameStore.setState({ selected: PRESET, preload: [item("沈屿", "done")], deferredArt: [item("天台", "pending")] });
+    });
+    rerender(<CraftingScreen />);
+    expect(screen.getByTestId("crafting-progress").textContent).toContain("其余 1 项开演后补画");
+  });
+
+  it("TopBar：补画进行中挂「补画 N/M」徽章，平时不挂", () => {
+    useGameStore.setState({ status: "作画中…", artAsk: true, deferredArt: [item("沈屿", "done"), item("天台", "running")] });
+    const { rerender } = render(<TopBar />);
+    expect(screen.getByTestId("art-pump").textContent).toContain("补画 1/2");
+
+    act(() => useGameStore.setState({ artAsk: false }));
+    rerender(<TopBar />);
+    expect(screen.queryByTestId("art-pump"), "不在补画回合就不该有这枚徽章").toBeNull();
+  });
+
+  it("OptionList：补画期间已排队的输入给一句「已记下」", () => {
+    useGameStore.setState({
+      typingDone: true,
+      options: [{ n: "1", t: "推开门" }],
+      pendingPlayerPrompt: "推开门",
+      autoAdvanceDeadline: null,
+    });
+    const { rerender } = render(<OptionList />);
+    expect(screen.getByTestId("pending-prompt-hint").textContent).toContain("已记下你的选择");
+
+    act(() => useGameStore.setState({ pendingPlayerPrompt: null }));
+    rerender(<OptionList />);
+    expect(screen.queryByTestId("pending-prompt-hint")).toBeNull();
+  });
+});
+
 describe("CreationScreen：选项 chip 化与排队提示", () => {
   beforeEach(() => {
     useGameStore.setState({

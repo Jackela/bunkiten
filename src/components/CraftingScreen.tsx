@@ -169,6 +169,9 @@ export default function CraftingScreen() {
   const elapsed = useTurnElapsed();
   // 批次读数按秒跳（只在真的有批次在跑时起定时器）：平均每张 / 约还需都从 preloadBatchStartedAt 算
   const preloadBatchStartedAt = useGameStore((s) => s.preloadBatchStartedAt);
+  // 两段式（v1.13）：没进开场子集的那批（差分、别的地点/角色）在开演后由泵逐张补——屏上要说清楚，
+  // 免得玩家以为「开场准备 2/3 就绪」是漏画了。**必须在 `if (!selected) return null` 之前**：它是 hook。
+  const deferredTotal = useGameStore((s) => s.deferredArt.length);
   const now = useTick(preloadBatchStartedAt !== null);
 
   if (!selected) return null;
@@ -209,7 +212,13 @@ export default function CraftingScreen() {
             </button>
           </>
         }
-        footer={canSkip ? "跳过剩余会立刻开演，未就绪的美术可从画廊补画" : undefined}
+        footer={
+          canSkip
+            ? deferredTotal > 0
+              ? "「跳过剩余」会连开场那几张也不等，立刻开演；其余美术开演后自动补画，也可从画廊补"
+              : "跳过剩余会立刻开演，未就绪的美术可从画廊补画"
+            : undefined
+        }
       >
         {chapterNo > 1 && <p className="mb-3 text-meta tracking-[.2em] text-gold/70">本章完 · 下一章制作中</p>}
         {/* 状态行与顶栏共用 lib/status 的映射：引擎口吻（「引擎演绎中…」「撰写章节大纲…」）不上玩家的屏 */}
@@ -219,7 +228,11 @@ export default function CraftingScreen() {
           {busy && elapsed !== null && <span className="tabular-nums">{elapsed}s</span>}
         </p>
         <p data-testid="crafting-progress" className="mt-1.5 text-meta tracking-[.2em] text-ink-hint">
-          {planning ? `正在为《${selected.title}》筹备第 ${chapterNo} 章` : `美术 ${doneCount} / ${preload.length} 就绪`}
+          {planning
+            ? `正在为《${selected.title}》筹备第 ${chapterNo} 章`
+            : deferredTotal > 0
+              ? `开场准备 ${doneCount} / ${preload.length} 就绪 · 其余 ${deferredTotal} 项开演后补画`
+              : `美术 ${doneCount} / ${preload.length} 就绪`}
           {/* 可预期性（v1.13）：还有多少张、大概还要多久——粗估，带「约」；样本不足时这半截不显示 */}
           {!planning && eta && <span className="ml-2 text-ink-hint">· {eta}</span>}
           {showWorldLabel && <span className="ml-2 text-ink-hint">· {label}</span>}

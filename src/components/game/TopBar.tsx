@@ -172,6 +172,10 @@ export default function TopBar() {
   // 世界名只在「有名字」时出现：无显示名时 store 退化为空串；`worldLabel !== worldId` 只是防旧状态/手改数据
   // （裸 id 对玩家零信息量）。旧版 server 自动写的分叉备注同理（「分叉自 campus-summer-1 @ 2-2」也是裸 id 串，
   // 见 lib/worlds）：当前世界线的来历在剧情图/世界线屏看，顶栏只留玩家自己起的名字。
+  // 两段式（v1.13）：后台补画进行中时给一枚低调徽章（补画回合 artAsk 置位，状态行同时显示「作画中…」）
+  const artAsk = useGameStore((s) => s.artAsk);
+  const deferredArt = useGameStore((s) => s.deferredArt);
+  const deferredDone = deferredArt.filter((i) => i.state === "done").length;
   const label = resolveWorldLabel(worldLabel, worldId);
   const showWorldLabel = label !== "";
 
@@ -185,6 +189,11 @@ export default function TopBar() {
           {playerStatus(status)}
           {busy && elapsed !== null ? ` ${elapsed}s` : ""}
         </span>
+        {artAsk && deferredArt.length > 0 && (
+          <span data-testid="art-pump" className="flex-none rounded-sm border border-white/15 px-1.5 py-0.5 text-micro tracking-[.12em] text-ink-hint">
+            补画 {deferredDone}/{deferredArt.length}
+          </span>
+        )}
         {showWorldLabel && (
           <span data-testid="world-label" className="max-w-[26ch] truncate text-ink-hint">
             {label}
