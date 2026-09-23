@@ -6,16 +6,15 @@ import {
   useState,
   type ChangeEvent,
   type KeyboardEvent as ReactKeyboardEvent,
-  type PointerEvent as ReactPointerEvent,
 } from "react";
 import { motion } from "framer-motion";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { Maximize2, ZoomIn, ZoomOut } from "lucide-react";
 import { coverUrl, fetchWorlds, postWorld, worldExportUrl, type WorldEntry } from "../lib/acp";
 import { genealogyStep, layoutGenealogy, type GenealogyLayout } from "../lib/genealogy";
+import { CANVAS_ZOOM_STEP, useCanvasPanZoom } from "../lib/useCanvasPanZoom";
+import { CanvasZoomToolbar } from "./CanvasZoomToolbar";
 import { tabThroughMenu } from "../lib/menuTab";
 import { truncate } from "../lib/text";
-import { fitView, panView, viewBoxOf, zoomViewAt, type TreeView } from "../lib/treeLayout";
 import { isLegacyForkNote } from "../lib/worlds";
 import { getTheme, themeVars } from "../theme";
 import { useGameStore } from "../store/game";
@@ -102,10 +101,6 @@ const GEN_NODE_H = 64;
     只封**上界**：森林更宽时这个上界够不着，画布照旧铺满可用宽度。 */
 const GEN_MAX_NODE_PX = 270;
 
-/** 缩放步进倍数与拖拽死区：与剧情图 TreeCanvas 同值（两块画布的体感与测试口径保持一致） */
-const GEN_ZOOM_STEP = 1.25;
-const GEN_DRAG_SLOP = 4;
-
 /**
  * 家谱画布（v1.7 / v1.8 缩放平移）：把 forkedFrom 血缘的森林画成 SVG——节点 = 圆角矩形卡
  * （显示名/章数/分叉徽章），边 = 父底边中点 → 子顶边中点的圆角拐弯。整图一个可 Tab 的节点
@@ -135,83 +130,12 @@ function GenealogyCanvas({
   focusId: string | null;
   onFocus: (id: string) => void;
 }) {
-  const svgRef = useRef<SVGSVGElement>(null);
+  // 视图 + 指针/滚轮/键盘缩放全在共享 hook 里（与剧情图画布同一份实现，见 lib/useCanvasPanZoom.ts）
+  const canvas = useCanvasPanZoom(layout);
   const nodeRefs = useRef(new Map<string, SVGGElement>());
   const ids = useMemo(() => layout.nodes.map((n) => n.worldId), [layout.nodes]);
   // roving tabIndex：没选中时落在第一个节点
   const tabbableId = focusId && ids.includes(focusId) ? focusId : ids[0];
-
-  /** 画布视图：中心点 + 相对「适应」的缩放倍数（zoom=1 即整片森林铺满画布宽度） */
-  const [view, setView] = useState<TreeView>(() => fitView(layout.width, layout.height));
-  /** 拖拽态：按下点 + 是否已越过死区；`draggedRef` 活到 click 之后（拖完那一下不算点选） */
-  const dragRef = useRef<{ x: number; y: number; moved: boolean } | null>(null);
-  const draggedRef = useRef(false);
-
-  // 布局换了（增删世界线、换剧本）：回到「适应」，别让上一片森林的缩放平移漂到新图上
-  useEffect(() => {
-    setView(fitView(layout.width, layout.height));
-  }, [layout.width, layout.height]);
-
-  const fit = useCallback(() => setView(fitView(layout.width, layout.height)), [layout.width, layout.height]);
-  const zoomBy = useCallback(
-    (factor: number, fx = 0.5, fy = 0.5) =>
-      setView((v) => zoomViewAt(v, factor, fx, fy, layout.width, layout.height)),
-    [layout.width, layout.height],
-  );
-
-  // 滚轮缩放：以指针为锚点。必须自己挂非 passive 监听（React 的 onWheel 在根上是被动的，preventDefault 无效）
-  useEffect(() => {
-    const el = svgRef.current;
-    if (!el) return;
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault(); // 画布内滚轮 = 缩放，不滚页面
-      const rect = el.getBoundingClientRect();
-      // 指针在画布里的归一化落点；jsdom（rect 全 0）与旧浏览器退化为中心缩放
-      const fx = rect.width > 0 ? (e.clientX - rect.left) / rect.width : 0.5;
-      const fy = rect.height > 0 ? (e.clientY - rect.top) / rect.height : 0.5;
-      setView((v) => zoomViewAt(v, e.deltaY < 0 ? GEN_ZOOM_STEP : 1 / GEN_ZOOM_STEP, fx, fy, layout.width, layout.height));
-    };
-    el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
-  }, [layout.width, layout.height]);
-
-  /** 屏幕像素位移 → 布局坐标位移（viewBox 等比铺满，横竖同一个比例；rect 已含封顶后的真实宽度） */
-  const layoutDelta = (px: number): number => {
-    const rect = svgRef.current?.getBoundingClientRect();
-    if (!rect || rect.width === 0) return 0; // 量不到宽度就不平移，宁可不响应也不乱跳
-    return (px * layout.width) / view.zoom / rect.width;
-  };
-
-  const onPointerDown = (e: ReactPointerEvent<SVGSVGElement>) => {
-    if (e.button !== 0) return;
-    draggedRef.current = false;
-    dragRef.current = { x: e.clientX, y: e.clientY, moved: false };
-  };
-
-  const onPointerMove = (e: ReactPointerEvent<SVGSVGElement>) => {
-    const d = dragRef.current;
-    if (!d) return;
-    const dx = e.clientX - d.x;
-    const dy = e.clientY - d.y;
-    if (!d.moved) {
-      if (Math.abs(dx) + Math.abs(dy) < GEN_DRAG_SLOP) return; // 死区内：还是点选
-      d.moved = true;
-      // 指针捕获让手滑出画布也能继续拖（老环境不支持就退化为画布内拖）
-      try {
-        e.currentTarget.setPointerCapture(e.pointerId);
-      } catch {
-        // 指针已失效（pointerId 不存在）：这轮拖拽按画布内拖继续
-      }
-    }
-    setView((v) => panView(v, layoutDelta(dx), layoutDelta(dy), layout.width, layout.height));
-    d.x = e.clientX;
-    d.y = e.clientY;
-  };
-
-  const onPointerUp = () => {
-    draggedRef.current = dragRef.current?.moved ?? false;
-    dragRef.current = null;
-  };
 
   /** 方向键步进：换选中并把 DOM 焦点一起搬过去（不是只换描边） */
   const step = (id: string, dir: "up" | "down" | "left" | "right") => {
@@ -251,30 +175,12 @@ function GenealogyCanvas({
   };
 
   /**
-   * 画布键盘：`+`/`=` 放大、`-`/`_` 缩小、`0` 适应。
+   * 画布键盘：`+`/`=` 放大、`-`/`_` 缩小、`0` 适应（都在共享 hook 里）。
    * 与节点级按键（方向键/Enter/Space）不相交，节点未消费的按键冒泡到这里 —— 两套键位可以共存。
    */
   const onCanvasKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     if (e.nativeEvent.isComposing) return; // 中文输入法组字中的按键不算快捷键
-    switch (e.key) {
-      // 「+」在不同键盘布局/主键盘区可能是 =，一起收
-      case "+":
-      case "=":
-        e.preventDefault();
-        zoomBy(GEN_ZOOM_STEP);
-        return;
-      case "-":
-      case "_":
-        e.preventDefault();
-        zoomBy(1 / GEN_ZOOM_STEP);
-        return;
-      case "0":
-        e.preventDefault();
-        fit();
-        return;
-      default:
-        return;
-    }
+    canvas.onZoomKeyDown(e);
   };
 
   /** 渲染宽度上界：单节点 ≤ GEN_MAX_NODE_PX（`layout.width × (270 / 210)`；forest 更宽时上界不起作用） */
@@ -285,54 +191,32 @@ function GenealogyCanvas({
       {/* 工具条：缩放控件 + 鼠标/键盘提示。提示放这一行（画布之上）而不是屏脚：
           画布高时屏脚会被顶到折叠线以下，1440×900 不滚动就看不到 */}
       <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-meta tracking-[.05em] text-ink-hint">
-        <span className="flex items-center gap-1">
-          <button
-            type="button"
-            data-testid="genealogy-zoom-out"
-            aria-label="缩小"
-            onClick={() => zoomBy(1 / GEN_ZOOM_STEP)}
-            className="rounded-md border border-white/10 p-1.5 transition-colors hover:border-gold/40 hover:text-ink"
-          >
-            <ZoomOut size={13} />
-          </button>
-          <button
-            type="button"
-            data-testid="genealogy-zoom-in"
-            aria-label="放大"
-            onClick={() => zoomBy(GEN_ZOOM_STEP)}
-            className="rounded-md border border-white/10 p-1.5 transition-colors hover:border-gold/40 hover:text-ink"
-          >
-            <ZoomIn size={13} />
-          </button>
-          <button
-            type="button"
-            data-testid="genealogy-zoom-fit"
-            onClick={fit}
-            className="flex items-center gap-1 rounded-md border border-white/10 px-2 py-1 transition-colors hover:border-gold/40 hover:text-ink"
-          >
-            <Maximize2 size={13} /> 适应
-          </button>
-          <span data-testid="genealogy-zoom-level" className="ml-1 w-10 text-right">
-            {Math.round(view.zoom * 100)}%
-          </span>
-        </span>
+        <CanvasZoomToolbar
+          testIdPrefix="genealogy"
+          zoomPct={canvas.zoomPct}
+          onZoomIn={() => canvas.zoomBy(CANVAS_ZOOM_STEP)}
+          onZoomOut={() => canvas.zoomBy(1 / CANVAS_ZOOM_STEP)}
+          onFit={canvas.fit}
+          iconSize={13}
+          levelClassName="ml-1 w-10 text-right"
+        />
         <span className="ml-auto">滚轮缩放 · 拖拽平移 · 双击复位 · 方向键走节点</span>
       </div>
 
       {/* 上界盒子（只封渲染宽度，mx-auto 居中）：森林更大时上界够不着，照旧铺满可用宽度 */}
       <div data-testid="genealogy-canvas-cap" className="mx-auto w-full" style={{ maxWidth: `${maxRenderW}px` }}>
         <svg
-          ref={svgRef}
+          ref={canvas.svgRef}
           data-testid="genealogy-canvas"
-          viewBox={viewBoxOf(view, layout.width, layout.height)}
+          viewBox={canvas.viewBox}
           preserveAspectRatio="xMidYMid meet"
           className="block w-full cursor-grab touch-none rounded-xl border border-white/[.06] bg-panel active:cursor-grabbing"
           style={{ height: "auto", aspectRatio: `${layout.width} / ${layout.height}` }}
-          onPointerDown={onPointerDown}
-          onPointerMove={onPointerMove}
-          onPointerUp={onPointerUp}
-          onPointerCancel={onPointerUp}
-          onDoubleClick={fit}
+          onPointerDown={canvas.onPointerDown}
+          onPointerMove={canvas.onPointerMove}
+          onPointerUp={canvas.onPointerUp}
+          onPointerCancel={canvas.onPointerUp}
+          onDoubleClick={canvas.onDoubleClick}
         >
           {layout.edges.map((e, i) => (
             <path
@@ -366,10 +250,7 @@ function GenealogyCanvas({
                 }`}
                 onClick={() => {
                   // 拖完手抬起那一下不算点选（否则平移顺手就把节点选中了）
-                  if (draggedRef.current) {
-                    draggedRef.current = false;
-                    return;
-                  }
+                  if (canvas.consumeDragged()) return;
                   onFocus(n.worldId);
                 }}
                 onKeyDown={onNodeKey(n.worldId)}
