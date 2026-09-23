@@ -4,11 +4,10 @@
 // ctx 是入口 startServer 的闭包能力注入：SSE 客户端集合、发提示词、画廊/落盘、会话图片定位、
 // 当前剧本 id 与 sessionId（getter——快照与嗅探会改它们，路由每次读最新值）。
 import fs from "fs";
-import os from "os";
 import path from "path";
 import { AUDIO_MIME, AUDIO_REL_RE } from "../shared/protocol.mjs";
 import { engineById } from "../shared/engines.mjs";
-import { GAME_ROOT, BASE_PORT, WORLDS_ROOT } from "./config.mjs";
+import { GAME_ROOT, BASE_PORT, WORLDS_ROOT, gameHome } from "./config.mjs";
 import { isCrossSiteRequest, readBodyText, MIME, resolveAppDist } from "./http-util.mjs";
 import { PRESET_ID_RE, LEGACY_ASSET_RE, ASSET_DELETE_FILE_RE, presetIdFromPath, legacyAssetCandidates, resolvePersistPreset } from "./assets.mjs";
 import { parseFrontmatter, scanPresets, assetTargetFile, buildPresetBundle, importPresetBundle, PRESET_IMPORT_MAX_BYTES } from "./presets.mjs";
@@ -482,12 +481,12 @@ export function createRequestHandler(ctx) {
       const entry = engineById(creds.engine);
       // 登录态探测按引擎（v1.11，docs/adr/0022）：grok 看 `~/.grok/auth.json`；codex 看玩家自己的
       // `~/.codex/auth.json`——那正是「沿用终端登录」复用的来源（server/engines.mjs 的 loginFile）。
-      const loggedIn = fs.existsSync(engineFor(creds.engine).loginFile(os.homedir()));
+      const loggedIn = fs.existsSync(engineFor(creds.engine).loginFile(gameHome()));
       // hasCredentials（v1.10/v1.11）：**该引擎支持**自备 key 且 LLM 侧配全时，boot 屏不必再要求终端登录
       const hasCredentials = entry?.byok === true && llmReady(creds);
       // canLogin（v1.11 收尾）：这个引擎的登录入口在不在（grok CLI 在不在 PATH / 随包 codex 在不在）——
       // 启动屏与设置屏据此禁用按钮并给一句人话，而不是点了才报错
-      const canLogin = engineFor(creds.engine).authAvailable({ home: os.homedir() });
+      const canLogin = engineFor(creds.engine).authAvailable({ home: gameHome() });
       sendJSON(res, 200, { loggedIn, hasCredentials, engine: creds.engine, canLogin });
       return;
     }

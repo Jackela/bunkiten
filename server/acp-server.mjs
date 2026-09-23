@@ -19,7 +19,6 @@
 // 同理钉在本文件（契约 lint ⑥ 与 src/theme.ts 比对字面量），presets.mjs 反向 import（仅函数内引用，环形安全）。
 import http from "http";
 import fs from "fs";
-import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 // 协议常量唯一真源（v1.7，docs/adr/0012）：指令前缀正则与章标记正则在 shared/protocol.mjs，
@@ -27,7 +26,7 @@ import { fileURLToPath } from "url";
 // 共用同一份值；本文件不再自持副本（契约 lint ⑤⑥组断言这一点）。
 import { CHAPTER_MARK_RE, DIRECTIVE_PREFIX_RE } from "../shared/protocol.mjs";
 import { PROVIDER_IDS } from "../shared/providers.mjs";
-import { GAME_ROOT, BASE_PORT, PORT_MAX_RETRY, SESSION_FILE, WORLDS_ROOT } from "./config.mjs";
+import { GAME_ROOT, BASE_PORT, PORT_MAX_RETRY, SESSION_FILE, WORLDS_ROOT, gameHome } from "./config.mjs";
 import {
   PRESET_ID_RE,
   ASSET_FILE_RE,
@@ -262,7 +261,7 @@ export function startServer() {
   /** @returns {ReturnType<typeof createAcpSession>} */
   function buildAcp() {
     const creds = readCredentials();
-    const plan = prepareSpawn({ creds, home: os.homedir(), gameRoot: GAME_ROOT, rules: RULES });
+    const plan = prepareSpawn({ creds, home: gameHome(), gameRoot: GAME_ROOT, rules: RULES });
     engine = plan.engine;
     return createAcpSession({
       engine: plan.engine,
@@ -331,7 +330,7 @@ export function startServer() {
    * @returns {Promise<{ok: boolean, error?: string, hint?: string}>}
    */
   function startEngineLogin() {
-    return startLogin({ engine: engineFor(readCredentials().engine), home: os.homedir() });
+    return startLogin({ engine: engineFor(readCredentials().engine), home: gameHome() });
   }
 
   /**
@@ -340,7 +339,7 @@ export function startServer() {
    * @returns {Promise<{ok: boolean, error?: string}>}
    */
   function logoutEngine() {
-    return runLogout({ engine: engineFor(readCredentials().engine), home: os.homedir() });
+    return runLogout({ engine: engineFor(readCredentials().engine), home: gameHome() });
   }
 
   /**
@@ -354,7 +353,7 @@ export function startServer() {
     if (!check.ok) return { ok: false, error: check.error };
     try {
       const next = mergeCredentials(readCredentials(), patch, clear);
-      writeCredentials(os.homedir(), next);
+      writeCredentials(gameHome(), next);
       console.log(`[acp] credentials updated: llm=${next.llm.mode} image=${next.image.mode}`); // 只记模式，不记 key
       return { ok: true, view: publicView(next) };
     } catch (e) {
@@ -385,8 +384,8 @@ export function startServer() {
    * @returns {{providers: object[], source: string, fetchedAt: string|null}} source = remote/cache/bundled
    */
   function providersView() {
-    const view = loadCatalog({ root: os.homedir() });
-    void revalidateCatalog({ root: os.homedir() });
+    const view = loadCatalog({ root: gameHome() });
+    void revalidateCatalog({ root: gameHome() });
     return view;
   }
 
@@ -402,7 +401,7 @@ export function startServer() {
    */
   function allowedProviderIds() {
     const ids = new Set(PROVIDER_IDS);
-    for (const p of loadCatalog({ root: os.homedir() }).providers) ids.add(p.id);
+    for (const p of loadCatalog({ root: gameHome() }).providers) ids.add(p.id);
     return ids;
   }
 
@@ -792,7 +791,7 @@ export function startServer() {
   // `void` 掉：启动不被网络拖住，失败静默（refreshCatalog 永不抛），抓不到就继续用缓存/内置兜底。
   // 会话期内的刷新不靠重启：`GET /api/providers`（闭包 providersView）会 stale-while-revalidate 再抓一次。
   // 两个开关：`BUNKITEN_DISABLE_UPDATE=1` 直接跳过（打包冒烟用，与 electron-updater 同款）；`BUNKITEN_PROVIDERS_URL` 覆盖源（测试/镜像）。
-  void refreshCatalog({ root: os.homedir() });
+  void refreshCatalog({ root: gameHome() });
 
   // ---------- HTTP ----------
   const server = http.createServer(createRequestHandler({

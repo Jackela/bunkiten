@@ -173,7 +173,7 @@ async function start(children, stop, { homeDir = null, credentials = null, env =
   // acp-server：显式钉一个高位端口起（避开开发中的 7800 实例，保证 e2e 与外部服务隔离）；
   // 被占时 server 自身 +1 重试，行里打印的是**实际监听端口**（server.address().port）
   const acp = await spawnAndAwaitLine(process.execPath, ["server/acp-server.mjs"], {
-    env: { PORT: "7900", ...(homeDir ? { HOME: homeDir, USERPROFILE: homeDir } : {}), ...env },
+    env: { PORT: "7900", ...(homeDir ? { HOME: homeDir, BUNKITEN_HOME: homeDir } : {}), ...env },
     matcher: (line) => /\[acp\] http:\/\/localhost:(\d+)/.exec(line),
     label: "acp-server listen",
     onSpawn: (p) => children.push(p),

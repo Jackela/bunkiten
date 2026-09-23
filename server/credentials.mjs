@@ -13,7 +13,7 @@
 // validateCredentialsPatch 的第三参）——本模块**不 import providers-catalog.mjs**（后者已 import 本模块的
 // CREDENTIALS_DIRNAME，反向会成环），所以读路径只按形态保留、写路径按注入的白名单严校验。
 import fs from "fs";
-import os from "os";
+import { gameHome } from "./config.mjs";
 import path from "path";
 import { PROVIDER_IDS, PROVIDER_ID_RE } from "../shared/providers.mjs";
 import { DEFAULT_ENGINE_ID, ENGINE_IDS } from "../shared/engines.mjs";
@@ -129,19 +129,19 @@ export function normalizeCredentials(raw) {
 
 /**
  * 凭据文件的绝对路径。
- * @param {string} [root] 用户主目录（缺省 os.homedir()；单测/harness 传临时 HOME）
- * @returns {string} `~/.bunkiten/credentials.json`
+ * @param {string} [root] 用户主目录（缺省 gameHome()——`BUNKITEN_HOME` 可覆盖，见 config.mjs；单测/harness 传临时 HOME）
+ * @returns {string} 凭据文件绝对路径
  */
-export function credentialsPath(root = os.homedir()) {
+export function credentialsPath(root = gameHome()) {
   return path.join(root, CREDENTIALS_DIRNAME, CREDENTIALS_FILENAME);
 }
 
 /**
  * 读凭据：文件不存在 / 坏 JSON / 结构不对一律回默认（**永不抛**——启动路径不能因凭据挂掉）。
- * @param {string} [root] 用户主目录（缺省 os.homedir()）
- * @returns {Credentials} 合法凭据
+ * @param {string} [root] 用户主目录（缺省 gameHome()）
+ * @returns {Credentials} 规范化后的凭据（文件不存在/坏 JSON → 默认值，读路径永不抛）
  */
-export function readCredentials(root = os.homedir()) {
+export function readCredentials(root = gameHome()) {
   try {
     const file = credentialsPath(root);
     if (!fs.existsSync(file)) return defaultCredentials();

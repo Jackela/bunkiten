@@ -335,10 +335,10 @@ export async function startStack({
   const env = {
     ...process.env,
     PATH: `${binDir}${path.delimiter}${process.env.PATH || "/usr/bin:/bin"}`,
-    // 临时 HOME 两个键都给：POSIX 认 `HOME`，**Windows 的 os.homedir() 读 `USERPROFILE`**
-    //（只写 HOME 的话，Windows 上 acp-server 会去读真主目录 → 登录态/凭据全落空，packaged-win 实测抓到）
+    // 临时 HOME 两个键都给：`HOME` 给 POSIX 工具链，`BUNKITEN_HOME` 是我们自己的旋钮（server/config.mjs
+    // 的 gameHome()——Windows 上 os.homedir() 读 USERPROFILE 而不读 HOME，旋钮才是可靠的那条路）
     HOME: home,
-    USERPROFILE: home,
+    BUNKITEN_HOME: home,
     GROK_GAME_ROOT: root,
     PORT: String(port),
     // v1.11：codex 后端的入口走显式覆盖（PATH 名不再是首选——描述符会先看仓内 node_modules，

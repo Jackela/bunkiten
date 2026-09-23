@@ -76,13 +76,16 @@ function rmTemp(dir: string): void {
 }
 
 /**
- * 临时 HOME 的环境变量（跨平台）：POSIX 认 `HOME`，**Windows 的 `os.homedir()` 读 `USERPROFILE`**
- *（再回落 `HOMEDRIVE`+`HOMEPATH`）。只写 `HOME` 的话，打包态 acp-server 在 Windows 上会去读 runner 的
- * 真实主目录——登录态与凭据全落空，应用永远停在启动屏（packaged-win 真跑时正是这么被抓到的）。
+ * 临时 HOME 的环境变量（跨平台）：
+ * - `BUNKITEN_HOME` 是**我们自己的旋钮**（`server/config.mjs` 的 `gameHome()`）——acp-server 的凭据、
+ *   登录态探测、目录缓存全跟着它走，Windows 上也生效（服务端侧唯一需要的那一个）；
+ * - `HOME` 给 POSIX 工具链（node 之外的子进程）用；
+ * - **刻意不动 `USERPROFILE`**：Windows 的 `os.homedir()` 读它，但 Chromium 也读——改它会让打包态应用
+ *   在启动后立刻崩（实测 exitCode 0x80000003），所以这条路上只动我们自己的变量。
  * @param {string} home 临时主目录 @returns {Record<string, string>} 追加进子进程 env 的键值
  */
 function homeEnv(home: string): Record<string, string> {
-  return { HOME: home, USERPROFILE: home };
+  return { HOME: home, BUNKITEN_HOME: home };
 }
 
 test("打包态：codex-acp 资源树就位，且打包态可执行文件（ELECTRON_RUN_AS_NODE）能把它跑出 initialize", async () => {

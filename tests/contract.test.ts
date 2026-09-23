@@ -512,6 +512,9 @@ describe("⑧ 引擎后端：真源 ↔ 描述符表 / GUI / 文档 / 铺垫路�
     // grok 的模型覆盖旋钮（真引擎冒烟用便宜档跑）同理：源码与排障文档两处都要写
     expect(src, `server/engines.mjs 少了 BUNKITEN_GROK_MODEL 覆盖开关（真引擎冒烟靠它换便宜模型）`).toContain("BUNKITEN_GROK_MODEL");
     expect(read(ENGINE_DOC), `${ENGINE_DOC} 没写 BUNKITEN_GROK_MODEL 覆盖开关（排障时找不到入口）`).toContain("BUNKITEN_GROK_MODEL");
+    // 主目录覆盖旋钮（打包态冒烟要把 home 指到临时目录）：真源在 config.mjs 的 gameHome()，文档也要写
+    expect(read("server/config.mjs"), "server/config.mjs 少了 BUNKITEN_HOME 覆盖开关（打包态冒烟靠它换临时 home）").toContain("BUNKITEN_HOME");
+    expect(read(ENGINE_DOC), `${ENGINE_DOC} 没写 BUNKITEN_HOME 覆盖开关（排障时找不到入口）`).toContain("BUNKITEN_HOME");
   });
 });
 

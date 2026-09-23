@@ -9,8 +9,8 @@
 import { spawn } from "child_process";
 import readline from "readline";
 import fs from "fs";
-import os from "os";
 import path from "path";
+import { gameHome } from "./config.mjs";
 
 /**
  * ACP 的权限请求应答（规格：`{outcome:{outcome:"selected", optionId}}`；规格明文允许客户端自动放行）。
@@ -132,7 +132,7 @@ export function createAcpSession({ engine, cmd, args, env = {}, shell = false, g
   // 引擎自产图的会话根（grok：`~/.grok/sessions/<encode(gameRoot)>`；codex：null = 没有这条通道，
   // 出图主路径是 media-mcp，见 docs/adr/0022）。null 时 resolveImage 一律 404。
   /** @type {string|null} */
-  const imagesRoot = engine.sessionImagesRoot({ home: os.homedir(), gameRoot });
+  const imagesRoot = engine.sessionImagesRoot({ home: gameHome(), gameRoot });
 
   function sessionImagesDir() {
     // 唯一调用点 resolveImage 入口有 `!imagesRoot || !sessionId → return null` 守卫（boot 完成前的

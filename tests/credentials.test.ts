@@ -74,6 +74,20 @@ function makeFetch(route: (url: string, init: any, call: number) => Reply) {
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
 
 describe("credentials.mjs：出厂默认与容错读取", () => {
+  it("BUNKITEN_HOME 覆盖主目录（打包态 e2e 的旋钮：Windows 上 os.homedir() 读 USERPROFILE，改它会把 Chromium 拖崩）；不设时回落 os.homedir()", () => {
+    const prev = process.env.BUNKITEN_HOME;
+    try {
+      process.env.BUNKITEN_HOME = path.join(os.tmpdir(), "bunkiten-home-probe");
+      expect(credentialsPath()).toBe(path.join(process.env.BUNKITEN_HOME, ".bunkiten", "credentials.json"));
+      expect(readCredentials().llm.mode).toBe("session"); // 该目录没有凭据文件 → 出厂默认（读路径永不抛）
+      delete process.env.BUNKITEN_HOME;
+      expect(credentialsPath()).toBe(path.join(os.homedir(), ".bunkiten", "credentials.json"));
+    } finally {
+      if (prev === undefined) delete process.env.BUNKITEN_HOME;
+      else process.env.BUNKITEN_HOME = prev;
+    }
+  });
+
   it("默认态是「沿用 grok 登录 + 不出图」——与 v1.9 行为一致", () => {
     const d = defaultCredentials();
     expect(d.version).toBe(CREDENTIALS_VERSION);
