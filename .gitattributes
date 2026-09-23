@@ -1,0 +1,25 @@
+# 行尾与二进制归属的唯一声明处（.editorconfig 只管编辑器，这份才管 Git 的检出与比对）
+#
+# text=auto + eol=lf：仓库里所有文本文件一律 LF。Windows 上 git 默认会按 autocrlf 把文本检出成 CRLF，
+# 而本仓有两处对行尾敏感：release.yml 合并 SHA256SUMS.txt 时要断言「不含 \r」（CRLF 会让 shasum -c 报
+# FAILED open or read），以及打包脚本与 CI 都在 Windows 上跑。源头钉死之后，workflow 里那段剥 \r 的防御
+# 仍然保留——两层一起，任一层失守都不会出货。
+* text=auto eol=lf
+
+# 二进制：显式标注，免得 text=auto 的嗅探在某个版本上改主意（也免得 diff/merge 去碰它们）
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.icns binary
+*.dmg binary
+*.exe binary
+*.zip binary
+*.wav binary
+*.mp3 binary
+*.ogg binary
+*.m4a binary
+*.flac binary
+
+# 生成物：语言统计里标出来，免得「仓库里怎么这么多 JSON」
+docs/providers.json linguist-generated=true
