@@ -34,6 +34,7 @@ import OptionList from "../src/components/game/OptionList";
 import BootScreen from "../src/components/BootScreen";
 import TitleScreen from "../src/components/TitleScreen";
 import CreationScreen from "../src/components/CreationScreen";
+import CraftingScreen, { preloadEtaLabel } from "../src/components/CraftingScreen";
 import AssetsScreen from "../src/components/AssetsScreen";
 import WorldsScreen, { relativeTime, worldDisplayName } from "../src/components/WorldsScreen";
 import StoryTreeScreen, { earliestSnapshotByNode, prevSnapshotSeq, snapshotTurnNo } from "../src/components/StoryTreeScreen";
@@ -678,6 +679,72 @@ describe("WorldsScreen：世界线列表与动作（v1.5）", () => {
     expect(relativeTime(now - 40 * 86_400_000, now)).toBe("更早");
     expect(relativeTime(0, now)).toBe("更早");
     expect(relativeTime(now + 60_000, now)).toBe("刚刚"); // 时钟回拨不显示负数
+  });
+});
+
+describe("制作中屏与创作屏的可预期性读数（v1.13）", () => {
+  const PRESET = {
+    id: "demo",
+    title: "示例剧本",
+    tagline: "",
+    genre: "",
+    rating: "",
+    characters: [],
+    protagonist_card: [],
+  };
+
+  it("preloadEtaLabel：样本不足不给数、按已完成张数算平均、画完即收口", () => {
+    const base = { total: 10, startedAt: 1_000, now: 41_000 }; // 40s 内完成 2 张
+    expect(preloadEtaLabel({ ...base, done: 0 }), "一张都没完成时没有样本").toBeNull();
+    expect(preloadEtaLabel({ ...base, done: 1 }), "只有一张样本，估出来是噪声").toBeNull();
+    expect(preloadEtaLabel({ ...base, done: 2 })).toBe("平均 ≈20s / 张 · 约还需 ~3 分钟");
+    expect(preloadEtaLabel({ ...base, done: 10 }), "全画完了就没有「还需」").toBeNull();
+    expect(preloadEtaLabel({ ...base, done: 3, startedAt: null }), "没有在跑的批次").toBeNull();
+    // 剩余不足 90 秒时切到「秒」档
+    expect(preloadEtaLabel({ done: 2, total: 4, startedAt: 0, now: 20_000 })).toBe("平均 ≈10s / 张 · 约还需 ~20 秒");
+  });
+
+  it("制作中屏：进度行给「平均每张 · 约还需」，样本不足 2 张时不显示这半截", () => {
+    const items = [1, 2, 3, 4, 5].map((i) => ({
+      kind: "portrait" as const,
+      name: `角色${i}`,
+      variant: "",
+      label: `角色${i}`,
+      command: `美术：立绘 角色${i}`,
+      state: i <= 1 ? ("done" as const) : ("pending" as const), // 先只完成 1 张：样本不足，屏上不显示预估
+      url: null,
+    }));
+    useGameStore.setState({
+      screen: "crafting",
+      selected: PRESET,
+      preloadPhase: "queue",
+      status: "作画中…",
+      chapterNo: 1,
+      preload: items,
+      preloadBatchStartedAt: Date.now() - 40_000, // 40 秒画完 1 张
+    });
+    render(<CraftingScreen />);
+    const line = screen.getByTestId("crafting-progress").textContent ?? "";
+    expect(line).toContain("美术 1 / 5 就绪");
+    expect(line, "样本不足 2 张时不该给预估").not.toContain("约还需");
+
+    // 再完成两张（共 3 张）：样本够了 → 读数出现。setState 在 act 里跑，读的是重渲染后的 DOM
+    act(() => {
+      useGameStore.setState({
+        preload: useGameStore.getState().preload.map((i, idx) => (idx === 1 || idx === 2 ? { ...i, state: "done" as const } : i)),
+      });
+    });
+    const line2 = screen.getByTestId("crafting-progress").textContent ?? "";
+    expect(line2).toContain("美术 3 / 5 就绪");
+    expect(line2).toMatch(/平均 ≈\d+s \/ 张 · 约还需 ~\d+ 秒/);
+  });
+
+  it("创作屏：状态行说出引擎在干什么（不再是只有 title 的灰点）", () => {
+    useGameStore.setState({ screen: "creation", screenReturn: "title", status: "引擎演绎中…", engineBusy: true, turnStartAt: Date.now() - 3000 });
+    render(<CreationScreen />);
+    const line = screen.getByTestId("creation-status").textContent ?? "";
+    expect(line, "引擎口吻要转成玩家说法（lib/status 唯一映射）").toContain("故事展开中…");
+    expect(line, "忙时带上已耗时秒数").toMatch(/\d+s/);
   });
 });
 

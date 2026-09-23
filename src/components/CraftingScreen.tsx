@@ -4,7 +4,24 @@ import { playerStatus } from "../lib/status";
 import { resolveWorldLabel } from "../lib/worlds";
 import { ScreenShell } from "./ScreenShell";
 import { ShellPage } from "./ShellPage";
-import { useTurnElapsed } from "./useTurnElapsed";
+import { useTick, useTurnElapsed } from "./useTurnElapsed";
+
+/**
+ * 本批美术的剩余预估文案（纯函数，单测直引）。口径：
+ * - 平均每张 = （现在 − 批次起点）/ 已完成张数——**已有 2 张以上才给**（样本太少时估出来是噪声）；
+ * - 剩余 = 平均 × 还没完成的张数；
+ * - 一律带「约」：这是粗估不是承诺（出图快慢取决于服务商与画幅）。没在跑的批次或样本不足时返回 null。
+ * @param {{done: number, total: number, startedAt: number|null, now: number}} o 已完成张数 / 总数 / 批次起点 / 现在
+ * @returns {string|null} 形如「平均 ≈38s / 张 · 约还需 ~6 分钟」，或 null（不显示）
+ */
+export function preloadEtaLabel(o: { done: number; total: number; startedAt: number | null; now: number }): string | null {
+  if (o.startedAt === null || o.done < 2 || o.done >= o.total) return null;
+  const perItemMs = Math.max(0, (o.now - o.startedAt) / o.done);
+  const remainMs = perItemMs * (o.total - o.done);
+  const per = `平均 ≈${Math.max(1, Math.round(perItemMs / 1000))}s / 张`;
+  const remain = remainMs < 90_000 ? `约还需 ~${Math.max(1, Math.round(remainMs / 1000))} 秒` : `约还需 ~${Math.round(remainMs / 60_000)} 分钟`;
+  return `${per} · ${remain}`;
+}
 
 /** 槽位名（清单/preset 可能带「」）→ artReady 槽位 URL */
 function slotUrl(artReady: Record<string, string>, item: PreloadItem): string | null {
@@ -150,6 +167,9 @@ export default function CraftingScreen() {
   const worldId = useGameStore((s) => s.worldId);
   const worldLabel = useGameStore((s) => s.worldLabel);
   const elapsed = useTurnElapsed();
+  // 批次读数按秒跳（只在真的有批次在跑时起定时器）：平均每张 / 约还需都从 preloadBatchStartedAt 算
+  const preloadBatchStartedAt = useGameStore((s) => s.preloadBatchStartedAt);
+  const now = useTick(preloadBatchStartedAt !== null);
 
   if (!selected) return null;
 
@@ -157,6 +177,7 @@ export default function CraftingScreen() {
   const doneCount = preload.filter((i) => i.state === "done").length;
   const busy = status.includes("…");
   const canSkip = preloadPhase === "init" || preloadPhase === "planning" || preloadPhase === "queue";
+  const eta = preloadEtaLabel({ done: doneCount, total: preload.length, startedAt: preloadBatchStartedAt, now });
   // 世界名只在「有名字」时出现（与顶栏同一条规则）：无显示名时 store 退化为空串；
   // `worldLabel !== worldId` 只是防旧状态/手改数据（旧版 server 自动写的分叉备注也是裸 id 串，见 lib/worlds）
   const label = resolveWorldLabel(worldLabel, worldId);
@@ -197,8 +218,10 @@ export default function CraftingScreen() {
           {playerStatus(status)}
           {busy && elapsed !== null && <span className="tabular-nums">{elapsed}s</span>}
         </p>
-        <p className="mt-1.5 text-meta tracking-[.2em] text-ink-hint">
+        <p data-testid="crafting-progress" className="mt-1.5 text-meta tracking-[.2em] text-ink-hint">
           {planning ? `正在为《${selected.title}》筹备第 ${chapterNo} 章` : `美术 ${doneCount} / ${preload.length} 就绪`}
+          {/* 可预期性（v1.13）：还有多少张、大概还要多久——粗估，带「约」；样本不足时这半截不显示 */}
+          {!planning && eta && <span className="ml-2 text-ink-hint">· {eta}</span>}
           {showWorldLabel && <span className="ml-2 text-ink-hint">· {label}</span>}
         </p>
 

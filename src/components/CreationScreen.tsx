@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Sparkles } from "lucide-react";
 import { BUILD_ASSEMBLE, parseOptions, stripOptionsBlock } from "../lib/parser";
 import { playerStatus } from "../lib/status";
+import { useTurnElapsed } from "./useTurnElapsed";
 import { useFocusTrap } from "../lib/useFocusTrap";
 import { useGameStore } from "../store/game";
 import { ScreenShell } from "./ScreenShell";
@@ -58,6 +59,7 @@ export default function CreationScreen() {
   };
 
   // 新剧本标题：presets 里查不到（或标题为空）时兜底，绝不把 id/slug 摆上玩家的屏
+  const elapsed = useTurnElapsed();
   const resultTitle = result ? presets.find((p) => p.id === result)?.title?.trim() || "未命名剧本" : null;
 
   return (
@@ -70,10 +72,16 @@ export default function CreationScreen() {
         <header className={`mx-auto mt-6 flex-none shell-panel rounded-2xl px-4 py-3 ${COL_WIDTH}`}>
           <div className="flex flex-wrap items-center gap-3">
             <h2 className="text-title tracking-[.6em] [text-indent:.6em]">剧 本 创 作</h2>
+            {/* 状态行：从前只有这颗圆点的 title 属性写着状态——引擎忙或出错时玩家看到的是个不闪的灰点，
+                现在与制作中屏同款（playerStatus 转玩家口吻 + 已耗时秒数） */}
             <span
+              aria-hidden
               className={`h-[7px] w-[7px] flex-none rounded-full ${engineBusy ? "animate-pulse bg-gold" : "bg-[#3d4254]"}`}
-              title={playerStatus(status)}
             />
+            <span data-testid="creation-status" className="flex items-center gap-2 text-ui text-ink-hint">
+              {playerStatus(status)}
+              {engineBusy && elapsed !== null && <span className="tabular-nums">{elapsed}s</span>}
+            </span>
             <button
               type="button"
               onClick={requestCreationExit}

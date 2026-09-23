@@ -89,6 +89,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
     artReady: {},
     preload: [],
     preloadPhase: "finished",
+    preloadBatchStartedAt: null,
     chapterNo: 1,
     skipRequested: false,
     engineBusy: false,
