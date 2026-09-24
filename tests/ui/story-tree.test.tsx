@@ -7,9 +7,38 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import StoryTreeScreen from "../../src/components/StoryTreeScreen";
 import { useGameStore } from "../../src/store/game";
 import { TREE_ZOOM_MAX, clampZoom, fitView, panView, viewBoxOf, zoomViewAt } from "../../src/lib/treeLayout";
-import { jsonResponse, box, setupUi } from "./helpers";
+import { archiveKey, chapterItems, STATUS_SLUG } from "../../src/lib/tree-view";
+import { type TreeChapter, type TreeNode } from "../../src/lib/parser";
+import { jsonResponse, box, readViewBox, setupUi } from "./helpers";
 
 setupUi();
+
+/** 手动控制 resolve 的 promise：把取树的应答拿在手里，在 act 之外落地（驱动调度窗口用） */
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+/** 只排微任务，不给调度器 macrotask */
+async function flushMicrotasks(n = 8) {
+  for (let i = 0; i < n; i++) await Promise.resolve();
+}
+
+/**
+ * 逐拍给一个 macrotask，直到 testid 命中就**立刻**返回——只在画布出现的第一拍停手，不给后续的被动 effect
+ * 冲刷机会。这是「驱动窗口」而不是「等它过去」：修复前，画布一提交（被动 refit 还在调度器队列里）就能抓到它。
+ */
+async function firstFrameWith(testId: string): Promise<HTMLElement> {
+  for (let i = 0; i < 20; i++) {
+    await new Promise((r) => setTimeout(r, 0));
+    const el = screen.queryByTestId(testId);
+    if (el) return el;
+  }
+  throw new Error(`等了 20 个 macrotask 也没等到 ${testId} 出现`);
+}
 
 describe("StoryTreeScreen：树图、详情与编辑（v1.5）", () => {
   const TREE_MD = [
@@ -259,10 +288,10 @@ describe("StoryTreeScreen：大图降级、缩放平移与节点 roving（v1.6�
 
     expect(screen.queryByTestId("tree-canvas")).toBeNull(); // 大图不再默认铺连线
     expect(screen.getByTestId("tree-view-list").getAttribute("aria-pressed")).toBe("true");
-    expect(screen.getByTestId("tree-list-group-已走过")).toBeTruthy();
-    expect(screen.getByTestId("tree-list-group-已剪枝")).toBeTruthy();
-    expect(screen.getByTestId("tree-list-group-可达")).toBeTruthy();
-    expect(screen.queryByTestId("tree-list-group-嫁接")).toBeNull(); // 空组不铺标题
+    expect(screen.getByTestId("tree-list-group-visited")).toBeTruthy();
+    expect(screen.getByTestId("tree-list-group-pruned")).toBeTruthy();
+    expect(screen.getByTestId("tree-list-group-reachable")).toBeTruthy();
+    expect(screen.queryByTestId("tree-list-group-grafted")).toBeNull(); // 空组不铺标题（slug 键，非中文字面量）
 
     const row = screen.getByTestId("tree-row-1-1");
     expect(row.tagName).toBe("BUTTON"); // 原生 button 语义
@@ -297,7 +326,9 @@ describe("StoryTreeScreen：大图降级、缩放平移与节点 roving（v1.6�
     render(<StoryTreeScreen />);
     await waitFor(() => expect(screen.getByTestId("tree-canvas")).toBeTruthy());
     const canvas = screen.getByTestId("tree-canvas");
-    const fit = canvas.getAttribute("viewBox");
+    // 每次读 viewBox 都按 testid 重新查当前画布（readViewBox 会断言抓住的节点没被换掉）：
+    // 这样「视图被复位」与「抓的是重挂后的旧节点」两种红灯在断言消息里就分得开
+    const fit = readViewBox("tree-canvas", canvas);
     expect(box(fit)[0]).toBe(0);
     expect(box(fit)[1]).toBe(0);
 
@@ -308,32 +339,32 @@ describe("StoryTreeScreen：大图降级、缩放平移与节点 roving（v1.6�
     expect(within(wrap).getByText("已走过")).toBeTruthy(); // 图例与画布同处一个包体
 
     fireEvent.click(screen.getByTestId("tree-zoom-in"));
-    const zoomed = canvas.getAttribute("viewBox");
+    const zoomed = readViewBox("tree-canvas", canvas);
     expect(zoomed).not.toBe(fit);
     expect(box(zoomed)[2]).toBeLessThan(box(fit)[2]); // 放大 = 视野变小
     expect(screen.getByTestId("tree-zoom-level").textContent).toBe("125%");
 
     fireEvent.click(screen.getByTestId("tree-zoom-out"));
-    expect(canvas.getAttribute("viewBox")).toBe(fit);
+    expect(readViewBox("tree-canvas", canvas)).toBe(fit);
     fireEvent.click(screen.getByTestId("tree-zoom-in"));
     fireEvent.click(screen.getByTestId("tree-zoom-fit"));
-    expect(canvas.getAttribute("viewBox")).toBe(fit);
+    expect(readViewBox("tree-canvas", canvas)).toBe(fit);
     expect(screen.getByTestId("tree-zoom-level").textContent).toBe("100%");
 
     // 双击画布复位
     fireEvent.click(screen.getByTestId("tree-zoom-in"));
-    expect(canvas.getAttribute("viewBox")).not.toBe(fit);
+    expect(readViewBox("tree-canvas", canvas)).not.toBe(fit);
     fireEvent.doubleClick(canvas);
-    expect(canvas.getAttribute("viewBox")).toBe(fit);
+    expect(readViewBox("tree-canvas", canvas)).toBe(fit);
 
     // 键盘 +/-/0：事件冒泡到画布容器
     fireEvent.keyDown(canvas, { key: "+" });
-    expect(canvas.getAttribute("viewBox")).not.toBe(fit);
+    expect(readViewBox("tree-canvas", canvas)).not.toBe(fit);
     fireEvent.keyDown(canvas, { key: "-" });
-    expect(canvas.getAttribute("viewBox")).toBe(fit);
+    expect(readViewBox("tree-canvas", canvas)).toBe(fit);
     fireEvent.keyDown(canvas, { key: "+" });
     fireEvent.keyDown(canvas, { key: "0" });
-    expect(canvas.getAttribute("viewBox")).toBe(fit);
+    expect(readViewBox("tree-canvas", canvas)).toBe(fit);
   });
 
   it("节点 roving tabIndex：只有选中节点可 Tab；方向键移动并搬焦点；当前进度带 aria-current", async () => {
@@ -365,14 +396,16 @@ describe("StoryTreeScreen：大图降级、缩放平移与节点 roving（v1.6�
   it("滚轮以指针为锚点缩放（画布内滚一下即变 viewBox，且不滚页面）", async () => {
     render(<StoryTreeScreen />);
     await waitFor(() => expect(screen.getByTestId("tree-canvas")).toBeTruthy());
-    // 数据与 effect 落定再交互：树是在 fetch 的 promise 里落地的（act 之外），那一拍的被动 effect
-    // 还挂在队列里——此刻派发滚轮会落进「画布已可见、监听/状态尚未就绪」的窗口，事件静默无效。
-    // 负载高时这个窗口更宽（机器刚跑完 Playwright 套件时实测约 4 次里失手 1 次）。
-    // 等一个空的 act 把队列排干，交互就只发生在稳定态上。
-    await act(async () => {});
-
+    // 画布一可见就是稳定态，交互不必先「排干队列」：refit 现在落在**渲染阶段**（lib/useCanvasPanZoom），
+    // 提交之后不留排队写入。
+    // 这里从前有一行 `await act(async () => {})` —— 那是在躲一个经探针证实过的窗口：树在 fetch 的 promise
+    // 里落地（act 之外）后，被动 refit 仍挂在调度器队列里；这一拍派发滚轮，那一发 setView(zoom) 会被随后
+    // 的 setView(fitView) 抹回「适应」（viewBox 原地不动，看着像滚轮没生效）。refit 改渲染阶段后窗口消失，
+    // 这行等待也一并撤掉。**但它不是那个窗口的哨兵**：把被动 refit 临时放回去，本用例通常仍是绿的
+    // （滚轮这条路径的时序偏保守）——哨兵是下面「refit 不留排队写入」那条确定性用例。
+    // 本用例只负责滚轮本身的行为：指针锚点缩放 + preventDefault。
     const canvas = screen.getByTestId("tree-canvas");
-    const fit = canvas.getAttribute("viewBox");
+    const fit = readViewBox("tree-canvas", canvas);
 
     const ev = new WheelEvent("wheel", { deltaY: -120, bubbles: true, cancelable: true });
     // 缩放走原生非 passive 监听（React 的 onWheel 是根上的被动监听，preventDefault 无效）；
@@ -382,8 +415,80 @@ describe("StoryTreeScreen：大图降级、缩放平移与节点 roving（v1.6�
     act(() => {
       canvas.dispatchEvent(ev);
     });
-    await waitFor(() => expect(canvas.getAttribute("viewBox")).not.toBe(fit));
+    await waitFor(() => expect(readViewBox("tree-canvas", canvas)).not.toBe(fit));
     expect(ev.defaultPrevented).toBe(true);
+  });
+
+  it("refit 不留排队写入：画布落地那一拍就点缩放，viewBox 不会被拉回「适应」", async () => {
+    // 「驱动窗口」而不是「等它过去」：取树的应答拿在手里，在 act 之外 resolve，只排微任务（不给调度器
+    // macrotask），然后逐拍给 macrotask——画布一出现就**立刻**交互，不给后续 effect 冲刷的机会。
+    // 修复前（refit 是 useEffect 的排队写入）这一拍：`setView(zoom)` 被随后那发 `setView(fitView)`
+    // 抹回「适应」，viewBox 原地不动，断言红。修复后（refit 落到渲染阶段，见 lib/useCanvasPanZoom）没有
+    // 排队写入，交互即时生效。把被动 refit 临时放回去，本用例即重新变红（mutation 面）。
+    // 本条钉的是**「布局复位不留排队写入」这个形状**——不是声称「负载下那次红就是它」：机制只证到这里。
+    const treeD = deferred<Response>();
+    const histD = deferred<Response>();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/api/tree") return treeD.promise;
+        if (url.pathname === "/api/history") return histD.promise;
+        return Promise.resolve(jsonResponse({}, 404));
+      }),
+    );
+    render(<StoryTreeScreen />);
+    treeD.resolve(jsonResponse({ worldId: "campus-summer-1", markdown: SMALL_MD }));
+    histD.resolve(jsonResponse({ worldId: "campus-summer-1", snapshots: [] }));
+    await flushMicrotasks();
+
+    const canvas = await firstFrameWith("tree-canvas");
+    const fit = readViewBox("tree-canvas", canvas);
+    fireEvent.click(screen.getByTestId("tree-zoom-in"));
+    expect(readViewBox("tree-canvas", canvas), "点缩放后 viewBox 没变——view 被排队中的 refit 抹回了 fit").not.toBe(fit);
+  });
+
+  it("重取（treeStamp 变）不拆画布：刷新后还是同一颗 DOM，视图不被重新「适应」", async () => {
+    render(<StoryTreeScreen />);
+    await waitFor(() => expect(screen.getByTestId("tree-canvas")).toBeTruthy());
+    const canvas = screen.getByTestId("tree-canvas");
+    const fit = readViewBox("tree-canvas", canvas);
+    // 先放大一档：重取若拆画布，视图会被重新「适应」回 100%
+    fireEvent.click(screen.getByTestId("tree-zoom-in"));
+    const zoomed = readViewBox("tree-canvas", canvas);
+    expect(box(zoomed)[2]).toBeLessThan(box(fit)[2]);
+
+    // 触发重取（编辑完成 / 回退完成 / 手动刷新 / SSE treeEdited 都走这条）：旧守卫 `!loading && !error`
+    // 会让画布随 data 一起被清掉、回来时重挂（DOM 换新、视图回「适应」）；现在树跨重取保留，画布不拆。
+    act(() => useGameStore.getState().refreshTree());
+    await waitFor(() => expect(screen.getByTestId("tree-canvas")).toBeTruthy());
+    // readViewBox 先断言「抓的节点没被换掉」——重挂时它会带着「旧节点值 / 当前节点值 / 是否同一颗」把话说明白
+    expect(readViewBox("tree-canvas", canvas)).toBe(zoomed);
+    expect(screen.getByTestId("tree-canvas")).toBe(canvas);
+    expect(screen.getByTestId("tree-zoom-level").textContent).toBe("125%");
+  });
+
+  it("重取失败保留旧树：画布不拆、只多一条错误提示（不白屏）", async () => {
+    render(<StoryTreeScreen />);
+    await waitFor(() => expect(screen.getByTestId("tree-canvas")).toBeTruthy());
+    const canvas = screen.getByTestId("tree-canvas");
+
+    // 下一次 /api/tree 直接失败：旧守卫（`!error && !loading`）会把整块内容连画布一起清掉、只剩错误条；
+    // 现在旧树跨失败保留——错误提示照上屏，但玩家正在看的那张图不被抽走。
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/api/tree") return jsonResponse({ error: "剧情树读取失败" }, 500);
+        if (url.pathname === "/api/history") return jsonResponse({ worldId: "campus-summer-1", snapshots: [] });
+        return jsonResponse({}, 404);
+      }),
+    );
+    act(() => useGameStore.getState().refreshTree());
+    await waitFor(() => expect(screen.getByTestId("tree-error")).toBeTruthy());
+
+    expect(screen.getByTestId("tree-canvas")).toBe(canvas); // 同一颗 DOM：没被失败清屏带走
+    expect(screen.getByTestId("tree-zoom-level").textContent).toBe("100%");
   });
 });
 
@@ -425,6 +530,73 @@ describe("treeLayout 视图纯函数：适应 / 指针锚点缩放 / 平移夹�
   });
 });
 
+describe("tree-view 展示层纯函数：章节键 / 状态 slug / 归档键（v1.13 data-testid 债）", () => {
+  const node = (id: string): TreeNode => ({
+    id,
+    beat: "",
+    location: "",
+    present: "",
+    synopsis: "",
+    edges: [],
+    status: "可达",
+  });
+  const chapter = (over: Partial<TreeChapter>): TreeChapter => ({
+    title: "",
+    goal: "",
+    outline: "",
+    current: null,
+    nodes: [],
+    ...over,
+  });
+
+  it("chapterItems：章号唯一时键就是章号，重号退回 `章号-下标`（逐项唯一），无节点章退回文件次序", () => {
+    // 唯一章号：键 = 章号本身（testid tree-chapter-2 / tree-chapter-3）
+    const unique = chapterItems([
+      chapter({ title: "雨夜来客", nodes: [node("2-1")] }),
+      chapter({ title: "雨夜之后", nodes: [node("3-1")] }),
+    ]);
+    expect(unique.map((c) => c.no)).toEqual([2, 3]);
+    expect(unique.map((c) => c.key)).toEqual(["2", "3"]);
+    expect(unique.map((c) => c.label)).toEqual(["第 2 章 · 雨夜来客", "第 3 章 · 雨夜之后"]);
+
+    // 重号（中文数字标题读不出号 → 章号退化成节点 id 前缀 3）：两颗都退回 `章号-下标`，键仍逐项唯一
+    const dup = chapterItems([
+      chapter({ title: "第 3 章：雨夜之后", nodes: [node("3-1")] }),
+      chapter({ title: "第 四 章：末尾的灯", nodes: [node("3-9")] }),
+    ]);
+    expect(dup.map((c) => c.no)).toEqual([3, 3]);
+    expect(dup.map((c) => c.key)).toEqual(["3-0", "3-1"]);
+    expect(new Set(dup.map((c) => c.key)).size).toBe(dup.length); // 两颗药丸都点得开
+
+    // 混合：只有重号的那几项带下标，唯一章号照旧取章号
+    const mixed = chapterItems([
+      chapter({ title: "第 2 章", nodes: [node("2-1")] }),
+      chapter({ title: "第 3 章", nodes: [node("3-1")] }),
+      chapter({ title: "第 四 章", nodes: [node("3-9")] }),
+    ]);
+    expect(mixed.map((c) => c.key)).toEqual(["2", "3-1", "3-2"]);
+
+    // 无节点、标题也读不出数字的章：章号退回文件次序 index+1
+    const fallback = chapterItems([chapter({ title: "", nodes: [] })]);
+    expect(fallback[0]!.no).toBe(1);
+    expect(fallback[0]!.key).toBe("1");
+    expect(chapterItems([])).toEqual([]);
+  });
+
+  it("STATUS_SLUG 覆盖全部四种节点状态（ASCII slug，与展示用词解耦）", () => {
+    expect(STATUS_SLUG).toEqual({ 已走过: "visited", 可达: "reachable", 已剪枝: "pruned", 嫁接: "grafted" });
+    // 四个键恰好是节点状态全集（新增状态忘了配 slug → testid 会变成 undefined）
+    expect(Object.keys(STATUS_SLUG)).toHaveLength(4);
+  });
+
+  it("archiveKey：取行内 `第 N 章` 的章号；抽不出号时退回 `line-下标`", () => {
+    expect(archiveKey("- 第 1 章：教室相遇；已走：1-1 → 1-2", 0)).toBe("1");
+    expect(archiveKey("- 第 12 章：雨夜", 3)).toBe("12");
+    expect(archiveKey("- 开头的话（没有章号）", 2)).toBe("line-2"); // 无号行的兜底键
+    expect(archiveKey("", 0)).toBe("line-0");
+  });
+});
+
 describe("StoryTreeScreen：章节切换器与归档药丸（v1.8）", () => {
   /** 两章 + 一页归档：第 2 章带进度指针（默认章），第 3 章只有末节一个节点 */
   const TREE_MD = [
@@ -453,8 +625,8 @@ describe("StoryTreeScreen：章节切换器与归档药丸（v1.8）", () => {
   ].join("\n");
 
   /** 会让**章号重号**的树：`## 第 四 章` 的标题是中文数字（chapterNoOf 读不出数字），
-      章号只能取自节点 id 前缀 3-9 → 与前面的「第 3 章」同号。没有复合键时两颗药丸会撞成
-      同一个 tree-chapter-3，第二颗永远点不开 */
+      章号只能取自节点 id 前缀 3-9 → 与前面的「第 3 章」同号。重号的章用 `章号-下标` 当键
+      （`tree-chapter-3-1` / `tree-chapter-3-2`），否则两颗药丸会撞成同一个 id、第二颗永远点不开 */
   const DUP_MD = [
     TREE_MD,
     "",
@@ -505,9 +677,9 @@ describe("StoryTreeScreen：章节切换器与归档药丸（v1.8）", () => {
 
     const switcher = screen.getByTestId("tree-chapters");
     expect(within(switcher).getAllByRole("button")).toHaveLength(2); // 归档不是章：不进切换器
-    // testid 用「章号-下标」复合键（章号会重号，见下面那段）：第 2 章在 0 位、第 3 章在 1 位
-    const ch2 = screen.getByTestId("tree-chapter-2-0");
-    const ch3 = screen.getByTestId("tree-chapter-3-1");
+    // testid 用章节键（章号唯一时就是章号）：第 2 章在 0 位、第 3 章在 1 位，各只出现一次 → tree-chapter-2 / tree-chapter-3
+    const ch2 = screen.getByTestId("tree-chapter-2");
+    const ch3 = screen.getByTestId("tree-chapter-3");
     expect(ch2.textContent).toContain("第 2 章 · 雨夜来客");
     expect(ch3.textContent).toContain("第 3 章 · 雨夜之后");
     expect(ch2.getAttribute("aria-pressed")).toBe("true"); // 默认画进度指针所在的那一章
@@ -521,11 +693,11 @@ describe("StoryTreeScreen：章节切换器与归档药丸（v1.8）", () => {
     fireEvent.click(ch3);
     expect(screen.getByTestId("tree-node-3-1")).toBeTruthy(); // 换章真的重绘了
     expect(screen.queryByTestId("tree-node-2-1")).toBeNull(); // 旧章节点整块卸载
-    expect(screen.getByTestId("tree-chapter-3-1").getAttribute("aria-pressed")).toBe("true");
-    expect(screen.getByTestId("tree-chapter-2-0").getAttribute("aria-pressed")).toBe("false");
-    expect(within(screen.getByTestId("tree-chapter-2-0")).getByText("当前")).toBeTruthy(); // 进度指针仍在第 2 章
+    expect(screen.getByTestId("tree-chapter-3").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("tree-chapter-2").getAttribute("aria-pressed")).toBe("false");
+    expect(within(screen.getByTestId("tree-chapter-2")).getByText("当前")).toBeTruthy(); // 进度指针仍在第 2 章
 
-    // 章号重号（番外章的首个节点 id 前缀同为 3）：复合键保证 testid 与选中态逐项唯一——
+    // 章号重号（番外章的首个节点 id 前缀同为 3）：重号的章退回 `章号-下标` 键，保证 testid 与选中态逐项唯一——
     // 只按章号认的话这棵树会给两颗同名药丸，点第二颗会落回第一颗（选不中，画布也不换）
     treeMd = DUP_MD;
     act(() => useGameStore.getState().refreshTree());
@@ -534,7 +706,11 @@ describe("StoryTreeScreen：章节切换器与归档药丸（v1.8）", () => {
     expect(pills.getAllByRole("button")).toHaveLength(3);
     expect(pills.getByTestId("tree-chapter-3-1").textContent).toContain("第 3 章 · 雨夜之后");
     expect(pills.getByTestId("tree-chapter-3-2").textContent).toContain("第 3 章 · 末尾的灯");
-    expect(pills.getByTestId("tree-chapter-3-1").getAttribute("aria-pressed")).toBe("true"); // 键还在：选中不漂
+    // 旧选中键是 "3"（那时第 3 章唯一）；番外章一进来它重号了、键改叫 "3-1"/"3-2"，旧键落空 →
+    // chapterIdx 按章号兜底：认回第一颗同号药丸，选中仍停在第 3 章、画布也不漂（见 StoryTreeScreen 的注释）
+    expect(pills.getByTestId("tree-chapter-3-1").getAttribute("aria-pressed")).toBe("true");
+    expect(pills.getByTestId("tree-chapter-2").getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByTestId("tree-node-3-1")).toBeTruthy(); // 画布就停在这一章，没被重号挤回默认章
 
     fireEvent.click(pills.getByTestId("tree-chapter-3-2"));
     expect(screen.getByTestId("tree-chapter-3-2").getAttribute("aria-pressed")).toBe("true");
@@ -547,19 +723,19 @@ describe("StoryTreeScreen：章节切换器与归档药丸（v1.8）", () => {
     render(<StoryTreeScreen />);
     await waitFor(() => expect(screen.getByTestId("tree-canvas")).toBeTruthy());
 
-    const pill = screen.getByTestId("tree-archive-0");
+    const pill = screen.getByTestId("tree-archive-1"); // 归档行「- 第 1 章：…」→ 键取章号 1
     expect(pill.textContent).toContain("第 1 章");
     expect(pill.getAttribute("aria-pressed")).toBe("false");
     expect(screen.queryByTestId("tree-archive-notice")).toBeNull();
 
     fireEvent.click(pill);
     expect(screen.getByTestId("tree-archive-notice").textContent).toBe("这一章已归档，只保留了目录信息");
-    expect(screen.getByTestId("tree-archive-0").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("tree-archive-1").getAttribute("aria-pressed")).toBe("true");
     // 归档只有目录信息（节点数据不在文件里）：画布照旧停在当前进度章，不会切到一个空章
-    expect(screen.getByTestId("tree-chapter-2-0").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("tree-chapter-2").getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByTestId("tree-node-2-1")).toBeTruthy();
 
-    fireEvent.click(screen.getByTestId("tree-archive-0"));
+    fireEvent.click(screen.getByTestId("tree-archive-1"));
     expect(screen.queryByTestId("tree-archive-notice")).toBeNull(); // 再点收起
   });
 });

@@ -9,7 +9,7 @@ import { useGameStore } from "../../src/store/game";
 import { relativeTime } from "../../src/lib/worlds";
 import { layoutGenealogy } from "../../src/lib/genealogy";
 import { type WorldEntry } from "../../src/lib/acp";
-import { PRESET, jsonResponse, openRowMenu, box, setupUi } from "./helpers";
+import { PRESET, jsonResponse, openRowMenu, box, readViewBox, setupUi } from "./helpers";
 
 setupUi();
 
@@ -397,7 +397,9 @@ describe("WorldsScreen：家谱画布缩放与渲染宽度上界（v1.8）", () 
     fireEvent.click(screen.getByTestId("worlds-view-genealogy"));
 
     const canvas = screen.getByTestId("genealogy-canvas");
-    const fit = canvas.getAttribute("viewBox");
+    // 每次读 viewBox 都按 testid 重新查当前画布（readViewBox 会断言抓住的节点没被换掉）：
+    // 「视图被复位」与「抓的是重挂后的旧节点」两种红灯靠它的断言消息分开
+    const fit = readViewBox("genealogy-canvas", canvas);
     expect(screen.getByTestId("genealogy-node-w1")).toBeTruthy();
     expect(screen.getByTestId("genealogy-zoom-level").textContent).toBe("100%");
 
@@ -411,26 +413,26 @@ describe("WorldsScreen：家谱画布缩放与渲染宽度上界（v1.8）", () 
 
     fireEvent.click(screen.getByTestId("genealogy-zoom-in"));
     expect(screen.getByTestId("genealogy-zoom-level").textContent).toBe("125%");
-    expect(canvas.getAttribute("viewBox")).not.toBe(fit);
-    expect(box(canvas.getAttribute("viewBox"))[2]).toBeLessThan(box(fit)[2]); // 放大 = 视野变小
+    expect(readViewBox("genealogy-canvas", canvas)).not.toBe(fit);
+    expect(box(readViewBox("genealogy-canvas", canvas))[2]).toBeLessThan(box(fit)[2]); // 放大 = 视野变小
 
     fireEvent.click(screen.getByTestId("genealogy-zoom-fit"));
     expect(screen.getByTestId("genealogy-zoom-level").textContent).toBe("100%");
-    expect(canvas.getAttribute("viewBox")).toBe(fit); // 适应态 viewBox 逐字回到初始
+    expect(readViewBox("genealogy-canvas", canvas)).toBe(fit); // 适应态 viewBox 逐字回到初始
 
     // 缩小按钮：与键盘「−」同一条路——从适应态点一下低于 100%（视野变大），再放大逐字回到适应态
     fireEvent.click(screen.getByTestId("genealogy-zoom-out"));
-    const out = canvas.getAttribute("viewBox");
+    const out = readViewBox("genealogy-canvas", canvas);
     expect(screen.getByTestId("genealogy-zoom-level").textContent).toBe("80%");
     expect(box(out)[2]).toBeGreaterThan(box(fit)[2]); // 缩小 = 视野变大
     fireEvent.click(screen.getByTestId("genealogy-zoom-in"));
     expect(screen.getByTestId("genealogy-zoom-level").textContent).toBe("100%");
-    expect(canvas.getAttribute("viewBox")).toBe(fit);
+    expect(readViewBox("genealogy-canvas", canvas)).toBe(fit);
 
     fireEvent.click(screen.getByTestId("genealogy-zoom-in"));
-    expect(canvas.getAttribute("viewBox")).not.toBe(fit);
+    expect(readViewBox("genealogy-canvas", canvas)).not.toBe(fit);
     fireEvent.doubleClick(canvas);
-    expect(canvas.getAttribute("viewBox")).toBe(fit); // 双击画布复位
+    expect(readViewBox("genealogy-canvas", canvas)).toBe(fit); // 双击画布复位
     expect(screen.getByTestId("genealogy-zoom-level").textContent).toBe("100%");
   });
 
@@ -450,7 +452,7 @@ describe("WorldsScreen：家谱画布缩放与渲染宽度上界（v1.8）", () 
     fireEvent.click(screen.getByTestId("worlds-view-genealogy"));
 
     const canvas = screen.getByTestId("genealogy-canvas");
-    const fit = canvas.getAttribute("viewBox");
+    const fit = readViewBox("genealogy-canvas", canvas);
 
     // 选中一个节点（走位键的既有路径）：详情条出现、DOM 焦点也在该节点上
     fireEvent.keyDown(screen.getByTestId("genealogy-node-w3"), { key: "ArrowUp" });
@@ -460,13 +462,13 @@ describe("WorldsScreen：家谱画布缩放与渲染宽度上界（v1.8）", () 
 
     fireEvent.keyDown(focused, { key: "+" }); // 节点没消费的键冒泡到画布容器
     expect(screen.getByTestId("genealogy-zoom-level").textContent).toBe("125%");
-    expect(canvas.getAttribute("viewBox")).not.toBe(fit);
+    expect(readViewBox("genealogy-canvas", canvas)).not.toBe(fit);
     expect(document.activeElement).toBe(focused); // 缩放没有把焦点搬走
     expect(within(screen.getByTestId("genealogy-detail")).getByText("二周目")).toBeTruthy(); // 选中也没被清掉
 
     fireEvent.keyDown(focused, { key: "0" });
     expect(screen.getByTestId("genealogy-zoom-level").textContent).toBe("100%");
-    expect(canvas.getAttribute("viewBox")).toBe(fit);
+    expect(readViewBox("genealogy-canvas", canvas)).toBe(fit);
 
     // 提示行住在画布工具条里（画布之上）：家谱视图整屏不铺页脚，所以它不可能挂在页脚
     const hint = screen.getByText(HINT);

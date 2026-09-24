@@ -28,12 +28,6 @@ export interface UseAsyncOptions {
   enabled?: boolean;
   /** 错误 → 屏上文案（缺省 `String(e)`）。需要映射（如把 404 说成人话）时传入 */
   mapError?: (e: unknown) => string;
-  /**
-   * key 变化时是否先把 data 清空。缺省 **false**：保留旧数据直到新数据到——
-   * 列表/画廊重取时不清空，React 按 key 复用同一批 DOM 节点（元素身份不丢，焦点归还等行为才稳）；
-   * 需要「换世界线立刻清屏、显示载入中」的场景（如剧情树换世界/换 stamp）显式传 true。
-   */
-  resetOnKey?: boolean;
 }
 
 /**
@@ -48,7 +42,7 @@ export function useAsync<T>(
   key: string | null,
   options: UseAsyncOptions = {},
 ): AsyncResult<T> {
-  const { enabled = true, mapError, resetOnKey = false } = options;
+  const { enabled = true, mapError } = options;
   const active = enabled && key !== null;
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(active);
@@ -63,20 +57,13 @@ export function useAsync<T>(
     mapErrorRef.current = mapError;
   }, [load, mapError]);
 
-  // 上一次跑过的 key：resetOnKey 时用来判断「是不是换了 key」（换 key 才清 data，reload 不清）
-  const lastKeyRef = useRef<string | null>(null);
-
   useEffect(() => {
     if (!active) {
-      lastKeyRef.current = key;
       setData(null);
       setError("");
       setLoading(false);
       return;
     }
-    const keyChanged = lastKeyRef.current !== key;
-    lastKeyRef.current = key;
-    if (resetOnKey && keyChanged) setData(null); // 显式要求时：换 key 先把旧数据清掉（如换世界线）
     setLoading(true);
     setError("");
     const ctrl = new AbortController();
@@ -94,7 +81,7 @@ export function useAsync<T>(
         if (!ctrl.signal.aborted) setLoading(false);
       });
     return () => ctrl.abort();
-  }, [key, tick, active, resetOnKey]);
+  }, [key, tick, active]);
 
   const reload = useCallback(() => setTick((t) => t + 1), []);
   return { data, loading, error, reload };

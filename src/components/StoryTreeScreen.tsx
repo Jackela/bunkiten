@@ -29,7 +29,15 @@ import { parseStoryTree, type StoryTree, type TreeChapter, type TreeNode, type T
 import { canReplaySnapshot } from "../lib/replay";
 import { truncate } from "../lib/text";
 import { layoutTree, type LayoutNode, type TreeLayout } from "../lib/treeLayout";
-import { chapterLabel, chapterNoOf, earliestSnapshotByNode, prevSnapshotSeq, type SnapshotRef } from "../lib/tree-view";
+import {
+  archiveKey,
+  chapterItems,
+  earliestSnapshotByNode,
+  prevSnapshotSeq,
+  STATUS_SLUG,
+  type ChapterItem,
+  type SnapshotRef,
+} from "../lib/tree-view";
 import { useAsync } from "../lib/useAsync";
 import { resolveWorldLabel } from "../lib/worlds";
 import { useGameStore } from "../store/game";
@@ -62,18 +70,6 @@ function nodePaint(status: TreeNodeStatus): { fill: string; stroke: string; dash
 
 /** 图例顺序（与节点状态字面一致） */
 const STATUS_ORDER: TreeNodeStatus[] = ["已走过", "可达", "已剪枝", "嫁接"];
-
-/** 章节切换器的一项：解析出的章号 + 标签 + 章节本体（一次算好，默认章、选中章与画布 key 共用） */
-interface ChapterItem {
-  no: number;
-  label: string;
-  chapter: TreeChapter;
-  /**
-   * 章节键 `章号-下标`：**章号不唯一**（只有标题、没有节点的章会退化成 `index + 1`，撞上下一个真实章号），
-   * 所以选中态、切换器的 key/testid 都以这个复合键为准——只按章号认会让第二个同号章永远点不开。
-   */
-  key: string;
-}
 
 /**
  * SVG 画布：按 viewBox 自适应宽度，渲染边与节点；v1.6 加缩放平移与 roving tabIndex。
@@ -317,7 +313,7 @@ function TreeList({
   return (
     <div data-testid="tree-list" className="mt-3 space-y-3">
       {groups.map((g) => (
-        <div key={g.status} data-testid={`tree-list-group-${g.status}`}>
+        <div key={g.status} data-testid={`tree-list-group-${STATUS_SLUG[g.status]}`}>
           <p className="text-meta tracking-[.2em] text-ink-hint">
             {g.status} · {g.nodes.length}
           </p>
@@ -418,7 +414,7 @@ export default function StoryTreeScreen() {
 
   // 列表/图形：null=按图大小自动（>BIG_GRAPH_NODES 降级列表），点过切换就由玩家说了算（状态留在本屏）
   const [modePref, setModePref] = useState<"graph" | "list" | null>(null);
-  // 选中的章节键（`章号-下标`；null = 默认章：带进度指针的那一章，否则最后一章）
+  // 选中的章节键（lib/tree-view 的 chapterItems 算出；null = 默认章：带进度指针的那一章，否则最后一章）
   const [chapterSel, setChapterSel] = useState<string | null>(null);
   // 被点过的归档药丸下标（归档只有目录信息，点它给一句实话——不装作能打开）
   const [archiveHint, setArchiveHint] = useState<number | null>(null);
@@ -430,8 +426,9 @@ export default function StoryTreeScreen() {
     (signal) => fetchTree(worldId ?? "", signal),
     worldId ? `tree:${worldId}:${treeStamp}` : null,
     {
-      // 换世界线 / 换 stamp（编辑完成、回退完成、手动刷新）先把旧树清掉：屏内回「载入剧情树…」而不是闪一下旧树
-      resetOnKey: true,
+      // 重取（编辑完成 / 回退完成 / 手动刷新 / SSE treeEdited）**不清旧树**：画布留在原地，视图（缩放/平移）
+      // 与 DOM 身份都不丢——从前的 resetOnKey 让旧树一清、画布随渲染守卫卸载，回来时视图被重新「适应」一遍，
+      // 抓住旧节点的调用方（含测试）还会拿着一个已经摘下的 DOM。换世界线仍旧立刻清屏，见下面 treeData 的闸。
       mapError: (e) => {
         const msg = (e as Error).message || String(e);
         // 404 = 本章尚未规划出树：给玩家一句人话
@@ -443,9 +440,15 @@ export default function StoryTreeScreen() {
     (signal) => fetchHistory(worldId ?? "", signal),
     worldId ? `history:${worldId}:${treeStamp}` : null,
   );
-  const markdown = treeReq.data?.markdown ?? null;
+  // 只采用「属于当前世界线」的那一份树：换世界线的那一刻 data 还是上一世界的（不清旧数据是为了重取不拆画布），
+  // 用响应自带的 worldId 把它挡在门外——换世界线照旧立刻清屏（载入态），不会闪一下上一条世界线的节点。
+  const treeData = treeReq.data && treeReq.data.worldId === worldId ? treeReq.data : null;
+  const markdown = treeData?.markdown ?? null;
   const loading = treeReq.loading;
   const error = treeReq.error;
+  // 屏上此刻有没有可画的东西（树本身，或解析失败时的原文回退）。加载占位只在「什么都没得画」时出现；
+  // 重取时画布不拆，只在顶上补一行轻提示。
+  const hasContent = markdown !== null;
   // 快照索引（逐轮回退用）；旧世界没有 history 目录 → 空数组，一切按现状降级。
   // useMemo 稳住空数组的引用：`?? []` 每次渲染都是新数组，会让下游 useMemo 每次都重算（exhaustive-deps 警告）
   const snapshots: WorldSnapshotMeta[] = useMemo(() => historyReq.data?.snapshots ?? [], [historyReq.data]);
@@ -453,15 +456,9 @@ export default function StoryTreeScreen() {
   // 解析失败（返回 null）时屏内回退显示原文
   const tree: StoryTree | null = useMemo(() => (markdown ? parseStoryTree(markdown) : null), [markdown]);
 
-  // 章节条目（章号 + 标签 + 本体 + 复合键）：切换器、默认章、选中章与画布 key 共用一次解析
-  const chapters: ChapterItem[] = useMemo(
-    () =>
-      (tree?.chapters ?? []).map((ch, i) => {
-        const no = chapterNoOf(ch, i);
-        return { no, label: chapterLabel(ch, i), chapter: ch, key: `${no}-${i}` };
-      }),
-    [tree],
-  );
+  // 章节条目（章号 + 标签 + 本体 + 稳定键）：切换器、默认章、选中章与画布 key 共用一次解析。
+  // 键规则在 lib/tree-view 的 chapterItems：章号唯一时用章号，重号时退回 `章号-下标`（保证 testid 逐项唯一、都点得开）
+  const chapters: ChapterItem[] = useMemo(() => chapterItems(tree?.chapters ?? []), [tree]);
 
   // 默认章：带「当前进度」指针的那一章（进度可能在更早的章上），否则最后一章
   const defaultChapterIdx = useMemo(() => {
@@ -471,17 +468,22 @@ export default function StoryTreeScreen() {
     return chapters.length - 1;
   }, [chapters]);
 
-  // 选中的章：按复合键认（重取树后仍指向同一章）；键消失（编辑删了那一章/章序变了）就退回默认章
+  // 选中的章：按章节键认（重取树后仍指向同一章）；键消失就退回默认章。
+  // 一处例外：`chapterItems` 的键在「章号由唯一变重号」时会长出下标后缀（`"3"` → `"3-1"`），旧键因此消失——
+  // 此时按章号认回第一颗同号药丸，别让玩家的选中白白漂回默认章（与旧复合键在编辑下的表现对齐）。
   const chapterIdx = useMemo(() => {
     if (chapterSel === null) return defaultChapterIdx;
-    const found = chapters.findIndex((c) => c.key === chapterSel);
-    return found === -1 ? defaultChapterIdx : found;
+    const exact = chapters.findIndex((c) => c.key === chapterSel);
+    if (exact !== -1) return exact;
+    const no = Number(chapterSel);
+    const byNo = Number.isFinite(no) ? chapters.findIndex((c) => c.no === no) : -1;
+    return byNo === -1 ? defaultChapterIdx : byNo;
   }, [chapterSel, chapters, defaultChapterIdx]);
 
   const chapter: TreeChapter | null = chapters[chapterIdx]?.chapter ?? null;
 
   /** 画布 key：换章必回「适应」——两章画布尺寸恰好相同时 layout 依赖不会变，靠 key 强制重挂重置视图。
-      用章节键（章号-下标）而不是章号：同号的两章不会共用一个 key */
+      用章节键（章号唯一即章号，重号才是章号-下标）而不是裸下标：画布 key 跟着内容走，重取树时不会错位 */
   const chapterKey = chapter ? `ch-${chapters[chapterIdx]!.key}` : "ch-none";
 
   // 布局（纯净函数）：节点矩形尺寸与画布尺寸一并定下
@@ -508,7 +510,7 @@ export default function StoryTreeScreen() {
   const focusCanReplay = focusSnapshot !== null && canReplaySnapshot(snapshots, focusSnapshot.seq);
 
   /**
-   * 切章：按章节键（章号-下标）选中并收掉节点焦点（详情里的节点已经不在这一章里了），
+   * 切章：按章节键选中并收掉节点焦点（详情里的节点已经不在这一章里了），
    * 模式回到自动判定——否则在手选过列表的大章上切到小章，会卡在列表态而切换器（只在降级时出现）看不见。
    */
   const selectChapter = (key: string) => {
@@ -600,7 +602,7 @@ export default function StoryTreeScreen() {
                 <button
                   key={i}
                   type="button"
-                  data-testid={`tree-archive-${i}`}
+                  data-testid={`tree-archive-${archiveKey(line, i)}`}
                   aria-pressed={archiveHint === i}
                   onClick={() => setArchiveHint(archiveHint === i ? null : i)}
                   className={`whitespace-nowrap rounded-full border px-3 py-1 text-meta transition-colors ${
@@ -642,16 +644,24 @@ export default function StoryTreeScreen() {
 
         {/* 主体：章节切换 →（左）画布/列表 ·（右 ≥lg）节点详情 */}
         <div className="mt-4 min-h-0 flex-1 overflow-y-auto px-6 pb-4">
-          {loading && <p className="mt-6 animate-pulse text-ui text-ink-hint">载入剧情树…</p>}
+          {loading && !hasContent && <p className="mt-6 animate-pulse text-ui text-ink-hint">载入剧情树…</p>}
 
-          {!loading && error && (
+          {/* 重取（刷新/编辑完成/回退）时画布不拆：顶上补一行轻提示，不当成「还没加载」占掉屏体 */}
+          {loading && hasContent && (
+            <p data-testid="tree-refreshing" className="mt-6 animate-pulse text-meta tracking-[.1em] text-ink-hint">
+              正在刷新剧情树…
+            </p>
+          )}
+
+          {/* 错误照常上屏：重取失败时保留屏上旧树（画布不拆），只把错误条摆出来，不整块清空 */}
+          {error && (
             <p data-testid="tree-error" className="mt-6 text-ui text-red-400">
               {error}
             </p>
           )}
 
           {/* 解析失败：回退显示原文 */}
-          {!loading && !error && markdown !== null && tree === null && (
+          {markdown !== null && tree === null && (
             <pre
               data-testid="tree-raw"
               className="mt-4 max-h-[60vh] overflow-auto whitespace-pre-wrap rounded-lg border border-white/10 bg-panel-soft p-4 text-ui leading-relaxed text-ink-body"
@@ -660,12 +670,12 @@ export default function StoryTreeScreen() {
             </pre>
           )}
 
-          {!loading && !error && tree && tree.chapters.length === 0 && (
+          {tree && tree.chapters.length === 0 && (
             <p className="mt-6 text-ui text-ink-hint">当前世界还没有可绘制的章节节点</p>
           )}
 
           {/* 章节切换器：每一章都到得了（从前只画进度指针那一章）；进度章标「当前」 */}
-          {!loading && !error && chapters.length > 0 && (
+          {chapters.length > 0 && (
             <div
               data-testid="tree-chapters"
               role="group"
@@ -701,7 +711,7 @@ export default function StoryTreeScreen() {
           <div className={`grid min-h-0 gap-4 ${focusNode ? "lg:grid-cols-[minmax(0,1fr)_380px]" : ""}`}>
             <div className="min-w-0">
               {/* 大图（> 40 节点）：默认列表，并给出显式切换 */}
-              {!loading && !error && tree && chapter && bigGraph && (
+              {tree && chapter && bigGraph && (
                 <div
                   data-testid="tree-view-toggle"
                   className="mt-3 flex flex-wrap items-center gap-2 text-ui text-ink-hint"
@@ -736,8 +746,9 @@ export default function StoryTreeScreen() {
                 </div>
               )}
 
-              {!loading && !error && tree && chapter && mode === "graph" && (
-                // key 跟章走：换章必回「适应」（见 chapterKey 注释）
+              {tree && chapter && mode === "graph" && (
+                // key 跟章走：换章必回「适应」（见 chapterKey 注释）。重取（treeStamp 变）不换 key，
+                // 画布不重挂——视图与 DOM 身份都留着。
                 <TreeCanvas
                   key={chapterKey}
                   chapter={chapter}
@@ -748,7 +759,7 @@ export default function StoryTreeScreen() {
                 />
               )}
 
-              {!loading && !error && tree && chapter && mode === "list" && (
+              {tree && chapter && mode === "list" && (
                 <TreeList
                   nodes={layout.nodes}
                   currentId={chapter.current}

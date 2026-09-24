@@ -10,7 +10,7 @@
 //   3. 基线里方言的字段集合 = 原先所有 beforeEach/afterEach 复位字段的**并集**：并集之外必然有人在靠泄漏
 //      （拆出来那一轮就是靠它把「某组复位得比它依赖的少」照出来的）。
 import { cleanup, fireEvent, screen } from "@testing-library/react";
-import { afterEach, beforeEach, vi } from "vitest";
+import { afterEach, beforeEach, expect, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "../../src/lib/settings";
 import { disposeStore, useGameStore } from "../../src/store/game";
 import type { GameStore } from "../../src/store/types";
@@ -127,6 +127,34 @@ export class FakeSpeechRecognition {
 /** viewBox 解析成 [x, y, w, h]（断言缩放比例用） */
 export function box(attr: string | null): number[] {
   return (attr ?? "").split(" ").map(Number);
+}
+
+/**
+ * 读画布 viewBox 的「会自证」入口（缩放用例专用）。
+ *
+ * 缩放用例的红有两种成因，外观一模一样（viewBox 看起来被复位回「适应」），事后只有字符串断言分不出来：
+ *   ① 视图真被写回了 fit（组件把状态复位了）；
+ *   ② 用例抓住的那颗 DOM 节点已经不在这棵树上了（画布重挂 → 旧节点游离、永远停在旧 viewBox）。
+ * 本函数每次都**按 testid 重新查当前树上的那颗**，取它的 viewBox；同时断言先前抓住的节点还在文档里、
+ * 且仍是同一颗元素——一旦是「过期节点」，断言消息把旧节点的值、当前节点的值、是不是同一颗一起打出来，
+ * 下次红灯当场就能分清是「视图被复位」还是「抓的是旧节点」。
+ *
+ * @param {string} testId 画布 testid（tree-canvas / genealogy-canvas）
+ * @param {Element} captured 用例先前抓住的那个节点（用来做身份/连通性对比）
+ * @returns {string} 当前树上那颗节点的 viewBox（调用方再喂给 {@link box} 断言比例）
+ */
+export function readViewBox(testId: string, captured: Element): string {
+  const live = screen.getByTestId(testId);
+  const capturedVb = captured.getAttribute("viewBox");
+  const liveVb = live.getAttribute("viewBox");
+  const same = live === captured;
+  expect(
+    captured.isConnected && same,
+    `画布节点已过期（「视图被复位」与「抓的是旧节点」是两回事）：` +
+      `captured viewBox=${capturedVb ?? "-"} isConnected=${captured.isConnected} · ` +
+      `live viewBox=${liveVb ?? "-"} same=${same}`,
+  ).toBe(true);
+  return liveVb ?? "";
 }
 
 /**

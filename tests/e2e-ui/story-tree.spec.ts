@@ -267,8 +267,8 @@ test("章节切换器：每章一枚药丸（进度章标「当前」），切�
 
   // 解析出的两章各一枚药丸（章号来自节点 id 前缀，标题来自 `## 第 N 章：标题`）
   await expect(bar.locator("button")).toHaveCount(2);
-  const first = page.getByTestId("tree-chapter-1-0");
-  const second = page.getByTestId("tree-chapter-2-1");
+  const first = page.getByTestId("tree-chapter-1");
+  const second = page.getByTestId("tree-chapter-2");
   await expect(first).toContainText("第 1 章 · 雨夜教堂");
   await expect(second).toContainText("第 2 章 · 白昼街市");
 

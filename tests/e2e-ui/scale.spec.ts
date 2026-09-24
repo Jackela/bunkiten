@@ -256,8 +256,8 @@ test("剧情图 · 600 节点大树：大章默认降级列表、切图形后 20
   const bar = page.getByTestId("tree-chapters");
   await expect(bar).toBeVisible();
   await expect(bar.locator("button")).toHaveCount(CHAPTERS);
-  const ch1 = page.getByTestId("tree-chapter-1-0");
-  const ch2 = page.getByTestId("tree-chapter-2-1");
+  const ch1 = page.getByTestId("tree-chapter-1");
+  const ch2 = page.getByTestId("tree-chapter-2");
   await expect(ch1).toContainText("第 1 章 · 长夜回廊");
   await expect(ch1).toContainText("当前");
   await expect(ch1).toHaveAttribute("aria-pressed", "true");

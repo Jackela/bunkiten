@@ -8,7 +8,7 @@
 //     因为重演要退到「该幕开演前」的状态；backup 不是一幕，退到它上下文会接错。
 //   两者名字都叫「prev…Seq」，但一个是「上一份不同的内容」、一个是「上一幕开演前」——合并必错一边。
 import type { WorldSnapshotMeta } from "./acp";
-import type { TreeChapter } from "./parser";
+import type { TreeChapter, TreeNodeStatus } from "./parser";
 
 /**
  * 节点上挂的快照引用：最早匹配快照的序号与「第几轮」。turn 仍由 {@link snapshotTurnNo} 算出（纯函数，
@@ -54,6 +54,66 @@ export function chapterLabel(chapter: TreeChapter, index: number): string {
   const no = chapterNoOf(chapter, index);
   const title = chapter.title.trim();
   return title && title !== `第 ${no} 章` ? `第 ${no} 章 · ${title}` : `第 ${no} 章`;
+}
+
+/**
+ * 章节切换器的一项：解析出的章号 + 标签 + 章节本体 + **稳定键**（一次算好，默认章、选中章与画布 key 共用）。
+ */
+export interface ChapterItem {
+  no: number;
+  label: string;
+  chapter: TreeChapter;
+  /**
+   * 章节键（切换器的 key/testid、选中态、画布 key 都用它）：
+   * **章号在本章列表里唯一时就是章号本身**（`"2"` → testid `tree-chapter-2`）；
+   * 章号重号（只有标题、没有节点的章会退化成 `index + 1`，撞上下一个真实章号）时退回 `` `${no}-${i}` ``（i = 数组下标），
+   * 保证两颗药丸的 testid 仍逐项唯一、都点得开。用章号单独当键会让第二个同号章永远点不开，用下标单独当键又会在
+   * 「编辑改动了章序」时错位——这正是要消掉的债（见 docs/ARCHITECTURE.md 的 data-testid 契约）。
+   */
+  key: string;
+}
+
+/**
+ * 把解析出的章节列表算成切换器条目（章号 + 标签 + 稳定键，纯函数）。
+ * 键规则见 {@link ChapterItem.key}：**章号唯一 → 章号当键**；**重号 → `` `${no}-${下标}` ``**。
+ * @param {TreeChapter[]} chapters 解析出的章节列表
+ * @returns {ChapterItem[]} 与入参同序的条目
+ */
+export function chapterItems(chapters: TreeChapter[]): ChapterItem[] {
+  const base = chapters.map((ch, i) => {
+    const no = chapterNoOf(ch, i);
+    return { no, label: chapterLabel(ch, i), chapter: ch };
+  });
+  const count = new Map<number, number>();
+  for (const it of base) count.set(it.no, (count.get(it.no) ?? 0) + 1);
+  return base.map((it, i) => ({ ...it, key: count.get(it.no) === 1 ? String(it.no) : `${it.no}-${i}` }));
+}
+
+/**
+ * 节点状态 → 稳定的 ASCII slug（列表分组的 testid 用）。中文状态是**展示用词**，进 testid 会把契约绑在文案上，
+ * 哪天用词变了 testid 会静默变名；slug 与用词解耦（`tree-list-group-visited|-reachable|-pruned|-grafted`）。
+ */
+export const STATUS_SLUG: Record<TreeNodeStatus, string> = {
+  已走过: "visited",
+  可达: "reachable",
+  已剪枝: "pruned",
+  嫁接: "grafted",
+};
+
+/** 归档行里的 `第 N 章` 章号（与 {@link chapterNoOf} 同一族正则；不锚定行首——归档行形如 `- 第 1 章：…`） */
+const ARCHIVE_CHAPTER_RE = /第\s*(\d+)\s*章/;
+
+/**
+ * 归档药丸的稳定键：取该行 `第 N 章` 的数字当键（`第 1 章…` → `"1"` → testid `tree-archive-1`）。
+ * 抽不出章号时退回 `` `line-${index}` ``（index = 数组下标；归档行本就是逐项唯一的一行，无号时下标是唯一可用且不撞的兜底，
+ * 比裸下标好——有号的行的键跟内容走，编辑加了无号行也不会让它整个错位）。
+ * @param {string} line 归档区原文行
+ * @param {number} index 该行在归档数组里的下标（0 起；仅作兜底键）
+ * @returns {string} 归档药丸的 testid 键
+ */
+export function archiveKey(line: string, index: number): string {
+  const m = ARCHIVE_CHAPTER_RE.exec(line);
+  return m ? m[1]! : `line-${index}`;
 }
 
 /**
