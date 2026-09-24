@@ -27,6 +27,7 @@ import {
 } from "../server/providers-catalog.mjs";
 import { credentialsPath } from "../server/credentials.mjs";
 import { PROVIDERS } from "../shared/providers.mjs";
+import { makeFetch } from "./helpers/http-doubles.mjs";
 
 /** 临时 HOME（真磁盘验 mode / 往返；结束即删） */
 function tmpHome() {
@@ -45,17 +46,8 @@ function doc(providers: any[] = [entry()], updatedAt: string | null = "2026-01-0
   return d;
 }
 
-/** 假 fetch（记录调用；refreshCatalog 只读 res.ok 与 res.text()） */
-function makeFetch(route: (url: string, call: number) => { status?: number; text?: string }) {
-  const calls: { url: string }[] = [];
-  const impl = (async (url: any) => {
-    calls.push({ url: String(url) });
-    const r = route(String(url), calls.length);
-    const status = r.status ?? 200;
-    return { ok: status >= 200 && status < 300, status, text: async () => r.text ?? "" };
-  }) as unknown as typeof fetch;
-  return { impl, calls };
-}
+// 假 fetch（记录调用；refreshCatalog 只读 res.ok 与 res.text()）收在 tests/helpers/http-doubles.mjs
+// （与 credentials 单测同一份；回包面取超集，这里只用 text）。
 
 beforeEach(() => {
   __resetCatalogMemo();

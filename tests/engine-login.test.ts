@@ -2,11 +2,7 @@
 // 每条都对着「改坏哪一处会红」：成功回调只调一次 / 超时回调与自停 / 取消立刻生效 / 单轮失败不算数。
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { watchLogin } from "../src/lib/engine-login";
-
-/** 最小 JSON Response（node 环境自带 Response） */
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-}
+import { jsonResponse } from "./helpers/http-doubles.mjs";
 
 describe("watchLogin：登录等待的轮询", () => {
   beforeEach(() => {

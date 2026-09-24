@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { startStack, type StackHandle } from "./harness.mjs";
+import { waitFor } from "../helpers/poll.mjs";
 
 /** startStack 的入参形状（真源在 harness 的 JSDoc，不在这里抄第二份） */
 type StackOptions = NonNullable<Parameters<typeof startStack>[0]>;
@@ -28,21 +29,13 @@ async function stack(opts: StackOptions = {}): Promise<StackHandle> {
 }
 
 /**
- * 轮询直到异步谓词为真（**不用 harness 的 waitFor**：那个谓词是同步口径，返回 Promise 会被当成真）。
+ * 轮询直到异步谓词为真。轮询内核收在 tests/helpers/poll.mjs（**会 await 谓词返回值**——这里以前自己抄过
+ * 一份同步口径的轮询，注释记着「harness 的 waitFor 是同步口径、async 谓词会被当成真」，那份坑已随真源收口）。
  * @param pred 异步谓词
  * @param opts 超时与失败标签
  */
-async function until(
-  pred: () => Promise<boolean>,
-  { timeout = 15000, label = "条件" }: { timeout?: number; label?: string } = {},
-) {
-  const deadline = Date.now() + timeout;
-  while (Date.now() < deadline) {
-    if (await pred()) return;
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  throw new Error(`超时：${label}`);
-}
+const until = (pred: () => Promise<boolean>, { timeout = 15000, label = "条件" } = {}) =>
+  waitFor(pred, { timeoutMs: timeout, intervalMs: 100, label });
 
 const grokAuthFile = (s: StackHandle) => path.join(s.home, ".grok", "auth.json");
 const codexAuthFile = (s: StackHandle) => path.join(s.home, ".codex", "auth.json");
@@ -99,10 +92,14 @@ describe("POST /api/engine/login|logout：把玩家自己的 CLI 登录流程拉
     ).toBe(false);
   });
 
-  it("canLogin 是布尔、按当前引擎算（登录入口在不在，GUI 据此禁用按钮）", async () => {
+  it("canLogin 按当前引擎算（登录入口在不在，GUI 据此禁用按钮）：两条垫片都在 PATH/env 上 → 都是 true", async () => {
+    // harness 把 bin/grok 前置进 PATH、并把 BUNKITEN_CODEX_BIN 指到 bin/codex——两个描述符的 authAvailable
+    // 因此都该为真。此前这里只断言 `typeof canLogin === "boolean"`，**canLogin 恒 true/恒 false 都能过**
+    // （近假绿，v1.13 收紧成定值）。残余局限：造不出「入口不在」的现场（拿掉 PATH 垫片会让 grok 栈起不来），
+    // 所以「按引擎分支」的负面路径仍由 server 侧描述符单测（tests/engines.test.ts）覆盖。
     const grok = await stack({ auth: "missing" });
-    expect(typeof (await grok.getJSON("/api/auth")).body.canLogin).toBe("boolean");
+    expect((await grok.getJSON("/api/auth")).body.canLogin).toBe(true);
     const codex = await stack({ credentials: codexCreds(), codexAuth: "missing" });
-    expect(typeof (await codex.getJSON("/api/auth")).body.canLogin).toBe("boolean");
+    expect((await codex.getJSON("/api/auth")).body.canLogin).toBe(true);
   });
 });

@@ -16,21 +16,13 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { startStack } from "./harness.mjs";
+import { waitFor } from "../helpers/poll.mjs";
 
 // 可辨识的假 JPEG 字节（内容断言用）：JPEG SOI 前缀 + 可读标记
 const fakeJpeg = (tag: string) =>
   Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from(`BUNKITEN-${tag}`)]);
 // /img 查询串构造：URLSearchParams 会把 chinese 与 `/` 正确百分号编码（穿越用例依赖这个）
 const imgUrl = (params: Record<string, string>) => "/img?" + new URLSearchParams(params).toString();
-// 轮询等待（stdout 断言用；events 用 stack.waitFor）
-async function until(pred: () => boolean, timeout = 2000) {
-  const deadline = Date.now() + timeout;
-  while (Date.now() < deadline) {
-    if (pred()) return true;
-    await new Promise((r) => setTimeout(r, 20));
-  }
-  return pred();
-}
 
 describe("集成：假 ACP 引擎 + 真 acp-server（CONTRACTS §8 1–5、7–8）", () => {
   let stack: any;
@@ -300,7 +292,11 @@ describe("集成 §8-6：sniffPreset 世界→剧本（继续世界：w1。→ �
     const r = await stack.prompt("继续世界：w1。");
     expect(r.status).toBe(200);
     await stack.waitFor((ev: any[]) => ev.some((e) => e.type === "turn_end"), { label: "turn_end(⑥)" });
-    expect(await until(() => stack.stdout().includes("current preset: demo (world w1)"))).toBe(true);
+    await waitFor(() => stack.stdout().includes("current preset: demo (world w1)"), {
+      timeoutMs: 2000,
+      intervalMs: 20,
+      label: "stdout: current preset: demo (world w1)",
+    });
 
     // 续玩后：旧档直服按 currentPresetId=demo 命中 demo 目录（证明「当前剧本」换成 w1 的剧本）
     const hit = await stack.getBytes(imgUrl({ p: "assets/立绘-林夏.jpg" }));
@@ -381,7 +377,11 @@ describe("集成：回合原文日志 + 质量守卫（v1.7）", () => {
 
     // 回合自带 **行动** → 守卫不触发：先等日志行刷出（它写在守卫点之后、stdout 有序），
     // 此时仍未出现追问日志，才能证明这一轮没有补发
-    expect(await until(() => stack.stdout().includes("turn log written: w1/logs/0001.json"))).toBe(true);
+    await waitFor(() => stack.stdout().includes("turn log written: w1/logs/0001.json"), {
+      timeoutMs: 2000,
+      intervalMs: 20,
+      label: "stdout: turn log written w1/logs/0001.json",
+    });
     expect(stack.stdout().includes("自动追问一次")).toBe(false);
   }, 15000);
 
@@ -400,7 +400,11 @@ describe("集成：回合原文日志 + 质量守卫（v1.7）", () => {
     expect(got.filter((e: any) => e.type === "turn_end")).toHaveLength(1);
 
     // 只追问了一次（若实现成了循环，第二次追问会把「美术：」条目按顺次消费掉，且追问日志会打两遍）
-    expect(await until(() => stack.stdout().split("自动追问一次").length - 1 === 1)).toBe(true);
+    await waitFor(() => stack.stdout().split("自动追问一次").length - 1 === 1, {
+      timeoutMs: 2000,
+      intervalMs: 20,
+      label: "stdout: 自动追问恰好一次",
+    });
 
     // log 条目：prompt 是玩家输入、text 是补全后的全文（正文 + 追问补的选项段）
     const logsDir = path.join(stack.root, "state", "worlds", "w1", "logs");
@@ -434,7 +438,11 @@ describe("集成：回合原文日志 + 质量守卫（v1.7）", () => {
     expect(readdirSync(logsDir).length).toBe(logsBefore); // 非正戏回合不产生日志条目
     expect(readdirSync(histDir).length).toBe(histBefore);
     // 仍是 ⑫ 那一次追问，没有新增（轮询等 ⑫ 的日志行落定后再读，避免 pipe 时序抖动）
-    expect(await until(() => stack.stdout().split("自动追问一次").length - 1 === 1)).toBe(true);
+    await waitFor(() => stack.stdout().split("自动追问一次").length - 1 === 1, {
+      timeoutMs: 2000,
+      intervalMs: 20,
+      label: "stdout: 自动追问恰好一次",
+    });
   }, 15000);
 
   it("⑭ 章末回合（【章】第 1 章 完，每轮协议「以选项结束」的唯一合法例外）不触发追问：log 照写含章标记全文、HTTP 200", async () => {
@@ -447,7 +455,11 @@ describe("集成：回合原文日志 + 质量守卫（v1.7）", () => {
 
     // 回合缺 **行动** 但带章标记 → 守卫不追问：先等本回合日志行刷出（它在守卫点之后落定），
     // 追问计数仍是 ⑫ 那一次；若误追问，fake 引擎会按顺次消费吃掉后续条目并把「自动追问一次」打成第二遍
-    expect(await until(() => stack.stdout().includes("turn log written: w1/logs/0003.json"))).toBe(true);
+    await waitFor(() => stack.stdout().includes("turn log written: w1/logs/0003.json"), {
+      timeoutMs: 2000,
+      intervalMs: 20,
+      label: "stdout: turn log written w1/logs/0003.json",
+    });
     expect(stack.stdout().split("自动追问一次").length - 1).toBe(1);
 
     // log 条目照写（豁免只免追问，不免留痕）：text 是章标记全文的原文回溯

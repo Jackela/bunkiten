@@ -18,9 +18,25 @@ import readline from "node:readline";
 import type { AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
 import { startStack, type StackHandle } from "./harness.mjs";
+import { startMockCatalog, waitForSource } from "../helpers/mock-catalog.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const MEDIA_MCP = path.join(ROOT, "server", "media-mcp.mjs");
+
+/** 只回固定 JSON 的本地目录服务器（BUNKITEN_PROVIDERS_URL 指它；含一个内置表里没有的 id） */
+const MOCK_CATALOG_DOC = {
+  version: 1,
+  updatedAt: "2026-01-02T03:04:05.000Z",
+  providers: [
+    {
+      id: "newcomer-llm",
+      label: "新来的服务",
+      kind: "llm",
+      baseUrl: "https://newcomer.example/v1",
+      models: [],
+    },
+  ],
+};
 
 /** startStack 的入参形状（真源在 harness 的 JSDoc，不在这里抄第二份） */
 type StackOptions = NonNullable<Parameters<typeof startStack>[0]>;
@@ -271,48 +287,8 @@ describe("引擎凭据端点（GET/POST /api/credentials）", () => {
 });
 
 describe("在线目录的新 provider 可保存（v1.10，docs/adr/0020）", () => {
-  /** 只回固定 JSON 的本地目录服务器（BUNKITEN_PROVIDERS_URL 指它；含一个内置表里没有的 id） */
-  async function startMockCatalog() {
-    const server = http.createServer((_req, res) => {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(
-        JSON.stringify({
-          version: 1,
-          updatedAt: "2026-01-02T03:04:05.000Z",
-          providers: [
-            {
-              id: "newcomer-llm",
-              label: "新来的服务",
-              kind: "llm",
-              baseUrl: "https://newcomer.example/v1",
-              models: [],
-            },
-          ],
-        }),
-      );
-    });
-    await new Promise((r) => server.listen(0, "127.0.0.1", () => r(undefined)));
-    const port = (server.address() as AddressInfo).port;
-    return {
-      url: `http://127.0.0.1:${port}/providers.json`,
-      close: () => new Promise((r) => server.close(() => r(undefined))),
-    };
-  }
-
-  /** 轮询 /api/providers 直到 source 到期望值（启动期抓取是异步的；拿可见证据而不是 sleep） */
-  async function waitForSource(s: any, want: string, timeout = 8000) {
-    const deadline = Date.now() + timeout;
-    for (;;) {
-      const r = await s.getJSON("/api/providers");
-      if (r.status === 200 && r.body?.source === want) return r.body;
-      if (Date.now() > deadline)
-        throw new Error(`timeout waiting for source=${want}（最后一次：${JSON.stringify(r.body)}）`);
-      await new Promise((res) => setTimeout(res, 25));
-    }
-  }
-
   it("目录里的远程 id 能保存成功（200）并回显；未知 id 仍 400", async () => {
-    const mock = await startMockCatalog();
+    const mock = await startMockCatalog(MOCK_CATALOG_DOC);
     const s = await stack({ extraEnv: { BUNKITEN_DISABLE_UPDATE: "0", BUNKITEN_PROVIDERS_URL: mock.url } });
     try {
       const catalog = await waitForSource(s, "remote");

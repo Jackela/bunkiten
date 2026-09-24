@@ -10,10 +10,10 @@
 // 两道既有闸（跨站 403 / body 5MB→413）由 http-util.mjs 的中间件统一覆盖、既有用例已测，这里不重复。
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import fs from "node:fs";
-import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { startStack } from "./harness.mjs";
+import { startMockCatalog, waitForSource } from "../helpers/mock-catalog.mjs";
 import { PROVIDER_IDS } from "../../shared/providers.mjs";
 
 /** mock 发布源的目录文档（一条一眼可辨的条目，用来证明「拿到的是远端那份」而不是内置表） */
@@ -31,48 +31,6 @@ const MOCK_DOC = {
     },
   ],
 };
-
-/**
- * 起一个只回固定 JSON 的本地目录服务器（`BUNKITEN_PROVIDERS_URL` 指它），并记录请求数（验「零请求」/「只发一轮」）。
- * @param payload 固定回的 JSON
- * @param opts.failFirst 首个请求回 **503**、其后回 200——用来把**启动期**那次抓取挡掉，
- *   让「成功的那次」只能来自 `GET /api/providers` 触发的后台 revalidate（把因果钉死，不靠时序巧合）
- */
-function startMockCatalog(payload: unknown, opts: { failFirst?: boolean } = {}) {
-  const requests: string[] = [];
-  const server = http.createServer((req, res) => {
-    requests.push(req.url ?? "");
-    if (opts.failFirst && requests.length === 1) {
-      res.writeHead(503, { "content-type": "text/plain" });
-      res.end("starting up");
-      return;
-    }
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify(payload));
-  });
-  return new Promise<{ url: string; count: () => number; close: () => Promise<void> }>((resolve) => {
-    server.listen(0, "127.0.0.1", () => {
-      const port = (server.address() as import("net").AddressInfo).port;
-      resolve({
-        url: `http://127.0.0.1:${port}/providers.json`,
-        count: () => requests.length,
-        close: () => new Promise((r) => server.close(() => r(undefined))),
-      });
-    });
-  });
-}
-
-/** 轮询 /api/providers 直到 source 到期望值（启动期抓取是异步的；拿可见证据而不是 sleep） */
-async function waitForSource(s: any, want: string, timeout = 8000) {
-  const deadline = Date.now() + timeout;
-  for (;;) {
-    const r = await s.getJSON("/api/providers");
-    if (r.status === 200 && r.body?.source === want) return r.body;
-    if (Date.now() > deadline)
-      throw new Error(`timeout waiting for source=${want}（最后一次：${JSON.stringify(r.body)}）`);
-    await new Promise((res) => setTimeout(res, 25));
-  }
-}
 
 describe("服务目录更新通道（v1.10，docs/adr/0020）：远端 → 缓存 → 内置兜底", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "bunkiten-providers-home-"));

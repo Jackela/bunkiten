@@ -1,136 +1,25 @@
 // E2E 进程编排：child_process 起 acp-server（7800，被占自动 +1）+ vite dev（5173，被占自动 +1），
 // 解析各自 stdout 拿实际端口，vite 用 ACP_PROXY_TARGET 指向真实 acp 端口。afterAll 调 stop() 清理。
-import { spawn } from "node:child_process";
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+//
+// 与 tests/integration/harness.mjs 的分工（两份编排器**刻意各留一份**，不合并成一个内核）：
+//   · 本文件是**真引擎**编排：不 seed 任何数据，起的是玩家的真 game root，只负责 acp-server + vite 两段
+//     进程生命周期与端口解析（真引擎冒烟 tests/e2e/smoke.spec.ts 用）；
+//   · harness.mjs 是**假引擎 fixture**：临时 game root + PATH 垫片 + 种子数据 + SSE/HTTP 断言面，
+//     起的是 tests/integration/fake-engine.mjs（集成层与假引擎 UI e2e 用，见 tests/helpers/fake-stack.mjs）。
+//   两者的失效模式、依赖、断言面都不同，合并只会把「真引擎要真登录态」与「假引擎要脚本队列」揉成一份
+//   谁都不敢改的东西。**真正共用的原语**（SIGTERM→宽限→SIGKILL、信号兜底、逐行等 stdout、vite 启动、
+//   轮询、探活）已抽到 tests/helpers/{proc,poll,vite}.mjs——那里是真源，两边的差异只留在本文件与 harness 头部。
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { httpOk, installProcessCleanup, killGracefully, spawnAndAwaitLine } from "./proc.mjs";
+import { waitFor } from "./poll.mjs";
+import { spawnViteDev } from "./vite.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
-/** 诊断 tee：把子进程 stdout 原样落盘（test-results/stack-<slug>.log），排查启动问题时看 */
-function teeFactory(slug) {
-  const dir = path.join(ROOT, "test-results");
-  try {
-    mkdirSync(dir, { recursive: true });
-  } catch {}
-  const file = path.join(dir, `stack-${slug}.log`);
-  try {
-    appendFileSync(file, `--- start ${new Date().toISOString()} cwd=${process.cwd()} ---\n`);
-  } catch {}
-  return (chunk) => {
-    try {
-      appendFileSync(file, chunk);
-    } catch {}
-  };
-}
-
-/** 轮询等待条件成立；超时抛错（label 进错误消息便于定位） */
-function waitFor(predicate, { timeoutMs = 90_000, intervalMs = 400, label = "condition" } = {}) {
-  const deadline = Date.now() + timeoutMs;
-  return new Promise((resolve, reject) => {
-    const tick = async () => {
-      let ok = false;
-      try {
-        ok = await predicate();
-      } catch {
-        /* 轮询期间失败视同未就绪 */
-      }
-      if (ok) return resolve();
-      if (Date.now() > deadline) return reject(new Error(`timeout waiting for ${label}`));
-      setTimeout(tick, intervalMs);
-    };
-    tick();
-  });
-}
-
-async function httpOk(url) {
-  try {
-    return (await fetch(url)).ok;
-  } catch {
-    return false;
-  }
-}
-
-// oxlint-disable-next-line eslint/no-control-regex -- ANSI 颜色码本身就是控制字符（\x1B），这条正则要的就是它
-const ANSI_RE = /\x1B\[[0-9;]*m/g; // vite 在 CI 环境会给 banner 上色，颜色码会打断行匹配
-
-/** 起一个进程并逐行监听 stdout，直到 matcher 命中某行；onSpawn 在 spawn 后立刻回调（供清理注册） */
-function spawnAndAwaitLine(cmd, args, { env, matcher, label, timeoutMs = 90_000, onSpawn }) {
-  return new Promise((resolve, reject) => {
-    const proc = spawn(cmd, args, {
-      cwd: ROOT,
-      env: env ? { ...process.env, ...env } : process.env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    onSpawn?.(proc);
-    const tee = teeFactory(label.replace(/\W+/g, "-"));
-    let buf = "";
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      reject(new Error(`timeout waiting for ${label} (stdout so far: ${buf.slice(-500)})`));
-    }, timeoutMs);
-    const onData = (chunk) => {
-      tee(chunk);
-      buf += chunk.toString();
-      let idx;
-      while ((idx = buf.indexOf("\n")) !== -1) {
-        const line = buf.slice(0, idx);
-        buf = buf.slice(idx + 1);
-        const m = matcher(line.replace(ANSI_RE, ""));
-        if (m) {
-          proc.stdout.removeListener("data", onData);
-          clearTimeout(timer);
-          settled = true;
-          resolve({ proc, match: m });
-          return;
-        }
-      }
-    };
-    proc.stdout.on("data", onData);
-    const stderrBuf = [];
-    proc.stderr.on("data", (d) => {
-      stderrBuf.push(d);
-      process.stderr.write(`[${label}] ${d}`);
-    });
-    proc.on("exit", (code) => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        reject(
-          new Error(
-            `${label} exited early with code ${code} (stderr: ${Buffer.concat(stderrBuf).toString().slice(-800)})`,
-          ),
-        );
-      }
-    });
-  });
-}
-
-function killGracefully(procs) {
-  return Promise.all(
-    procs.map(
-      (p) =>
-        new Promise((resolve) => {
-          if (p.exitCode !== null) return resolve();
-          const t = setTimeout(() => {
-            try {
-              p.kill("SIGKILL");
-            } catch {}
-            resolve();
-          }, 4000);
-          p.once("exit", () => {
-            clearTimeout(t);
-            resolve();
-          });
-          try {
-            p.kill("SIGTERM"); // acp-server 收 SIGTERM 会自带清理 grok 子进程
-          } catch {}
-        }),
-    ),
-  );
-}
+/** 诊断日志落点：test-results/stack-<slug>.log（排障看它；与 fake 栈的 test-results-ui/ 分开） */
+const teeFile = (slug) => path.join(ROOT, "test-results", `stack-${slug}.log`);
 
 /**
  * 起 acp-server + vite，返回 { pageUrl, acpPort, stop() }。
@@ -150,11 +39,13 @@ export async function startStack({ homeDir = null, credentials = null, env = {} 
   const stop = async () => {
     if (stopped) return;
     stopped = true;
+    disposeCleanup();
     await killGracefully(children);
   };
   // 兜底：playwright 进程退出（含崩溃/中断）时同步杀掉子进程。
   // **信号路径必须显式接管**：Node 收到信号默认直接终止、**不触发 'exit'**——只挂 'exit' + SIGINT/SIGTERM
   // 会漏掉关终端（SIGHUP）与 Ctrl-\（SIGQUIT）这两条（同源问题在 integration 栈上实测留下过孤儿进程）。
+  // 语义与说明收在 tests/helpers/proc.mjs 的 installProcessCleanup；dispose 在 stop() 里摘掉监听。
   const emergencyKill = () => {
     for (const p of children) {
       try {
@@ -162,18 +53,7 @@ export async function startStack({ homeDir = null, credentials = null, env = {} 
       } catch {}
     }
   };
-  process.on("exit", emergencyKill);
-  for (const [sig, code] of [
-    ["SIGINT", 130],
-    ["SIGTERM", 143],
-    ["SIGHUP", 129],
-    ["SIGQUIT", 131],
-  ]) {
-    process.on(sig, () => {
-      emergencyKill();
-      process.exit(code);
-    });
-  }
+  const disposeCleanup = installProcessCleanup(emergencyKill);
 
   try {
     return await start(children, stop, { homeDir, credentials, env });
@@ -196,11 +76,16 @@ async function start(children, stop, { homeDir = null, credentials = null, env =
     env: { PORT: "7900", ...(homeDir ? { HOME: homeDir, BUNKITEN_HOME: homeDir } : {}), ...env },
     matcher: (line) => /\[acp\] http:\/\/localhost:(\d+)/.exec(line),
     label: "acp-server listen",
+    teeFile: teeFile("acp-server-listen"),
     onSpawn: (p) => children.push(p),
   });
   const acpPort = acp.match[1];
 
-  await waitFor(() => httpOk(`http://localhost:${acpPort}/api/auth`), { label: "acp-server /api/auth" });
+  await waitFor(() => httpOk(`http://localhost:${acpPort}/api/auth`), {
+    timeoutMs: 90_000,
+    intervalMs: 400,
+    label: "acp-server /api/auth",
+  });
   // 等引擎 session 就绪（boot: initialize → session/new → "<engine> session ready"；两个后端都有这一行）
   await new Promise((resolve, reject) => {
     let buf = "";
@@ -221,17 +106,13 @@ async function start(children, stop, { homeDir = null, credentials = null, env =
     }, 120_000).unref();
   });
 
-  // vite dev：默认 5173，被占自动 +1；代理目标指向 acp 实际端口
-  const viteBin = path.join(ROOT, "node_modules", "vite", "bin", "vite.js");
-  const vite = await spawnAndAwaitLine(process.execPath, [viteBin], {
-    env: { ACP_PROXY_TARGET: `http://localhost:${acpPort}`, NO_COLOR: "1" },
-    matcher: (line) => /Local:\s+(http:\/\/\S+?\/)/.exec(line),
-    label: "vite dev server",
-    timeoutMs: 30_000,
+  // vite dev：默认 5173，被占自动 +1；代理目标指向 acp 实际端口（启动样板收在 tests/helpers/vite.mjs）
+  const vite = await spawnViteDev({
+    acpBase: `http://localhost:${acpPort}`,
+    teeFile: teeFile("vite-dev-server"),
     onSpawn: (p) => children.push(p),
   });
-  const pageUrl = vite.match[1].replace(/\/$/, "");
-  await waitFor(() => httpOk(pageUrl), { label: "vite dev server http" });
+  await waitFor(() => httpOk(vite.pageUrl), { timeoutMs: 90_000, intervalMs: 400, label: "vite dev server http" });
 
-  return { pageUrl, acpPort, stop };
+  return { pageUrl: vite.pageUrl, acpPort, stop };
 }

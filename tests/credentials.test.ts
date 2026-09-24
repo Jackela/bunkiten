@@ -43,34 +43,14 @@ import {
   resolveOutputPath,
 } from "../server/media-mcp.mjs";
 import { testImage, testLlm } from "../server/credentials-probe.mjs";
+import { makeFetch } from "./helpers/http-doubles.mjs";
 
 /** 临时 HOME（单测用真磁盘验 mode / 往返；结束即删） */
 function tmpHome() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "bunkiten-creds-"));
 }
 
-// ---------- 假 fetch（记录调用；按脚本回包） ----------
-type Reply = { status?: number; json?: unknown; text?: string; bytes?: Buffer };
-
-/** @param {(url: string, init: any, call: number) => Reply} route 按调用次序决定回包 */
-function makeFetch(route: (url: string, init: any, call: number) => Reply) {
-  const calls: { url: string; init: any }[] = [];
-  const impl = (async (url: any, init: any) => {
-    calls.push({ url: String(url), init });
-    const r = route(String(url), init, calls.length);
-    const status = r.status ?? 200;
-    const text = r.text ?? (r.json !== undefined ? JSON.stringify(r.json) : "");
-    return {
-      ok: status >= 200 && status < 300,
-      status,
-      text: async () => text,
-      json: async () => (r.json !== undefined ? r.json : JSON.parse(text)),
-      arrayBuffer: async () => Uint8Array.from(r.bytes ?? Buffer.from(text)).buffer,
-    };
-  }) as unknown as typeof fetch;
-  return { impl, calls };
-}
-
+// 假 fetch（记录调用；按脚本回包）收在 tests/helpers/http-doubles.mjs（与 providers-catalog 单测同一份）。
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
 
 describe("credentials.mjs：出厂默认与容错读取", () => {

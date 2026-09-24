@@ -55,6 +55,16 @@ export interface UiStackOptions {
       files: { state: string | null; summary: string | null; tree: string | null };
     }>
   >;
+  /** 版本化索引的 schema 号（缺省 1；2 = 未来版本，验「读到、不降级写回」） */
+  indexSchema?: number;
+  /** 版本化索引里追加的未知顶层键（验读改写保留） */
+  indexExtra?: Record<string, unknown>;
+  /** 写 v1.8 及以前的**裸数组**索引（验启动期 migrateWorldsSchema） */
+  legacyIndexArray?: boolean;
+  /** 用**原文** preset.md 覆盖合成 frontmatter：presetId → preset.md 全文（截图管线用：真主题/真角色） */
+  presetMd?: Record<string, string>;
+  /** 写 presets/<id>/cover.jpg：presetId → 封面字节（截图管线用：卡带与世界线行缩略图） */
+  covers?: Record<string, Uint8Array>;
   /** 是否写临时 HOME 的 `~/.grok/auth.json`（缺省 "ok"；"missing" = boot 屏未登录态用例的前置） */
   auth?: "ok" | "missing";
   /** 是否写临时 HOME 的 `~/.codex/auth.json`（v1.11；engine=codex 的用例用它造登录/未登录两态） */
@@ -69,6 +79,8 @@ export interface UiStackOptions {
   /** 追加/覆盖给 acp-server 子进程的环境变量（透传 harness.startStack.extraEnv；在线目录用例用它指
    *  BUNKITEN_PROVIDERS_URL 到本地 mock、并开 BUNKITEN_DISABLE_UPDATE=0——服务端与浏览器看到的是同一份目录） */
   extraEnv?: Record<string, string>;
+  /** 复用已有 HOME（跨多次起栈共享 `~/.bunkiten` 缓存；归调用方所有，stop() 不动它） */
+  homeDir?: string | null;
   /** 非默认浏览上下文（如 reduced-motion 用例的 { reducedMotion: "reduce" }）；不进 startFakeStack */
   contextOptions?: BrowserContextOptions;
 }

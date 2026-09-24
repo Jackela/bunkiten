@@ -15,6 +15,8 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { httpOk, installProcessCleanup, killProc } from "../helpers/proc.mjs";
+import { waitFor } from "../helpers/poll.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const FAKE_ENGINE = path.join(ROOT, "tests", "integration", "fake-engine.mjs");
@@ -55,8 +57,9 @@ const shQuote = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
  * @property {(p: string) => Promise<{status: number, type: string|null, bytes: Buffer}>} getBytes
  * @property {(p: string, body: unknown) => Promise<{status: number, body: any}>} postJSON
  * @property {(text: string) => Promise<{status: number, body: any}>} prompt 发一句玩家输入（POST /prompt）
- * @property {(pred: (events: Array<{type: string} & Record<string, any>>) => boolean,
+ * @property {(pred: (events: Array<{type: string} & Record<string, any>>) => boolean | Promise<boolean>,
  *   opts?: {timeout?: number, interval?: number, label?: string}) => Promise<void>} waitFor 轮询断言
+ *   （同步/异步谓词都支持：返回值一律 await，async 谓词不会被误当成「恒真」的假绿）
  */
 
 // 预置剧本：frontmatter id/title + `# 主要角色`（server parseCharacters 按 `## 名` 抓取）；
@@ -123,7 +126,10 @@ function seedWorld(worldsRoot, worldId, preset, title, meta = {}) {
 //   · indexSchema: number        → 版本化索引的 schema 号（缺省 1 = 当前形态；2 = 未来版本，验「读到、不降级写回」）
 //   · indexExtra:  object        → 版本化索引里追加的未知顶层键（验读改写保留）
 //   · legacyIndexArray: boolean  → 写 v1.8 及以前的**裸数组**索引（验启动期 migrateWorldsSchema 真的升了它）
-//   · credentials: object        → 写临时 HOME 的 ~/.bunkiten/credentials.json（0600；验自备 key 的注入与端点）
+//   · presetMd:   { presetId: "preset.md 全文" } → 用原文覆盖合成 frontmatter（截图管线用：真主题/真角色）
+//   · covers:     { presetId: Buffer }            → 写 presets/<id>/cover.jpg（截图管线用：卡带与行缩略图）
+// 注意：`credentials`（写临时 HOME 的 ~/.bunkiten/credentials.json）**不在这里**——它由 startStack 处理，
+// 曾在本注释里被误记成一个 seedStack 选项（传了会被静默忽略，是假绿来源），v1.13 修正。
 function seedStack(root, presets, extra = {}) {
   const {
     assets = {},
@@ -213,28 +219,7 @@ function withTimeout(promise, ms, label) {
   });
 }
 
-// SIGTERM → 等退出（宽限期内不退再 SIGKILL）
-function killProc(proc, graceMs = 4000) {
-  if (proc.exitCode !== null || proc.signalCode !== null) return Promise.resolve();
-  return new Promise((resolve) => {
-    const t = setTimeout(() => {
-      try {
-        proc.kill("SIGKILL");
-      } catch {}
-      resolve();
-    }, graceMs);
-    proc.once("exit", () => {
-      clearTimeout(t);
-      resolve();
-    });
-    try {
-      proc.kill("SIGTERM");
-    } catch {
-      clearTimeout(t);
-      resolve();
-    }
-  });
-}
+// SIGTERM → 等退出（宽限期内不退再 SIGKILL）已收在 tests/helpers/proc.mjs（与 fake/real 栈同一份）。
 
 // 消费 /events 的 SSE 流：按 `\n\n` 分块，取 `data:` 行 JSON 推进 events（fire-and-forget）
 function readSSE(res, events) {
@@ -263,14 +248,6 @@ function readSSE(res, events) {
       /* abort / 连接结束：正常收尾路径 */
     }
   })();
-}
-
-async function httpOk(url) {
-  try {
-    return (await fetch(url)).ok;
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -361,7 +338,6 @@ export async function startStack({
     legacyIndexArray,
     presetMd,
     covers,
-    auth,
   });
 
   // 会话图片目录：server 用 os.homedir()（=HOME）+ encodeURIComponent(GAME_ROOT) + sessionId 拼接
@@ -464,32 +440,23 @@ export async function startStack({
   const sseController = new AbortController();
   let stopped = false;
 
-  // 兜底：测试进程异常退出时同步杀掉 server（正常路径走 stop()）。
-  // **信号路径必须显式接管**：Node 收到 SIGINT/SIGTERM/SIGHUP 默认直接终止、**不触发 'exit'**——
-  // 只挂 'exit' 等于漏掉 Ctrl-C、关终端（SIGHUP）、上层超时杀进程这三条路。实测留下过 3 只孤儿
-  // acp-server（临时根 `bunkiten-it-*`，各占一个端口）。这里先杀子进程再按惯例退出码退出。
+  // 兜底：测试进程异常退出 / 收到信号时同步杀掉 server（正常路径走 stop()）。
+  // **信号路径必须显式接管**（SIGINT/SIGTERM/SIGHUP/SIGQUIT 默认不触发 'exit'）——语义与说明收在
+  // tests/helpers/proc.mjs 的 installProcessCleanup；dispose 必须在 stop() 里调用，否则单个测试进程里
+  // 反复 startStack 会累积信号监听（实测 11 个 SIGINT 监听触发 MaxListenersExceededWarning）。
   const killServer = () => {
     try {
       proc.kill("SIGKILL");
-    } catch {}
+    } catch {
+      /* 已经退了 */
+    }
   };
-  process.once("exit", killServer);
-  for (const [sig, code] of [
-    ["SIGINT", 130],
-    ["SIGTERM", 143],
-    ["SIGHUP", 129],
-    ["SIGQUIT", 131],
-  ]) {
-    process.on(sig, () => {
-      killServer();
-      process.exit(code);
-    });
-  }
+  const disposeCleanup = installProcessCleanup(killServer);
 
   const stop = async () => {
     if (stopped) return;
     stopped = true;
-    process.removeListener("exit", killServer);
+    disposeCleanup();
     try {
       sseController.abort();
     } catch {}
@@ -554,25 +521,15 @@ export async function startStack({
     return { status: r.status, body: await r.json().catch(() => null) };
   };
   stack.prompt = (text) => stack.postJSON("/prompt", { text });
-  // 轮询断言：pred 收到实时 events 数组，返回真即 resolve；超时抛错（带上当前事件便于定位）
-  stack.waitFor = (pred, { timeout = 8000, interval = 25, label = "condition" } = {}) => {
-    const deadline = Date.now() + timeout;
-    return new Promise((resolve, reject) => {
-      const tick = () => {
-        let ok = false;
-        try {
-          ok = Boolean(pred(events));
-        } catch {
-          ok = false;
-        }
-        if (ok) return resolve();
-        if (Date.now() > deadline)
-          return reject(new Error(`timeout waiting for ${label}（events: ${JSON.stringify(events)}）`));
-        setTimeout(tick, interval);
-      };
-      tick();
+  // 轮询断言：pred 收到实时 events 数组，返回真即 resolve；超时抛错（带上当前事件便于定位）。
+  // 轮询内核收在 tests/helpers/poll.mjs（**会 await 谓词返回值**——async 谓词不会被误当同步口径）。
+  stack.waitFor = (pred, { timeout = 8000, interval = 25, label = "condition" } = {}) =>
+    waitFor(() => pred(events), {
+      timeoutMs: timeout,
+      intervalMs: interval,
+      label,
+      detail: () => `events: ${JSON.stringify(events)}`,
     });
-  };
 
   try {
     const [actualPort] = await Promise.all([
