@@ -738,7 +738,25 @@ const CASE_GROUPS = [
   { name: "doctor", files: ["tests/doctor.test.ts"], floor: 11 },
   { name: "preload", files: ["tests/preload.test.ts"], floor: 7 },
   { name: "credentials", files: ["tests/credentials.test.ts"], floor: 52 },
-  { name: "ui", files: ["tests/ui.test.tsx"], floor: 174 },
+  // v1.13 拆分：原先单文件 tests/ui.test.tsx（6393 行）按屏/关注点拆进 tests/ui/，用例数不变（合计仍是 178）
+  {
+    name: "ui",
+    files: [
+      "tests/ui/app.test.tsx",
+      "tests/ui/audio.test.tsx",
+      "tests/ui/gallery.test.tsx",
+      "tests/ui/game-hud.test.tsx",
+      "tests/ui/game-play.test.tsx",
+      "tests/ui/replay-resync.test.tsx",
+      "tests/ui/settings.test.tsx",
+      "tests/ui/story-tree-snapshots.test.tsx",
+      "tests/ui/story-tree.test.tsx",
+      "tests/ui/title-boot.test.tsx",
+      "tests/ui/worlds-edit.test.tsx",
+      "tests/ui/worlds.test.tsx",
+    ],
+    floor: 174,
+  },
   {
     name: "integration",
     files: [
