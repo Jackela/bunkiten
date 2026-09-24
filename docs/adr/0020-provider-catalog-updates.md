@@ -1,4 +1,7 @@
-# 服务目录随版本更新（仓库 JSON 发布源 + 服务端抓取 + 24h 缓存 + 内置兜底）
+# ADR-0020：服务目录随版本更新（仓库 JSON 发布源 + 服务端抓取/缓存 + 内置兜底）
+
+> 标题里的「24h 缓存」已随 2026-09-21 的「修订」段改为 **6h**，且两源改为**并行取最新**——
+> 标题不再复述具体数字，免得正文改了、标题还停在旧口径（v1.13 修正）。
 
 服务目录（`shared/providers.mjs` 的 `PROVIDERS`，27 条）此前是**打进包里的死数据**：新服务、或某家改了 `base_url`/模型示例，只有等下一个游戏版本发布才到得了玩家机器。本裁决把「服务目录」变成一个**可随版本单独更新**的发布物，四件事。其一，**发布源就是仓库里的一个 JSON**：`docs/providers.json`（`{version: 1, updatedAt, providers}`），由 `scripts/export-providers.mjs` 从唯一真源 `shared/providers.mjs` 生成（`npm run providers:export`，零依赖、搬不改），契约 lint ⑦ 组断言它与 `PROVIDERS` **深等**——手改 JSON 会红，不存在第二份目录。其二，**服务端抓取，客户端不抓**：`server/providers-catalog.mjs` 在 `startServer()` 里 `void refreshCatalog()` 做一次**非阻塞**抓取（先主后备两道公开源 `CATALOG_URLS`：jsDelivr CDN `…@main/docs/providers.json` 为主、GitHub raw 为备），校验通过就落 `~/.bunkiten/providers.json`（目录 0700 / 文件 0600，临时文件 + rename 原子写）并更新进程内 memo。其三，**缓存优先 + 24h 节流 + 内置兜底**：`loadCatalog()` 按 memo → 缓存 → 内置 `PROVIDERS` 三级回落，`GET /api/providers` 回 `{providers, source: "remote"|"cache"|"bundled", fetchedAt}`；`refreshCatalog()` 按 `CATALOG_TTL_MS=24h` 节流（本地副本还新鲜就不打扰发布源），**失败静默**（不抛、不响、不落盘），没有缓存/缓存坏/抓不到就继续用内置表——目录更新是尽力而为的后台动作，任何一步都不许影响启动或游玩。其四，**校验不过即弃**：`validateCatalogDocument(doc)` 是纯函数，**整包**形状坏（非对象 / `version` 不认 / `providers` 不是数组 / 剔完一条不剩）就**拒整包**、回落缓存/内置；**单条**坏（id 非法或重复、`kind` 不认识、`label` 空、地址非法、超长、留空又没 `note`）只**丢那一条**——远端是不可信输入，目录是下拉候选全集，宁可少一个选项，也不给玩家一个打不通的地址。两个兼容开关与 electron-updater 的既有做法同款：`BUNKITEN_DISABLE_UPDATE=1` 直接跳过（打包冒烟已在用）、`BUNKITEN_PROVIDERS_URL` 覆盖源（测试/镜像）。
 

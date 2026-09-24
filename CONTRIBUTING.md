@@ -30,9 +30,12 @@ vite 会把 `/api`、`/img`、`/audio`、`/events` 代理到它（默认 `localh
 
 | 命令 | 什么时候必须跑 |
 |---|---|
+| `npm run format:check` | 任何改动（`npm run format` 是它的写入版）——**Prettier 管风格，只管手写代码**：数据（`presets/**/preset.md`）、生成物（`docs/providers.json`）、散文（`*.md`）与 CI 配置都在 `.prettierignore` 里，别去动它们 |
+| `npm run lint` | 任何改动（oxlint，秒级）——correctness 一类按 **error** 拦（`no-floating-promises`、`react/rules-of-hooks`、`no-unused-vars`…）；故意为之的写法用 `// oxlint-disable-next-line <规则> -- 原因` 就地豁免并写清理由 |
 | `npm run build` | 任何改动（`tsc -b && vite build`） |
-| `npm run typecheck:server` | 动 `server/**`、`shared/**`、`scripts/**`（`tsconfig.server.json` 对这批 `.mjs` 开 strict checkJs，类型全靠 JSDoc） |
-| `npm test` | 任何改动 —— 单测 + 集成全量 560+ 例，秒级；含 **契约 lint**（防漂移门禁，见 §4） |
+| `npm run typecheck:server` | 动 `server/**`、`shared/**`、`scripts/**`、`electron/**`（`tsconfig.server.json` 对这批 `.mjs`/`.js` 开 strict checkJs + `noUnusedLocals`/`noUnusedParameters`/`useUnknownInCatchVariables`，类型全靠 JSDoc） |
+| `npm run typecheck:tests` | 动 `tests/**` 或改了被测模块的导出面（`tsconfig.tests.json`；此前 `tests/**` 不在任何 tsconfig 里，类型错误静默存在） |
+| `npm test` | 任何改动 —— 单测 + 集成全量 645+ 例，秒级；含 **契约 lint**（防漂移门禁，见 §4） |
 | `npm run test:e2e:ui` | 动前端流程、文本协议或测试 harness —— 假引擎确定性 UI e2e（`tests/e2e-ui/`，22 个 spec），约 5 分钟；CI 也会跑 |
 | `npm run test:e2e:packaged` | 动 `electron-builder.yml` / 打包布局 / 主进程 —— 打包态冒烟（跨平台：mac 出 `.app`、Windows 出 `win-unpacked`，定位见 `tests/helpers/packaged-app.mjs`）；mac 侧本机 opt-in、arm64 only，Windows 侧由 CI 的 `packaged-win` job 真跑 |
 | `npm run test:e2e` | 动前端流程或协议时的真引擎冒烟 —— **会花真 token**：3 条（Grok 快速开局 + Grok 章节制作 + Codex 1 回合），Grok 两条约 6–12 分钟、Codex 一条约 3 分钟，视模型与网络。前置缺一即 **skip 而非失败**（`~/.grok/auth.json` / `~/.codex/auth.json`），`retries: 0` 不做静默重试 |
@@ -40,6 +43,12 @@ vite 会把 `/api`、`/img`、`/audio`、`/events` 代理到它（默认 `localh
 | `npm run test:coverage` | 可选 —— 同一批测试 + 覆盖率仪表（CI 用它替代 `npm test` 步骤并上传报告；阈值是「防下滑线」，配置在 `vitest.config.ts`） |
 | `npm run doctor` | 改了 preset 结构或新增了剧本 —— 剧本体检查（作者侧 CLI，退出码非 0 ⟺ 有 error；warning 不拦发布，**刻意不进 CI**） |
 | `npm run providers:export` | 改了 `shared/providers.mjs`（服务目录真源）—— 必须同批重生成并提交 `docs/providers.json`，契约 lint 断言两者深等 |
+
+**为什么是 oxlint 而不是 ESLint**（v1.13 的取舍，记在这里免得后人反复问）：本仓的 TypeScript 是 7.x，
+而 `typescript-eslint` 至今（8.70.1）的 peer 范围是 `>=4.8.4 <6.1.0`——装不上，除非 `--legacy-peer-deps` 硬压。
+那等于把「明知版本不匹配还装上」变成常态，正是这一轮要清掉的那类账；oxlint 则本就与构建链同族（vite/rolldown 用的就是 oxc），
+原生解析 TS/JSX、零 peer 冲突、跑一次 100ms 级。代价要说清：**它没有完整类型信息**，所以像
+`no-unnecessary-type-assertion` 这类需要类型图解的规则用它拿不到——那部分仍由两份 tsc 门禁负责。
 
 打包预检（产物在 `release/`）：`npm run dist:mac` / `npm run dist:win`；只出目录态用 `npm run dist:mac:dir` / `npm run dist:win:dir`。
 正式产物由发版 workflow 双平台矩阵出，本地只作预检（mac 只出 arm64）。
@@ -71,7 +80,7 @@ vite 会把 `/api`、`/img`、`/audio`、`/events` 代理到它（默认 `localh
 |---|---|
 | `package.json` | `version`（惯用 `npm version --no-git-tag-version <版本>`，同时更新 `package-lock.json`） |
 | `README.md` | 顶部 `> v<版本> —— …` 标语（本版 banner，整条换写） |
-| `CHANGELOG.md` | 追加本版条目（只记史实；已发布版本的条目不回改） |
+| `CHANGELOG.md` | 追加本版条目（只记史实；已发布版本的条目**叙述不回改**——但事实性数字错了要就地改并留一句更正说明：数字留着错的会被后来的文档一直抄走） |
 | `docs/releases/<tag>.md` | 新增本版发布说明（Release body 真源；缺失会回落到 gh 自动 notes） |
 | git tag | 最后 `git tag v<版本> && git push --tags` |
 

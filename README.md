@@ -119,7 +119,7 @@ bunkiten/
 
 ## 工程质量
 
-- **单测 + 集成全量 560+ 例**（`npm test`，vitest，秒级）：含假引擎集成层（假 ACP 引擎 + 真 acp-server 子进程）；同一套里还有**契约 lint**，钉住协议常量真源、`RULES` 与引擎 SKILL 的逐字副本、主题白名单与用例数下限——防的是两侧悄悄分叉。
+- **单测 + 集成全量 645+ 例**（`npm test`，vitest，秒级）：含假引擎集成层（假 ACP 引擎 + 真 acp-server 子进程）；同一套里还有**契约 lint**，钉住协议常量真源、`RULES` 与引擎 SKILL 的逐字副本、主题白名单与用例数下限——防的是两侧悄悄分叉。
 - **假引擎确定性 UI e2e，22 个 spec**（`npm run test:e2e:ui`，Playwright + 真 acp-server + vite，零 token、几十秒）；**打包态冒烟**跨平台（mac `.app` / Windows `win-unpacked`），另有一条 opt-in 的真出图链路。
 - **CI**：每次 push / PR 跑构建 + `typecheck:server` + 覆盖率仪器下的全量测试 + 假引擎 UI e2e；`main` 上另有一个 Windows job 真跑打包态冒烟（`packaged-win`）。真引擎冒烟要登录态与真 token，只在开发机按需跑。
 - 上面那几张界面图不是手截的：`npm run shots` 用假引擎栈（`tests/e2e-shots/`）按仓库真素材重出一遍，改完界面跑一次就能更新——零 token、不进 CI。
