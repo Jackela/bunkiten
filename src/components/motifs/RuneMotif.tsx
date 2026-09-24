@@ -24,7 +24,10 @@ export function RuneMotif({ dense = false }: { dense?: boolean }) {
         <motion.div
           key={`line-${i}`}
           className="absolute inset-y-0 w-px"
-          style={{ left: `${l}%`, background: "linear-gradient(180deg, transparent, rgba(62,207,174,.25), transparent)" }}
+          style={{
+            left: `${l}%`,
+            background: "linear-gradient(180deg, transparent, rgba(62,207,174,.25), transparent)",
+          }}
           animate={{ opacity: [0.3, 0.8, 0.3] }}
           transition={{ duration: 9 + i * 3, repeat: Infinity, ease: "easeInOut" }}
         />

@@ -15,7 +15,12 @@ import { startStack } from "./harness.mjs";
 
 // 用 node:http 直发 POST：超限时服务端会「先回 413 再断连」，fetch 可能看到连接被重置；
 // 原生 request 能在 response 事件里拿到 413，比 fetch 更稳。
-function rawPost(base: string, p: string, body: string, headers: Record<string, string> = {}): Promise<{ status: number; text: string }> {
+function rawPost(
+  base: string,
+  p: string,
+  body: string,
+  headers: Record<string, string> = {},
+): Promise<{ status: number; text: string }> {
   return new Promise((resolve) => {
     const u = new URL(base + p);
     let settled = false;

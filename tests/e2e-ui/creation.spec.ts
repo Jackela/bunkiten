@@ -35,7 +35,6 @@ import { expect, test, type Page } from "@playwright/test";
 import { startUiStack, stopUiStack } from "./stack";
 import { openTitleMore } from "./flow";
 
-
 /** 装配产出的新剧本：id 必须与目录名一致（【新剧本】<id> → server 按它补落盘、客户端重拉 /api/presets） */
 const NEO_ID = "neo";
 const NEO_TITLE = "雨夜侦探";
@@ -53,10 +52,7 @@ const SUCCESS_TURNS = [
   // 玩家聊一句 → 引擎回一句 + 两个 chip（chip 文案刻意不含「开始装配」，免得与那个按钮的按名定位撞车）
   {
     match: PLAYER_LINE,
-    ops: [
-      "那就雨夜。侦探得有个不肯开口的证人。\n",
-      "**行动**\n1. 加一个不肯开口的证人\n2. 先这样，动手\n",
-    ],
+    ops: ["那就雨夜。侦探得有个不肯开口的证人。\n", "**行动**\n1. 加一个不肯开口的证人\n2. 先这样，动手\n"],
   },
   // 装配回合：正文一行 + 三项协议行各占一行（一行 = 一次广播：标记点亮与【新剧本】之间才有先后可言）
   {

@@ -14,10 +14,7 @@ type BootState = "checking" | "login" | "error";
 
 /** 登录进行到哪一步（idle / 正在拉起 / 已拉起等浏览器完成 / 失败） */
 type LoginState =
-  | { phase: "idle" }
-  | { phase: "starting" }
-  | { phase: "waiting"; hint?: string }
-  | { phase: "error"; error: string };
+  { phase: "idle" } | { phase: "starting" } | { phase: "waiting"; hint?: string } | { phase: "error"; error: string };
 
 /** 登录/连不上两种失败态共用的提示卡：一句主因 + 一句怎么办 + 重试（同一张卡，两态只有文案差） */
 function RetryCard({ title, hint, onRetry }: { title: string; hint: ReactNode; onRetry: () => void }) {
@@ -119,7 +116,9 @@ export default function BootScreen() {
     <ScreenShell className="flex flex-col items-center justify-center gap-5 shell-backdrop p-6">
       <h1 className="text-display font-normal tracking-[.55em] [text-indent:.55em]">剧 本</h1>
 
-      {state === "checking" && <p className="animate-pulse text-meta tracking-[.3em] text-ink-hint">正在确认登录状态…</p>}
+      {state === "checking" && (
+        <p className="animate-pulse text-meta tracking-[.3em] text-ink-hint">正在确认登录状态…</p>
+      )}
 
       {state === "login" && (
         <div className="shell-panel w-full max-w-md rounded-2xl p-6 text-center" data-testid="boot-login">

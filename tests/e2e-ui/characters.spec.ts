@@ -6,7 +6,6 @@ import { expect, test, type Page } from "@playwright/test";
 import { startUiStack, stopUiStack, type StartedStack } from "./stack";
 import { openRailGroup } from "./flow";
 
-
 /** w1 的完整 state.md（SKILL「状态文件格式」样例形态；角色面板 /api/state 的数据源） */
 function fullStateMd(): string {
   return [
@@ -53,7 +52,9 @@ test.beforeAll(async ({ browser }) => {
   ({ stack, page } = await startUiStack(browser, {
     presets: [{ id: "demo", title: "示例剧本" }],
     stateFiles: { w1: fullStateMd() },
-    turns: [{ match: "继续世界：w1", ops: ["雨停了，教堂门口的石阶泛着冷光。\n\n**行动**\n1. 推门进去\n2. 原地等待\n"] }],
+    turns: [
+      { match: "继续世界：w1", ops: ["雨停了，教堂门口的石阶泛着冷光。\n\n**行动**\n1. 推门进去\n2. 原地等待\n"] },
+    ],
   }));
 });
 

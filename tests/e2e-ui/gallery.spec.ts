@@ -93,7 +93,12 @@ test("画廊：分组清单→选择模式勾 2 项批量删除（两段确认�
   await page.getByTestId("assets-regen-note").fill("头发改成短发");
   await page.getByTestId("assets-preview-regen").click();
   await expect
-    .poll(() => stack.stack.engineProbeEntries().filter((e) => e.kind === "prompt").map((e) => e.text))
+    .poll(() =>
+      stack.stack
+        .engineProbeEntries()
+        .filter((e) => e.kind === "prompt")
+        .map((e) => e.text),
+    )
     .toContain("美术：重绘 立绘 薇拉：头发改成短发");
 
   // 重绘回合完成：批次提示 ok（|重绘 标记命中挂起项 → finishRegen(true)），画廊经 stamp 刷新

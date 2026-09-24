@@ -91,13 +91,19 @@ describe("doctor：剧本体检查纯函数", () => {
   it("全好剧本：七组检查全 [ok]，零警告零错误", () => {
     const root = makeRoot();
     try {
-      const dir = writePreset(root, "demo", goodMd(), { assets: ["立绘-阿明.jpg", "背景-演示.jpg"], audio: ["曲-夜.mp3"] });
+      const dir = writePreset(root, "demo", goodMd(), {
+        assets: ["立绘-阿明.jpg", "背景-演示.jpg"],
+        audio: ["曲-夜.mp3"],
+      });
       const r = checkPreset(dir, root);
       expect(r.errors).toBe(0);
       expect(r.warnings).toBe(0);
       expect(r.passed).toBe(7);
       expect(r.id).toBe("demo");
-      expect(r.findings.every((f: any) => f.level === "ok"), JSON.stringify(r.findings)).toBe(true);
+      expect(
+        r.findings.every((f: any) => f.level === "ok"),
+        JSON.stringify(r.findings),
+      ).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -163,7 +169,15 @@ describe("doctor：剧本体检查纯函数", () => {
       mkdirSync(path.join(root, "state", "worlds", "w1"), { recursive: true });
       writeFileSync(
         path.join(root, "state", "worlds", "w1", "state.md"),
-        ["# 剧情状态", "- preset: demo", "", "# 角色卡", "## 路人", "- art_file: presets/demo/assets/立绘-路人.jpg", ""].join("\n"),
+        [
+          "# 剧情状态",
+          "- preset: demo",
+          "",
+          "# 角色卡",
+          "## 路人",
+          "- art_file: presets/demo/assets/立绘-路人.jpg",
+          "",
+        ].join("\n"),
       );
       const dir = writePreset(root, "demo", goodMd(), { assets: ["立绘-阿明.jpg", "立绘-路人.jpg", "背景-荒地.jpg"] });
       const warns = messagesOf(checkPreset(dir, root), "warn");
@@ -223,7 +237,8 @@ describe("doctor：剧本体检查纯函数", () => {
       expect(warns1).toMatch(/theme\.accent「#12」非法，将被 server 回退 #c9a86a/);
       expect(warns1).toMatch(/theme\.font「gothic」非法，将被 server 回退 serif/);
 
-      const themeBlock = 'theme:\n  accent: "#c9a86a"\n  accent2: "#e8e4da"\n  motif: aurora\n  font: serif\n  dialog: plain\n';
+      const themeBlock =
+        'theme:\n  accent: "#c9a86a"\n  accent2: "#e8e4da"\n  motif: aurora\n  font: serif\n  dialog: plain\n';
       const r2 = checkPreset(writePreset(root, "f2", goodMd("f2").replace(themeBlock, "")), root);
       expect(messagesOf(r2, "warn")).toHaveLength(1);
       expect(messagesOf(r2, "warn")[0]).toMatch(/theme 块缺失，将整套回退默认/);

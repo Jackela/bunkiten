@@ -55,7 +55,13 @@ test("未登录但已配好自备 key：不必终端登录，直接进标题屏"
     auth: "missing",
     credentials: {
       version: 1,
-      llm: { mode: "byok", provider: "custom", baseUrl: "http://127.0.0.1:9/v1", apiKey: "sk-boot-e2e-key-4f2a", model: "m" },
+      llm: {
+        mode: "byok",
+        provider: "custom",
+        baseUrl: "http://127.0.0.1:9/v1",
+        apiKey: "sk-boot-e2e-key-4f2a",
+        model: "m",
+      },
       image: { mode: "off", provider: "openai", baseUrl: "", apiKey: "", model: "", size: "" },
     },
   });
@@ -68,7 +74,9 @@ test("未登录但已配好自备 key：不必终端登录，直接进标题屏"
   }
 });
 
-test("未登录（Codex 后端，v1.11）：指引写 `codex login`、设置入口换成「打开设置」；补上登录态后重试进标题屏", async ({ browser }) => {
+test("未登录（Codex 后端，v1.11）：指引写 `codex login`、设置入口换成「打开设置」；补上登录态后重试进标题屏", async ({
+  browser,
+}) => {
   const { stack, page } = await startUiStack(browser, {
     presets: ["demo"],
     turns: [],

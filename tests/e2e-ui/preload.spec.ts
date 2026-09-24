@@ -142,12 +142,16 @@ test("立绘预载：同角色第二次上屏不再拉清单（会话内 /api/as
 
   // ② 预热已经发生，且清单只拉了一次——此刻**任何【立绘】标记都还没发**，两张差分图的 200
   //    只能在预载路径上产生（画面上没人引用它们）
-  await expect.poll(() => imgStatusOf("立绘-薇拉-微笑.jpg"), {
-    message: "第一张立绘上屏后，预载没有把 薇拉·微笑 的差分塞进缓存（/img 200）",
-  }).toBe(200);
-  await expect.poll(() => imgStatusOf("立绘-薇拉-伤感.jpg"), {
-    message: "第一张立绘上屏后，预载没有把 薇拉·伤感 的差分塞进缓存（/img 200）",
-  }).toBe(200);
+  await expect
+    .poll(() => imgStatusOf("立绘-薇拉-微笑.jpg"), {
+      message: "第一张立绘上屏后，预载没有把 薇拉·微笑 的差分塞进缓存（/img 200）",
+    })
+    .toBe(200);
+  await expect
+    .poll(() => imgStatusOf("立绘-薇拉-伤感.jpg"), {
+      message: "第一张立绘上屏后，预载没有把 薇拉·伤感 的差分塞进缓存（/img 200）",
+    })
+    .toBe(200);
   expect(assetCalls, "第一张立绘上屏后清单应当正好被拉过一次").toHaveLength(1);
   expect(assetCalls[0], "清单请求没带当前剧本（preload 按 preset 记账，preset 必须随请求带上）").toBe(
     "GET /api/assets?preset=demo",
@@ -170,9 +174,11 @@ test("立绘预载：同角色第二次上屏不再拉清单（会话内 /api/as
   await expect(page.getByTestId("status")).toHaveText("就绪");
   await expectPortrait("沈屿的立绘没有上屏/解码", (i) => i.alt === "沈屿" && i.w > 0);
   // 新角色的差分预热同样发生（这条 /img 与【图】标记的 images/4.jpg 是两个 URL，只能来自预载）
-  await expect.poll(() => imgStatusOf("立绘-沈屿.jpg"), {
-    message: "第二个角色上场后，预载没有预热他的立绘（/img 200）",
-  }).toBe(200);
+  await expect
+    .poll(() => imgStatusOf("立绘-沈屿.jpg"), {
+      message: "第二个角色上场后，预载没有预热他的立绘（/img 200）",
+    })
+    .toBe(200);
 
   // 收口：整个会话（三次同角色上屏 + 一次新角色上屏）只有开局那一次清单请求
   expect(

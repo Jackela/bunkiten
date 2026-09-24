@@ -146,10 +146,12 @@ export function layoutGenealogy(worlds: WorldEntry[], opts: GenealogyOptions = {
     const t = entryById.get(id)!.lastPlayed;
     return Number.isFinite(t) ? t : 0;
   };
-  const rows = [...byDepth.entries()].sort((a, b) => a[0] - b[0]).map(([d, ids]) => ({
-    depth: d,
-    ids: ids.sort((a, b) => lastOf(b) - lastOf(a) || (a < b ? -1 : 1)),
-  }));
+  const rows = [...byDepth.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([d, ids]) => ({
+      depth: d,
+      ids: ids.sort((a, b) => lastOf(b) - lastOf(a) || (a < b ? -1 : 1)),
+    }));
 
   let maxRow = 1;
   for (const r of rows) if (r.ids.length > maxRow) maxRow = r.ids.length;

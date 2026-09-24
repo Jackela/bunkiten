@@ -109,7 +109,9 @@ describe("validateCatalogDocument：单条规则（坏一条丢一条）", () =>
   });
 
   it("id 重复丢后来者，保持首现顺序", () => {
-    const out = validateCatalogDocument(doc([entry({ id: "dup", label: "第一次" }), entry({ id: "dup", label: "第二次" }), entry({ id: "tail" })]));
+    const out = validateCatalogDocument(
+      doc([entry({ id: "dup", label: "第一次" }), entry({ id: "dup", label: "第二次" }), entry({ id: "tail" })]),
+    );
     expect(out.ok).toBe(true);
     if (!out.ok) return;
     expect(out.doc.providers.map((p) => `${p.id}:${p.label}`)).toEqual(["dup:第一次", "tail:Svc"]);
@@ -133,7 +135,14 @@ describe("validateCatalogDocument：单条规则（坏一条丢一条）", () =>
     const out = validateCatalogDocument(doc([entry({ baseUrl: "", note: "按部署填" })]));
     expect(out.ok).toBe(true);
     if (!out.ok) return;
-    expect(out.doc.providers[0]).toEqual({ id: "svc", label: "Svc", kind: "llm", baseUrl: "", models: [], note: "按部署填" });
+    expect(out.doc.providers[0]).toEqual({
+      id: "svc",
+      label: "Svc",
+      kind: "llm",
+      baseUrl: "",
+      models: [],
+      note: "按部署填",
+    });
   });
 
   it("https-only：远端 http 拒，https 收，本机 http://localhost / http://127.0.0.1 例外", () => {
@@ -148,7 +157,9 @@ describe("validateCatalogDocument：单条规则（坏一条丢一条）", () =>
   });
 
   it("models：条数与单项长度上限，越界丢该条；imageModels 可选、坏则丢该条", () => {
-    expect(validateCatalogDocument(doc([entry({ models: Array.from({ length: 51 }, (_, i) => `m${i}`) })])).ok).toBe(false);
+    expect(validateCatalogDocument(doc([entry({ models: Array.from({ length: 51 }, (_, i) => `m${i}`) })])).ok).toBe(
+      false,
+    );
     expect(validateCatalogDocument(doc([entry({ models: ["ok", ""] })])).ok).toBe(false);
     expect(validateCatalogDocument(doc([entry({ models: ["x".repeat(201)] })])).ok).toBe(false);
     expect(validateCatalogDocument(doc([entry({ models: ["deepseek-chat"] })])).ok).toBe(true);
@@ -309,7 +320,9 @@ describe("refreshCatalog：两源并行取最新、抓取三态与 TTL 节流", 
     const home = tmpHome();
     try {
       const { impl, calls } = makeFetch((url) =>
-        url === CATALOG_URLS[0] ? { status: 503, text: "cdn down" } : { text: JSON.stringify(doc([entry({ id: "backup" })])) },
+        url === CATALOG_URLS[0]
+          ? { status: 503, text: "cdn down" }
+          : { text: JSON.stringify(doc([entry({ id: "backup" })])) },
       );
       const out = await refreshCatalog({ root: home, fetchImpl: impl, env: {} });
       expect(out.ok).toBe(true);
@@ -417,7 +430,11 @@ describe("refreshCatalog：两源并行取最新、抓取三态与 TTL 节流", 
     const home = tmpHome();
     try {
       const { impl, calls } = makeFetch(() => ({ text: JSON.stringify(doc([entry({ id: "mirror" })])) }));
-      const out = await refreshCatalog({ root: home, fetchImpl: impl, env: { BUNKITEN_PROVIDERS_URL: "http://127.0.0.1:9/providers.json" } });
+      const out = await refreshCatalog({
+        root: home,
+        fetchImpl: impl,
+        env: { BUNKITEN_PROVIDERS_URL: "http://127.0.0.1:9/providers.json" },
+      });
       expect(out.ok).toBe(true);
       expect(calls.map((c) => c.url)).toEqual(["http://127.0.0.1:9/providers.json"]);
       expect(loadCatalog({ root: home }).providers.map((p) => p.id)).toEqual(["mirror"]);

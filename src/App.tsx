@@ -75,7 +75,10 @@ export default function App() {
       if (e.key !== "Escape" || e.isComposing) return;
       const el = document.activeElement as HTMLElement | null;
       const typing =
-        el && (el.tagName === "TEXTAREA" || el.isContentEditable || (el.tagName === "INPUT" && (el as HTMLInputElement).type !== "range"));
+        el &&
+        (el.tagName === "TEXTAREA" ||
+          el.isContentEditable ||
+          (el.tagName === "INPUT" && (el as HTMLInputElement).type !== "range"));
       if (typing) return;
       const s = useGameStore.getState();
       if (s.assetsPreview) {
@@ -117,7 +120,10 @@ export default function App() {
     // 13 的语义保留——淡入本身是 WCAG 推荐的降级替代。CSS keyframes 与打字机的降级分别在
     // global.css 与 DialogueBox（见 docs/ARCHITECTURE.md「动效降级」）。
     <MotionConfig reducedMotion="user">
-      <div className="fixed inset-0 overflow-hidden bg-bg text-ink" style={{ ...themeVars(theme), fontFamily: "var(--font-preset)" }}>
+      <div
+        className="fixed inset-0 overflow-hidden bg-bg text-ink"
+        style={{ ...themeVars(theme), fontFamily: "var(--font-preset)" }}
+      >
         <StatusAnnouncer />
         <BgLayer />
         <div className="pointer-events-none absolute inset-0">

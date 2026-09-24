@@ -158,9 +158,7 @@ describe("stripOptionsBlock 截断「**行动**」选项段", () => {
 
 describe("cleanForHistory 历史正文", () => {
   it("过滤【图】行并去除首尾空白", () => {
-    expect(cleanForHistory("\n【图】背景|教室|images/1.jpg\n蝉鸣渐起。\n她合上书。\n")).toBe(
-      "蝉鸣渐起。\n她合上书。",
-    );
+    expect(cleanForHistory("\n【图】背景|教室|images/1.jpg\n蝉鸣渐起。\n她合上书。\n")).toBe("蝉鸣渐起。\n她合上书。");
   });
 
   it("过滤协议行：【清单】与【章】行同【图】一样不进历史", () => {
@@ -297,7 +295,9 @@ describe("世界线指令（v1.5 契约）", () => {
 
 describe("剧情编辑指令（v1.5 剧情图契约；v1.12 起可带节点作用域）", () => {
   it("buildTreeEditCommand：前缀「剧情：」原文，输入首尾空白剥掉", () => {
-    expect(buildTreeEditCommand("  在节点 3-1 后加一个雨夜遇袭的节点  ")).toBe("剧情：在节点 3-1 后加一个雨夜遇袭的节点");
+    expect(buildTreeEditCommand("  在节点 3-1 后加一个雨夜遇袭的节点  ")).toBe(
+      "剧情：在节点 3-1 后加一个雨夜遇袭的节点",
+    );
   });
 
   it("带节点作用域（v1.12）：`剧情：针对节点 <id>：<指令>`；缺省与旧指令逐字一致", () => {

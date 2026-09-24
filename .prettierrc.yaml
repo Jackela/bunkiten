@@ -1,0 +1,17 @@
+# Prettier：只做格式化，不做规则判断（那条线交给 oxlint）。
+# 取值全部对齐仓库**现状**（v1.13 之前靠 review 纪律维持，风格本就一致），
+# 所以一次性 --write 的 diff 很小——目的是把「已经一致」这件事变成「以后也一致」。
+# 与 .editorconfig 同款：LF、UTF-8、2 空格、末行留空行。
+printWidth: 120 # 仓库里有长行（协议说明/契约注释），80 会把 diff 撑得很大
+tabWidth: 2
+useTabs: false
+semi: true
+singleQuote: false
+trailingComma: all # v3 默认，与现状一致
+arrowParens: always
+endOfLine: lf
+overrides:
+  # 文档：不改写（散文里的人工换行/表格对齐是作者排版，格式化只会添乱）
+  - files: "*.md"
+    options:
+      proseWrap: preserve

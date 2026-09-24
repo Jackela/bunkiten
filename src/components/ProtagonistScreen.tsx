@@ -12,7 +12,9 @@ import { ShellPage } from "./ShellPage";
 function AnswerChips({ values }: { values: string[] }) {
   if (values.length === 0) {
     return (
-      <span className="rounded-full border border-dashed border-white/20 px-2.5 py-0.5 text-meta text-ink-hint">待定</span>
+      <span className="rounded-full border border-dashed border-white/20 px-2.5 py-0.5 text-meta text-ink-hint">
+        待定
+      </span>
     );
   }
   return (

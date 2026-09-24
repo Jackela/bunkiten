@@ -526,7 +526,11 @@ export default function WorldsScreen() {
       if (confirmId || editId || menuId) return; // 确认删除/行内改名/菜单开着：不拦截
       const el = e.target instanceof HTMLElement ? e.target : null;
       // 焦点在按钮/输入框上时不做屏级导航，避免 Enter 被激活两次（⋯ 菜单项也在这条里）
-      if (el && (el.tagName === "BUTTON" || el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+      if (
+        el &&
+        (el.tagName === "BUTTON" || el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)
+      )
+        return;
       if (e.key === "ArrowUp" || e.key === "ArrowDown") {
         e.preventDefault();
         const next = Math.min(Math.max(focus + (e.key === "ArrowUp" ? -1 : 1), 0), Math.max(list.length - 1, 0));
@@ -710,7 +714,10 @@ export default function WorldsScreen() {
             selected ? (
               <>
                 {selected.title}
-                <span className="text-ink-hint"> · {selected.genre} · {selected.rating}</span>
+                <span className="text-ink-hint">
+                  {" "}
+                  · {selected.genre} · {selected.rating}
+                </span>
               </>
             ) : undefined
           }
@@ -769,7 +776,11 @@ export default function WorldsScreen() {
           actions={
             <>
               {/* 视图切换（v1.7）：平铺列表 ↔ forkedFrom 家谱森林（分段按钮） */}
-              <div role="group" aria-label="世界线视图" className="flex items-center rounded-lg border border-white/10 p-0.5">
+              <div
+                role="group"
+                aria-label="世界线视图"
+                className="flex items-center rounded-lg border border-white/10 p-0.5"
+              >
                 <button
                   type="button"
                   data-testid="worlds-view-list"
@@ -949,7 +960,10 @@ export default function WorldsScreen() {
                         {/* 显示名与备注都有时，备注降为次行（分叉说明这类信息不该被显示名吃掉）。
                             旧版 server 自动写的分叉备注是裸 id 串，不算备注——次行不铺（分叉关系看徽标） */}
                         {entry.label?.trim() && entry.note?.trim() && !isLegacyForkNote(entry.note) && (
-                          <p data-testid={`world-note-${entry.worldId}`} className="mt-1 truncate text-meta text-ink-hint">
+                          <p
+                            data-testid={`world-note-${entry.worldId}`}
+                            className="mt-1 truncate text-meta text-ink-hint"
+                          >
                             {entry.note}
                           </p>
                         )}
@@ -1016,7 +1030,12 @@ export default function WorldsScreen() {
                                   三项都 preventDefault 掉「选中即关」：确认态要留在菜单里，导出要等下载派发完 */}
                               {confirming ? (
                                 <>
-                                  <DropdownMenu.Item asChild disabled={busy} onSelect={KEEP_MENU_OPEN} onClick={() => removeWorld(entry)}>
+                                  <DropdownMenu.Item
+                                    asChild
+                                    disabled={busy}
+                                    onSelect={KEEP_MENU_OPEN}
+                                    onClick={() => removeWorld(entry)}
+                                  >
                                     <button
                                       type="button"
                                       data-testid={`world-confirm-${entry.worldId}`}
@@ -1027,7 +1046,12 @@ export default function WorldsScreen() {
                                       {busy ? "删除中…" : "确认删除"}
                                     </button>
                                   </DropdownMenu.Item>
-                                  <DropdownMenu.Item asChild disabled={busy} onSelect={KEEP_MENU_OPEN} onClick={() => setConfirmId(null)}>
+                                  <DropdownMenu.Item
+                                    asChild
+                                    disabled={busy}
+                                    onSelect={KEEP_MENU_OPEN}
+                                    onClick={() => setConfirmId(null)}
+                                  >
                                     <button
                                       type="button"
                                       data-testid={`world-cancel-${entry.worldId}`}
@@ -1158,7 +1182,9 @@ export default function WorldsScreen() {
                           >
                             取消
                           </button>
-                          <span className="text-meta tracking-[.08em] text-ink-hint">Enter 保存 · Esc 取消 · 留空即清除</span>
+                          <span className="text-meta tracking-[.08em] text-ink-hint">
+                            Enter 保存 · Esc 取消 · 留空即清除
+                          </span>
                         </div>
                       </div>
                     )}

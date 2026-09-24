@@ -11,7 +11,6 @@ import { expect, test, type Page } from "@playwright/test";
 import { startUiStack, stopUiStack, type StartedStack } from "./stack";
 import { openRailGroup } from "./flow";
 
-
 /** w1 当前三节点树（进度指针 1-2；含快照 1 的节点 1-1，供点选回退） */
 function currentTree(): string {
   return [

@@ -90,7 +90,9 @@ export default function CreationScreen() {
               返回
             </button>
           </div>
-          <p className="mt-1.5 text-meta tracking-[.2em] text-ink-hint">用几句话聊聊你想要的故事，聊到满意就装配成新剧本</p>
+          <p className="mt-1.5 text-meta tracking-[.2em] text-ink-hint">
+            用几句话聊聊你想要的故事，聊到满意就装配成新剧本
+          </p>
         </header>
 
         {/* 对话流：引擎在上、玩家回话靠右。它同时是本屏的滚动容器——确认层开着时挂 .scroll-locked
@@ -135,11 +137,7 @@ export default function CreationScreen() {
           })}
 
           {/* 引擎忙时排队的消息：回合结束自动补发 */}
-          {pendingMessage && (
-            <p className="mb-3 text-right text-meta tracking-[.15em] text-ink-hint">
-              就绪后自动发送
-            </p>
-          )}
+          {pendingMessage && <p className="mb-3 text-right text-meta tracking-[.15em] text-ink-hint">就绪后自动发送</p>}
 
           {/* 装配进度：收到【图】标记逐项点亮 */}
           {assembling && (
@@ -150,9 +148,7 @@ export default function CreationScreen() {
             >
               <p className="text-ui tracking-[.25em] text-gold/80">装 配 中</p>
               <ul className="mt-2 space-y-1 text-ui text-ink-body">
-                <li className={coverDone ? "text-ink" : ""}>
-                  {coverDone ? "封面 ✓" : "封面 · 生成中…"}
-                </li>
+                <li className={coverDone ? "text-ink" : ""}>{coverDone ? "封面 ✓" : "封面 · 生成中…"}</li>
                 <li className={portraits.length > 0 ? "text-ink" : ""}>
                   {portraits.length > 0 ? `角色立绘 ✓（${portraits.join("、")}）` : "角色立绘 · 生成中…"}
                 </li>

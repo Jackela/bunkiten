@@ -76,11 +76,13 @@ function collectClosure(entry) {
     seen.add(name);
     for (const dep of Object.keys(pkg.dependencies ?? {})) queue.push({ name: dep, required: true });
     for (const dep of Object.keys(pkg.optionalDependencies ?? {})) {
-      if (!seen.has(dep) && !queue.some((q) => q.name === dep && q.required)) queue.push({ name: dep, required: false });
+      if (!seen.has(dep) && !queue.some((q) => q.name === dep && q.required))
+        queue.push({ name: dep, required: false });
     }
   }
   const hard = [...missing.entries()].filter(([, req]) => req).map(([n]) => n);
-  if (hard.length > 0) throw new Error(`node_modules 里缺必需依赖：${hard.join(", ")}——先跑 npm ci（或 npm i -D ${ENTRY}）再打包`);
+  if (hard.length > 0)
+    throw new Error(`node_modules 里缺必需依赖：${hard.join(", ")}——先跑 npm ci（或 npm i -D ${ENTRY}）再打包`);
   return { names: [...seen], skipped: [...missing.keys()] };
 }
 
@@ -117,7 +119,8 @@ for (const name of names) {
 }
 
 const entryFile = path.join(OUT, ENTRY, "dist", "index.js");
-if (!fs.existsSync(entryFile)) throw new Error(`入口脚本不存在：${entryFile}（${ENTRY} 的 bin 变了？见 server/engines.mjs 的 codexAcpCommand）`);
+if (!fs.existsSync(entryFile))
+  throw new Error(`入口脚本不存在：${entryFile}（${ENTRY} 的 bin 变了？见 server/engines.mjs 的 codexAcpCommand）`);
 // 目标架构的平台二进制必须在树里（架构自检已在开头做过；这里确认那条依赖真的被 npm 装下来了）
 if (!names.includes(CODEX_PLATFORM_PKG)) {
   throw new Error(

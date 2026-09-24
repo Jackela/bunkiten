@@ -11,7 +11,6 @@ import { expect, test, type Page } from "@playwright/test";
 import { startUiStack, stopUiStack, type StartedStack } from "./stack";
 import { openRailGroup } from "./flow";
 
-
 /** w1 的三节点小树（1-1 → 1-2 → 1-3，进度指针在 1-2） */
 function smallTree(): string {
   return [

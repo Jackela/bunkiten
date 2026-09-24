@@ -237,7 +237,9 @@ function copyCodexSkill(gameRoot, codHome) {
 /** PATH 里找一个可执行文件（给「登录按钮能不能点」用；找不到回 null，不抛） @param {string} name @returns {string | null} */
 function resolveOnPath(name) {
   const exts = process.platform === "win32" ? ["", ".exe", ".cmd", ".bat"] : [""];
-  for (const dir of String(process.env.PATH || "").split(path.delimiter).filter(Boolean)) {
+  for (const dir of String(process.env.PATH || "")
+    .split(path.delimiter)
+    .filter(Boolean)) {
     for (const ext of exts) {
       try {
         const file = path.join(dir, name + ext);

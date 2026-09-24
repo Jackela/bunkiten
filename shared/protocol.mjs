@@ -30,7 +30,13 @@ export const AUDIO_FILE_RE = new RegExp(`^(${AUDIO_KINDS.join("|")})-(.+)\\.(${A
 export const AUDIO_REL_RE = new RegExp(`^presets/[A-Za-z0-9_-]+/audio/[^/]+\\.(${AUDIO_EXTS.join("|")})$`);
 
 /** 扩展名 → Content-Type（键必须与 AUDIO_EXTS 同集，漏一个直服就回落 octet-stream） */
-export const AUDIO_MIME = { mp3: "audio/mpeg", ogg: "audio/ogg", m4a: "audio/mp4", wav: "audio/wav", flac: "audio/flac" };
+export const AUDIO_MIME = {
+  mp3: "audio/mpeg",
+  ogg: "audio/ogg",
+  m4a: "audio/mp4",
+  wav: "audio/wav",
+  flac: "audio/flac",
+};
 
 /**
  * 美术类型字面（**唯一真源**，v1.7 收尾）：【图】标记与【清单】行的类型段（立绘/背景/封面）。

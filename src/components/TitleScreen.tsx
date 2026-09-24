@@ -70,7 +70,7 @@ function CardCover({ id }: { id: string }) {
 /** 环形最短偏移：i 相对 current 的 -1/0/+1 位置（|offset|>1 的卡移出视野但保留 DOM） */
 function ringOffset(i: number, current: number, n: number): number {
   const half = Math.floor(n / 2);
-  let off = ((i - current) % n + n) % n;
+  let off = (((i - current) % n) + n) % n;
   if (off > half) off -= n;
   return off;
 }
@@ -267,7 +267,9 @@ export default function TitleScreen() {
           data-testid="title-continue"
           aria-label={`继续上次的世界线 ${continueName}`}
           disabled={continueDisabled}
-          title={!lastWorld.exists ? "目录缺失" : !resumePreset ? "剧本已移除" : engineBusy ? "忙碌中，稍后再试" : undefined}
+          title={
+            !lastWorld.exists ? "目录缺失" : !resumePreset ? "剧本已移除" : engineBusy ? "忙碌中，稍后再试" : undefined
+          }
           onClick={resumeLast}
           onKeyDown={swallowEnter}
           className={`group absolute bottom-[4vh] left-6 z-20 w-[min(228px,40vw)] rounded-2xl border px-4 py-3 text-left backdrop-blur-md transition-colors ${
@@ -278,7 +280,10 @@ export default function TitleScreen() {
         >
           <span className="flex items-center gap-2">
             <span className="text-meta tracking-[.25em] text-gold/80">继 续 上 次</span>
-            <span aria-hidden className="ml-auto text-meta text-gold/70 transition-transform group-hover:translate-x-0.5">
+            <span
+              aria-hidden
+              className="ml-auto text-meta text-gold/70 transition-transform group-hover:translate-x-0.5"
+            >
               ▸
             </span>
           </span>
@@ -522,7 +527,9 @@ export default function TitleScreen() {
 
                     {/* 顶部标签带：卡带的纸标（自带深色底+毛玻璃，保证任意封面上的可读性）——标题 + 题材/分级 */}
                     <span className="absolute inset-x-0 top-0 block border-b border-white/[.08] bg-scrim px-5 pb-2.5 pt-3 backdrop-blur-[3px]">
-                      <span className="block truncate text-title leading-snug tracking-[.08em] text-ink">{p.title}</span>
+                      <span className="block truncate text-title leading-snug tracking-[.08em] text-ink">
+                        {p.title}
+                      </span>
                       <span className="mt-0.5 block truncate text-meta tracking-[.22em]" style={{ color: t.accent }}>
                         {p.genre} · {p.rating}
                       </span>

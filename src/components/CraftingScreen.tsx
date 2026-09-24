@@ -14,12 +14,20 @@ import { useTick, useTurnElapsed } from "./useTurnElapsed";
  * @param {{done: number, total: number, startedAt: number|null, now: number}} o 已完成张数 / 总数 / 批次起点 / 现在
  * @returns {string|null} 形如「平均 ≈38s / 张 · 约还需 ~6 分钟」，或 null（不显示）
  */
-export function preloadEtaLabel(o: { done: number; total: number; startedAt: number | null; now: number }): string | null {
+export function preloadEtaLabel(o: {
+  done: number;
+  total: number;
+  startedAt: number | null;
+  now: number;
+}): string | null {
   if (o.startedAt === null || o.done < 2 || o.done >= o.total) return null;
   const perItemMs = Math.max(0, (o.now - o.startedAt) / o.done);
   const remainMs = perItemMs * (o.total - o.done);
   const per = `平均 ≈${Math.max(1, Math.round(perItemMs / 1000))}s / 张`;
-  const remain = remainMs < 90_000 ? `约还需 ~${Math.max(1, Math.round(remainMs / 1000))} 秒` : `约还需 ~${Math.round(remainMs / 60_000)} 分钟`;
+  const remain =
+    remainMs < 90_000
+      ? `约还需 ~${Math.max(1, Math.round(remainMs / 1000))} 秒`
+      : `约还需 ~${Math.round(remainMs / 60_000)} 分钟`;
   return `${per} · ${remain}`;
 }
 
@@ -66,7 +74,10 @@ function Silhouette({ scene, dim }: { scene: boolean; dim?: boolean }) {
               </linearGradient>
             </defs>
             <circle cx="50" cy="30" r="15" fill="url(#slot-figure-grad)" />
-            <path d="M50 50 C 32 50 22 62 20 82 L 16 126 L 84 126 L 80 82 C 78 62 68 50 50 50 Z" fill="url(#slot-figure-grad)" />
+            <path
+              d="M50 50 C 32 50 22 62 20 82 L 16 126 L 84 126 L 80 82 C 78 62 68 50 50 50 Z"
+              fill="url(#slot-figure-grad)"
+            />
           </svg>
         )}
       </motion.div>
@@ -113,7 +124,12 @@ function ArtSlot({ item, url }: { item: PreloadItem; url: string | null }) {
               className="absolute inset-0 h-full w-full object-cover"
             />
           ) : (
-            <motion.div key="placeholder" exit={{ opacity: 0 }} transition={{ duration: 1.2, ease: "easeInOut" }} className="absolute inset-0">
+            <motion.div
+              key="placeholder"
+              exit={{ opacity: 0 }}
+              transition={{ duration: 1.2, ease: "easeInOut" }}
+              className="absolute inset-0"
+            >
               <Silhouette scene={scene} dim={item.state !== "running"} />
               {item.state === "failed" && (
                 <span className="absolute inset-0 flex items-center justify-center text-ink-faint">
@@ -129,7 +145,9 @@ function ArtSlot({ item, url }: { item: PreloadItem; url: string | null }) {
           </span>
         )}
       </div>
-      <div className={`mt-2.5 flex items-baseline gap-1.5 text-meta ${item.state === "failed" ? "text-ink-hint" : url ? "text-gold" : "text-ink-hint"}`}>
+      <div
+        className={`mt-2.5 flex items-baseline gap-1.5 text-meta ${item.state === "failed" ? "text-ink-hint" : url ? "text-gold" : "text-ink-hint"}`}
+      >
         <span className="min-w-0 flex-1 truncate">{item.label}</span>
         <span className="flex-none text-micro tracking-[.1em] text-ink-hint">{STATE_LABEL[item.state]}</span>
       </div>

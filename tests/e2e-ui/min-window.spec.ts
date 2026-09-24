@@ -95,8 +95,13 @@ test("最小窗口 1024×640：让位生效、捏人屏动作不滚可见、设�
   await enterProtagonist(page, "示例剧本");
 
   // ② 捏人屏：两个开局入口在不滚动时可见（<xl 走固定底栏；此前它们随右栏沉到全部问题之后）
-  expect(await inViewport(page.getByTestId("protagonist-start")), "「制作美术并开演」在最小窗口下要滚到底才够得着").toBe(true);
-  expect(await inViewport(page.getByTestId("skip-preload")), "「跳过美术，直接开演」在最小窗口下要滚到底才够得着").toBe(true);
+  expect(
+    await inViewport(page.getByTestId("protagonist-start")),
+    "「制作美术并开演」在最小窗口下要滚到底才够得着",
+  ).toBe(true);
+  expect(await inViewport(page.getByTestId("skip-preload")), "「跳过美术，直接开演」在最小窗口下要滚到底才够得着").toBe(
+    true,
+  );
 
   // 进游戏屏（跳过美术：本 spec 只验版面，不验制作流水线）
   await page.getByRole("button", { name: "女", exact: true }).click();

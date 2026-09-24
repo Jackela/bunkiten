@@ -8,7 +8,6 @@ import { expect, test, type Page } from "@playwright/test";
 import { startUiStack, stopUiStack, type StartedStack } from "./stack";
 import { openTitleMore } from "./flow";
 
-
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 let stack: StartedStack;
@@ -17,7 +16,9 @@ let page: Page;
 test.beforeAll(async ({ browser }) => {
   ({ stack, page } = await startUiStack(browser, {
     presets: [{ id: "demo", title: "示例剧本" }],
-    assets: { demo: [{ name: "立绘-薇拉.jpg", bytes: Buffer.concat([Buffer.from([0xff, 0xd8]), Buffer.from("E2E-VERA")]) }] },
+    assets: {
+      demo: [{ name: "立绘-薇拉.jpg", bytes: Buffer.concat([Buffer.from([0xff, 0xd8]), Buffer.from("E2E-VERA")]) }],
+    },
     audioFiles: { demo: [{ name: "曲-夜灯谣.wav", bytes: Buffer.from("E2E-WAV") }] },
     turns: [], // 导出/导入不推演，无需回合脚本
   }));
@@ -85,4 +86,3 @@ test("剧本分享：导出下载 .preset.json → 导入成新卡带（demo-cop
   await expect(page.getByTestId("preset-export-demo-copy")).toBeVisible(); // 导出换成新 id
   await expect(page.getByTestId("title-card-center")).toHaveAttribute("aria-label", /示例剧本/);
 });
-

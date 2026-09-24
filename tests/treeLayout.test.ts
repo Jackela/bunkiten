@@ -40,7 +40,15 @@ describe("layoutTree：最长路径分层与画布尺寸", () => {
   it("分叉与汇合：层号取最长路径，汇合点对齐较深分支（不提前）", () => {
     // a → b → d（两跳）；a → c → d（两跳）：d 层号 = 2
     const l = layoutTree(
-      chapter([node("a", [["", "b"], ["", "c"]]), node("b", [["", "d"]]), node("c", [["", "d"]]), node("d")]),
+      chapter([
+        node("a", [
+          ["", "b"],
+          ["", "c"],
+        ]),
+        node("b", [["", "d"]]),
+        node("c", [["", "d"]]),
+        node("d"),
+      ]),
     );
     const layerOf = (id: string) => l.nodes.find((n) => n.id === id)!.layer;
     expect(layerOf("a")).toBe(0);
@@ -67,7 +75,16 @@ describe("layoutTree：最长路径分层与画布尺寸", () => {
   });
 
   it("重复节点 id 与重复边去重（保留首次出现）", () => {
-    const l = layoutTree(chapter([node("a", [["", "b"], ["", "b"]]), node("a"), node("b")]));
+    const l = layoutTree(
+      chapter([
+        node("a", [
+          ["", "b"],
+          ["", "b"],
+        ]),
+        node("a"),
+        node("b"),
+      ]),
+    );
     expect(l.nodes.map((n) => n.id)).toEqual(["a", "b"]);
     expect(l.edges).toHaveLength(1);
   });
@@ -78,7 +95,15 @@ describe("layoutTree：最长路径分层与画布尺寸", () => {
   });
 
   it("确定性：同输入两次布局结果完全一致（坐标抹浮点噪声）", () => {
-    const ch = chapter([node("a", [["", "b"], ["", "c"]]), node("b", [["", "d"]]), node("c", [["", "d"]]), node("d")]);
+    const ch = chapter([
+      node("a", [
+        ["", "b"],
+        ["", "c"],
+      ]),
+      node("b", [["", "d"]]),
+      node("c", [["", "d"]]),
+      node("d"),
+    ]);
     expect(layoutTree(ch)).toEqual(layoutTree(ch));
   });
 });

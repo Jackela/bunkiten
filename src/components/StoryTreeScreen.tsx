@@ -23,13 +23,7 @@ import { motion } from "framer-motion";
 import { RefreshCw } from "lucide-react";
 import { fetchHistory, fetchSnapshot, fetchTree, postSnapshotLabel, type WorldSnapshotMeta } from "../lib/acp";
 import { diffLines, diffStats, type DiffRow } from "../lib/diff";
-import {
-  parseStoryTree,
-  type StoryTree,
-  type TreeChapter,
-  type TreeNode,
-  type TreeNodeStatus,
-} from "../lib/parser";
+import { parseStoryTree, type StoryTree, type TreeChapter, type TreeNode, type TreeNodeStatus } from "../lib/parser";
 import { canReplaySnapshot } from "../lib/replay";
 import { truncate } from "../lib/text";
 import { layoutTree, type LayoutNode, type TreeLayout } from "../lib/treeLayout";
@@ -226,7 +220,12 @@ function TreeCanvas({
 
   const ids = useMemo(() => layout.nodes.map((n) => n.id), [layout.nodes]);
   // roving tabIndex：整图只有一个可 Tab 的节点（选中节点；没选中时落在当前进度/首个节点）
-  const tabbableId = treeFocus && ids.includes(treeFocus) ? treeFocus : chapter.current && ids.includes(chapter.current) ? chapter.current : ids[0];
+  const tabbableId =
+    treeFocus && ids.includes(treeFocus)
+      ? treeFocus
+      : chapter.current && ids.includes(chapter.current)
+        ? chapter.current
+        : ids[0];
 
   /** 方向键在节点间走（顺序=章节顺序），焦点跟着 roving 走，接着按 Enter 就在新节点上 */
   const moveFocus = (step: number) => {
@@ -392,7 +391,12 @@ function TreeCanvas({
                 }}
                 strokeWidth={strokeWidth}
               />
-              <text x={ln.x + 12} y={ln.y + 24} className="text-ui font-semibold tracking-[.06em]" style={{ fill: "var(--ink)" }}>
+              <text
+                x={ln.x + 12}
+                y={ln.y + 24}
+                className="text-ui font-semibold tracking-[.06em]"
+                style={{ fill: "var(--ink)" }}
+              >
                 节点 {ln.id}
               </text>
               <text x={ln.x + 12} y={ln.y + 46} className="text-meta" style={{ fill: "var(--ink)", opacity: 0.62 }}>
@@ -427,9 +431,10 @@ function TreeList({
   snapshotOf: Map<string, SnapshotRef>;
   onFocus: (id: string) => void;
 }) {
-  const groups = STATUS_ORDER.map((status) => ({ status, nodes: nodes.filter((n) => n.node.status === status) })).filter(
-    (g) => g.nodes.length > 0,
-  );
+  const groups = STATUS_ORDER.map((status) => ({
+    status,
+    nodes: nodes.filter((n) => n.node.status === status),
+  })).filter((g) => g.nodes.length > 0);
 
   return (
     <div data-testid="tree-list" className="mt-3 space-y-3">
@@ -451,7 +456,9 @@ function TreeList({
                   aria-label={`节点 ${ln.id} · ${ln.node.status}${snap ? ` · 存档点 · 第 ${snap.seq} 幕` : ""}`}
                   onClick={() => onFocus(ln.id)}
                   className={`flex w-full items-center gap-3 rounded-lg border px-3 py-2 text-left text-ui transition-colors ${
-                    isCurrent ? "border-[color:var(--accent2)]/60 bg-white/[.05]" : "border-white/[.08] hover:border-gold/40"
+                    isCurrent
+                      ? "border-[color:var(--accent2)]/60 bg-white/[.05]"
+                      : "border-white/[.08] hover:border-gold/40"
                   }`}
                 >
                   <span className="w-12 flex-none tracking-wide text-gold">{ln.id}</span>
@@ -502,13 +509,24 @@ function DiffLine({ row }: { row: DiffRow }) {
   const sign = row.type === "remove" ? "−" : row.type === "add" ? "+" : " ";
   const body = (
     <>
-      <span aria-hidden className="mr-1.5 inline-block w-2.5 select-none text-center">{sign}</span>
+      <span aria-hidden className="mr-1.5 inline-block w-2.5 select-none text-center">
+        {sign}
+      </span>
       {row.text || "\u00a0"}
     </>
   );
   return (
-    <div data-testid={`diff-row-${row.type}`} className={`whitespace-pre-wrap px-1.5 font-mono text-meta leading-relaxed ${tone}`}>
-      {row.type === "remove" ? <del className="no-underline">{body}</del> : row.type === "add" ? <ins className="no-underline">{body}</ins> : body}
+    <div
+      data-testid={`diff-row-${row.type}`}
+      className={`whitespace-pre-wrap px-1.5 font-mono text-meta leading-relaxed ${tone}`}
+    >
+      {row.type === "remove" ? (
+        <del className="no-underline">{body}</del>
+      ) : row.type === "add" ? (
+        <ins className="no-underline">{body}</ins>
+      ) : (
+        body
+      )}
     </div>
   );
 }
@@ -781,7 +799,9 @@ function TreeDetail({
                         setDiffShowAll(false); // 切 tab 回到折叠视图：每个 tab 独立展开
                       }}
                       className={`rounded-md border px-2.5 py-1 text-meta tracking-[.08em] transition-colors ${
-                        active ? "border-gold/45 bg-gold/15 text-gold" : "border-white/10 text-ink-hint hover:border-gold/40"
+                        active
+                          ? "border-gold/45 bg-gold/15 text-gold"
+                          : "border-white/10 text-ink-hint hover:border-gold/40"
                       }`}
                     >
                       {t.label}
@@ -799,7 +819,11 @@ function TreeDetail({
                 aria-labelledby={`snapshot-diff-tab-${diffTab}`}
                 className="mt-2 max-h-72 overflow-y-auto rounded-md border border-white/[.06] bg-panel-soft p-2"
               >
-                {((diffShowAll ? [{ kind: "rows", rows: diffRows[diffTab] }] : partitionDiff(diffRows[diffTab])) as DiffPart[]).map((part, i) =>
+                {(
+                  (diffShowAll
+                    ? [{ kind: "rows", rows: diffRows[diffTab] }]
+                    : partitionDiff(diffRows[diffTab])) as DiffPart[]
+                ).map((part, i) =>
                   part.kind === "gap" ? (
                     <button
                       key={i}
@@ -884,9 +908,7 @@ function TreeDetail({
             改这里
           </button>
         </div>
-        {engineBusy ? (
-          <p className="mt-1.5 text-meta text-ink-hint">忙碌中，就绪后自动发送</p>
-        ) : null}
+        {engineBusy ? <p className="mt-1.5 text-meta text-ink-hint">忙碌中，就绪后自动发送</p> : null}
       </div>
 
       <div className="mt-4 flex flex-wrap items-center gap-3">
@@ -1338,7 +1360,9 @@ export default function StoryTreeScreen() {
                     aria-pressed={active}
                     onClick={() => selectChapter(it.key)}
                     className={`flex items-center gap-1.5 rounded-md border px-3 py-1 text-ui tracking-[.12em] transition-colors ${
-                      active ? "border-gold/45 bg-gold/15 text-gold" : "border-white/10 text-ink-hint hover:border-gold/40 hover:text-ink"
+                      active
+                        ? "border-gold/45 bg-gold/15 text-gold"
+                        : "border-white/10 text-ink-hint hover:border-gold/40 hover:text-ink"
                     }`}
                   >
                     {it.label}
@@ -1356,7 +1380,10 @@ export default function StoryTreeScreen() {
             <div className="min-w-0">
               {/* 大图（> 40 节点）：默认列表，并给出显式切换 */}
               {!loading && !error && tree && chapter && bigGraph && (
-                <div data-testid="tree-view-toggle" className="mt-3 flex flex-wrap items-center gap-2 text-ui text-ink-hint">
+                <div
+                  data-testid="tree-view-toggle"
+                  className="mt-3 flex flex-wrap items-center gap-2 text-ui text-ink-hint"
+                >
                   <span>本章 {layout.nodes.length} 个节点，已切到列表模式</span>
                   <button
                     type="button"
@@ -1364,7 +1391,9 @@ export default function StoryTreeScreen() {
                     aria-pressed={mode === "list"}
                     onClick={() => setModePref("list")}
                     className={`rounded-md border px-3 py-1 tracking-[.15em] transition-colors ${
-                      mode === "list" ? "border-gold/45 bg-gold/15 text-gold" : "border-white/10 text-ink-hint hover:border-gold/40"
+                      mode === "list"
+                        ? "border-gold/45 bg-gold/15 text-gold"
+                        : "border-white/10 text-ink-hint hover:border-gold/40"
                     }`}
                   >
                     列表
@@ -1375,7 +1404,9 @@ export default function StoryTreeScreen() {
                     aria-pressed={mode === "graph"}
                     onClick={() => setModePref("graph")}
                     className={`rounded-md border px-3 py-1 tracking-[.15em] transition-colors ${
-                      mode === "graph" ? "border-gold/45 bg-gold/15 text-gold" : "border-white/10 text-ink-hint hover:border-gold/40"
+                      mode === "graph"
+                        ? "border-gold/45 bg-gold/15 text-gold"
+                        : "border-white/10 text-ink-hint hover:border-gold/40"
                     }`}
                   >
                     图形

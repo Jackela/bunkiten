@@ -50,9 +50,13 @@ function FavorMeter({ favor }: { favor: number | null }) {
   return (
     <div className="flex items-center gap-2.5">
       <span className="text-meta tracking-[.15em] text-ink-hint">好感度</span>
-      <span className="text-body font-medium tabular-nums text-[color:var(--accent)]">{favor === null ? "—" : favor}</span>
+      <span className="text-body font-medium tabular-nums text-[color:var(--accent)]">
+        {favor === null ? "—" : favor}
+      </span>
       <div className="h-[3px] min-w-0 flex-1 rounded-full bg-white/10">
-        {favor !== null && <div className="h-full rounded-full bg-[color:var(--accent)]" style={{ width: `${favor}%` }} />}
+        {favor !== null && (
+          <div className="h-full rounded-full bg-[color:var(--accent)]" style={{ width: `${favor}%` }} />
+        )}
       </div>
     </div>
   );
@@ -77,7 +81,10 @@ function CharacterCard({ c }: { c: StateCharacter }) {
       <div className="mb-2 flex items-center gap-2">
         <h4 className="text-ui tracking-[.1em] text-ink">{c.name}</h4>
         {c.expression && (
-          <span data-testid={`character-expression-${c.name}`} className="rounded-sm border border-white/15 px-1.5 py-0.5 text-micro tracking-[.12em] text-ink-body">
+          <span
+            data-testid={`character-expression-${c.name}`}
+            className="rounded-sm border border-white/15 px-1.5 py-0.5 text-micro tracking-[.12em] text-ink-body"
+          >
             {c.expression}
           </span>
         )}
@@ -101,7 +108,10 @@ function CharacterCard({ c }: { c: StateCharacter }) {
             秘密（剧透）
           </button>
           {secretOpen && (
-            <p data-testid={`character-secret-text-${c.name}`} className="mt-1.5 text-meta leading-relaxed text-ink-body">
+            <p
+              data-testid={`character-secret-text-${c.name}`}
+              className="mt-1.5 text-meta leading-relaxed text-ink-body"
+            >
               {c.secret}
             </p>
           )}
@@ -222,7 +232,9 @@ export default function CharactersDrawer() {
                           {view.foreshadowing.map((f, i) => (
                             <li key={`${i}-${f.text}`} className="flex gap-2">
                               <span className="min-w-0 flex-1">{f.text}</span>
-                              {f.turn !== null && <span className="flex-none text-meta text-ink-hint">第 {f.turn} 幕</span>}
+                              {f.turn !== null && (
+                                <span className="flex-none text-meta text-ink-hint">第 {f.turn} 幕</span>
+                              )}
                             </li>
                           ))}
                         </ul>

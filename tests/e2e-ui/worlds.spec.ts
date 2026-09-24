@@ -103,10 +103,7 @@ test("世界线管理：行内改名→导出→导入出重名副本 w2-2→两
 
   // —— 导出：⋯ 菜单里的 anchor 触发浏览器下载（Content-Disposition attachment），存到 test-results-ui/ ——
   await page.getByTestId("world-menu-w2").click();
-  const [download] = await Promise.all([
-    page.waitForEvent("download"),
-    page.getByTestId("world-export-w2").click(),
-  ]);
+  const [download] = await Promise.all([page.waitForEvent("download"), page.getByTestId("world-export-w2").click()]);
   const outDir = path.join(ROOT, "test-results-ui");
   mkdirSync(outDir, { recursive: true });
   const bundlePath = path.join(outDir, "w2-export.world.json");
@@ -246,10 +243,7 @@ test("家谱缩放：100% 起手 → 放大 125%（viewBox 变窄）→ 适应�
   await page.getByTestId("genealogy-zoom-in").click();
   await expect(level).toHaveText("125%");
   const zoomedVb = (await canvas.getAttribute("viewBox"))!;
-  expect(
-    Number(zoomedVb.split(/\s+/)[2]),
-    `放大后 viewBox 视野没变窄（${fitVb} → ${zoomedVb}）`,
-  ).toBeLessThan(fitW);
+  expect(Number(zoomedVb.split(/\s+/)[2]), `放大后 viewBox 视野没变窄（${fitVb} → ${zoomedVb}）`).toBeLessThan(fitW);
 
   // 适应：回到起手那一档——逐字同一个 viewBox（不是「随便一个小一点的值」）
   await page.getByTestId("genealogy-zoom-fit").click();
@@ -371,7 +365,10 @@ async function watchCoverImg(): Promise<void> {
  * 容差 0.01px：真实回归（少一行文字、缩略图把行撑高）至少差 1px 量级，照样能红。
  */
 function expectSamePx(actual: number, expected: number, what: string): void {
-  expect(Math.abs(actual - expected), `${what}：实测 ${actual}、基准 ${expected}（相差 ${Math.abs(actual - expected)}px）`).toBeLessThan(0.01);
+  expect(
+    Math.abs(actual - expected),
+    `${what}：实测 ${actual}、基准 ${expected}（相差 ${Math.abs(actual - expected)}px）`,
+  ).toBeLessThan(0.01);
 }
 
 // 行缩略图（ROADMAP §5）：缩略图取的是**剧本封面** `coverUrl(entry.preset)`（`/img` 白名单直服
@@ -408,10 +405,13 @@ test("行缩略图：有封面的剧本上封面图，没封面的只剩同尺�
   // 命中目标与「点完焦点/选中落到哪一行」两样都断言：前者是机制（elementFromPoint 会跳过
   // pointer-events:none 的元素），后者是玩家可见的结果（roving tabIndex 的语义不变）
   const hitTest = (box: { x: number; y: number; width: number; height: number }): Promise<string> =>
-    page.evaluate(({ x, y }) => {
-      const el = document.elementFromPoint(x, y);
-      return el?.closest('[data-testid^="world-row-"]')?.getAttribute("data-testid") ?? "";
-    }, { x: box.x + box.width / 2, y: box.y + box.height / 2 });
+    page.evaluate(
+      ({ x, y }) => {
+        const el = document.elementFromPoint(x, y);
+        return el?.closest('[data-testid^="world-row-"]')?.getAttribute("data-testid") ?? "";
+      },
+      { x: box.x + box.width / 2, y: box.y + box.height / 2 },
+    );
   const clickCenter = (box: { x: number; y: number; width: number; height: number }) =>
     page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
 

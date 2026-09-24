@@ -40,7 +40,10 @@ describe("watchLogin：登录等待的轮询", () => {
   });
 
   it("hasCredentials 也算「能开玩」：自备 key 的引擎同样自动继续", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ loggedIn: false, hasCredentials: true })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse({ loggedIn: false, hasCredentials: true })),
+    );
     const onLoggedIn = vi.fn();
     watchLogin(onLoggedIn, { intervalMs: 100, timeoutMs: 10_000 });
     await vi.advanceTimersByTimeAsync(100);

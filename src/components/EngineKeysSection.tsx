@@ -49,7 +49,13 @@ interface Draft {
 /** 分组文案与默认值（两组共用一套渲染，只有这些差异） */
 const GROUP_META: Record<
   GroupKey,
-  { title: string; blurb: string; modes: { value: string; label: string }[]; keyHint: string; modeLabels: Record<string, string> }
+  {
+    title: string;
+    blurb: string;
+    modes: { value: string; label: string }[];
+    keyHint: string;
+    modeLabels: Record<string, string>;
+  }
 > = {
   llm: {
     title: "故事引擎",
@@ -75,7 +81,14 @@ const GROUP_META: Record<
 
 /** 草稿 ↔ 服务端视图（尺寸两格只在图片组有，缺省空串） */
 function draftOf(view: CredentialGroupView): Draft {
-  return { mode: view.mode, provider: view.provider, baseUrl: view.baseUrl, model: view.model, size: view.size ?? "", sizeBackground: view.sizeBackground ?? "" };
+  return {
+    mode: view.mode,
+    provider: view.provider,
+    baseUrl: view.baseUrl,
+    model: view.model,
+    size: view.size ?? "",
+    sizeBackground: view.sizeBackground ?? "",
+  };
 }
 
 /**
@@ -156,8 +169,13 @@ function GroupForm({
   const options = optionsFor(group, catalog, draft.provider);
   const [apiKey, setApiKey] = useState(""); // 只在输入期间存在；提交后清空
   const [reveal, setReveal] = useState(false);
-  const [probe, setProbe] = useState<{ state: "idle" | "running" | "done"; result?: CredentialProbe }>({ state: "idle" });
-  const pending = useRef<{ patch: Record<string, string>; timer: ReturnType<typeof setTimeout> | null }>({ patch: {}, timer: null });
+  const [probe, setProbe] = useState<{ state: "idle" | "running" | "done"; result?: CredentialProbe }>({
+    state: "idle",
+  });
+  const pending = useRef<{ patch: Record<string, string>; timer: ReturnType<typeof setTimeout> | null }>({
+    patch: {},
+    timer: null,
+  });
   // 服务端视图变化（首次加载/保存回包）时同步草稿：key 格是本地态，不参与同步。
   // 「有没发出去的改动」时不回灌——否则玩家正在敲的地址会被上一笔回包覆盖成旧值（视觉回跳）
   useEffect(() => {
@@ -232,7 +250,9 @@ function GroupForm({
   // 只是这一屏不再画它（它本来也不会被转发给这个引擎，见 server/engines.mjs 的 spawn 描述符）。
   const effectiveMode = locked ? "session" : draft.mode;
   const active = effectiveMode === "byok";
-  const missing = active ? [!draft.baseUrl ? "服务地址" : "", !view.hasKey && !apiKey ? "密钥" : ""].filter(Boolean) : [];
+  const missing = active
+    ? [!draft.baseUrl ? "服务地址" : "", !view.hasKey && !apiKey ? "密钥" : ""].filter(Boolean)
+    : [];
   const providerLabel = options.find((p) => p.id === draft.provider)?.label ?? draft.provider;
   const note = options.find((p) => p.id === draft.provider)?.note;
 
@@ -240,7 +260,9 @@ function GroupForm({
     <div className="shell-panel rounded-2xl p-5">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <h4 className="text-ui tracking-[.3em] text-gold/85">{meta.title}</h4>
-        <span className="text-meta text-ink-hint">{view.hasKey && active ? "已配置" : active ? "未配置完整" : meta.modeLabels[effectiveMode]}</span>
+        <span className="text-meta text-ink-hint">
+          {view.hasKey && active ? "已配置" : active ? "未配置完整" : meta.modeLabels[effectiveMode]}
+        </span>
       </div>
       <p className="mt-2 text-meta leading-relaxed text-ink-hint">{meta.blurb}</p>
 
@@ -273,7 +295,11 @@ function GroupForm({
           );
         })}
       </div>
-      {locked ? <p data-testid={`engine-${group}-byok-locked`} className="mt-2 text-meta leading-relaxed text-ink-hint">{locked}</p> : null}
+      {locked ? (
+        <p data-testid={`engine-${group}-byok-locked`} className="mt-2 text-meta leading-relaxed text-ink-hint">
+          {locked}
+        </p>
+      ) : null}
 
       {active && (
         <div className="mt-4 space-y-3">
@@ -359,15 +385,21 @@ function GroupForm({
               className={inputClass}
             />
             <datalist id={`engine-${group}-models`}>
-              {(group === "llm" ? options.find((p) => p.id === draft.provider)?.models : options.find((p) => p.id === draft.provider)?.imageModels)?.map(
-                (m) => <option key={m} value={m} />,
-              )}
+              {(group === "llm"
+                ? options.find((p) => p.id === draft.provider)?.models
+                : options.find((p) => p.id === draft.provider)?.imageModels
+              )?.map((m) => (
+                <option key={m} value={m} />
+              ))}
             </datalist>
           </Field>
 
           {group === "image" ? (
             <>
-              <Field label="出图尺寸（高级）" hint="留空按画面类型自动：立绘与封面竖构图、背景横构图。填了就是所有类型的通用覆盖。">
+              <Field
+                label="出图尺寸（高级）"
+                hint="留空按画面类型自动：立绘与封面竖构图、背景横构图。填了就是所有类型的通用覆盖。"
+              >
                 <input
                   type="text"
                   data-testid="engine-image-size"
@@ -419,7 +451,9 @@ function GroupForm({
           </div>
           {missing.length > 0 ? <p className="text-meta text-ink-hint">还差：{missing.join("、")}</p> : null}
           {group === "image" && probe.state === "idle" ? (
-            <p className="text-meta leading-relaxed text-ink-faint">「测试连接」会真的生成一张小图来验证服务能用（可能产生一点点费用）。</p>
+            <p className="text-meta leading-relaxed text-ink-faint">
+              「测试连接」会真的生成一张小图来验证服务能用（可能产生一点点费用）。
+            </p>
           ) : null}
         </div>
       )}
@@ -439,7 +473,9 @@ export default function EngineKeysSection({ showTitle = true }: { showTitle?: bo
   const [view, setView] = useState<CredentialsView | null>(null);
   const [loadError, setLoadError] = useState("");
   const [notice, setNotice] = useState("");
-  const [restart, setRestart] = useState<{ state: "idle" | "running" | "done" | "error"; error?: string }>({ state: "idle" });
+  const [restart, setRestart] = useState<{ state: "idle" | "running" | "done" | "error"; error?: string }>({
+    state: "idle",
+  });
   // 在线服务目录（v1.10）：读到且里面有条目就换掉下拉候选（两组共用这一份），否则保持 null → 内置表。
   // 读不到**不报错也不提示**——服务目录是候选的加分项，缺了就照旧用内置表，不该在屏上留一条玩家的红字。
   const [catalog, setCatalog] = useState<ProviderCatalogView | null>(null);
@@ -584,7 +620,9 @@ export default function EngineKeysSection({ showTitle = true }: { showTitle?: bo
                 aria-pressed={view.engine === e.id}
                 onClick={() => void pickEngine(e.id)}
                 className={`rounded-lg border px-4 py-1.5 text-ui tracking-[.1em] transition-colors duration-200 ${
-                  view.engine === e.id ? "border-gold/40 bg-gold/15 text-gold" : "border-white/10 text-ink-hint hover:border-gold/25 hover:text-ink"
+                  view.engine === e.id
+                    ? "border-gold/40 bg-gold/15 text-gold"
+                    : "border-white/10 text-ink-hint hover:border-gold/25 hover:text-ink"
                 }`}
               >
                 {e.label}
@@ -620,7 +658,8 @@ export default function EngineKeysSection({ showTitle = true }: { showTitle?: bo
             ) : null}
             {auth && !auth.loggedIn && !auth.canLogin ? (
               <span data-testid="engine-auth-unavailable" className="text-meta leading-relaxed text-ink-hint">
-                这台机器上没有 {engineEntry.label} 的登录入口{engineEntry.unavailableNote}——你也可以自己在终端运行 {engineEntry.loginHint}
+                这台机器上没有 {engineEntry.label} 的登录入口{engineEntry.unavailableNote}——你也可以自己在终端运行{" "}
+                {engineEntry.loginHint}
               </span>
             ) : null}
             {auth?.loggedIn ? (
@@ -699,7 +738,15 @@ export default function EngineKeysSection({ showTitle = true }: { showTitle?: bo
             onSaved={onSaved}
             onError={setLoadError}
           />
-          <GroupForm group="image" view={view.image} catalog={catalog?.providers ?? null} locked={null} onView={setView} onSaved={onSaved} onError={setLoadError} />
+          <GroupForm
+            group="image"
+            view={view.image}
+            catalog={catalog?.providers ?? null}
+            locked={null}
+            onView={setView}
+            onSaved={onSaved}
+            onError={setLoadError}
+          />
         </div>
       ) : null}
 

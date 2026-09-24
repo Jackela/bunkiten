@@ -7,7 +7,9 @@ interface SpeechRecognitionLike {
   lang: string;
   interimResults: boolean;
   continuous: boolean;
-  onresult: ((event: { results: { length: number; [index: number]: { [index: number]: { transcript: string } } } }) => void) | null;
+  onresult:
+    | ((event: { results: { length: number; [index: number]: { [index: number]: { transcript: string } } } }) => void)
+    | null;
   onend: (() => void) | null;
   onerror: (() => void) | null;
   start(): void;

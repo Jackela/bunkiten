@@ -15,7 +15,11 @@ const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
  * 探测绝不抛错，缺实现就走原打字机路径。
  */
 function prefersReducedMotion(): boolean {
-  return typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia(REDUCED_MOTION_QUERY).matches;
+  return (
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia(REDUCED_MOTION_QUERY).matches
+  );
 }
 
 /** 系统动效偏好：挂载时读一次，之后跟随系统设置变化；只影响呈现，不碰用户的文字速度档 */
@@ -168,7 +172,8 @@ export default function DialogueBox() {
       <span
         className="pointer-events-none absolute inset-x-4 top-0 h-px"
         style={{
-          background: "linear-gradient(90deg, transparent, color-mix(in oklab, var(--accent) 70%, transparent), transparent)",
+          background:
+            "linear-gradient(90deg, transparent, color-mix(in oklab, var(--accent) 70%, transparent), transparent)",
         }}
       />
       {/* 自动 / 快进：VN 肌肉记忆的两个控件，落位面板右上角。

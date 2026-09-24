@@ -47,7 +47,8 @@ async function expectStageFits(page: Page, where: string) {
 }
 
 /** 人形 figure 的按名取用（figure 是布局盒的载体，img 只是它里面的画） */
-const figureOf = (page: Page, name: string): Locator => page.locator(`[data-testid="portrait-figure"]:has(img[alt="${name}"])`);
+const figureOf = (page: Page, name: string): Locator =>
+  page.locator(`[data-testid="portrait-figure"]:has(img[alt="${name}"])`);
 
 /** 量一次给报告用的数：面板宽 / 各立绘左右缘（真机数值，避免「注释里的数字」与实况漂开） */
 async function measure(page: Page) {
@@ -65,7 +66,11 @@ async function measure(page: Page) {
       };
     }),
   );
-  return { panelW: Math.round((dialogue?.width ?? 0) * 10) / 10, panelRight: Math.round(((dialogue?.x ?? 0) + (dialogue?.width ?? 0)) * 10) / 10, figures };
+  return {
+    panelW: Math.round((dialogue?.width ?? 0) * 10) / 10,
+    panelRight: Math.round(((dialogue?.x ?? 0) + (dialogue?.width ?? 0)) * 10) / 10,
+    figures,
+  };
 }
 
 let stack: StartedStack;
@@ -165,11 +170,20 @@ test("同屏 2 立绘：两人都有真实布局盒、名牌只归发言者、�
 
   // 亮/暗：非发言者压暗（VN 的 dim 约定），发言者全亮。压暗档落在图那一层
   // （外层是 framer 的 motion 元素，内联 opacity 会盖掉类）
-  const dimOpacity = await figureOf(page, "薇拉").locator("div").first().evaluate((el) => getComputedStyle(el).opacity);
+  const dimOpacity = await figureOf(page, "薇拉")
+    .locator("div")
+    .first()
+    .evaluate((el) => getComputedStyle(el).opacity);
   expect(Number(dimOpacity), "非发言者没有被压暗（opacity 不是 .55）").toBeCloseTo(0.55, 2);
-  const leadOpacity = await figureOf(page, "阿澈").locator("div").first().evaluate((el) => getComputedStyle(el).opacity);
+  const leadOpacity = await figureOf(page, "阿澈")
+    .locator("div")
+    .first()
+    .evaluate((el) => getComputedStyle(el).opacity);
   expect(Number(leadOpacity), "发言者被压暗了（应该全亮）").toBeCloseTo(1, 2);
-  const leadFilter = await figureOf(page, "阿澈").locator("div").first().evaluate((el) => getComputedStyle(el).filter);
+  const leadFilter = await figureOf(page, "阿澈")
+    .locator("div")
+    .first()
+    .evaluate((el) => getComputedStyle(el).filter);
   expect(leadFilter, "发言者不该带降饱和滤镜").not.toContain("saturate");
 
   // 同屏 2 人的双硬约束：面板 > 700px，两张立绘都不压面板
@@ -208,5 +222,7 @@ test("同屏 2 立绘：两人都有真实布局盒、名牌只归发言者、�
   await expectStageFits(page, "第三人上屏后（薇拉+布洛克）");
 
   // 报告用数值（真机实测；断言本身不依赖这段，删掉不影响门禁）
-  console.log(`[duo] solo=${JSON.stringify(solo)}\n[duo] duo=${JSON.stringify(duo)}\n[duo] swapped=${JSON.stringify(swapped)}\n[duo] trio=${JSON.stringify(trio)}`);
+  console.log(
+    `[duo] solo=${JSON.stringify(solo)}\n[duo] duo=${JSON.stringify(duo)}\n[duo] swapped=${JSON.stringify(swapped)}\n[duo] trio=${JSON.stringify(trio)}`,
+  );
 });

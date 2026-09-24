@@ -48,16 +48,11 @@ async function storedSettings(p: Page): Promise<Record<string, unknown> | null> 
 
 /** 受控 range input 设值（React 会拦截直接赋值，须走原型 setter 再派发 input 事件） */
 async function setRangeValue(p: Page, testId: string, value: number): Promise<void> {
-  await p
-    .getByTestId(testId)
-    .evaluate(
-      (el, v) => {
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
-        setter?.call(el, String(v));
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-      },
-      value,
-    );
+  await p.getByTestId(testId).evaluate((el, v) => {
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+    setter?.call(el, String(v));
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  }, value);
 }
 
 test("引擎与密钥：填 key → 掩码 → 刷新后仍在 → 重启引擎生效 → 清空回落，且响应里从无明文", async ({ browser }) => {
@@ -194,16 +189,31 @@ test("引擎与密钥 · 图片组与测试连接：两条探活路径（通过 
   }
 });
 
-test("引擎与密钥 · 在线目录：候选换成远端那份、地址按远端预填，并真的保存一个 mock 目录独有的 provider", async ({ browser }) => {
+test("引擎与密钥 · 在线目录：候选换成远端那份、地址按远端预填，并真的保存一个 mock 目录独有的 provider", async ({
+  browser,
+}) => {
   // 一份「在线目录」（形状与 GET /api/providers 的响应体一致）：一条已有 id 改名并换地址、一条全新 id、一条只在出图侧。
   // 用本地 mock 发布源真的喂给服务端——这样保存时服务端校验看到的目录与浏览器读到的完全一致。
   const mockCatalog = {
     version: 1,
     updatedAt: "2026-01-02T03:04:05.000Z",
     providers: [
-      { id: "deepseek", label: "深海探路者", kind: "llm", baseUrl: "https://api.deepseek.com/online", models: ["deepseek-chat"] },
+      {
+        id: "deepseek",
+        label: "深海探路者",
+        kind: "llm",
+        baseUrl: "https://api.deepseek.com/online",
+        models: ["deepseek-chat"],
+      },
       { id: "newcomer-llm", label: "新来的服务", kind: "llm", baseUrl: "https://newcomer.example/v1", models: [] },
-      { id: "newcomer-image", label: "新来的出图服务", kind: "image", baseUrl: "https://newcomer.example/img", models: [], imageModels: ["new-image-1"] },
+      {
+        id: "newcomer-image",
+        label: "新来的出图服务",
+        kind: "image",
+        baseUrl: "https://newcomer.example/img",
+        models: [],
+        imageModels: ["new-image-1"],
+      },
     ],
   };
   const catalog = http.createServer((_req, res) => {
@@ -223,7 +233,9 @@ test("引擎与密钥 · 在线目录：候选换成远端那份、地址按远�
     // 启动期抓取是异步的：先等 /api/providers 变成 remote（GUI 挂载时读到的才是这份远端目录）。
     // 这不只是「屏上标注」的前置——保存走的是同一个服务端进程，它校验用的也是这份目录。
     await expect
-      .poll(async () => (await (await page.request.get(`${stack.pageUrl}/api/providers`)).json()).source, { timeout: 10_000 })
+      .poll(async () => (await (await page.request.get(`${stack.pageUrl}/api/providers`)).json()).source, {
+        timeout: 10_000,
+      })
       .toBe("remote");
 
     await page.goto(stack.pageUrl);
@@ -260,14 +272,18 @@ test("引擎与密钥 · 在线目录：候选换成远端那份、地址按远�
 
     // 出图组同样吃远端候选（新增的出图服务出现在它的下拉里）
     await page.getByTestId("engine-image-mode-byok").click();
-    await expect(page.getByTestId("engine-image-provider").locator('option[value="newcomer-image"]')).toHaveText("新来的出图服务");
+    await expect(page.getByTestId("engine-image-provider").locator('option[value="newcomer-image"]')).toHaveText(
+      "新来的出图服务",
+    );
   } finally {
     await new Promise<void>((r) => catalog.close(() => r()));
     await stopUiStack(page, stack);
   }
 });
 
-test("登录状态（v1.11 收尾）：设置屏看得见「已登录」；两段确认登出后状态翻回未登录、玩家文件被清", async ({ browser }) => {
+test("登录状态（v1.11 收尾）：设置屏看得见「已登录」；两段确认登出后状态翻回未登录、玩家文件被清", async ({
+  browser,
+}) => {
   // codexAuth:"ok" 造一个「已登录」的现场（codex 侧登录态 = 玩家 ~/.codex/auth.json 在）
   const { stack, page } = await startUiStack(browser, {
     presets: [{ id: "demo", title: "示例剧本" }],
@@ -339,9 +355,16 @@ test("设置屏：改主音量与文本速度→localStorage 落盘→刷新后�
   await expect(page.getByTestId("settings-textspeed-instant")).toHaveAttribute("aria-pressed", "true");
 });
 
-test("引擎选择（v1.11）：切到 Codex → 对话组的「自备密钥」被锁并给原因 → 重启引擎 → 选择落到磁盘", async ({ browser }) => {
+test("引擎选择（v1.11）：切到 Codex → 对话组的「自备密钥」被锁并给原因 → 重启引擎 → 选择落到磁盘", async ({
+  browser,
+}) => {
   // codexAuth:"ok" 让重启后的握手有一条可用的登录态（codex 侧不走自备 key）；auth:"missing" 从 boot 屏进设置屏
-  const { stack, page } = await startUiStack(browser, { presets: ["demo"], turns: [], auth: "missing", codexAuth: "ok" });
+  const { stack, page } = await startUiStack(browser, {
+    presets: ["demo"],
+    turns: [],
+    auth: "missing",
+    codexAuth: "ok",
+  });
   try {
     await page.goto(stack.pageUrl);
     await page.getByTestId("boot-credentials").click();

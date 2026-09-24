@@ -20,7 +20,16 @@ import { PROVIDER_IDS } from "../../shared/providers.mjs";
 const MOCK_DOC = {
   version: 1,
   updatedAt: "2026-01-02T03:04:05.000Z",
-  providers: [{ id: "mock-only", label: "Mock 服务", kind: "llm", baseUrl: "https://mock.example/v1", models: [], note: "集成测试用发布源" }],
+  providers: [
+    {
+      id: "mock-only",
+      label: "Mock 服务",
+      kind: "llm",
+      baseUrl: "https://mock.example/v1",
+      models: [],
+      note: "集成测试用发布源",
+    },
+  ],
 };
 
 /**
@@ -59,7 +68,8 @@ async function waitForSource(s: any, want: string, timeout = 8000) {
   for (;;) {
     const r = await s.getJSON("/api/providers");
     if (r.status === 200 && r.body?.source === want) return r.body;
-    if (Date.now() > deadline) throw new Error(`timeout waiting for source=${want}（最后一次：${JSON.stringify(r.body)}）`);
+    if (Date.now() > deadline)
+      throw new Error(`timeout waiting for source=${want}（最后一次：${JSON.stringify(r.body)}）`);
     await new Promise((res) => setTimeout(res, 25));
   }
 }
@@ -100,7 +110,9 @@ describe("服务目录更新通道（v1.10，docs/adr/0020）：远端 → 缓�
   it("② 断源重启：缓存顶上（source=cache），不回内置表", async () => {
     // 把缓存时间戳改旧：否则 TTL 会直接跳过抓取，测不到「抓失败仍用缓存」这条
     const cached = JSON.parse(fs.readFileSync(cacheFile, "utf8"));
-    fs.writeFileSync(cacheFile, JSON.stringify({ ...cached, fetchedAt: "2020-01-01T00:00:00.000Z" }, null, 2) + "\n", { mode: 0o600 });
+    fs.writeFileSync(cacheFile, JSON.stringify({ ...cached, fetchedAt: "2020-01-01T00:00:00.000Z" }, null, 2) + "\n", {
+      mode: 0o600,
+    });
     await mock.close(); // 断源：mock 目录服务器停掉
 
     const s = await startStack({

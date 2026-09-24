@@ -9,7 +9,6 @@ import { expect, test, type Page } from "@playwright/test";
 import { startUiStack, stopUiStack, type StartedStack } from "./stack";
 import { openTitleMore } from "./flow";
 
-
 let stack: StartedStack;
 let page: Page;
 

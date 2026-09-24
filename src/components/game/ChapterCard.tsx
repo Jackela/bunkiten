@@ -14,7 +14,8 @@ function Rule() {
       aria-hidden="true"
       className="h-px w-[min(320px,42vw)]"
       style={{
-        background: "linear-gradient(90deg, transparent, color-mix(in oklab, var(--accent) 70%, transparent), transparent)",
+        background:
+          "linear-gradient(90deg, transparent, color-mix(in oklab, var(--accent) 70%, transparent), transparent)",
       }}
     />
   );

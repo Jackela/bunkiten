@@ -128,23 +128,40 @@ function openMcp(entry) {
   const waiting = new Map();
   rl.on("line", (line) => {
     let msg;
-    try { msg = JSON.parse(line); } catch { return; }
+    try {
+      msg = JSON.parse(line);
+    } catch {
+      return;
+    }
     const w = msg.id !== undefined ? waiting.get(msg.id) : undefined;
-    if (w) { waiting.delete(msg.id); w(msg); }
+    if (w) {
+      waiting.delete(msg.id);
+      w(msg);
+    }
   });
   let id = 1;
   const request = (method, params, timeoutMs = 5000) =>
     new Promise((res, rej) => {
       const myId = id++;
-      const to = setTimeout(() => rej(new Error(`${method} 无响应${stderr ? `；stderr=${stderr.slice(0, 300)}` : ""}`)), timeoutMs);
-      waiting.set(myId, (m) => { clearTimeout(to); res(m); });
+      const to = setTimeout(
+        () => rej(new Error(`${method} 无响应${stderr ? `；stderr=${stderr.slice(0, 300)}` : ""}`)),
+        timeoutMs,
+      );
+      waiting.set(myId, (m) => {
+        clearTimeout(to);
+        res(m);
+      });
       child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: myId, method, params }) + "\n");
     });
   return {
     child,
     request,
     stderr: () => stderr,
-    kill: () => { try { child.kill("SIGKILL"); } catch {} },
+    kill: () => {
+      try {
+        child.kill("SIGKILL");
+      } catch {}
+    },
   };
 }
 
@@ -175,7 +192,9 @@ function spawnAndProbeMcp(entry) {
       // 会话可能先 session/load（被拒）再 session/new，两条都 spawn 一次 MCP：换手时把上一条关掉，别留泄漏。
       // 其余一律 kill，与旧行为逐字一致。
       if (CALL_MCP && extra.ok === true) {
-        try { persistentMcp?.kill(); } catch {}
+        try {
+          persistentMcp?.kill();
+        } catch {}
         persistentMcp = h;
       } else h.kill();
       probe({ ...rec, ...extra });
@@ -205,7 +224,11 @@ function spawnAndProbeMcp(entry) {
 
 /** @param {string} s JSON 文本 @returns {any|null} 解析失败回 null（探针不该因坏回包崩） */
 function safeParse(s) {
-  try { return JSON.parse(String(s)); } catch { return null; }
+  try {
+    return JSON.parse(String(s));
+  } catch {
+    return null;
+  }
 }
 
 /** @param {string} text 提示词原文 @returns {{kind: string, name: string}|null} 「美术：重绘 …」里的类型/名 */
@@ -283,7 +306,12 @@ async function handleRegenTurn(text, id) {
     target = resolveRegenTarget(gameRoot, info.kind, info.name);
     if (!target) throw new Error("无法解析出剧本 id（GAME_ROOT/presets 为空？）");
     if (!persistentMcp) throw new Error("没有可用的 MCP 连接（需 FAKE_ENGINE_SPAWN_MCP=1）");
-    args = { prompt: `mock regen: ${info.kind} ${info.name}`, kind: info.kind, name: info.name, outRelPath: target.outRelPath };
+    args = {
+      prompt: `mock regen: ${info.kind} ${info.name}`,
+      kind: info.kind,
+      name: info.name,
+      outRelPath: target.outRelPath,
+    };
     const r = await persistentMcp.request("tools/call", { name: MCP_TOOL_NAME, arguments: args }, 20000);
     if (r?.error) throw new Error(JSON.stringify(r.error));
     payload = safeParse(r?.result?.content?.[0]?.text);
@@ -293,7 +321,10 @@ async function handleRegenTurn(text, id) {
   probe({ kind: "mcp-call", tool: MCP_TOOL_NAME, args, ok: payload?.ok === true, result: payload, error });
   // 工具成功才补【图】协议行（失败镜像真引擎的静默跳过：不发标记，app 侧自然收尾到「未确认」）
   if (payload?.ok === true && info && target) {
-    notify({ sessionUpdate: "agent_message_chunk", content: { text: `【图】${info.kind}|${target.markerName}|${target.outRelPath}|重绘\n` } });
+    notify({
+      sessionUpdate: "agent_message_chunk",
+      content: { text: `【图】${info.kind}|${target.markerName}|${target.outRelPath}|重绘\n` },
+    });
   }
   reply(id, {});
 }
@@ -379,14 +410,24 @@ function handle(msg) {
       return reply(msg.id, { protocolVersion: 1, agentCapabilities: { loadSession: true } });
     case "session/new": {
       sessionCwd = msg.params?.cwd ?? sessionCwd; // 会话 cwd = 引擎 GAME_ROOT：推 outRelPath 时用它
-      probe({ kind: "session", method: "session/new", mcpServers: msg.params?.mcpServers ?? null, meta: msg.params?._meta ?? null });
+      probe({
+        kind: "session",
+        method: "session/new",
+        mcpServers: msg.params?.mcpServers ?? null,
+        meta: msg.params?._meta ?? null,
+      });
       if (SPAWN_MCP) for (const s of msg.params?.mcpServers ?? []) mcpReady = spawnAndProbeMcp(s);
       return reply(msg.id, { sessionId: "fake-session" });
     }
     case "session/load":
       // 固定拒绝：让 server 走「降级 session/new」这条确定路径（CONTRACTS §8）
       sessionCwd = msg.params?.cwd ?? sessionCwd;
-      probe({ kind: "session", method: "session/load", mcpServers: msg.params?.mcpServers ?? null, meta: msg.params?._meta ?? null });
+      probe({
+        kind: "session",
+        method: "session/load",
+        mcpServers: msg.params?.mcpServers ?? null,
+        meta: msg.params?._meta ?? null,
+      });
       if (SPAWN_MCP) for (const s of msg.params?.mcpServers ?? []) mcpReady = spawnAndProbeMcp(s);
       return fail(msg.id, -32000, "no session");
     case "session/set_config_option":
@@ -400,7 +441,9 @@ function handle(msg) {
       // .catch 是最后兜底：万一它异步抛（正常路径不会），也要保证 session/prompt 一定有应答，别把回合挂死。
       if (CALL_MCP && text.includes("美术：重绘")) {
         handleRegenTurn(text, msg.id).catch(() => {
-          try { reply(msg.id, {}); } catch {}
+          try {
+            reply(msg.id, {});
+          } catch {}
         });
         return;
       }

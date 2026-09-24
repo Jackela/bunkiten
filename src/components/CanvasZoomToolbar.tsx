@@ -34,13 +34,26 @@ export function CanvasZoomToolbar({
   /** 外层 span 的附加类（两块画布的行的排布不同：剧情图靠右、家谱靠左） */
   className?: string;
 }) {
-  const btn = "rounded-md border border-white/10 p-1.5 text-ink-hint transition-colors hover:border-gold/40 hover:text-ink";
+  const btn =
+    "rounded-md border border-white/10 p-1.5 text-ink-hint transition-colors hover:border-gold/40 hover:text-ink";
   return (
     <span className={`flex items-center gap-1 ${className}`}>
-      <button type="button" data-testid={`${testIdPrefix}-zoom-out`} aria-label="缩小" onClick={onZoomOut} className={btn}>
+      <button
+        type="button"
+        data-testid={`${testIdPrefix}-zoom-out`}
+        aria-label="缩小"
+        onClick={onZoomOut}
+        className={btn}
+      >
         <ZoomOut size={iconSize} />
       </button>
-      <button type="button" data-testid={`${testIdPrefix}-zoom-in`} aria-label="放大" onClick={onZoomIn} className={btn}>
+      <button
+        type="button"
+        data-testid={`${testIdPrefix}-zoom-in`}
+        aria-label="放大"
+        onClick={onZoomIn}
+        className={btn}
+      >
         <ZoomIn size={iconSize} />
       </button>
       <button

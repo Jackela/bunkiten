@@ -41,7 +41,8 @@ function pickId(a: AssetEntry): string {
  * variant="group" 组标题（金、宽字距、h3）；variant="sub" 角色名这类次级标题（text-meta ink-body）。
  */
 function HeadingBand({ variant, children }: { variant: "group" | "sub"; children: ReactNode }) {
-  const text = variant === "group" ? "text-ui tracking-[.35em] text-gold/85" : "text-meta tracking-[.2em] text-ink-body";
+  const text =
+    variant === "group" ? "text-ui tracking-[.35em] text-gold/85" : "text-meta tracking-[.2em] text-ink-body";
   return (
     <div className="shell-panel rounded-xl px-3 py-2">
       {variant === "group" ? <h3 className={text}>{children}</h3> : <p className={text}>{children}</p>}
@@ -333,7 +334,10 @@ export default function AssetsScreen() {
       >
         {/* 批量工具栏：只在管理素材模式出现（全选/清空/重绘选中/删除选中/退出） */}
         {selectMode && (
-          <div data-testid="assets-toolbar" className="shell-panel flex flex-wrap items-center gap-2 rounded-xl px-3 py-2">
+          <div
+            data-testid="assets-toolbar"
+            className="shell-panel flex flex-wrap items-center gap-2 rounded-xl px-3 py-2"
+          >
             <span className="text-ui tracking-[.12em] text-ink-hint">已选 {picked.length}</span>
             <button
               type="button"
@@ -578,7 +582,8 @@ export default function AssetsScreen() {
                     // 中文输入法选词的 Enter 不算发送（与世界线改名编辑器同款）
                     if (e.key === "Enter" && !e.nativeEvent.isComposing) {
                       e.preventDefault();
-                      if (selectedTarget && !selectedBusy) startRegen(selectedTarget.type, selectedTarget.key, selectedTarget.matchName, regenNote);
+                      if (selectedTarget && !selectedBusy)
+                        startRegen(selectedTarget.type, selectedTarget.key, selectedTarget.matchName, regenNote);
                     }
                   }}
                   placeholder="例：头发改成短发、换成夜景、正面特写"
@@ -590,7 +595,10 @@ export default function AssetsScreen() {
                   type="button"
                   data-testid="assets-preview-regen"
                   disabled={!selectedTarget || selectedBusy}
-                  onClick={() => selectedTarget && startRegen(selectedTarget.type, selectedTarget.key, selectedTarget.matchName, regenNote)}
+                  onClick={() =>
+                    selectedTarget &&
+                    startRegen(selectedTarget.type, selectedTarget.key, selectedTarget.matchName, regenNote)
+                  }
                   className={`flex items-center gap-1.5 rounded-lg border px-4 py-2 text-ui tracking-[.1em] transition-colors ${
                     !selectedTarget || selectedBusy
                       ? "cursor-not-allowed border-white/10 text-ink-hint"

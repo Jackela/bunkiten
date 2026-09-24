@@ -112,9 +112,7 @@ test("剧情图方向键：SVG 节点 <g> 聚焦，outline 画在 g 上（无需
   // 剧情图是整屏切换：TopBar 卸载后焦点在 body，方向键的 onKeyDown 挂在画布包裹层上——
   // 键盘用户得先 Tab 进画布（路过头部/工具条按钮，落在 roving tabIndex 的节点 <g> 上）
   for (let i = 0; i < 10; i++) {
-    const onNode = await page.evaluate(() =>
-      document.activeElement?.matches('[data-testid^="tree-node-"]'),
-    );
+    const onNode = await page.evaluate(() => document.activeElement?.matches('[data-testid^="tree-node-"]'));
     if (onNode) break;
     await page.keyboard.press("Tab");
   }

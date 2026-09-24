@@ -48,14 +48,14 @@
    （颜色块反过来：--color-* 内联出的是 `var(--bg)`/`var(--panel)`，运行时真变量在 `:root`，
    主题注入与 token 覆盖照常生效。） */
 @theme inline {
-  --text-micro: 0.75rem;      /* 12px — 仅角标/徽章短标记，不承载需细读的信息 */
-  --text-meta: 0.8125rem;     /* 13px — 提示/图例/元信息：需要读的文字的下限 */
-  --text-ui: 0.875rem;        /* 14px — 标签/按钮/次级正文 */
-  --text-body: 1rem;          /* 16px — 正文 */
-  --text-read: 1.0625rem;     /* 17px — 叙事正文（对话框） */
-  --text-lead: 1.125rem;      /* 18px — 强调正文 */
-  --text-title: 1.25rem;      /* 20px — 屏标题 */
-  --text-display: 1.75rem;    /* 28px — 主标题/封面字 */
+  --text-micro: 0.75rem; /* 12px — 仅角标/徽章短标记，不承载需细读的信息 */
+  --text-meta: 0.8125rem; /* 13px — 提示/图例/元信息：需要读的文字的下限 */
+  --text-ui: 0.875rem; /* 14px — 标签/按钮/次级正文 */
+  --text-body: 1rem; /* 16px — 正文 */
+  --text-read: 1.0625rem; /* 17px — 叙事正文（对话框） */
+  --text-lead: 1.125rem; /* 18px — 强调正文 */
+  --text-title: 1.25rem; /* 20px — 屏标题 */
+  --text-display: 1.75rem; /* 28px — 主标题/封面字 */
 }
 
 /* 壳层表面与遮罩 token（v1.8）：面板底色与两层遮罩原来散在组件类名里手写（三档面板 rgba 字面
@@ -71,12 +71,12 @@
    (10,12,18)/(8,10,16)/(16,19,28) 三个偏蓝偏黑的近色各写各的，屏与屏之间有说不清的色偏，
    归位即意图（视觉差极小，同屏内不再两种「面板色」）。 */
 :root {
-  --panel: rgba(12,14,20,.72);
-  --panel-strong: rgba(9,11,16,.96);
-  --panel-soft: rgba(12,14,20,.55);
-  --panel-sunken: rgba(12,14,20,.82);
-  --scrim: rgba(7,8,12,.66);
-  --scrim-soft: rgba(7,8,12,.38);
+  --panel: rgba(12, 14, 20, 0.72);
+  --panel-strong: rgba(9, 11, 16, 0.96);
+  --panel-soft: rgba(12, 14, 20, 0.55);
+  --panel-sunken: rgba(12, 14, 20, 0.82);
+  --scrim: rgba(7, 8, 12, 0.66);
+  --scrim-soft: rgba(7, 8, 12, 0.38);
 }
 
 /* 暴露为 tailwind 主题色：bg-panel / bg-panel-strong / bg-panel-soft / bg-panel-sunken /
@@ -106,7 +106,7 @@
   background:
     radial-gradient(120% 80% at 50% -18%, color-mix(in oklab, var(--accent) 15%, transparent), transparent 62%),
     linear-gradient(180deg, color-mix(in oklab, var(--accent2) 5%, transparent), transparent 36%),
-    linear-gradient(180deg, rgba(7,8,12,.58), rgba(7,8,12,.9));
+    linear-gradient(180deg, rgba(7, 8, 12, 0.58), rgba(7, 8, 12, 0.9));
 }
 
 /* 壳层面板基线：底色 + 毛玻璃 + 一道 ink 描边。圆角/内边距仍由组件用工具类选（rounded-xl/px-4…），

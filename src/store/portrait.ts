@@ -69,7 +69,12 @@ export function nextPortraitOnExpression(
   const baseUrl = keep ? keep.baseUrl : assetUrl("portrait", who, preset);
   // 无剧本上下文（preset 空）时 assetPath 回空串：宁可用基础图，也不构造 presets//assets/… 这种坏路径
   const variantPath = variant ? assetPath("立绘", `${who}-${variant}`, preset) : "";
-  return { name: keep ? keep.name : character, variant, url: variantPath ? assetFileUrl(variantPath) : baseUrl, baseUrl };
+  return {
+    name: keep ? keep.name : character,
+    variant,
+    url: variantPath ? assetFileUrl(variantPath) : baseUrl,
+    baseUrl,
+  };
 }
 
 /**

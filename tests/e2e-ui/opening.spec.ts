@@ -56,9 +56,18 @@ test.beforeAll(async ({ browser }) => {
     // 优先命中 presets/<id>/assets/ 已落盘文件直服（缓存权威路径），真实尺寸、无需生成
     assets: {
       demo: [
-        { name: "立绘-薇拉.jpg", bytes: readFileSync(path.join(ROOT, "presets", "rift-mark", "assets", "立绘-薇拉.jpg")) },
-        { name: "背景-教堂.jpg", bytes: readFileSync(path.join(ROOT, "presets", "rift-mark", "assets", "背景-灰雀镇旅店客房.jpg")) },
-        { name: "背景-街道.jpg", bytes: readFileSync(path.join(ROOT, "presets", "rift-mark", "assets", "背景-灰雀镇旅店客房.jpg")) },
+        {
+          name: "立绘-薇拉.jpg",
+          bytes: readFileSync(path.join(ROOT, "presets", "rift-mark", "assets", "立绘-薇拉.jpg")),
+        },
+        {
+          name: "背景-教堂.jpg",
+          bytes: readFileSync(path.join(ROOT, "presets", "rift-mark", "assets", "背景-灰雀镇旅店客房.jpg")),
+        },
+        {
+          name: "背景-街道.jpg",
+          bytes: readFileSync(path.join(ROOT, "presets", "rift-mark", "assets", "背景-灰雀镇旅店客房.jpg")),
+        },
       ],
     },
     audioFiles: { demo: [{ name: "曲-序幕.wav", bytes: silentWav() }] },
@@ -105,9 +114,7 @@ test("开局全链路：捏人填卡→跳过美术开演→正文/选项/立绘
   await expect(page.getByTestId("dialogue-text")).not.toContainText("**行动**");
 
   // 选项化身为按钮（打字机完成后浮入，轮询数量），首项文本来自协议选项行
-  await expect
-    .poll(async () => page.getByTestId("options").locator("button").count())
-    .toBeGreaterThanOrEqual(2);
+  await expect.poll(async () => page.getByTestId("options").locator("button").count()).toBeGreaterThanOrEqual(2);
   await expect(page.getByTestId("options").locator("button").first()).toContainText("撑伞迎上去");
 
   // 【图】标记链路断言：立绘 img 挂载、真实解码（marker→URL→/img 命中 seed 资产→naturalWidth>0）
@@ -149,8 +156,14 @@ test("开局全链路：捏人填卡→跳过美术开演→正文/选项/立绘
   // 每个在 DOM 里的背景层都必须带真图（空层 = 背景没应用），且都铺满视口（inset-0 回归即红）
   for (const layer of bg.layers) {
     expect(layer.url, "背景层挂着 bg-cover 却没有 backgroundImage").not.toBe("");
-    expect(layer.w, `背景层没有铺满视口（宽 ${layer.w} < ${bg.viewport.w}）：inset-0/bg-cover 掉了`).toBeGreaterThanOrEqual(bg.viewport.w);
-    expect(layer.h, `背景层没有铺满视口（高 ${layer.h} < ${bg.viewport.h}）：inset-0/bg-cover 掉了`).toBeGreaterThanOrEqual(bg.viewport.h);
+    expect(
+      layer.w,
+      `背景层没有铺满视口（宽 ${layer.w} < ${bg.viewport.w}）：inset-0/bg-cover 掉了`,
+    ).toBeGreaterThanOrEqual(bg.viewport.w);
+    expect(
+      layer.h,
+      `背景层没有铺满视口（高 ${layer.h} < ${bg.viewport.h}）：inset-0/bg-cover 掉了`,
+    ).toBeGreaterThanOrEqual(bg.viewport.h);
   }
   // 新图落在**某一层**上，且只在一层上（URL 即 marker 直服目标：/img?p=images%2F2.jpg&t=背景&n=教堂&preset=demo）
   expect(
@@ -196,7 +209,10 @@ test("开局全链路：捏人填卡→跳过美术开演→正文/选项/立绘
     const snapshot = () => {
       const state: Snap = Array.from(document.querySelectorAll('div[class*="bg-cover"]')).map((el) => {
         const anim = (el.getAnimations?.() ?? []).find((a) => (a as CSSAnimation).animationName === "stage-bg-fade");
-        return { url: decodeURIComponent((el as HTMLElement).style.backgroundImage), fade: anim ? Number(anim.effect?.getTiming().duration ?? 0) : null };
+        return {
+          url: decodeURIComponent((el as HTMLElement).style.backgroundImage),
+          fade: anim ? Number(anim.effect?.getTiming().duration ?? 0) : null,
+        };
       });
       const key = state.map((l) => `${l.url}#${l.fade}`).join("|");
       const last = w.__bgSnapshots[w.__bgSnapshots.length - 1];
@@ -206,11 +222,20 @@ test("开局全链路：捏人填卡→跳过美术开演→正文/选项/立绘
     const layer = document.querySelector('[data-testid="bg-layer"]');
     w.__bgObserved = !!layer;
     snapshot();
-    if (layer) new MutationObserver(snapshot).observe(layer, { childList: true, subtree: true, attributes: true, attributeFilter: ["style"] });
+    if (layer)
+      new MutationObserver(snapshot).observe(layer, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["style"],
+      });
     return { observed: w.__bgObserved, first: w.__bgSnapshots[0] ?? [] };
   });
   expect(recorder.observed, "App 根没有 [data-testid=bg-layer]：背景层结构变了，观察者没挂上去").toBe(true);
-  expect(recorder.first.filter((l) => l.url.includes("教堂")).length, "第一回合的背景没在底图上（观察者起手就该看到它）").toBe(1);
+  expect(
+    recorder.first.filter((l) => l.url.includes("教堂")).length,
+    "第一回合的背景没在底图上（观察者起手就该看到它）",
+  ).toBe(1);
 
   // 第二回合：点第一项选项 → 引擎换背景（教堂 → 街道）
   await page.getByTestId("options").locator("button").first().click();
@@ -235,7 +260,9 @@ test("开局全链路：捏人填卡→跳过美术开演→正文/选项/立绘
   const snapshots: { url: string; fade: number | null }[][] = await page.evaluate(
     () => (window as unknown as { __bgSnapshots: { url: string; fade: number | null }[][] }).__bgSnapshots,
   );
-  const crossfade = snapshots.find((s) => s.some((l) => l.url.includes("教堂")) && s.some((l) => l.url.includes("街道")));
+  const crossfade = snapshots.find(
+    (s) => s.some((l) => l.url.includes("教堂")) && s.some((l) => l.url.includes("街道")),
+  );
   expect(
     crossfade,
     `换背景时没有出现「旧图 + 新图」两层并存的快照——退化成了硬切（记录到的快照：${JSON.stringify(snapshots)}）`,

@@ -1,0 +1,41 @@
+# Prettier 的边界（v1.13）：**只格式化手写的代码**，不碰数据 / 生成物 / 散文 / CI 配置。
+# 这条边界是刻意的——格式化的收益（风格一致）只在代码上成立，而下列几类要么是内容本身、
+# 要么会被别的门禁反向校验，动它们只会制造噪声甚至打架。
+
+# 生成物 / 外部产物（不是我们手写的源码）
+dist/
+build/
+release/
+coverage/
+node_modules/
+package-lock.json
+
+# **生成物**：docs/providers.json 由 `npm run providers:export` 从 shared/providers.mjs 生成，
+# 契约 lint ⑦ 组断言它与真源**深等**——格式化它会让「生成器输出」与「提交物」分叉、lint 直接红。
+docs/providers.json
+
+# 剧本数据：preset.md 是**游戏内容**（引擎与作者手写、doctor 按内容契约检查），不是我们的源码。
+presets/**/preset.md
+presets/**/assets/
+presets/**/audio/
+
+# 运行时数据与用户内容
+state/
+
+# 散文：README / AGENTS / ARCHITECTURE / ADR / 发布说明都是人排版的（表格对齐、按意换行），
+# 格式化只会重排它们、带来巨大 diff 而收益为零。
+*.md
+
+# CI/CD 配置：YAML 里大量对齐的注释块是给人读的，格式化的收益远小于改坏流水线的风险。
+.github/
+
+# 引擎提示词与命令：引擎按行读，排版本身有语义。
+.grok/
+
+# 图片与测试产物
+docs/images/
+test-results/
+test-results-ui/
+test-results-shots/
+test-results-packaged/
+playwright-report/

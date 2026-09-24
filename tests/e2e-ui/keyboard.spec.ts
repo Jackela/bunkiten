@@ -26,9 +26,19 @@ test.beforeAll(async ({ browser }) => {
     presets: [{ id: "demo", title: "示例剧本" }],
     turns: [
       // 测试 1 的开局回合：三个选项（数字键 2 = 第二项「推开侧门走进回廊」）
-      { match: "开局：", ops: ["雨声漫过教堂的尖顶，薇拉抱着账册站在门口，没有看你。\n\n**行动**\n1. 撑伞迎上去\n2. 推开侧门走进回廊\n3. 停在原地等她开口\n"] },
+      {
+        match: "开局：",
+        ops: [
+          "雨声漫过教堂的尖顶，薇拉抱着账册站在门口，没有看你。\n\n**行动**\n1. 撑伞迎上去\n2. 推开侧门走进回廊\n3. 停在原地等她开口\n",
+        ],
+      },
       // 测试 1 按下 2 后的应答回合（match 命中选项文本本身）
-      { match: "推开侧门", ops: ["侧门虚掩着，回廊里只有你自己的脚步声。墙上的烛台次第亮起，照出一道狭长的影子。\n\n**行动**\n1. 沿回廊深入\n2. 折返正厅\n"] },
+      {
+        match: "推开侧门",
+        ops: [
+          "侧门虚掩着，回廊里只有你自己的脚步声。墙上的烛台次第亮起，照出一道狭长的影子。\n\n**行动**\n1. 沿回廊深入\n2. 折返正厅\n",
+        ],
+      },
       // 测试 2 的开局回合：长正文让标准档打字机持续数秒，留出「打字中按空格」的窗口
       {
         match: "开局：",
@@ -58,9 +68,7 @@ test("数字键 2 选中第二项：prompt 带选项文本、下一回合正文�
   await quickStartToGame(page);
 
   // 打字完成后选项浮入（≥3 个按钮）；此时 window keydown 已挂上
-  await expect
-    .poll(async () => page.getByTestId("options").locator("button").count())
-    .toBeGreaterThanOrEqual(3);
+  await expect.poll(async () => page.getByTestId("options").locator("button").count()).toBeGreaterThanOrEqual(3);
 
   // FreeInput 在就绪时自动聚焦，而数字键对输入框让路（在打字不是在选选项）——
   // 先点一下把焦点还给 body（等自动聚焦落过地、并确认焦点真的在 body 上，见 flow.handFocusBackToBody），
@@ -117,9 +125,7 @@ test("面板控件：快进一次补全文并随即禁用，自动切 aria-press
   await expect(page.getByTestId("dialogue-skip")).toBeDisabled();
 
   // 打完 → 选项浮入；这时才谈「自动前进」（倒计时只在选项可见时武装）
-  await expect
-    .poll(async () => page.getByTestId("options").locator("button").count())
-    .toBeGreaterThanOrEqual(2);
+  await expect.poll(async () => page.getByTestId("options").locator("button").count()).toBeGreaterThanOrEqual(2);
   const auto = page.getByTestId("dialogue-auto");
   await expect(auto).toHaveAttribute("aria-pressed", "false");
   await expect(page.getByTestId("auto-advance")).toHaveCount(0);

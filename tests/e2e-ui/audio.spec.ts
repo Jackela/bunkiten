@@ -169,13 +169,17 @@ async function audioElements(p: Page): Promise<AudioSnapshot[]> {
  * 某个文件对应元素的摘要（找不到时 null —— 失败信息直接说「登记簿里没有这个元素」，不是含糊的 false）。
  * volume 收敛到 2 位小数：淡入终值是浮点乘法（1 × 0.8），逐帧写在元素上会带 float32 尾巴。
  */
-async function elementState(p: Page, file: string): Promise<{ file: string; paused: boolean; volume: number; ended: boolean } | null> {
+async function elementState(
+  p: Page,
+  file: string,
+): Promise<{ file: string; paused: boolean; volume: number; ended: boolean } | null> {
   const hit = (await audioElements(p)).find((a) => a.src.includes(audioPath(file)));
   return hit ? { file, paused: hit.paused, volume: Number(hit.volume.toFixed(2)), ended: hit.ended } : null;
 }
 
 /** 带 p 参数的 /audio 直服请求（索引 /api/audio 是另一个 pathname，刻意不计入——它是「清单」不是「播放」） */
-const playedPaths = (requests: readonly string[], file: string): string[] => requests.filter((p) => p === audioPath(file));
+const playedPaths = (requests: readonly string[], file: string): string[] =>
+  requests.filter((p) => p === audioPath(file));
 
 /** 从（已 decodeURIComponent 的）src 里取出 p 参数值；空 src 返回空串 */
 const pOf = (src: string): string => {
@@ -238,10 +242,14 @@ test("① 三行音频协议各触发一次 /audio 直服请求；元素 src 指
   // ——— 元素面：src 指向对应文件 + 在播（paused=false）+ 音量 = 主音量 × 通道音量 ———
   // ended=false 一起断言：它把「文件太短、早就播完」这类假红与真回归区分开（播完 paused 也会是 true）
   await expect
-    .poll(() => elementState(page, BGM_FILE), { message: `【曲】${BGM_NAME} 的元素应指向 ${audioPath(BGM_FILE)}、在播、音量 1×0.8` })
+    .poll(() => elementState(page, BGM_FILE), {
+      message: `【曲】${BGM_NAME} 的元素应指向 ${audioPath(BGM_FILE)}、在播、音量 1×0.8`,
+    })
     .toEqual({ file: BGM_FILE, paused: false, volume: 0.8, ended: false });
   await expect
-    .poll(() => elementState(page, AMBIENT_FILE), { message: `【环境】${AMBIENT_NAME} 的元素应指向 ${audioPath(AMBIENT_FILE)}、在播、音量 1×0.6` })
+    .poll(() => elementState(page, AMBIENT_FILE), {
+      message: `【环境】${AMBIENT_NAME} 的元素应指向 ${audioPath(AMBIENT_FILE)}、在播、音量 1×0.6`,
+    })
     .toEqual({ file: AMBIENT_FILE, paused: false, volume: 0.6, ended: false });
   await expect
     .poll(() => elementState(page, SFX_FILE), { message: `【音效】${SFX_NAME} 的一次性元素应在播、音量 1×0.9` })
@@ -272,19 +280,21 @@ test("② 换曲：新元素淡入在播、旧元素淡出到 0 后被 pause；�
 
   // 换曲的下半场：新元素淡入到目标音量并在播——src 换成了新文件（同一个通道换手，不是重启旧元素）
   await expect
-    .poll(() => elementState(page, BGM_NEXT_FILE), { message: `换曲后应出现指向 ${audioPath(BGM_NEXT_FILE)} 且在播的新元素（音量 1×0.8）` })
+    .poll(() => elementState(page, BGM_NEXT_FILE), {
+      message: `换曲后应出现指向 ${audioPath(BGM_NEXT_FILE)} 且在播的新元素（音量 1×0.8）`,
+    })
     .toEqual({ file: BGM_NEXT_FILE, paused: false, volume: 0.8, ended: false });
 
   // 旧元素：淡出（FADE_MS≈600ms）走完后被 pause 且音量归 0。
   // ended=false 是硬条件：证明这条 pause 来自淡出回调，而不是「旧曲自己播完了」。
   await expect
-    .poll(() => elementState(page, BGM_FILE), { message: `旧元素 ${BGM_FILE} 应在淡出结束时音量归 0 并被 pause（ended 仍为 false）` })
+    .poll(() => elementState(page, BGM_FILE), {
+      message: `旧元素 ${BGM_FILE} 应在淡出结束时音量归 0 并被 pause（ended 仍为 false）`,
+    })
     .toEqual({ file: BGM_FILE, paused: true, volume: 0, ended: false });
 
   // 结构：曲通道的两个元素此刻各带一个 src（旧+新并存 = 真的是两个元素交叉，不是一个元素换 src）
-  const bgmPaths = (await audioElements(page))
-    .map((a) => pOf(a.src))
-    .filter((p) => p.startsWith(`${AUDIO_DIR}/曲-`));
+  const bgmPaths = (await audioElements(page)).map((a) => pOf(a.src)).filter((p) => p.startsWith(`${AUDIO_DIR}/曲-`));
   expect(bgmPaths.sort()).toEqual([audioPath(BGM_FILE), audioPath(BGM_NEXT_FILE)].sort());
 
   // ——— 设置屏静音：命令轨「设置」→ 静音开关（updateSettings 立即 applySettings，无需保存按钮）———

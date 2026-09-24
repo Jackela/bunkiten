@@ -26,7 +26,8 @@ export const RULES = RULES_SENTENCES.join("");
 // 选项段时自动补发一次（每回合至多一次），只出现在 session/prompt 的请求方向。
 // 刻意不进 shared/protocol.mjs：它不是客户端协议——客户端从不构造也从不解析它，
 // DIRECTIVE_PREFIX_RE（分档/正戏判定）与 PROTOCOL_HEADS（协议行过滤）都与它无关，真源只需要 server 一侧。
-export const SUPPLEMENT_PROMPT = "补充：上一回合缺少 **行动** 选项段。请只补发完整的每轮协议回合尾（含 **行动** 与选项行），不要重述正文。";
+export const SUPPLEMENT_PROMPT =
+  "补充：上一回合缺少 **行动** 选项段。请只补发完整的每轮协议回合尾（含 **行动** 与选项行），不要重述正文。";
 
 // 【图】<类型>|<名>|<路径>[|重绘]：资产标记（类型 = shared 的 ART_KINDS：立绘/背景/封面；封面即剧本标题，重绘要求覆盖同名文件）
 // 类型交替组由 ART_KINDS（shared 真源）构造——与客户端 parser.ts 的 ART_LINE_BODY 同一份类型集合

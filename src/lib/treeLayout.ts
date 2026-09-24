@@ -260,7 +260,14 @@ function clampView(v: TreeView, width: number, height: number): TreeView {
  * @param {number} height 布局高
  * @returns {TreeView} 新视图（中心已夹进布局）
  */
-export function zoomViewAt(v: TreeView, factor: number, fx: number, fy: number, width: number, height: number): TreeView {
+export function zoomViewAt(
+  v: TreeView,
+  factor: number,
+  fx: number,
+  fy: number,
+  width: number,
+  height: number,
+): TreeView {
   const zoom = clampZoom(v.zoom * factor);
   const ax = Math.min(1, Math.max(0, fx));
   const ay = Math.min(1, Math.max(0, fy));
@@ -268,7 +275,11 @@ export function zoomViewAt(v: TreeView, factor: number, fx: number, fy: number, 
   const px = v.cx + (ax - 0.5) * (width / v.zoom);
   const py = v.cy + (ay - 0.5) * (height / v.zoom);
   // 反解新中心：同一个布局坐标仍落在同一个比例位置上
-  return clampView({ cx: px - (ax - 0.5) * (width / zoom), cy: py - (ay - 0.5) * (height / zoom), zoom }, width, height);
+  return clampView(
+    { cx: px - (ax - 0.5) * (width / zoom), cy: py - (ay - 0.5) * (height / zoom), zoom },
+    width,
+    height,
+  );
 }
 
 /**

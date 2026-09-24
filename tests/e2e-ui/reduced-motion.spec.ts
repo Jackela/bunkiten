@@ -81,8 +81,14 @@ test.beforeAll(async ({ browser }) => {
     // /img 的 t&n&preset 契约会命中 presets/<id>/assets/ 的落盘文件直服（与 opening.spec.ts 同款）。
     assets: {
       demo: [
-        { name: "背景-教堂.jpg", bytes: readFileSync(path.join(ROOT, "presets", "rift-mark", "assets", "背景-灰雀镇教堂.jpg")) },
-        { name: "背景-街道.jpg", bytes: readFileSync(path.join(ROOT, "presets", "rift-mark", "assets", "背景-灰雀镇后巷.jpg")) },
+        {
+          name: "背景-教堂.jpg",
+          bytes: readFileSync(path.join(ROOT, "presets", "rift-mark", "assets", "背景-灰雀镇教堂.jpg")),
+        },
+        {
+          name: "背景-街道.jpg",
+          bytes: readFileSync(path.join(ROOT, "presets", "rift-mark", "assets", "背景-灰雀镇后巷.jpg")),
+        },
       ],
     },
     // fake-engine 的「已消费」标记是**进程级**的（同一条目不会被两条用例共用），所以两条用例各要一份
@@ -114,9 +120,7 @@ test("reduce 下开局：正文整段立现（无打字过程），game 屏照�
 
   // 动效降级不破坏 ScreenShell 转场：crafting→game 切换后的 game 屏可用，选项按钮照常浮出
   await expect(page.getByTestId("dialogue-text")).toBeVisible();
-  await expect
-    .poll(async () => page.getByTestId("options").locator("button").count())
-    .toBeGreaterThanOrEqual(2);
+  await expect.poll(async () => page.getByTestId("options").locator("button").count()).toBeGreaterThanOrEqual(2);
 });
 
 test("reduce 下换背景：新图瞬时上屏（无 stage-bg-fade 动画、上屏即不透明）", async () => {
@@ -173,7 +177,10 @@ test("reduce 下换背景：新图瞬时上屏（无 stage-bg-fade 动画、上�
     return { observed: w.__bgObserved, first: w.__bgSnaps[0] ?? [] };
   });
   expect(recorder.observed, "App 根没有 [data-testid=bg-layer]：背景层结构变了，观察者没挂上去").toBe(true);
-  expect(recorder.first.some((l) => l.url.includes("教堂")), "换图前底图上就该是教堂").toBe(true);
+  expect(
+    recorder.first.some((l) => l.url.includes("教堂")),
+    "换图前底图上就该是教堂",
+  ).toBe(true);
 
   // 换背景：点第一项选项 → 引擎发第二张【图】背景（教堂 → 街道）
   await page.getByTestId("options").locator("button").first().click();

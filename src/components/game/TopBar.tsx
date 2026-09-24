@@ -20,7 +20,17 @@ const MENU_ITEM_CLS =
 const swallowEscape = (event: KeyboardEvent) => event.stopPropagation();
 
 /** 快捷命令按钮：竖排文字，贴右侧边缘（galgame 规范的操作轨）；testId/aria 供 e2e 与无障碍名分离于短标签 */
-function RailButton({ label, onClick, testId, aria }: { label: string; onClick: () => void; testId?: string; aria?: string }) {
+function RailButton({
+  label,
+  onClick,
+  testId,
+  aria,
+}: {
+  label: string;
+  onClick: () => void;
+  testId?: string;
+  aria?: string;
+}) {
   return (
     <button
       type="button"
@@ -181,16 +191,19 @@ export default function TopBar() {
 
   return (
     <>
-      <div className={`fixed top-0 left-0 z-30 flex items-center gap-2.5 px-3.5 py-2.5 text-meta text-ink-hint ${idle ? "sr-only" : ""}`}>
-        <span
-          className={`h-[7px] w-[7px] flex-none rounded-full ${busy ? "animate-pulse bg-gold" : "bg-[#3d4254]"}`}
-        />
+      <div
+        className={`fixed top-0 left-0 z-30 flex items-center gap-2.5 px-3.5 py-2.5 text-meta text-ink-hint ${idle ? "sr-only" : ""}`}
+      >
+        <span className={`h-[7px] w-[7px] flex-none rounded-full ${busy ? "animate-pulse bg-gold" : "bg-[#3d4254]"}`} />
         <span data-testid="status">
           {playerStatus(status)}
           {busy && elapsed !== null ? ` ${elapsed}s` : ""}
         </span>
         {artAsk && deferredArt.length > 0 && (
-          <span data-testid="art-pump" className="flex-none rounded-sm border border-white/15 px-1.5 py-0.5 text-micro tracking-[.12em] text-ink-hint">
+          <span
+            data-testid="art-pump"
+            className="flex-none rounded-sm border border-white/15 px-1.5 py-0.5 text-micro tracking-[.12em] text-ink-hint"
+          >
             补画 {deferredDone}/{deferredArt.length}
           </span>
         )}
