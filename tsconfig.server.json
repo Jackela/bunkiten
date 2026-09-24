@@ -10,9 +10,11 @@
     "checkJs": true,
     "allowImportingTsExtensions": true,
     "strict": true,
-    "useUnknownInCatchVariables": false,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "useUnknownInCatchVariables": true,
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["server/**/*.mjs", "shared/*.mjs", "scripts/doctor.mjs"]
+  "include": ["server/**/*.mjs", "shared/*.mjs", "scripts/**/*.mjs", "electron/**/*.js", "electron/**/*.cjs"]
 }

@@ -1,0 +1,28 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["react", "typescript", "unicorn", "oxc", "import"],
+  "categories": {
+    "correctness": "error"
+  },
+  "rules": {
+    "typescript/no-floating-promises": "error",
+    "react/rules-of-hooks": "error",
+    "react/exhaustive-deps": "warn",
+
+    "react/set-state-in-effect": "off",
+    "react/refs": "off",
+    "react/immutability": "off"
+  },
+  "ignorePatterns": [
+    "dist/**",
+    "build/**",
+    "release/**",
+    "coverage/**",
+    "test-results*/**",
+    "playwright-report/**",
+    "state/**",
+    "docs/**",
+    "presets/**",
+    ".grok/**"
+  ]
+}
