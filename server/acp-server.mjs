@@ -26,7 +26,6 @@
 // 抓它们的函数体（必须引用 shared 真源的 DIRECTIVE_PREFIX_RE）；FONT_PRESETS/DIALOG_TEXTURES/DEFAULT_THEME
 // 同理钉在本文件（契约 lint ⑥ 与 src/theme.ts 比对字面量），presets.mjs 反向 import（仅函数内引用，环形安全）。
 import http from "http";
-import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 // 协议常量唯一真源（v1.7，docs/adr/0012）：指令前缀正则与章标记正则在 shared/protocol.mjs，
@@ -35,17 +34,7 @@ import { fileURLToPath } from "url";
 import { CHAPTER_MARK_RE, DIRECTIVE_PREFIX_RE } from "../shared/protocol.mjs";
 import { PROVIDER_IDS } from "../shared/providers.mjs";
 import { GAME_ROOT, BASE_PORT, PORT_MAX_RETRY, SESSION_FILE, WORLDS_ROOT, gameHome } from "./config.mjs";
-import {
-  PRESET_ID_RE,
-  ASSET_FILE_RE,
-  sanitizeAssetName,
-  splitAssetVariant,
-  mtimeOf,
-  presetAssetsDir,
-  presetIdFromPath,
-  resolvePersistPreset,
-} from "./assets.mjs";
-import { scanPresets, assetTargetFile } from "./presets.mjs";
+import { PRESET_ID_RE } from "./assets.mjs";
 import {
   RULES,
   SUPPLEMENT_PROMPT,
@@ -81,6 +70,7 @@ import { loadCatalog, refreshCatalog, revalidateCatalog } from "./providers-cata
 import { mediaMcpServers } from "./media-mcp.mjs";
 import { createRequestHandler } from "./routes.mjs";
 import { createBroadcaster } from "./sse.mjs";
+import { createAssetPipeline } from "./assets-pipeline.mjs";
 import { errText } from "./errors.mjs";
 
 // ---------- 外部 import 面保活：拆出模块的既有导出符号逐名 re-export（electron/tests/doctor 从这里 import） ----------
@@ -296,20 +286,6 @@ export function startServer() {
   let seg = 0;
   let busy = false;
 
-  // assets registry：<剧本 id>|type|sanitizedName -> AssetEntry；磁盘真况见 listAssets()
-  /**
-   * @typedef {Object} AssetEntry
-   * @property {string} type 立绘 | 背景 | 封面
-   * @property {string} name sanitize 后的名字（差分形如 `薇拉-微笑`）
-   * @property {string} rawName 标记里的原始名
-   * @property {string} presetId 落盘剧本 id（拿不到剧本的占位条目为空串）
-   * @property {string} file 落盘目标相对路径（占位条目为空串）
-   * @property {string} srcRel 标记里的原始路径
-   * @property {boolean} ready 目标文件是否已就绪
-   * @property {boolean} [regen] 第四段「重绘」：覆盖同名文件
-   */
-  /** @type {Map<string, AssetEntry>} */
-  const assetRegistry = new Map();
   let currentPresetId = ""; // 当前剧本 id（sendPrompt 嗅探世界段得出；/img 的旧档直服与嗅探比对用它）
   /** @type {string|null} */ let currentWorldId = null; // 当前世界 id（sniffPreset 一并保存；逐轮快照按它落盘 history/NNNN.json）
   let lastEffort = EFFORT; // 上次已生效的推理档位（boot 已设 EFFORT；档位变化才再发 set_config_option）
@@ -319,6 +295,10 @@ export function startServer() {
   // SSE 广播（连接集合的生命周期与帧格式在 server/sse.mjs，v1.13 从本闭包拆出）
   const sse = createBroadcaster();
   const broadcast = sse.broadcast;
+
+  // 资产注册表与落盘（v1.13 拆去 server/assets-pipeline.mjs）：本闭包只留「协议行从哪来」的扫描，
+  // 「该落到哪、落没落成」全在那边的模块里。会话图片定位用惰性箭头注入——acp 在本行之后才建。
+  const assets = createAssetPipeline({ resolveImage: (name) => acp.resolveImage(name) });
 
   // ACP 会话（spawn/JSON-RPC/sessionId/boot 都封装在 acp.mjs）：流式 chunk 与进度 label 回调进本闭包，
   // 这里才有 assetRegistry 与 SSE clients——标记扫描与 broadcast 因此留在入口（ingestChunkText/handleArtLine）。
@@ -487,99 +467,11 @@ export function startServer() {
     return ids;
   }
 
-  // ---------- 资产持久化：按「剧本 + 类型 + 名字」落盘（封面 presets/<id>/cover.jpg；重绘标志覆盖同名文件） ----------
-  // 「拿不到剧本」告警去重（同一 key 只警告一次）：回合末补扫、每条 /img 预载都会反复走到同一资产，
-  // 不去重会把控制台刷爆，真正的告警反而看不见。
-  const warnedPresetless = new Set();
-  /** @param {string} type @param {string} name sanitize 后的名字 @param {string} rawName 标记里的原始名 */
-  function warnPresetlessOnce(type, name, rawName) {
-    const key = `${type}|${name}`;
-    if (warnedPresetless.has(key)) return;
-    warnedPresetless.add(key);
-    console.warn(`[acp] 拿不到当前剧本，暂不落盘（等【新剧本】或带 &preset= 的请求补落）: ${type}|${rawName}`);
-  }
-  // 旧档路径提示去重（预载/轮播会反复命中同一条老路径）
-  const warnedLegacyPaths = new Set();
-  /** @param {string} rel 旧档相对路径 */
-  function warnLegacyPathOnce(rel) {
-    if (warnedLegacyPaths.has(rel)) return;
-    warnedLegacyPaths.add(rel);
-    console.warn(`[acp] 请求了旧档资产路径（v1.5 之前的全局 assets/ 格式），只按当前剧本目录直服: ${rel}`);
-  }
-
-  /**
-   * 落盘一个资产（流式【图】标记与回合末补扫共用）。
-   * 目标随剧本走：presets/<剧本 id>/assets/<类型>-<名>.jpg（封面 presets/<id>/cover.jpg）。
-   * 剧本 id 只认「调用方显式传入」或「标记路径自带 presets/<id>/…」（resolvePersistPreset），
-   * **不再回退 currentPresetId**（B1）：创作模式装配新剧本时 currentPresetId 还是上一局的剧本，
-   * 一退回就会把新剧本的立绘写进旧剧本的 assets 目录。
-   * 拿不到剧本时不落盘，registry 留 ready:false 占位（同一 key 只告警一次），
-   * 等【新剧本】<id> 标记（handleArtLine 用它重试整批占位项）或带 &preset= 的 /img 请求补落。
-   * @param {string} type 立绘 | 背景 | 封面
-   * @param {string} rawName 标记里的原始名（角色名/地点名/剧本标题）
-   * @param {string} srcRel 标记里的原始路径（images/N.jpg 或 presets/<id>/assets/…）
-   * @param {boolean} [regen] 第四段「重绘」：覆盖同名文件
-   * @param {string} [presetId] 调用方解析出的剧本 id（【新剧本】补落盘会显式给出新剧本 id）
-   * @returns {boolean} 目标文件是否已就绪
-   */
-  function persistAsset(type, rawName, srcRel, regen = false, presetId = "") {
-    const name = sanitizeAssetName(rawName);
-    const { presetId: pid } = resolvePersistPreset({ queryPreset: presetId, srcRel });
-    const file = assetTargetFile(type, rawName, pid || "");
-    if (!file) {
-      const key = `${pid || ""}|${type}|${name}`;
-      const entry = assetRegistry.get(key) || {
-        type,
-        name,
-        rawName,
-        presetId: pid || "",
-        file: "",
-        srcRel,
-        ready: false,
-      };
-      entry.rawName = rawName;
-      entry.srcRel = srcRel;
-      entry.regen = regen;
-      entry.ready = false;
-      assetRegistry.set(key, entry);
-      warnPresetlessOnce(type, name, rawName);
-      return false;
-    }
-    const finalPid = presetIdFromPath(file) || pid || ""; // 封面按标题反查到的剧本也算数
-    const key = `${finalPid}|${type}|${name}`;
-    const abs = path.join(GAME_ROOT, file);
-    const entry = assetRegistry.get(key) || { type, name, rawName, presetId: finalPid, file, srcRel, ready: false };
-    entry.presetId = finalPid;
-    entry.rawName = rawName;
-    entry.srcRel = srcRel;
-    entry.file = file;
-    entry.regen = regen;
-    if (regen || !fs.existsSync(abs)) {
-      // 标记出现时图片文件应已生成（引擎先 image_gen 再输出标记）；当前会话没有就跨会话扫描
-      const src = acp.resolveImage(path.basename(srcRel));
-      if (!src) {
-        entry.ready = false;
-        assetRegistry.set(key, entry);
-        return false;
-      }
-      fs.mkdirSync(path.dirname(abs), { recursive: true });
-      fs.copyFileSync(src, abs);
-    }
-    entry.ready = true;
-    assetRegistry.set(key, entry);
-    // 清掉此前「拿不到剧本」留下的同名占位项（那些 key 里的剧本 id 是空串）
-    for (const [k, e] of assetRegistry) {
-      if (k !== key && !e.ready && e.type === type && e.name === name) assetRegistry.delete(k);
-    }
-    console.log(`[acp] asset persisted: ${file}`);
-    return true;
-  }
-
   /** @param {string} line 已到达完整行的协议行候选 */
   function handleArtLine(line) {
     const art = parseArtLine(line);
     if (art) {
-      persistAsset(art.type, art.name, art.srcRel, art.regen);
+      assets.persistAsset(art.type, art.name, art.srcRel, art.regen);
       return;
     }
     const expr = parseExpressionLine(line);
@@ -599,8 +491,7 @@ export function startServer() {
         // 【新剧本】<id> = 装配期的补落盘信号（B1）：装配时【图】标记先到（那时还没人知道新剧本 id，
         // 这批条目的 presetId 是空串），标记后到就把它们全部按新剧本 id 重试一次——这批就是新剧本的美术。
         currentPresetId = newId;
-        const pending = [...assetRegistry.values()].filter((e) => !e.ready);
-        for (const e of pending) persistAsset(e.type, e.rawName ?? e.name, e.srcRel, e.regen === true, newId);
+        assets.retryPendingWithPreset(newId); // 装配期那批「还不知道剧本 id」的条目按新剧本重试（B1）
       } else {
         console.warn(`[acp] 【新剧本】id 非法，已忽略（不改当前剧本）: ${added.id}`);
       }
@@ -625,111 +516,8 @@ export function startServer() {
   function flushArtLines() {
     if (artScanPos < turnText.length) handleArtLine(turnText.slice(artScanPos));
     artScanPos = turnText.length;
-    // 图片文件可能晚于标记落盘，回合结束补一次。
-    // 剧本 id 一律用条目上记的（`e.presetId` 为空=装配期还没拿到新剧本 id）——**不回退 currentPresetId**（B1）：
-    // 那一退回就是"新剧本的美术写进上一局剧本"，正确出口是【新剧本】<id> 的补落盘或带 &preset= 的 /img。
-    // 这里的 `[...assetRegistry]` **不是**多余的 spread：persistAsset 会在迭代过程中 delete 注册表键（同名未就绪项），
-    // 直接遍历活 Map 会踩「边遍历边删」——先取一份快照才是对的（oxlint 的 no-useless-spread 看不到这一层）。
-    // oxlint-disable-next-line unicorn/no-useless-spread -- 见上：快照是语义的一部分
-    for (const [, e] of [...assetRegistry]) {
-      if (!e.ready) persistAsset(e.type, e.rawName ?? e.name, e.srcRel, e.regen === true, e.presetId || "");
-    }
-  }
-
-  /**
-   * 某剧本的画廊数据：只扫该剧本的 assets/ 与封面（磁盘为准），registry 补尚未落盘的项。
-   * variant 从文件名解析；inUse 只扫**该剧本的世界**（index.json 按 preset 过滤）的 state.md 是否含该名。
-   * 资产随故事走，跨剧本不再串味——所以剧本 id 是必填参数。
-   * @param {string} presetId 剧本 id（调用方已用 PRESET_ID_RE 校验）
-   * @returns {Array<object>} 资产项列表
-   */
-  function listAssets(presetId) {
-    /** @type {string[]} */
-    const stateTexts = [];
-    for (const e of readWorldsIndex(WORLDS_ROOT)) {
-      if (e.preset !== presetId) continue;
-      try {
-        stateTexts.push(fs.readFileSync(path.join(WORLDS_ROOT, e.worldId, "state.md"), "utf8"));
-      } catch {}
-    }
-    /** @param {string} name */
-    const inUse = (name) => stateTexts.some((t) => t.includes(name));
-    const out = new Map();
-    /** @param {string} key @param {string} type @param {string} rest @param {string} file @param {boolean} ready */
-    const push = (key, type, rest, file, ready) => {
-      const { name, variant } = splitAssetVariant(rest);
-      // preset 必填：客户端画廊按它做防御性过滤（跨剧本条目一律丢弃并告警）
-      out.set(key, {
-        type,
-        name,
-        variant,
-        file,
-        ready,
-        preset: presetId,
-        inUse: inUse(name),
-        mtime: mtimeOf(path.join(GAME_ROOT, file)),
-      });
-    };
-    try {
-      for (const f of fs.readdirSync(presetAssetsDir(presetId))) {
-        // 只认立绘/背景：封面不在 assets/ 里（契约是 presets/<id>/cover.jpg，另见下面那条），
-        // `assets/封面-X.jpg` 是死路径，扫了只会给画廊塞进永远 404 的项。
-        // 文件名正则取 shared 真源（ASSET_FILE_RE，由 ASSET_KINDS 构造）：落盘白名单与画廊扫描同一份
-        const m = ASSET_FILE_RE.exec(f);
-        // file 用**磁盘上的真实文件名**拼（v1.5 之前的素材可能是 .jpeg，硬拼 .jpg 会让画廊 404）
-        if (m) push(`${m[1]}|${m[2]}`, m[1], m[2], `presets/${presetId}/assets/${f}`, true);
-      }
-    } catch {}
-    try {
-      // 封面随 preset 目录分发：presets/<id>/cover.jpg，name 用剧本标题
-      const file = `presets/${presetId}/cover.jpg`;
-      const preset = scanPresets().presets.find((p) => p.id === presetId);
-      if (preset && fs.existsSync(path.join(GAME_ROOT, file)))
-        push(`封面|${preset.title}`, "封面", preset.title, file, true);
-    } catch {}
-    for (const [, e] of assetRegistry) {
-      if (e.presetId !== presetId) continue;
-      const key = `${e.type}|${e.name}`; // 与磁盘扫描同键去重（registry 键含剧本 id）
-      if (!out.has(key)) push(key, e.type, e.name, e.file, e.ready);
-    }
-    return [...out.values()];
-  }
-
-  /**
-   * /img 从会话命中时顺手落盘（src 是绝对路径）。
-   * 剧本 id 与 persistAsset 用同一套判定（resolvePersistPreset）：显式传入 → 来源路径解析 → 都不行就不落盘。
-   * **不回退 currentPresetId**（B1）：调用方（/img 与【新剧本】补落盘）自己决定该用哪个剧本，判定只有一处。
-   * @param {string} type 立绘 | 背景 | 封面
-   * @param {string} rawName 标记里的原始名
-   * @param {string} src 会话图片的绝对路径
-   * @param {string} [presetId] 调用方解析出的剧本 id（不给即视为拿不到剧本）
-   * @param {string} [srcRel] 原始来源路径（images/N.jpg 或 presets/<id>/assets/…，用于路径兜底解析）
-   * @returns {boolean} 是否新落盘（目标已存在或拿不到剧本时为 false）
-   */
-  function persistAssetFromFile(type, rawName, src, presetId = "", srcRel = "") {
-    const name = sanitizeAssetName(rawName);
-    const { presetId: pid } = resolvePersistPreset({ queryPreset: presetId, srcRel });
-    const file = assetTargetFile(type, rawName, pid || "");
-    if (!file) {
-      warnPresetlessOnce(type, name, rawName);
-      return false;
-    }
-    const abs = path.join(GAME_ROOT, file);
-    if (fs.existsSync(abs)) return false;
-    fs.mkdirSync(path.dirname(abs), { recursive: true });
-    fs.copyFileSync(src, abs);
-    const finalPid = presetIdFromPath(file) || pid || "";
-    assetRegistry.set(`${finalPid}|${type}|${name}`, {
-      type,
-      name,
-      rawName,
-      presetId: finalPid,
-      file,
-      srcRel,
-      ready: true,
-    });
-    console.log(`[acp] asset persisted: ${file}`);
-    return true;
+    // 图片文件可能晚于标记落盘，回合结束补一次（迭代纪律见 assets-pipeline 的 retryPendingWithOwnPreset）
+    assets.retryPendingWithOwnPreset();
   }
 
   /**
@@ -942,10 +730,10 @@ export function startServer() {
     createRequestHandler({
       sse,
       sendPrompt,
-      listAssets,
-      persistAssetFromFile,
+      listAssets: assets.listAssets,
+      persistAssetFromFile: assets.persistAssetFromFile,
       resolveImage: (name) => acp.resolveImage(name),
-      warnLegacyPathOnce,
+      warnLegacyPathOnce: assets.warnLegacyPathOnce,
       credentialsView,
       updateCredentials,
       testCredentials,
