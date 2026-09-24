@@ -217,8 +217,7 @@ function loadCheckPreset() {
 async function respondPresetCheck(id, res) {
   const check = await loadCheckPreset().catch(() => null);
   const out = presetCheckView(id, GAME_ROOT, check);
-  res.writeHead(out.code, { "content-type": "application/json; charset=utf-8" });
-  res.end(JSON.stringify(out.body));
+  sendJSON(res, out.code, out.body);
 }
 
 /**
@@ -232,8 +231,7 @@ export function createRequestHandler(ctx) {
 
     // 来源校验（统一入口，先于所有路由）：跨站请求一律 403（无 Origin 的 curl/测试/Electron 同源请求放行）
     if (isCrossSiteRequest(req)) {
-      res.writeHead(403, { "content-type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ error: "跨站请求被拒绝" }));
+      sendJSON(res, 403, { error: "跨站请求被拒绝" });
       return;
     }
 
@@ -250,8 +248,7 @@ export function createRequestHandler(ctx) {
     }
 
     if (req.method === "GET" && url.pathname === "/api/presets") {
-      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify(scanPresets()));
+      sendJSON(res, 200, scanPresets());
       return;
     }
 
@@ -262,8 +259,7 @@ export function createRequestHandler(ctx) {
       if (out.error) {
         // 目录/ preset.md 不存在与「id 非法」分开说：前者 404（真路过期的 id），后者 400（坏请求）
         const status = out.error === "剧本不存在" ? 404 : 400;
-        res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ ok: false, error: out.error }));
+        sendJSON(res, status, { ok: false, error: out.error });
         return;
       }
       res.writeHead(200, {
@@ -295,13 +291,11 @@ export function createRequestHandler(ctx) {
             payload = JSON.parse(body) || {};
           } catch {}
           if (String(payload.action || "") !== "import") {
-            res.writeHead(400, { "content-type": "application/json; charset=utf-8" });
-            res.end(JSON.stringify({ ok: false, error: "未知动作" }));
+            sendJSON(res, 400, { ok: false, error: "未知动作" });
             return;
           }
           const out = importPresetBundle(GAME_ROOT, payload.bundle);
-          res.writeHead(out.error ? 400 : 200, { "content-type": "application/json; charset=utf-8" });
-          res.end(JSON.stringify(out.error ? { ok: false, error: out.error } : { ok: true, id: out.id }));
+          sendJSON(res, out.error ? 400 : 200, out.error ? { ok: false, error: out.error } : { ok: true, id: out.id });
         },
         PRESET_IMPORT_MAX_BYTES,
       );
@@ -312,12 +306,10 @@ export function createRequestHandler(ctx) {
     if (req.method === "GET" && url.pathname === "/api/assets") {
       const presetId = url.searchParams.get("preset") || "";
       if (!PRESET_ID_RE.test(presetId)) {
-        res.writeHead(400, { "content-type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ error: "缺少或非法的 preset 参数" }));
+        sendJSON(res, 400, { error: "缺少或非法的 preset 参数" });
         return;
       }
-      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify(ctx.listAssets(presetId)));
+      sendJSON(res, 200, ctx.listAssets(presetId));
       return;
     }
 
@@ -330,8 +322,7 @@ export function createRequestHandler(ctx) {
           payload = JSON.parse(body) || {};
         } catch {}
         const json = /** @param {number} code @param {object} obj */ (code, obj) => {
-          res.writeHead(code, { "content-type": "application/json; charset=utf-8" });
-          res.end(JSON.stringify(obj));
+          sendJSON(res, code, obj);
         };
         if (String(payload.action || "") !== "delete") return json(400, { error: "未知动作" });
         const presetId = String(payload.preset || "");
@@ -360,12 +351,10 @@ export function createRequestHandler(ctx) {
     if (req.method === "GET" && url.pathname === "/api/audio") {
       const presetId = url.searchParams.get("preset") || "";
       if (!PRESET_ID_RE.test(presetId)) {
-        res.writeHead(400, { "content-type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ error: "缺少或非法的 preset 参数" }));
+        sendJSON(res, 400, { error: "缺少或非法的 preset 参数" });
         return;
       }
-      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ items: scanPresetAudio(presetId) }));
+      sendJSON(res, 200, { items: scanPresetAudio(presetId) });
       return;
     }
 
@@ -374,8 +363,7 @@ export function createRequestHandler(ctx) {
     if (req.method === "GET" && url.pathname === "/api/history") {
       const worldId = url.searchParams.get("worldId") || "";
       if (!WORLD_ID_RE.test(worldId)) {
-        res.writeHead(400, { "content-type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ error: "缺少或非法的 worldId 参数" }));
+        sendJSON(res, 400, { error: "缺少或非法的 worldId 参数" });
         return;
       }
       // 玩家给存档点起的名字（v1.12）住在索引的世界条目上，读的时候并进快照元信息——
@@ -398,8 +386,7 @@ export function createRequestHandler(ctx) {
         chapterNo: s.chapterNo,
         label: snapLabels[String(s.seq)] ?? "",
       }));
-      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ worldId, snapshots }));
+      sendJSON(res, 200, { worldId, snapshots });
       return;
     }
 
@@ -408,8 +395,7 @@ export function createRequestHandler(ctx) {
       const worldId = url.searchParams.get("worldId") || "";
       const out = exportWorld(WORLDS_ROOT, worldId); // 内部已过 WORLD_ID_RE + 存在性校验
       if (out.error) {
-        res.writeHead(400, { "content-type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ ok: false, error: out.error }));
+        sendJSON(res, 400, { ok: false, error: out.error });
         return;
       }
       res.writeHead(200, {
@@ -422,8 +408,7 @@ export function createRequestHandler(ctx) {
 
     // 世界线列表（可选 ?preset=<id> 过滤；chapterNo/lastPlayed 由磁盘自愈）
     if (req.method === "GET" && url.pathname === "/api/worlds") {
-      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ worlds: listWorlds(WORLDS_ROOT, url.searchParams.get("preset")) }));
+      sendJSON(res, 200, { worlds: listWorlds(WORLDS_ROOT, url.searchParams.get("preset")) });
       return;
     }
 
@@ -482,8 +467,7 @@ export function createRequestHandler(ctx) {
               // moveToTrash 的直删回退也失败（EACCES/EPERM/EBUSY…）才是真失败 → 500；
               // 绝不让异常冒泡出 readBodyText 回调（Electron 主进程无 uncaughtException 兜底，冒泡即闪退）。
               // 注：json 助手只在 /api/assets 分支里定义，这里就地写响应，别引用不存在的闭包。
-              res.writeHead(500, { "content-type": "application/json; charset=utf-8" });
-              res.end(JSON.stringify({ ok: false, error: "世界删除失败" }));
+              sendJSON(res, 500, { ok: false, error: "世界删除失败" });
               return;
             }
           }
@@ -491,8 +475,7 @@ export function createRequestHandler(ctx) {
           out = { error: "未知动作" };
         }
         const ok = !out.error;
-        res.writeHead(ok ? 200 : 400, { "content-type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ ok, ...out }));
+        sendJSON(res, ok ? 200 : 400, { ok, ...out });
       });
       return;
     }
@@ -507,20 +490,17 @@ export function createRequestHandler(ctx) {
         } catch {}
       }
       if (markdown === null) {
-        res.writeHead(404, { "content-type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ error: "剧情树不存在" }));
+        sendJSON(res, 404, { error: "剧情树不存在" });
         return;
       }
-      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ worldId, markdown }));
+      sendJSON(res, 200, { worldId, markdown });
       return;
     }
 
     // 角色面板（v1.7）：读该世界 state.md 并容错解析；?worldId=<id> 必填（缺失/非法 400，无文件 404）
     if (req.method === "GET" && url.pathname === "/api/state") {
       const out = stateViewFor(url.searchParams.get("worldId") || "");
-      res.writeHead(out.code, { "content-type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify(out.body));
+      sendJSON(res, out.code, out.body);
       return;
     }
 
