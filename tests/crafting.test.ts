@@ -11,6 +11,7 @@ import {
   fallbackPortraitUrl,
   isTypingTarget,
   nextPortraitOnExpression,
+  disposeStore,
   parseWorldBundle,
   speakerOf,
   useGameStore,
@@ -292,7 +293,9 @@ describe("章节制作流水线（store 公共 API 驱动）", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
-    useGameStore.getState().toTitle(); // 清看门狗定时器，避免测试进程悬挂
+    // 显式收尾（v1.13）：此前靠「切回标题屏」顺带清掉看门狗——那是一条隐式路径，
+    // 读代码看不出这里在收尾；现在定时器归 store 实例所有，收尾有名字。
+    disposeStore();
   });
 
   it("快速开局 + 制作美术：发待命版开局指令进入 crafting；待命回合结束发「规划：第 1 章。」，进入 planning", async () => {

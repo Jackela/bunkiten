@@ -66,10 +66,24 @@ export function isTypingTarget(el: EventTarget | null): boolean {
   return node.tagName === "INPUT" && (node as HTMLInputElement).type !== "range";
 }
 
+/**
+ * 当前 store 实例的收尾钩子（v1.13）：定时器现在是**每个实例一份**，于是需要一个显式的清理出口。
+ * 为什么需要：测试在同一进程里反复建 store（`useGameStore.setState` 之后跑下一组用例），
+ * 旧实例的看门狗/自动前进倒计时若不收掉，会替新用例做决定——此前靠 `toTitle()` 顺带清掉，
+ * 那是一条隐式路径（读代码看不出来「这里在收尾」）。
+ */
+let disposeCurrentStore: (() => void) | null = null;
+
+/** 清掉当前 store 实例的定时器（测试收尾用；应用里进程退出即随之结束） */
+export function disposeStore(): void {
+  disposeCurrentStore?.();
+}
+
 export const useGameStore = create<GameStore>()((set, get) => {
-  // 共享上下文（跨片流水线 + 定时器单例）：只建一次，slice 只通过它调用——
+  // 共享上下文（跨片流水线 + 定时器）：只建一次，slice 只通过它调用——
   // 拆分前这些函数就是同一个闭包域里的内部函数，换到这里后调用顺序与时序逐字不变。
   const ctx = createStoreContext(set, get);
+  disposeCurrentStore = ctx.dispose; // 模块级只留「最新实例」的收尾口（store 本就是应用级单例）
 
   return {
     // —— 初始 state（拆分前是同一个对象字面量；切片动作在下面按 slice 组装追加）——

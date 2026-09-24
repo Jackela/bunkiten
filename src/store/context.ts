@@ -9,7 +9,8 @@
 //
 // 约定：
 // - slice 只拿 ctx.set/ctx.get 与下面这些共享函数，不许自己复制一份流水线逻辑；
-// - 定时器单例（watchdogTimer / autoAdvanceTimer）与清理函数留在模块级——store 是应用级单例，与原先一致；
+// - 定时器（watchdogTimer / autoAdvanceTimer）是**每个 store 实例一份**（v1.13 从模块级搬进来）：
+//   模块级时同进程两个 store 会互相清对方的定时器，且没有显式收尾口；现在有 ctx.dispose()；
 // - 依赖 store 动作时一律 `get().动作()`（原实现就是这么写的），所以 ctx 不需要持有 send/startGame 等动作。
 
 import type { StoreApi } from "zustand";
@@ -60,34 +61,10 @@ function markerPresetId(screen: Screen, selected: Preset | null, creationResult:
   return selected?.id ?? "";
 }
 
-// 看门狗定时器（store 为应用级单例，模块变量即可）
-let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
-
-function clearWatchdog() {
-  if (watchdogTimer) {
-    clearTimeout(watchdogTimer);
-    watchdogTimer = null;
-  }
-}
-
-// 自动前进倒计时（同上：单例 store 用模块变量；每次重置/取消都必须清，否则旧回合的定时器会替新回合做决定）
-let autoAdvanceTimer: ReturnType<typeof setTimeout> | null = null;
-// 本轮倒计时为「引擎忙」已经重试掉的毫秒数（见 fireAutoAdvance）：与 autoAdvanceTimer 同一生命周期，
-// 一起被 clearAutoAdvanceTimer 归零（新回合/新倒计时都重新有整份预算）
-let autoAdvanceRetryMs = 0;
-
 /** 自动前进撞上「引擎忙」后的重试间隔（ms） */
 const AUTO_ADVANCE_RETRY_MS = 250;
 /** 重试总预算（ms）：累计到点仍忙才作废，避免引擎真的卡住时无限重试 */
 const AUTO_ADVANCE_RETRY_BUDGET_MS = 2000;
-
-function clearAutoAdvanceTimer() {
-  autoAdvanceRetryMs = 0;
-  if (autoAdvanceTimer) {
-    clearTimeout(autoAdvanceTimer);
-    autoAdvanceTimer = null;
-  }
-}
 
 /** slice 可用的共享上下文：set/get + 跨片流水线函数 + 两个定时器的清理入口 */
 export interface StoreContext {
@@ -99,6 +76,8 @@ export interface StoreContext {
   armWatchdog(): void;
   /** 清自动前进倒计时（换本/发指令/取消时） */
   clearAutoAdvanceTimer(): void;
+  /** 收尾：清掉本实例的两个定时器（测试显式收尾用；应用里进程退出即随之结束） */
+  dispose(): void;
   finishRegen(ok?: boolean): void;
   pumpRegenQueue(): void;
   applyMarkers(markers: Marker[], dedupe: boolean): void;
@@ -137,6 +116,30 @@ export interface StoreContext {
 export type SliceContext<K extends keyof StoreContext> = Pick<StoreContext, K>;
 
 export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
+  // 两个定时器是**每个 store 实例一份**（v1.13 从模块级搬进来）：模块级时同一进程里两个 store
+  // 会互相 clearTimeout 对方的看门狗/倒计时——测试里重建 store 就是这种情形（此前靠「切屏顺带清」
+  // 这种隐式路径兜着）。搬进来之后收尾就有了显式出口：见 dispose()。
+  /** 看门狗：等引擎响应超时的兜底 */
+  let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+  function clearWatchdog() {
+    if (watchdogTimer) {
+      clearTimeout(watchdogTimer);
+      watchdogTimer = null;
+    }
+  }
+  /** 自动前进倒计时（每次重置/取消都必须清，否则旧回合的定时器会替新回合做决定） */
+  let autoAdvanceTimer: ReturnType<typeof setTimeout> | null = null;
+  // 本轮倒计时为「引擎忙」已经重试掉的毫秒数（见 fireAutoAdvance）：与 autoAdvanceTimer 同一生命周期，
+  // 一起被 clearAutoAdvanceTimer 归零（新回合/新倒计时都重新有整份预算）
+  let autoAdvanceRetryMs = 0;
+  function clearAutoAdvanceTimer() {
+    autoAdvanceRetryMs = 0;
+    if (autoAdvanceTimer) {
+      clearTimeout(autoAdvanceTimer);
+      autoAdvanceTimer = null;
+    }
+  }
+
   /**
    * 一条重绘收尾：解除挂起、刷新画廊清单，并推进顺序队列（批量重绘）。
    * @param {boolean} ok 是否在回合里收到了匹配的 `|重绘` 标记；false=未确认
@@ -643,6 +646,11 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
     clearWatchdog,
     armWatchdog,
     clearAutoAdvanceTimer,
+    /** 收尾：清掉本实例的两个定时器（测试显式收尾用；应用里进程退出即随之结束） */
+    dispose() {
+      clearWatchdog();
+      clearAutoAdvanceTimer();
+    },
     finishRegen,
     pumpRegenQueue,
     pumpDeferredArt,
