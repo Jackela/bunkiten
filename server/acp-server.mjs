@@ -80,6 +80,7 @@ import { testLlm, testImage } from "./credentials-probe.mjs";
 import { loadCatalog, refreshCatalog, revalidateCatalog } from "./providers-catalog.mjs";
 import { mediaMcpServers } from "./media-mcp.mjs";
 import { createRequestHandler } from "./routes.mjs";
+import { createBroadcaster } from "./sse.mjs";
 import { errText } from "./errors.mjs";
 
 // ---------- 外部 import 面保活：拆出模块的既有导出符号逐名 re-export（electron/tests/doctor 从这里 import） ----------
@@ -315,13 +316,9 @@ export function startServer() {
   let turnText = ""; // 当前回合 chunk 文本累积，用于流式解析【图】标记行
   let artScanPos = 0;
 
-  /** @type {Set<import("http").ServerResponse>} */
-  const clients = new Set();
-  /** @param {object} obj 广播事件（JSON.stringify 后走 SSE） */
-  function broadcast(obj) {
-    const s = `data: ${JSON.stringify(obj)}\n\n`;
-    for (const res of clients) res.write(s);
-  }
+  // SSE 广播（连接集合的生命周期与帧格式在 server/sse.mjs，v1.13 从本闭包拆出）
+  const sse = createBroadcaster();
+  const broadcast = sse.broadcast;
 
   // ACP 会话（spawn/JSON-RPC/sessionId/boot 都封装在 acp.mjs）：流式 chunk 与进度 label 回调进本闭包，
   // 这里才有 assetRegistry 与 SSE clients——标记扫描与 broadcast 因此留在入口（ingestChunkText/handleArtLine）。
@@ -943,7 +940,7 @@ export function startServer() {
   // ---------- HTTP ----------
   const server = http.createServer(
     createRequestHandler({
-      clients,
+      sse,
       sendPrompt,
       listAssets,
       persistAssetFromFile,
@@ -1011,8 +1008,7 @@ export function startServer() {
     } catch {
       /* 启动失败也要清理子进程 */
     }
-    for (const res of clients) res.destroy(); // SSE 长连接会拖住 server.close 回调
-    clients.clear();
+    sse.closeAll(); // SSE 长连接会拖住 server.close 回调（见 sse.mjs 的 closeAll）
     if (handle) await /** @type {Promise<void>} */ (new Promise((resolve) => handle.server.close(() => resolve())));
     // 杀**当前**的引擎进程：重启过就可能是新拉起的那个（旧 handle.proc 只是启动时的快照）
     try {

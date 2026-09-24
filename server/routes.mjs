@@ -48,7 +48,7 @@ import { stateViewFor } from "./state-view.mjs";
 /**
  * 入口闭包注入的能力集（startServer → 路由链；currentPresetId/sessionId 是 getter，每次读最新值）。
  * @typedef {Object} HandlerContext
- * @property {Set<import("http").ServerResponse>} clients SSE 客户端集合（/events 注册、stopServer 清空）
+ * @property {import("./sse.mjs").Broadcaster} sse SSE 广播器（/events 注册；收尾由入口的 closeAll 做）
  * @property {(text: string) => Promise<{ok: boolean, error?: string}>} sendPrompt
  * @property {(presetId: string) => Array<object>} listAssets 画廊数据（registry + 磁盘扫描）
  * @property {(type: string, rawName: string, src: string, presetId?: string, srcRel?: string) => boolean} persistAssetFromFile
@@ -769,8 +769,8 @@ export function createRequestHandler(ctx) {
         connection: "keep-alive",
       });
       res.write("retry: 2000\n\n");
-      ctx.clients.add(res);
-      req.on("close", () => ctx.clients.delete(res));
+      ctx.sse.addClient(res);
+      req.on("close", () => ctx.sse.removeClient(res));
       return;
     }
 
