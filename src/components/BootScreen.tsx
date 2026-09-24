@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { KeyRound, LogIn, RefreshCw } from "lucide-react";
 import { fetchAuth, startEngineLogin } from "../lib/acp";
 import { watchLogin } from "../lib/engine-login";
+import { useAsync } from "../lib/useAsync";
 import { ENGINES, engineById } from "../../shared/engines.mjs";
 import { useGameStore } from "../store/game";
 import { ScreenShell } from "./ScreenShell";
@@ -45,9 +46,6 @@ export default function BootScreen() {
   const [engine, setEngine] = useState<string>(ENGINES[0].id);
   const [canLogin, setCanLogin] = useState(false);
   const [login, setLogin] = useState<LoginState>({ phase: "idle" });
-  // 自检的取消信号（对齐 TitleScreen 的既有做法）：自检挂着 15s 上限，不取消的话切屏后会有一条
-  // /api/auth 拖到点，再往已卸载的组件里写 error 态。retry 复用同一个 controller（同一次挂载内不互相取消）
-  const abortRef = useRef<AbortController | null>(null);
   // 登录等待的取消函数（切屏/完成/超时都要停掉；卸载时一并清理）
   const stopWatchRef = useRef<(() => void) | null>(null);
 
@@ -56,31 +54,28 @@ export default function BootScreen() {
     stopWatchRef.current = null;
   }, []);
 
-  const check = useCallback(async () => {
-    setState("checking");
-    try {
-      const { loggedIn, hasCredentials, engine: engineId, canLogin: can } = await fetchAuth(abortRef.current?.signal);
-      setEngine(engineId);
-      setCanLogin(can);
-      if (loggedIn || hasCredentials) toTitle();
-      else setState("login");
-    } catch (e) {
-      // 卸载/切屏：静默（与 TitleScreen 的 catch 同款——只放行 AbortError）；其余一律进错误态
-      if ((e as Error).name === "AbortError") return;
-      setState("error");
-    }
-  }, [toTitle]);
-
+  // 自检走 lib/useAsync（AbortController 与「写回前复查 signal.aborted」统一在 hook 里）；
+  // 「重试」走 reload——它会中止在途请求再打一次，比原来复用同一个 controller 更干净。
+  const authReq = useAsync((signal) => fetchAuth(signal), "boot");
+  // 判定去处：登录态可用 / 已配好自备密钥（两条都直接进标题屏）/ 都没有（给登录、设置、重试三个入口）
   useEffect(() => {
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
-    void check();
-    return () => {
-      ctrl.abort();
-      abortRef.current = null;
-      stopPolling();
-    };
-  }, [check, stopPolling]);
+    if (!authReq.data) return;
+    setEngine(authReq.data.engine);
+    setCanLogin(authReq.data.canLogin);
+    if (authReq.data.loggedIn || authReq.data.hasCredentials) toTitle();
+    else setState("login");
+  }, [authReq.data, toTitle]);
+  // 读不到（含挂住超过 15s 的超时）：错误态给 RetryCard
+  useEffect(() => {
+    if (authReq.error) setState("error");
+  }, [authReq.error]);
+  // 卸载时停掉登录轮询
+  useEffect(() => () => stopWatchRef.current?.(), []);
+
+  const retryCheck = () => {
+    setState("checking");
+    authReq.reload();
+  };
 
   /**
    * 一键登录：把玩家自己的 CLI 登录流程拉起来（浏览器里完成），然后轮询 /api/auth——
@@ -154,7 +149,7 @@ export default function BootScreen() {
             <button
               type="button"
               data-testid="boot-retry"
-              onClick={() => void check()}
+              onClick={retryCheck}
               className="inline-flex items-center gap-2 rounded-lg border border-white/10 px-5 py-2 text-ui text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
             >
               <RefreshCw size={14} /> 重试
@@ -175,7 +170,7 @@ export default function BootScreen() {
       )}
 
       {state === "error" && (
-        <RetryCard title="连不上叙事服务。" hint="请确认本地服务已启动，然后重试。" onRetry={() => void check()} />
+        <RetryCard title="连不上叙事服务。" hint="请确认本地服务已启动，然后重试。" onRetry={retryCheck} />
       )}
     </ScreenShell>
   );

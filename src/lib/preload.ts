@@ -75,3 +75,28 @@ export function warmPortraitVariants(presetId: string, characterName: string): v
     }
   });
 }
+
+/**
+ * 本批美术的剩余预估文案（纯函数，单测直引；v1.13 从 CraftingScreen 收编到「预载」这一主题下）。口径：
+ * - 平均每张 = （现在 − 批次起点）/ 已完成张数——**已有 2 张以上才给**（样本太少时估出来是噪声）；
+ * - 剩余 = 平均 × 还没完成的张数；
+ * - 一律带「约」：这是粗估不是承诺（出图快慢取决于服务商与画幅）。没在跑的批次或样本不足时返回 null。
+ * @param {{done: number, total: number, startedAt: number|null, now: number}} o 已完成张数 / 总数 / 批次起点 / 现在
+ * @returns {string|null} 形如「平均 ≈38s / 张 · 约还需 ~6 分钟」，或 null（不显示）
+ */
+export function preloadEtaLabel(o: {
+  done: number;
+  total: number;
+  startedAt: number | null;
+  now: number;
+}): string | null {
+  if (o.startedAt === null || o.done < 2 || o.done >= o.total) return null;
+  const perItemMs = Math.max(0, (o.now - o.startedAt) / o.done);
+  const remainMs = perItemMs * (o.total - o.done);
+  const per = `平均 ≈${Math.max(1, Math.round(perItemMs / 1000))}s / 张`;
+  const remain =
+    remainMs < 90_000
+      ? `约还需 ~${Math.max(1, Math.round(remainMs / 1000))} 秒`
+      : `约还需 ~${Math.round(remainMs / 60_000)} 分钟`;
+  return `${per} · ${remain}`;
+}

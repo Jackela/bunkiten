@@ -163,9 +163,22 @@ export default function DialogueBox() {
   const showReadyHint = status === "就绪" && !options;
 
   return (
+    // 面板根是「点击/空格补全」的可交互区：给 role=button + tabIndex + aria-label 让键盘与读屏也能用。
+    // 刻意**不**换成 <button>：面板里还有「自动/快进」两个按钮（嵌套 button 非法），
+    // 所以留 div + role="button" 语义；内层控件的按键由它们自己吃（onKeyDown 只在事件源是根时处理）。
     <div
       data-testid="dialogue-box"
+      role="button"
+      tabIndex={0}
+      aria-label="对话内容（点击或按空格补全）"
       onClick={completeNow}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return; // 焦点在内层「自动/快进」按钮上：按键归它们
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          completeNow();
+        }
+      }}
       className={`relative min-h-32 cursor-pointer rounded-xl border border-white/10 border-t-gold/35 bg-panel p-5 pb-4 shadow-[0_20px_60px_rgba(0,0,0,.5)] backdrop-blur-xl ${texture}`}
     >
       {/* 顶部主题色发丝线 */}

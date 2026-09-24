@@ -444,8 +444,12 @@ describe("③ 指令字符串双处存在：src/lib/parser.ts 源码 ↔ SKILL.m
 
 // ——————————————————————— ⑦ 引擎凭据（v1.10，ADR-0019） ———————————————————————
 
-/** 设置屏里渲染服务目录的那个组件（GUI 的渲染面就是它；契约 lint 从它的源码抓「是否吃真源」） */
-const GUI_PROVIDERS_FILE = "src/components/EngineKeysSection.tsx";
+/** 设置屏里渲染服务目录的那个组件（GUI 的渲染面就是它；契约 lint 从它的源码抓「是否吃真源」）。
+    v1.13 起「引擎与密钥」整节拆成三块：目录下拉与两组模式开关住在 `EngineGroupForm`（本常量指向它） */
+const GUI_PROVIDERS_FILE = "src/components/EngineGroupForm.tsx";
+
+/** 设置屏里渲染**引擎选择器**的那一节（v1.13 拆文件后与目录面分开：选择器仍住 `EngineKeysSection`） */
+const GUI_ENGINE_FILE = "src/components/EngineKeysSection.tsx";
 
 /** 引擎凭据的文档面（凭据落点、环境变量名、MCP 工具名的说明都在 ARCHITECTURE 的新节里） */
 const CREDENTIALS_DOC = "docs/ARCHITECTURE.md";
@@ -636,12 +640,12 @@ describe("⑧ 引擎后端：真源 ↔ 描述符表 / GUI / 文档 / 铺垫路�
   });
 
   it("GUI 吃真源、不带第二份 id 表：设置屏与启动屏都 import shared/engines.mjs，src/ 下没有引擎 id 字面量", () => {
-    const settings = read(GUI_PROVIDERS_FILE);
+    const settings = read(GUI_ENGINE_FILE);
     const boot = read("src/components/BootScreen.tsx");
-    expect(settings, `${GUI_PROVIDERS_FILE} 没有从 shared/engines.mjs import 引擎表：选择器会退化成手写清单`).toContain(
+    expect(settings, `${GUI_ENGINE_FILE} 没有从 shared/engines.mjs import 引擎表：选择器会退化成手写清单`).toContain(
       'from "../../shared/engines.mjs"',
     );
-    expect(settings, `${GUI_PROVIDERS_FILE} 没有渲染真源的 ENGINES`).toContain("ENGINES.map(");
+    expect(settings, `${GUI_ENGINE_FILE} 没有渲染真源的 ENGINES`).toContain("ENGINES.map(");
     expect(boot, `src/components/BootScreen.tsx 没有从 shared/engines.mjs import 引擎表：登录指引会写死一家`).toContain(
       'from "../../shared/engines.mjs"',
     );

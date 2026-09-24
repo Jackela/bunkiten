@@ -9,10 +9,11 @@
 // 块顺序 = doctor 的报告顺序（同组的行连着，按首现顺序切块即可），每行 = 严重度 chip + 行原文。
 // 字号只取 global.css 的阶梯档位；配色只用既有档：通过=金、警告=琥珀、错误=红（与画廊/世界线的失败色同源）。
 // 重试只有一处（右上「重新检查」）：错误态里不再摆第二个同 testid 的按钮，免得 testid 撞车。
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { RefreshCw } from "lucide-react";
-import { fetchPresetCheck, type PresetCheckItem, type PresetCheckResult } from "../lib/acp";
+import { fetchPresetCheck, type PresetCheckItem } from "../lib/acp";
+import { useAsync } from "../lib/useAsync";
 import { useGameStore } from "../store/game";
 import { ScreenShell } from "./ScreenShell";
 import { ShellPage } from "./ShellPage";
@@ -35,30 +36,19 @@ export default function PresetCheckScreen() {
   const presetTitle = useGameStore((s) => s.selected?.title);
   const closeOverlay = useGameStore((s) => s.closeOverlay);
 
-  const [result, setResult] = useState<PresetCheckResult | null>(null);
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
   /** 「重新检查」的触发计数：屏内自助刷新不占 store 字段（与画廊的 assetsStamp 同款） */
   const [checkStamp, setCheckStamp] = useState(0);
 
-  // 换剧本与每次「重新检查」都重取；卸载/换本即取消（在途响应不再回填）
-  useEffect(() => {
-    if (!presetId) return; // 还没选剧本：没有可查的目录，不白打一次 400
-    const abort = new AbortController();
-    setBusy(true);
-    setError("");
-    fetchPresetCheck(presetId, abort.signal)
-      .then(setResult)
-      .catch((e: unknown) => {
-        if ((e as Error).name === "AbortError") return;
-        setResult(null);
-        setError(String(e));
-      })
-      .finally(() => {
-        if (!abort.signal.aborted) setBusy(false);
-      });
-    return () => abort.abort();
-  }, [presetId, checkStamp]);
+  // 换剧本与每次「重新检查」都重取；卸载/换本即取消（在途响应不再回填）。
+  // 走 lib/useAsync：AbortController 与「写回前复查 signal.aborted」统一在 hook 里
+  const checkReq = useAsync(
+    (signal) => fetchPresetCheck(presetId, signal),
+    // 还没选剧本：没有可查的目录，不白打一次 400（key=null 即不取数）
+    presetId ? `check:${presetId}:${checkStamp}` : null,
+  );
+  const result = checkReq.data;
+  const error = checkReq.error;
+  const busy = checkReq.loading;
 
   /** 摘要行计数：与 doctor 的「N 项通过 · M 警告 · K 错误」同口径（组干净时整组一条 ok，所以 N 也是通过组数） */
   const counts = useMemo(() => {

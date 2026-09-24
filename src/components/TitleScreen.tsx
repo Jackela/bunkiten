@@ -1,5 +1,6 @@
 import {
   Fragment,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -12,8 +13,9 @@ import { AnimatePresence, motion, type PanInfo } from "framer-motion";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { coverUrl, fetchPresets, fetchWorlds, presetExportUrl, type WorldEntry } from "../lib/acp";
 import { getTheme, themeVars } from "../theme";
+import { useAsync } from "../lib/useAsync";
+import { relativeTime, worldDisplayName } from "../lib/worlds";
 import { useGameStore } from "../store/game";
-import { relativeTime, worldDisplayName } from "./WorldsScreen";
 import { ScreenShell } from "./ScreenShell";
 import { MotifLayer } from "./motifs";
 
@@ -104,14 +106,10 @@ export default function TitleScreen() {
   const engineBusy = useGameStore((s) => s.engineBusy);
   // 轮播数据读 store：挂载拉取写入，presetAdded（新剧本装配完成）也会刷新——新卡带封面即时出现
   const presets = useGameStore((s) => s.presets);
-  const [error, setError] = useState("");
-  const [loaded, setLoaded] = useState(false);
   const [index, setIndex] = useState(0);
   const [inserting, setInserting] = useState(false);
   /** 角落簇「更多」菜单（受控：导出要延后一拍才收菜单，见 KEEP_MENU_OPEN） */
   const [moreOpen, setMoreOpen] = useState(false);
-  /** 最近游玩的世界线（挂载拉一次全量 /api/worlds，自己取 lastPlayed 最大的一条：与 WorldsScreen aside 同判据） */
-  const [worlds, setWorlds] = useState<WorldEntry[]>([]);
   // 导入剧本（v1.7）：在途标志（按钮禁用）与文件读取失败的就近提示（POST 结果走 store 的 titleNotice）
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState("");
@@ -119,38 +117,33 @@ export default function TitleScreen() {
   // 拖拽位移记录：tap 判定用（拖动超过阈值后的 tap 不算点击）
   const dragged = useRef(0);
 
+  // 剧本轮播：挂载拉一次写进 store（presetAdded 也会刷新）；拉不到走错误态（data 保持 null →「加载中…」→ 错误）
+  const presetsReq = useAsync((signal) => fetchPresets(signal), "title-presets");
   useEffect(() => {
-    const abort = new AbortController();
-    fetchPresets(abort.signal)
-      .then((r) => {
-        setPresets(r.presets);
-        // 解析失败的剧本目录是开发诊断信息（旧版在标题屏报「跳过 N 个无法解析的剧本」），只留控制台
-        if (r.errors.length > 0) console.debug("剧本目录解析失败：", r.errors);
-        setLoaded(true);
-      })
-      .catch((e: unknown) => {
-        if ((e as Error).name !== "AbortError") setError(String(e));
-      });
-    return () => abort.abort();
-  }, [setPresets]);
+    if (!presetsReq.data) return;
+    setPresets(presetsReq.data.presets);
+    // 解析失败的剧本目录是开发诊断信息（旧版在标题屏报「跳过 N 个无法解析的剧本」），只留控制台
+    if (presetsReq.data.errors.length > 0) console.debug("剧本目录解析失败：", presetsReq.data.errors);
+  }, [presetsReq.data, setPresets]);
 
   // 「继续上次」的世界清单：标题屏还没有 selected，所以不按剧本过滤（最近玩的那条可能在别的本里）。
-  // 拉不到不挡路：这只是个快捷入口，完整清单与错误态在世界线屏
-  useEffect(() => {
-    const abort = new AbortController();
-    fetchWorlds(undefined, abort.signal)
-      .then(setWorlds)
-      .catch((e: unknown) => {
-        if ((e as Error).name !== "AbortError") console.debug("标题屏：世界线清单拉取失败", e);
-      });
-    return () => abort.abort();
-  }, []);
+  // 拉不到不挡路：这只是个快捷入口，完整清单与错误态在世界线屏（error 刻意不上屏，只留一句 console）
+  const worldsReq = useAsync((signal) => fetchWorlds(undefined, signal), "title-worlds", {
+    mapError: (e) => {
+      console.debug("标题屏：世界线清单拉取失败", e);
+      return "";
+    },
+  });
+  const worlds = useMemo(() => worldsReq.data ?? [], [worldsReq.data]);
 
   // 进屏清掉上一轮的提示条（导入结果属于上一次会话，不该复读）
   useEffect(() => {
     clearTitleNotice();
   }, [clearTitleNotice]);
 
+  const error = presetsReq.error;
+  // loaded 进条件：轮播还没到位时不急着说「剧本已移除」（两个拉取谁先回来不定，避免闪一下死态）
+  const loaded = presetsReq.data !== null;
   const n = presets.length;
   const current = presets[index] ?? null;
   const theme = getTheme(current);
@@ -164,18 +157,20 @@ export default function TitleScreen() {
   const resumePreset = lastWorld ? (presets.find((p) => p.id === lastWorld.preset) ?? null) : null;
   const continueName = lastWorld ? worldDisplayName(lastWorld, resumePreset?.title ?? lastWorld.title) : "";
   const continueDisabled = !lastWorld || !resumePreset || !lastWorld.exists || engineBusy;
-  // loaded 进条件：轮播还没到位时不急着说「剧本已移除」（两个拉取谁先回来不定，避免闪一下死态）
   const showContinue = lastWorld !== null && (resumePreset !== null || loaded);
 
-  const step = (dir: 1 | -1) => {
-    if (!inserting && n > 1) setIndex((i) => (i + dir + n) % n);
-  };
+  const step = useCallback(
+    (dir: 1 | -1) => {
+      if (!inserting && n > 1) setIndex((i) => (i + dir + n) % n);
+    },
+    [inserting, n],
+  );
 
-  const insert = () => {
+  const insert = useCallback(() => {
     if (inserting || !current) return;
     setInserting(true);
     window.setTimeout(() => selectPreset(current), INSERT_MS);
-  };
+  }, [inserting, current, selectPreset]);
 
   /**
    * 「继续上次」：走世界线屏行上那个「继续」的同一条路径（resumeWorld）。
@@ -195,6 +190,8 @@ export default function TitleScreen() {
     });
   };
 
+  // 全局键盘（← → 切卡 / Enter 插卡）：注册一次，靠 step/insert 的 useCallback 保持最新闭包——
+  // 从前没给依赖数组，每次渲染都拆了重挂一遍（打字/动画期间反复注册同一监听）
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "ArrowLeft") step(-1);
@@ -203,7 +200,7 @@ export default function TitleScreen() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  });
+  }, [step, insert]);
 
   const onDragEnd = (_e: unknown, info: PanInfo) => {
     if (info.offset.x < -DRAG_THRESHOLD) step(1);
@@ -250,6 +247,7 @@ export default function TitleScreen() {
           <p
             data-testid="title-notice"
             data-kind={titleNotice.kind}
+            role="status"
             className={`mt-2 text-ui ${titleNotice.kind === "error" ? "text-red-400" : "text-emerald-300"}`}
           >
             {titleNotice.text}

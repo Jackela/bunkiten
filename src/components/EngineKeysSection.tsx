@@ -13,8 +13,9 @@
 // 它到屏上只影响「有哪些服务可挑」，绝不改写玩家已存的地址/密钥/模型（保存仍只由玩家动作触发）。
 //
 // 文案纪律：不出现 env、变量名、配置文件路径这类内部词；说的是「服务地址 / 密钥 / 模型」。
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Eye, EyeOff, LogIn, LogOut, Plug, RotateCw, Trash2 } from "lucide-react";
+// v1.13：两组表单拆到 `EngineGroupForm`、登录/登出块拆到 `EngineAuthPanel`；三处取数收进 `lib/useAsync`。
+import { useCallback, useEffect, useRef, useState } from "react";
+import { RotateCw } from "lucide-react";
 import {
   engineLogout,
   fetchAuth,
@@ -23,443 +24,13 @@ import {
   postCredentials,
   restartEngine,
   startEngineLogin,
-  testCredentials,
-  type CredentialProbe,
-  type CredentialGroupView,
   type CredentialsView,
-  type ProviderCatalogView,
 } from "../lib/acp";
 import { watchLogin } from "../lib/engine-login";
-import { providerById, providersFor, type ProviderEntry } from "../../shared/providers.mjs";
+import { useAsync } from "../lib/useAsync";
 import { ENGINES, engineById } from "../../shared/engines.mjs";
-
-/** 哪一组（对话 / 出图） */
-type GroupKey = "llm" | "image";
-
-/** 一组表单的本地草稿（不含 key：key 只活在一次输入里） */
-interface Draft {
-  mode: string;
-  provider: string;
-  baseUrl: string;
-  model: string;
-  size: string;
-  sizeBackground: string;
-}
-
-/** 分组文案与默认值（两组共用一套渲染，只有这些差异） */
-const GROUP_META: Record<
-  GroupKey,
-  {
-    title: string;
-    blurb: string;
-    modes: { value: string; label: string }[];
-    keyHint: string;
-    modeLabels: Record<string, string>;
-  }
-> = {
-  llm: {
-    title: "故事引擎",
-    blurb: "演绎剧情用的对话模型。留空则沿用终端里的登录状态。",
-    modes: [
-      { value: "session", label: "沿用终端登录" },
-      { value: "byok", label: "自备密钥" },
-    ],
-    keyHint: "密钥只存在这台机器上，不会写进剧本、存档或导出包。",
-    modeLabels: { session: "沿用终端登录", byok: "自备密钥" },
-  },
-  image: {
-    title: "插画生成",
-    blurb: "生成角色立绘与背景用的图片服务。不上心就选「不用」——剧情照常进行。",
-    modes: [
-      { value: "off", label: "不用" },
-      { value: "byok", label: "自备服务" },
-    ],
-    keyHint: "密钥只存在这台机器上；出图失败只会静默略过，不会打断剧情。",
-    modeLabels: { off: "不用", byok: "自备服务" },
-  },
-};
-
-/** 草稿 ↔ 服务端视图（尺寸两格只在图片组有，缺省空串） */
-function draftOf(view: CredentialGroupView): Draft {
-  return {
-    mode: view.mode,
-    provider: view.provider,
-    baseUrl: view.baseUrl,
-    model: view.model,
-    size: view.size ?? "",
-    sizeBackground: view.sizeBackground ?? "",
-  };
-}
-
-/**
- * 某用途的可选项：优先**在线目录**（按 kind 过滤），没有就用内置真源 {@link providersFor} 兜底
- * （契约 lint ⑦ 组钉的就是这一句调用：GUI 吃 shared 的目录真源，不许自带第二份 id 表）。
- *
- * 两处细节都有理由：
- *   · 在线目录里这一组一条都没有时（远端只加了出图服务之类）**按组**回落内置表：宁可让这一组留着旧候选，
- *     也不给玩家一个空下拉；
- *   · 玩家已存的服务若不在候选里（目录撤了这条 / 改了 id），用内置表把它补在最前——目录更新只该改
- *     「有哪些可挑」，不该让当前选着的那家从下拉里消失（那会让下拉显示成空的，玩家连自己选的哪家都看不到）。
- *     补进去的条目只进候选，地址/密钥/模型仍照旧回显玩家存的值。
- * @param group 哪一组
- * @param catalog 服务端给的在线目录（null = 还没读到/读失败）
- * @param current 当前已存的服务 id（补可见性用）
- * @returns 该组的候选（顺序即下拉顺序）
- */
-function optionsFor(group: GroupKey, catalog: ProviderEntry[] | null, current: string): readonly ProviderEntry[] {
-  const kind: "llm" | "image" = group === "llm" ? "llm" : "image";
-  const usable = (p: ProviderEntry) => p.kind === kind || p.kind === "both";
-  const online = (catalog ?? []).filter(usable);
-  const base = online.length > 0 ? online : providersFor(kind);
-  if (!current || base.some((p) => p.id === current)) return base;
-  const saved = providerById(current);
-  return saved && usable(saved) ? [saved, ...base] : base;
-}
-
-/**
- * 一个输入行：标签 + 控件 + 可选说明。控件由调用方给（input/select），这里只管排版。
- */
-function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) {
-  return (
-    <label className="block">
-      <span className="mb-1.5 block text-ui tracking-[.2em] text-ink-body">{label}</span>
-      {children}
-      {hint ? <span className="mt-1 block text-meta leading-relaxed text-ink-hint">{hint}</span> : null}
-    </label>
-  );
-}
-
-/** 文本框的统一样式（设置屏其余输入格同款观感） */
-const inputClass =
-  "w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-ui text-ink placeholder:text-ink-faint focus:border-gold/40 focus:outline-none";
-
-/**
- * 一组凭据的表单（对话或出图）。
- * @param {object} props 组件属性
- * @param {GroupKey} props.group 组名
- * @param {CredentialGroupView} props.view 服务端的脱敏视图（掩码与 hasKey 的来源）
- * @param {ProviderEntry[] | null} props.catalog 在线服务目录（null = 没读到，下拉回落内置表）
- * @param {string | null} props.locked 该引擎不支持这一组自备时的原因（v1.11：如 Codex 的对话组）；
- *   非空时按「沿用登录」呈现、禁用自备按钮并显示原因——**已存的值不动**（切回支持的引擎即恢复）
- * @param {(view: CredentialsView) => void} props.onView 保存成功后的最新视图（整份，父级统一落地）
- * @param {(text: string) => void} props.onSaved 保存成功（父级弹「重启后生效」提示）
- * @param {(err: string) => void} props.onError 保存失败
- */
-function GroupForm({
-  group,
-  view,
-  catalog,
-  locked,
-  onView,
-  onSaved,
-  onError,
-}: {
-  group: GroupKey;
-  view: CredentialGroupView;
-  catalog: ProviderEntry[] | null;
-  locked: string | null;
-  onView: (v: CredentialsView) => void;
-  onSaved: () => void;
-  onError: (msg: string) => void;
-}) {
-  const meta = GROUP_META[group];
-  const [draft, setDraft] = useState<Draft>(() => draftOf(view));
-  // 候选随「在线目录 + 当前选中的服务」变：目录到得比首次渲染晚，到货即换掉下拉选项（草稿里的
-  // provider 不动——玩家没选过就不改他存的值）
-  const options = optionsFor(group, catalog, draft.provider);
-  const [apiKey, setApiKey] = useState(""); // 只在输入期间存在；提交后清空
-  const [reveal, setReveal] = useState(false);
-  const [probe, setProbe] = useState<{ state: "idle" | "running" | "done"; result?: CredentialProbe }>({
-    state: "idle",
-  });
-  const pending = useRef<{ patch: Record<string, string>; timer: ReturnType<typeof setTimeout> | null }>({
-    patch: {},
-    timer: null,
-  });
-  // 服务端视图变化（首次加载/保存回包）时同步草稿：key 格是本地态，不参与同步。
-  // 「有没发出去的改动」时不回灌——否则玩家正在敲的地址会被上一笔回包覆盖成旧值（视觉回跳）
-  useEffect(() => {
-    if (Object.keys(pending.current.patch).length > 0 || pending.current.timer) return;
-    setDraft(draftOf(view));
-  }, [view.mode, view.provider, view.baseUrl, view.model, view.size]);
-
-  const flush = useCallback(async () => {
-    const patch = pending.current.patch;
-    pending.current.patch = {};
-    if (pending.current.timer) {
-      clearTimeout(pending.current.timer);
-      pending.current.timer = null;
-    }
-    if (Object.keys(patch).length === 0) return;
-    const r = await postCredentials(group === "llm" ? { llm: patch } : { image: patch });
-    if (!r.ok || !r.view) {
-      onError(r.error ?? "保存失败");
-      return;
-    }
-    onView(r.view);
-    onSaved();
-  }, [group, onError, onSaved, onView]);
-
-  /** 攒一次保存：文本格走短防抖，选择类立即发 */
-  const save = useCallback(
-    (patch: Record<string, string>, immediate = false) => {
-      pending.current.patch = { ...pending.current.patch, ...patch };
-      if (pending.current.timer) clearTimeout(pending.current.timer);
-      if (immediate) {
-        void flush();
-        return;
-      }
-      pending.current.timer = setTimeout(() => void flush(), 400);
-    },
-    [flush],
-  );
-
-  // 卸载（切屏/关 overlay）时把没发出去的改动补发——否则关了设置屏就丢字
-  useEffect(() => () => void flush(), [flush]);
-
-  const setField = (key: keyof Draft) => (value: string) => {
-    setDraft((d) => ({ ...d, [key]: value }));
-    save({ [key]: value });
-  };
-
-  /** 换服务：地址与模型跟着目录预填（只在它们为空或还是上一家的值时动，不覆盖玩家自己填的） */
-  const pickProvider = (id: string) => {
-    const next = options.find((p) => p.id === id);
-    const prev = options.find((p) => p.id === draft.provider);
-    const patch: Record<string, string> = { provider: id };
-    if (next) {
-      if (!draft.baseUrl || (prev && draft.baseUrl === prev.baseUrl)) patch.baseUrl = next.baseUrl;
-      if (!draft.model && next.models.length) patch.model = next.models[0];
-    }
-    setDraft((d) => ({ ...d, ...patch }));
-    save(patch, true);
-  };
-
-  const clearKey = () => {
-    setApiKey("");
-    save({ apiKey: "" }, true);
-  };
-
-  const runTest = async () => {
-    setProbe({ state: "running" });
-    const r = await testCredentials(group);
-    setProbe({ state: "done", result: r });
-  };
-
-  // 该引擎不支持这一组自备（locked 非空）时：按「沿用登录」呈现——已存的值留在盘上不动，
-  // 只是这一屏不再画它（它本来也不会被转发给这个引擎，见 server/engines.mjs 的 spawn 描述符）。
-  const effectiveMode = locked ? "session" : draft.mode;
-  const active = effectiveMode === "byok";
-  const missing = active
-    ? [!draft.baseUrl ? "服务地址" : "", !view.hasKey && !apiKey ? "密钥" : ""].filter(Boolean)
-    : [];
-  const providerLabel = options.find((p) => p.id === draft.provider)?.label ?? draft.provider;
-  const note = options.find((p) => p.id === draft.provider)?.note;
-
-  return (
-    <div className="shell-panel rounded-2xl p-5">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <h4 className="text-ui tracking-[.3em] text-gold/85">{meta.title}</h4>
-        <span className="text-meta text-ink-hint">
-          {view.hasKey && active ? "已配置" : active ? "未配置完整" : meta.modeLabels[effectiveMode]}
-        </span>
-      </div>
-      <p className="mt-2 text-meta leading-relaxed text-ink-hint">{meta.blurb}</p>
-
-      <div className="mt-3 flex flex-wrap gap-2">
-        {meta.modes.map((m) => {
-          const disabled = Boolean(locked) && m.value === "byok";
-          return (
-            <button
-              key={m.value}
-              type="button"
-              data-testid={`engine-${group}-mode-${m.value}`}
-              aria-pressed={effectiveMode === m.value}
-              disabled={disabled}
-              title={disabled && locked ? locked : undefined}
-              onClick={() => {
-                setDraft((d) => ({ ...d, mode: m.value }));
-                setProbe({ state: "idle" });
-                save({ mode: m.value }, true);
-              }}
-              className={`rounded-lg border px-4 py-1.5 text-ui tracking-[.1em] transition-colors duration-200 ${
-                disabled
-                  ? "cursor-not-allowed border-white/10 text-ink-faint opacity-50"
-                  : effectiveMode === m.value
-                    ? "border-gold/40 bg-gold/15 text-gold"
-                    : "border-white/10 text-ink-hint hover:border-gold/25 hover:text-ink"
-              }`}
-            >
-              {m.label}
-            </button>
-          );
-        })}
-      </div>
-      {locked ? (
-        <p data-testid={`engine-${group}-byok-locked`} className="mt-2 text-meta leading-relaxed text-ink-hint">
-          {locked}
-        </p>
-      ) : null}
-
-      {active && (
-        <div className="mt-4 space-y-3">
-          <Field label="服务">
-            <select
-              data-testid={`engine-${group}-provider`}
-              value={draft.provider}
-              onChange={(e) => pickProvider(e.target.value)}
-              className={inputClass}
-            >
-              {options.map((p) => (
-                <option key={p.id} value={p.id} className="bg-[#0b0d12]">
-                  {p.label}
-                </option>
-              ))}
-            </select>
-          </Field>
-          {note ? <p className="-mt-1 text-meta leading-relaxed text-ink-hint">{note}</p> : null}
-
-          <Field label="服务地址">
-            <input
-              type="url"
-              data-testid={`engine-${group}-baseurl`}
-              value={draft.baseUrl}
-              placeholder="https://…/v1"
-              spellCheck={false}
-              onChange={(e) => setField("baseUrl")(e.target.value)}
-              className={inputClass}
-            />
-          </Field>
-
-          <Field label="密钥" hint={meta.keyHint}>
-            <div className="flex items-stretch gap-2">
-              <input
-                type={reveal ? "text" : "password"}
-                data-testid={`engine-${group}-apikey`}
-                value={apiKey}
-                placeholder={view.hasKey ? `${view.apiKeyMasked}（已保存）` : "粘贴服务商给的密钥"}
-                spellCheck={false}
-                autoComplete="off"
-                onChange={(e) => setApiKey(e.target.value)}
-                onBlur={() => {
-                  // 失焦即提交并清空本地值：之后这里显示的是服务端掩码，屏上不再有明文
-                  if (apiKey) save({ apiKey }, true);
-                  setApiKey("");
-                  setReveal(false);
-                }}
-                className={inputClass}
-              />
-              <button
-                type="button"
-                data-testid={`engine-${group}-apikey-reveal`}
-                aria-pressed={reveal}
-                title={reveal ? "隐藏" : "显示"}
-                onClick={() => setReveal((v) => !v)}
-                className="flex-none rounded-lg border border-white/10 px-3 text-ink-hint transition-colors hover:border-gold/30 hover:text-ink"
-              >
-                {reveal ? <EyeOff size={14} /> : <Eye size={14} />}
-              </button>
-              {view.hasKey ? (
-                <button
-                  type="button"
-                  data-testid={`engine-${group}-apikey-clear`}
-                  title="清空密钥"
-                  onClick={clearKey}
-                  className="flex-none rounded-lg border border-white/10 px-3 text-ink-hint transition-colors hover:border-gold/30 hover:text-ink"
-                >
-                  <Trash2 size={14} />
-                </button>
-              ) : null}
-            </div>
-          </Field>
-
-          <Field label="模型">
-            <input
-              type="text"
-              data-testid={`engine-${group}-model`}
-              value={draft.model}
-              placeholder={options.find((p) => p.id === draft.provider)?.models[0] || "服务商文档里的模型 id"}
-              spellCheck={false}
-              list={`engine-${group}-models`}
-              onChange={(e) => setField("model")(e.target.value)}
-              className={inputClass}
-            />
-            <datalist id={`engine-${group}-models`}>
-              {(group === "llm"
-                ? options.find((p) => p.id === draft.provider)?.models
-                : options.find((p) => p.id === draft.provider)?.imageModels
-              )?.map((m) => (
-                <option key={m} value={m} />
-              ))}
-            </datalist>
-          </Field>
-
-          {group === "image" ? (
-            <>
-              <Field
-                label="出图尺寸（高级）"
-                hint="留空按画面类型自动：立绘与封面竖构图、背景横构图。填了就是所有类型的通用覆盖。"
-              >
-                <input
-                  type="text"
-                  data-testid="engine-image-size"
-                  value={draft.size}
-                  placeholder="1024x1536"
-                  spellCheck={false}
-                  onChange={(e) => setField("size")(e.target.value)}
-                  className={inputClass}
-                />
-              </Field>
-              <Field label="背景尺寸（高级）" hint="只对背景生效；留空则回落上面那格，再留空就按背景的横构图默认。">
-                <input
-                  type="text"
-                  data-testid="engine-image-size-background"
-                  value={draft.sizeBackground}
-                  placeholder="1536x1024"
-                  spellCheck={false}
-                  onChange={(e) => setField("sizeBackground")(e.target.value)}
-                  className={inputClass}
-                />
-              </Field>
-            </>
-          ) : null}
-
-          <div className="flex flex-wrap items-center gap-3 pt-1">
-            <button
-              type="button"
-              data-testid={`engine-${group}-test`}
-              onClick={() => void runTest()}
-              disabled={probe.state === "running"}
-              className="inline-flex items-center gap-2 rounded-lg border border-gold/40 bg-gold/10 px-4 py-1.5 text-ui text-gold transition-colors hover:bg-gold/20 disabled:opacity-60"
-            >
-              <Plug size={14} />
-              {probe.state === "running" ? "测试中…" : "测试连接"}
-            </button>
-            <span
-              data-testid={`engine-${group}-test-result`}
-              className="text-meta leading-relaxed text-ink-hint"
-              role="status"
-            >
-              {probe.state === "done" && probe.result
-                ? probe.result.ok
-                  ? `通过（${probe.result.ms} ms）${probe.result.detail ? "，" + probe.result.detail : ""}`
-                  : `失败：${probe.result.error ?? "未知原因"}`
-                : probe.state === "running"
-                  ? `正在连接「${providerLabel}」…`
-                  : ""}
-            </span>
-          </div>
-          {missing.length > 0 ? <p className="text-meta text-ink-hint">还差：{missing.join("、")}</p> : null}
-          {group === "image" && probe.state === "idle" ? (
-            <p className="text-meta leading-relaxed text-ink-faint">
-              「测试连接」会真的生成一张小图来验证服务能用（可能产生一点点费用）。
-            </p>
-          ) : null}
-        </div>
-      )}
-    </div>
-  );
-}
+import { EngineAuthPanel } from "./EngineAuthPanel";
+import { EngineGroupForm } from "./EngineGroupForm";
 
 /**
  * 设置屏的「引擎与密钥」整节：两份 GroupForm + 保存提示与重启按钮。
@@ -471,62 +42,38 @@ function GroupForm({
  */
 export default function EngineKeysSection({ showTitle = true }: { showTitle?: boolean }) {
   const [view, setView] = useState<CredentialsView | null>(null);
-  const [loadError, setLoadError] = useState("");
+  const [actionError, setActionError] = useState("");
   const [notice, setNotice] = useState("");
   const [restart, setRestart] = useState<{ state: "idle" | "running" | "done" | "error"; error?: string }>({
     state: "idle",
   });
-  // 在线服务目录（v1.10）：读到且里面有条目就换掉下拉候选（两组共用这一份），否则保持 null → 内置表。
-  // 读不到**不报错也不提示**——服务目录是候选的加分项，缺了就照旧用内置表，不该在屏上留一条玩家的红字。
-  const [catalog, setCatalog] = useState<ProviderCatalogView | null>(null);
-  // 登录状态（v1.11 收尾）：终端登录态的「看得见 + 点得动」——状态行 + 一键登录/登出。
-  // canLogin=false（这台机器没有该 CLI 的入口）时按钮不画，改为一句说明。
-  const [auth, setAuth] = useState<{ loggedIn: boolean; canLogin: boolean } | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
   const [authNote, setAuthNote] = useState("");
   const [confirmLogout, setConfirmLogout] = useState(false);
   const authWatchRef = useRef<(() => void) | null>(null);
   useEffect(() => () => authWatchRef.current?.(), []);
 
-  const load = useCallback(async () => {
-    setLoadError("");
-    try {
-      setView(await fetchCredentials());
-    } catch (e) {
-      setLoadError(String(e));
-    }
-  }, []);
+  // 凭据：挂载读一次（拿掩码/已存值），重试走 reload；保存回包由 EngineGroupForm 的 onView 直接落 view
+  const credsReq = useAsync((signal) => fetchCredentials(signal), "credentials");
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (credsReq.data) setView(credsReq.data);
+  }, [credsReq.data]);
+  // 读不到配置 / 保存失败共用同一个错误位（原文案「读不到当前配置」对两者都成立：都画不出可用的这一节）
+  const loadError = credsReq.error || actionError;
+  const retryLoad = () => {
+    setActionError("");
+    credsReq.reload();
+  };
 
-  /** 读登录态（与凭据一起；读不到就不画状态行——它不是错误态） */
-  const loadAuth = useCallback(async () => {
-    try {
-      const a = await fetchAuth();
-      setAuth({ loggedIn: a.loggedIn, canLogin: a.canLogin });
-    } catch {
-      setAuth(null);
-    }
-  }, []);
-  useEffect(() => {
-    void loadAuth();
-  }, [loadAuth]);
+  // 登录态（v1.11 收尾）：终端登录态的「看得见 + 点得动」——状态行 + 一键登录/登出。
+  // canLogin=false（这台机器没有该 CLI 的入口）时按钮不画，改为一句说明。读不到就不画状态行（不是错误态）
+  const authReq = useAsync((signal) => fetchAuth(signal), "engine-auth");
+  const auth = authReq.data ? { loggedIn: authReq.data.loggedIn, canLogin: authReq.data.canLogin } : null;
 
   // 目录只在挂载时读一次（跟凭据一起）：它和「玩家刚选了什么」无关，切屏回来重读也行，但不必要。
-  // 卸载即取消在途请求（关 overlay 时最可能撞上），拿到的空目录一律当「没有」
-  useEffect(() => {
-    const ctrl = new AbortController();
-    void (async () => {
-      try {
-        const got = await fetchProviders(ctrl.signal);
-        if (got.providers.length > 0) setCatalog(got);
-      } catch {
-        // 读不到就用内置表（providersFor）；连日志都不该有——这是正常回落，不是故障
-      }
-    })();
-    return () => ctrl.abort();
-  }, []);
+  // 读不到**不报错也不提示**——服务目录是候选的加分项，缺了就照旧用内置表，不该在屏上留一条玩家的红字。
+  const catalogReq = useAsync((signal) => fetchProviders(signal), "providers");
+  const catalog = catalogReq.data && catalogReq.data.providers.length > 0 ? catalogReq.data : null;
 
   const onSaved = useCallback(() => {
     setNotice("已保存，重启引擎后生效");
@@ -548,7 +95,7 @@ export default function EngineKeysSection({ showTitle = true }: { showTitle?: bo
     if (!view || view.engine === id) return;
     const r = await postCredentials({ engine: id });
     if (!r.ok || !r.view) {
-      setLoadError(r.error ?? "保存失败");
+      setActionError(r.error ?? "保存失败");
       return;
     }
     setView(r.view);
@@ -556,7 +103,7 @@ export default function EngineKeysSection({ showTitle = true }: { showTitle?: bo
     setRestart({ state: "idle" });
     setConfirmLogout(false);
     setAuthNote("");
-    void loadAuth(); // 登录态是按引擎看的：换了引擎，状态行跟着换
+    authReq.reload(); // 登录态是按引擎看的：换了引擎，状态行跟着换
   };
 
   /**
@@ -579,7 +126,7 @@ export default function EngineKeysSection({ showTitle = true }: { showTitle?: bo
         authWatchRef.current = null;
         setAuthBusy(false);
         setAuthNote("登录成功。");
-        void loadAuth();
+        authReq.reload();
       },
       {
         onTimeout: () => {
@@ -598,7 +145,7 @@ export default function EngineKeysSection({ showTitle = true }: { showTitle?: bo
     const r = await engineLogout();
     setAuthBusy(false);
     setAuthNote(r.ok ? "已退出登录。" : `没能退出：${r.error ?? "未知原因"}`);
-    await loadAuth();
+    authReq.reload();
   };
 
   return (
@@ -633,75 +180,17 @@ export default function EngineKeysSection({ showTitle = true }: { showTitle?: bo
             {engineEntry.blurb}
           </p>
 
-          {/* 登录状态（v1.11 收尾）：终端登录态看得见、点得动。登录是玩家的（我们不存凭据），
-              登出是**全局动作**（终端里那份也一起清），所以两段确认 */}
-          <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
-            <span className="text-meta text-ink-hint">登录状态</span>
-            <span
-              data-testid="engine-auth-status"
-              className={`rounded-lg border px-3 py-1 text-meta ${
-                auth?.loggedIn ? "border-gold/30 bg-gold/10 text-gold" : "border-white/10 text-ink-hint"
-              }`}
-            >
-              {auth === null ? "读取中…" : auth.loggedIn ? "已登录" : "未登录"}
-            </span>
-            {auth && !auth.loggedIn && auth.canLogin ? (
-              <button
-                type="button"
-                data-testid="engine-auth-login"
-                disabled={authBusy}
-                onClick={() => void doLogin()}
-                className="inline-flex items-center gap-2 rounded-lg border border-gold/40 bg-gold/10 px-4 py-1.5 text-ui text-gold transition-colors hover:bg-gold/20 disabled:opacity-60"
-              >
-                <LogIn size={14} /> {authBusy ? "正在打开…" : `登录 ${engineEntry.label}`}
-              </button>
-            ) : null}
-            {auth && !auth.loggedIn && !auth.canLogin ? (
-              <span data-testid="engine-auth-unavailable" className="text-meta leading-relaxed text-ink-hint">
-                这台机器上没有 {engineEntry.label} 的登录入口{engineEntry.unavailableNote}——你也可以自己在终端运行{" "}
-                {engineEntry.loginHint}
-              </span>
-            ) : null}
-            {auth?.loggedIn ? (
-              confirmLogout ? (
-                <span className="inline-flex flex-wrap items-center gap-2">
-                  <span className="text-meta text-ink-hint">会同时退出你在终端里的登录。</span>
-                  <button
-                    type="button"
-                    data-testid="engine-auth-logout-confirm"
-                    disabled={authBusy}
-                    onClick={() => void doLogout()}
-                    className="inline-flex items-center gap-2 rounded-lg border border-red-400/40 bg-red-500/15 px-4 py-1.5 text-ui text-red-300 transition-colors hover:bg-red-500/25 disabled:opacity-60"
-                  >
-                    <LogOut size={14} /> 确认退出
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="engine-auth-logout-cancel"
-                    onClick={() => setConfirmLogout(false)}
-                    className="rounded-lg border border-white/10 px-4 py-1.5 text-ui text-ink-hint transition-colors hover:border-gold/30 hover:text-ink"
-                  >
-                    取消
-                  </button>
-                </span>
-              ) : (
-                <button
-                  type="button"
-                  data-testid="engine-auth-logout"
-                  disabled={authBusy}
-                  onClick={() => setConfirmLogout(true)}
-                  className="inline-flex items-center gap-2 rounded-lg border border-white/10 px-4 py-1.5 text-ui text-ink-hint transition-colors hover:border-gold/30 hover:text-ink disabled:opacity-60"
-                >
-                  <LogOut size={14} /> 退出登录
-                </button>
-              )
-            ) : null}
-          </div>
-          {authNote ? (
-            <p data-testid="engine-auth-note" role="status" className="mt-2 text-meta leading-relaxed text-ink-hint">
-              {authNote}
-            </p>
-          ) : null}
+          <EngineAuthPanel
+            auth={auth}
+            busy={authBusy}
+            note={authNote}
+            confirming={confirmLogout}
+            engineEntry={engineEntry}
+            onLogin={() => void doLogin()}
+            onRequestLogout={() => setConfirmLogout(true)}
+            onConfirmLogout={() => void doLogout()}
+            onCancelLogout={() => setConfirmLogout(false)}
+          />
         </div>
       ) : null}
 
@@ -711,7 +200,7 @@ export default function EngineKeysSection({ showTitle = true }: { showTitle?: bo
           <button
             type="button"
             data-testid="engine-keys-retry"
-            onClick={() => void load()}
+            onClick={retryLoad}
             className="rounded-lg border border-white/10 px-3 py-1.5 text-meta text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
           >
             重试
@@ -729,23 +218,23 @@ export default function EngineKeysSection({ showTitle = true }: { showTitle?: bo
 
       {view ? (
         <div className="mt-4 grid gap-4 lg:grid-cols-2">
-          <GroupForm
+          <EngineGroupForm
             group="llm"
             view={view.llm}
             catalog={catalog?.providers ?? null}
             locked={engineEntry.byok ? null : engineEntry.byokNote}
             onView={setView}
             onSaved={onSaved}
-            onError={setLoadError}
+            onError={setActionError}
           />
-          <GroupForm
+          <EngineGroupForm
             group="image"
             view={view.image}
             catalog={catalog?.providers ?? null}
             locked={null}
             onView={setView}
             onSaved={onSaved}
-            onError={setLoadError}
+            onError={setActionError}
           />
         </div>
       ) : null}

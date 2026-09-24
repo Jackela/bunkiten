@@ -119,6 +119,7 @@ export default function FreeInput() {
           type="button"
           data-testid="free-input-mic"
           onClick={toggleMic}
+          aria-label="语音输入"
           title="语音输入"
           className={`rounded-lg border px-4 text-body transition-colors ${
             listening

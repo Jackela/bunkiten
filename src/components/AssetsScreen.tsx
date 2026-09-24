@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { RefreshCw, X } from "lucide-react";
 import { assetFileUrl, fetchAssets, type AssetEntry } from "../lib/acp";
 import { variantLabel, REGEN_NOTE_MAX } from "../lib/parser";
+import { useAsync } from "../lib/useAsync";
 import { useFocusTrap } from "../lib/useFocusTrap";
 import { useGameStore, type RegenJob } from "../store/game";
 import { ScreenShell } from "./ScreenShell";
@@ -155,8 +156,6 @@ export default function AssetsScreen() {
   /** 眉标用的剧本标题（未选剧本时给一句状态，别留空行） */
   const presetTitle = useGameStore((s) => s.selected?.title);
 
-  const [assets, setAssets] = useState<AssetEntry[] | null>(null);
-  const [error, setError] = useState("");
   /** 管理素材模式开关（批量操作的入口；浏览模式只有预览） */
   const [selectMode, setSelectMode] = useState(false);
   /** 勾选的素材（有序数组：按落盘路径记，批量动作按勾选顺序执行，改名/重绘都不影响） */
@@ -171,13 +170,12 @@ export default function AssetsScreen() {
   const previewRef = useRef<HTMLDivElement | null>(null);
   useFocusTrap(!!selected, previewRef);
 
-  // 挂载、换剧本与每次重绘完成（stamp 自增）时刷新；URL 带 v=stamp 破缓存换新图
-  useEffect(() => {
-    if (!preset) return; // 还没选剧本：没有可查的资产目录，不白打一次 400
-    const abort = new AbortController();
-    setError("");
-    fetchAssets(preset, abort.signal)
-      .then((list) => {
+  // 挂载、换剧本与每次重绘完成（stamp 自增）时刷新；URL 带 v=stamp 破缓存换新图。
+  // 走 lib/useAsync：AbortController 与「写回前复查 signal.aborted」统一在 hook 里——
+  // 此前这里手写的 .then 直接 setAssets，缺了 peers 都有的 aborted 复查（过期应答会落到已卸载的屏上）
+  const assetsReq = useAsync(
+    (signal) =>
+      fetchAssets(preset, signal).then((list) => {
         // 防御性校验：服务端只应返回 presets/<preset>/assets/ 下的资产（跨剧本条目 = 旧档串味 / 装配期写错目录）。
         // 兜底把 preset 对不上的丢出去并告警——宁可画廊少显示，也不让另一部剧本的图混进当前故事
         const foreign = list.filter((a) => a.preset !== preset);
@@ -188,13 +186,13 @@ export default function AssetsScreen() {
             foreign.map((a) => a.file),
           );
         }
-        setAssets(list.filter((a) => a.preset === preset));
-      })
-      .catch((e: unknown) => {
-        if ((e as Error).name !== "AbortError") setError(String(e));
-      });
-    return () => abort.abort();
-  }, [preset, stamp]);
+        return list.filter((a) => a.preset === preset);
+      }),
+    // 还没选剧本：没有可查的资产目录，不白打一次 400（key=null 即不取数）
+    preset ? `assets:${preset}:${stamp}` : null,
+  );
+  const assets = assetsReq.data;
+  const error = assetsReq.error;
 
   // 进屏/换本清掉上一轮的提示条（批次结果属于上一次会话，不该复读）
   useEffect(() => {
@@ -427,6 +425,7 @@ export default function AssetsScreen() {
           <p
             data-testid="assets-regen-notice"
             data-kind={regenNotice.kind}
+            role="status"
             className={`mt-3 rounded-xl border px-4 py-2 text-ui leading-relaxed ${
               regenNotice.kind === "error"
                 ? "border-red-400/25 bg-panel-soft text-red-400"
@@ -448,6 +447,7 @@ export default function AssetsScreen() {
           <p
             data-testid="assets-notice"
             data-kind={assetsNotice.kind}
+            role="status"
             className={`mt-3 rounded-xl border px-4 py-2 text-ui leading-relaxed ${
               assetsNotice.kind === "error"
                 ? "border-red-400/25 bg-panel-soft text-red-400"
@@ -461,6 +461,7 @@ export default function AssetsScreen() {
         {error && (
           <p
             data-testid="assets-error"
+            role="status"
             className="mt-3 rounded-xl border border-red-400/25 bg-scrim px-4 py-2 text-ui text-red-400 backdrop-blur-md"
           >
             素材加载失败：{error}

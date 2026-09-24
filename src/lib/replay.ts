@@ -2,6 +2,13 @@
 // 快照（= K 那一幕开演前的结束态）、再重发 K 的输入；退到 K 自己会把同一幕演两遍、上下文还接错。
 // backup 条目是回退前的自动备份、不是一幕；续玩条目（继续世界：）是正戏回合——两者都按 kind 判定。
 // store 的重演解析内核与剧情图屏的按钮判据共用这一份规则，不写第二份（本仓最忌的两份规则）。
+//
+// ⚠️ 本文件的 prevTurnSnapshotSeq 与 lib/tree-view.ts 的 prevSnapshotSeq **不是同一个函数，别合并**：
+//   · prevTurnSnapshotSeq（本文件）——存档点重演的回退点：只认 kind:"turn"（backup 不是一幕，退到它
+//     上下文会接错），且严格在 seq 之前；
+//   · prevSnapshotSeq（lib/tree-view.ts）——快照对比的基线：seq 更小的最近一条、**kind 不限**，
+//     因为回退前的自动备份恰恰是「上一份不同的内容」，排除它会让回退后的第一次对比找不到基线。
+//   两者名字都叫「prev…Seq」，语义（重演回退点 vs 对比基线）不同——合并必错一边。
 import type { WorldSnapshotMeta } from "./acp";
 
 /**
