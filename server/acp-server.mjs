@@ -2,29 +2,37 @@
 // spawn grok agent stdio (ACP)、SSE 推流、资产落盘流水线、逐轮快照、进程生命周期都在这里的 startServer 闭包装配。
 // 用法：node server/acp-server.mjs  →  http://localhost:7800 ；或 import { startServer }
 //
-// 模块地图（同目录 server/，v1.13 补全——这份地图此前停在 v1.7 的 10 个模块，
-// 而 AGENTS.md 又让读者来这里找地图，结果是「文档指着地图、地图缺一半」）：
+// 模块地图（同目录 server/ 共 23 个文件 = 本入口 + 22 个模块；v1.13 与目录逐一对齐过——
+// 这份地图此前停在 v1.7 的 10 个模块，而 AGENTS.md 又让读者来这里找地图，结果是「文档指着地图、地图缺一半」）：
 //   config.mjs 路径/端口（GAME_ROOT/SESSION_FILE/WORLDS_ROOT/gameHome 等公共依赖，零依赖叶子）
 //   errors.mjs 未知错误的读取口（errText/errName：catch 变量在 strict 下是 unknown）
+//   fs-guard.mjs 路径越界守卫 withinRoot（/app、/audio、/img 三条直服与 media-mcp 落盘共用这一份）
 //   protocol-lines.mjs 注入 agent 的 RULES 原文 + 五种协议行 parse* + 质量守卫追问指令 SUPPLEMENT_PROMPT
 //   assets.mjs 美术资产路径契约纯函数（sanitize/白名单/落盘判定/差分拆分）
+//   assets-pipeline.mjs 资产注册表与落盘（persistAsset/persistAssetFromFile/listAssets/未就绪项重试）
 //   presets.mjs preset.md 解析 + assetTargetFile + 剧本导出包（buildPresetBundle/importPresetBundle）
 //   snapshots.mjs 世界三文件与逐轮快照的地基（WORLD_FILES/WORLD_ID_RE/读写/选择/fork 纯函数）
-//   worlds.mjs 世界线索引/CRUD/导出导入/migrateLegacyState/migrateWorldsSchema/角色面板解析
+//   worlds.mjs 世界线索引/CRUD/导出导入/migrateLegacyState/migrateWorldsSchema
+//   state-view.mjs state.md 容错解析与 GET /api/state 的判定（角色面板数据源）
 //   audio.mjs presets/<id>/audio/ 扫描（AUDIO_KINDS/AUDIO_EXTS/AUDIO_FILE_RE re-export 给 doctor）
-//   http-util.mjs 本地端点防护（跨站 403/body 413）+ /app 静态托管的 MIME 与目录解析
+//   http-util.mjs 本地端点防护（跨站 403/body 413）+ 出网小工具（withTimeoutSignal/joinEndpoint）+ /app 的 MIME 与目录解析
+//   sse.mjs SSE 广播（/events 连接集合的生命周期 + 帧格式）
 //   acp.mjs ACP 子进程封装（spawn/JSON-RPC request/sessionId 存取/boot/会话图片定位）
 //   engines.mjs 引擎描述符表（spawn 三件套/规则注入/档位形状/登录探测/CODEX_HOME 准备，v1.11）
 //   engine-auth.mjs 登录/登出编排（GUI 按钮 → 玩家自己 CLI 的单例在途登录 + 收尾，v1.11）
 //   credentials.mjs 引擎凭据（~/.bunkiten/credentials.json 的 normalize/读写/校验/env/脱敏，v1.10）
 //   credentials-probe.mjs 「测试连接」探活（LLM 先 /models 再退化最小 completion；图片走最小生成，v1.10）
 //   providers-catalog.mjs 服务目录在线更新（抓取/校验/缓存/三级回落/单飞刷新，v1.10，ADR-0020）
+//   settings-api.mjs 设置面（凭据增删查测 + 引擎登录登出 + 服务目录读取：每次调用现读凭据）
 //   media-mcp.mjs 自建出图 MCP server（bunkiten-media__generate_image，零依赖 stdio，v1.10）
 //   routes.mjs HTTP 路由链（createRequestHandler(ctx)，闭包能力由本文件注入）
+//
 // 本文件继续逐名 re-export 拆出的全部符号——外部 import 面（electron/main.js、tests/、scripts/doctor.mjs）
 // 逐字不变。pickEffort 与 isMainTurn 留在这里：契约 lint（tests/contract.test.ts ⑥）从本文件源码
-// 抓它们的函数体（必须引用 shared 真源的 DIRECTIVE_PREFIX_RE）；FONT_PRESETS/DIALOG_TEXTURES/DEFAULT_THEME
-// 同理钉在本文件（契约 lint ⑥ 与 src/theme.ts 比对字面量），presets.mjs 反向 import（仅函数内引用，环形安全）。
+// 抓它们的函数体（必须引用 shared 真源的 DIRECTIVE_PREFIX_RE）。
+// 主题取值（FONT_PRESETS/DIALOG_TEXTURES/MOTIFS/FALLBACK_THEME）v1.13 起**真源在 shared/theme.mjs**，
+// 本文件只 re-export——此前它钉在这里、presets.mjs 反向 import，acp-server ↔ presets 因此成环。
+// 现在 server/ + shared/ 的模块图无环（拆环的收益：谁在模块顶层用一次真源也不再是静默 undefined）。
 import http from "http";
 import path from "path";
 import { fileURLToPath } from "url";
