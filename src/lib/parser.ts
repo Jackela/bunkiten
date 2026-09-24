@@ -1,4 +1,4 @@
-// 文本协议解析纯函数：行为迁移自 shell/index.html（旧版是交互事实源），不依赖 React/DOM。
+// 文本协议解析纯函数：交互事实源就是本文件（v1.0 的网页原型早已删除，别再去它的路径找参照），不依赖 React/DOM。
 // 可被 node 直接 import 做冒烟测试，勿引入副作用。
 import { ART_KINDS, ASSET_KINDS, AUDIO_KINDS, CHAPTER_MARK_RE, PROTOCOL_HEADS } from "../../shared/protocol.mjs";
 
@@ -53,7 +53,12 @@ export interface CardAnswer {
 const KIND_MAP: Record<string, Marker["kind"]> = { 立绘: "portrait", 背景: "background", 封面: "cover" };
 
 function toMarker(kind: string, name: string, path: string, regen?: string): Marker {
-  return { kind: KIND_MAP[kind] ?? "portrait", name: name.trim(), path: path.trim(), ...(regen ? { regen: true } : {}) };
+  return {
+    kind: KIND_MAP[kind] ?? "portrait",
+    name: name.trim(),
+    path: path.trim(),
+    ...(regen ? { regen: true } : {}),
+  };
 }
 
 /** 【图】标记行的段体：类型|名|路径[|重绘]（重绘段存在=覆盖旧图的重新生成）；类型集合取 shared 真源 */
@@ -219,7 +224,15 @@ export function parseStoryTree(md: string): StoryTree | null {
     }
     const nd = line.match(TREE_NODE_RE);
     if (nd && chapter) {
-      node = { id: nd[1], beat: (nd[2] ?? "").trim(), location: "", present: "", synopsis: "", edges: [], status: "可达" };
+      node = {
+        id: nd[1],
+        beat: (nd[2] ?? "").trim(),
+        location: "",
+        present: "",
+        synopsis: "",
+        edges: [],
+        status: "可达",
+      };
       chapter.nodes.push(node);
       sawStructure = true;
       continue;
@@ -445,7 +458,10 @@ export const REGEN_NOTE_MAX = 200;
  * @returns {string} 形如「美术：重绘 立绘 薇拉-微笑：把头发改成短发」的指令原文
  */
 export function buildRegenCommand(type: ArtKind, key: string, note = ""): string {
-  const clean = note.replace(/\s*\n+\s*/g, " ").trim().slice(0, REGEN_NOTE_MAX);
+  const clean = note
+    .replace(/\s*\n+\s*/g, " ")
+    .trim()
+    .slice(0, REGEN_NOTE_MAX);
   return clean ? `美术：重绘 ${type} ${key}：${clean}` : `美术：重绘 ${type} ${key}`;
 }
 

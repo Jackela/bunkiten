@@ -1,7 +1,9 @@
 import type { ReactNode } from "react";
 
 /**
- * 壳层页框（v1.8）：worlds/protagonist/crafting/settings/assets 这些非游戏舞台屏共用的外框——
+ * 壳层页框（v1.8）：**6 屏**共用的外框——worlds/protagonist/crafting/settings/assets/preset-check
+ * （v1.13 更正名单：此前这里写「worlds/protagonist/crafting/settings/assets」并常被连带读成含 title，
+ * 实际 title 是卡带舞台、creation/story-tree 各有版式、boot 是首启三态，四者都不走页框）。
  * 满幅主题底（由屏外层吃 global.css 的 .shell-backdrop）+ 宽栏（本文件唯一的定宽：max-w-[84rem]）+
  * 统一表头（eyebrow → 标题 + 短 accent 分隔线 → 右侧动作簇）+ 可选 ≥xl 右栏 + 可选页脚提示行。
  *

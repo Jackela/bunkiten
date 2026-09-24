@@ -4,10 +4,18 @@
 // 分叉与回退都是 server 侧文件操作，不占引擎回合；只有编辑指令与回退后的续档指令走 prompt 通路。
 // v1.8：玩家可见文案去引擎口吻（「快照 #N」→「第 N 幕」、排队/忙碌走「忙碌中」、回退成功说「已备份」）；
 //       分叉不再往世界线备注里塞「分叉自 <裸 id> @ <节点>」（note 留空，血缘由徽标交代）。
-import { fetchHistory, fetchSnapshot, postWorld, postWorldRestore, type WorldAction, type WorldPostResult, type WorldSnapshotMeta } from "../../lib/acp";
+import {
+  fetchHistory,
+  fetchSnapshot,
+  postWorld,
+  postWorldRestore,
+  type WorldAction,
+  type WorldPostResult,
+  type WorldSnapshotMeta,
+} from "../../lib/acp";
 import { buildResumeCommand, buildTreeEditCommand } from "../../lib/parser";
 import { prevTurnSnapshotSeq } from "../../lib/replay";
-import type { StoreContext } from "../context";
+import type { SliceContext } from "../context";
 import type { GameStore, HistoryRollbackMark } from "../types";
 
 /** 重演解析的失败码：两个入口各自映射成玩家话术（见 REPLAY_FAIL_TEXT） */
@@ -30,7 +38,7 @@ const REPLAY_FAIL_TEXT: Record<ReplayFailure, string> = {
 const REPLAY_PROBE_MAX = 8;
 
 export function createTreeSlice(
-  ctx: StoreContext,
+  ctx: SliceContext<"set" | "get">,
 ): Pick<
   GameStore,
   | "openTree"
@@ -84,7 +92,9 @@ export function createTreeSlice(
       }
       const backup = r.backupSeq === undefined ? "" : "；回退前的进度已备份";
       const mark: HistoryRollbackMark =
-        opts.reason === "reroll" ? { kind: "rollback", seq, at: Date.now(), reason: "reroll" } : { kind: "rollback", seq, at: Date.now() };
+        opts.reason === "reroll"
+          ? { kind: "rollback", seq, at: Date.now(), reason: "reroll" }
+          : { kind: "rollback", seq, at: Date.now() };
       // treeStamp 自增 = 图屏重取树与快照索引（回退后节点状态与「最早快照」映射都会变；重演同理会变）
       set({
         // 三态之一「重同步中」：成功/失败的后两态由 gameplay slice 在 turn_end / error 里改写
@@ -231,7 +241,9 @@ export function createTreeSlice(
       // 分叉是 server 侧的文件操作（复制 + 回退 + fork.md），不占用引擎回合，也不推演内容。
       // 带 seq = 精确分叉（以该快照的三文件建新世界）；不带 = 旧世界的兼容路径，载荷与 v1.5 逐字一致
       const body: WorldAction =
-        seq === undefined ? { action: "fork", worldId: s.worldId, nodeId } : { action: "fork", worldId: s.worldId, nodeId, seq };
+        seq === undefined
+          ? { action: "fork", worldId: s.worldId, nodeId }
+          : { action: "fork", worldId: s.worldId, nodeId, seq };
       set({ treeNotice: "正在分叉…" });
       postWorld(body)
         .then((r) => {

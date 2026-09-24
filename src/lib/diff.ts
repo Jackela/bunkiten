@@ -41,6 +41,7 @@ export function diffLines(a: string, b: string): DiffRow[] {
 
   // dp[i][j] = as[i..n) 与 bs[j..m) 的 LCS 长度（后缀表，末行末列是 0 哨兵）——
   // 用后缀表可以从 (0,0) 正向回溯，输出天然按文档顺序，不需要收集后再 reverse。
+  // oxlint-disable-next-line unicorn/no-new-array -- 「定长数组填同一个初值」在这里比 Array.from({length}) 更直白，且要的是 number[][]
   const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
   for (let i = n - 1; i >= 0; i--) {
     for (let j = m - 1; j >= 0; j--) {

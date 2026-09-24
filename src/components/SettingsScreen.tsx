@@ -51,10 +51,7 @@ function VolumeRow({
         onChange={(e) => onChange(Number(e.target.value))}
         className="h-1 flex-1 cursor-pointer appearance-none rounded-full bg-white/15 accent-[color:var(--accent)]"
       />
-      <span
-        data-testid={`${testId}-value`}
-        className="w-9 flex-none text-right text-meta tabular-nums text-ink-hint"
-      >
+      <span data-testid={`${testId}-value`} className="w-9 flex-none text-right text-meta tabular-nums text-ink-hint">
         {Math.round(value * 100)}
       </span>
     </label>
@@ -154,6 +151,12 @@ function Disclosure({
   );
 }
 
+/**
+ * 设置屏（overlay）：两层披露——第一层是音量与文本节奏（改完即生效，存 localStorage），
+ * 第二层默认收起：细分音量（曲/环境/音效）与「引擎与密钥」（v1.10 的引擎选择/登录/自备 key）。
+ * 从启动屏未登录态进来时（`screenReturn === "boot"`）第二层自动展开——那一趟正是冲着它来的。
+ * 设置是本机偏好，**不进世界线**（见 lib/settings.ts 的文件头）。
+ */
 export default function SettingsScreen() {
   const settings = useGameStore((s) => s.settings);
   const updateSettings = useGameStore((s) => s.updateSettings);
@@ -248,15 +251,29 @@ export default function SettingsScreen() {
                   />
                 </button>
                 {channelsOpen && (
-                  <div id="settings-channels-panel" data-testid="settings-channels-panel" className="mt-1 divide-y divide-white/[.06]">
-                    <VolumeRow label="曲" value={settings.bgm} testId="settings-bgm" onChange={(v) => updateSettings({ bgm: v })} />
+                  <div
+                    id="settings-channels-panel"
+                    data-testid="settings-channels-panel"
+                    className="mt-1 divide-y divide-white/[.06]"
+                  >
+                    <VolumeRow
+                      label="曲"
+                      value={settings.bgm}
+                      testId="settings-bgm"
+                      onChange={(v) => updateSettings({ bgm: v })}
+                    />
                     <VolumeRow
                       label="环境"
                       value={settings.ambient}
                       testId="settings-ambient"
                       onChange={(v) => updateSettings({ ambient: v })}
                     />
-                    <VolumeRow label="音效" value={settings.sfx} testId="settings-sfx" onChange={(v) => updateSettings({ sfx: v })} />
+                    <VolumeRow
+                      label="音效"
+                      value={settings.sfx}
+                      testId="settings-sfx"
+                      onChange={(v) => updateSettings({ sfx: v })}
+                    />
                   </div>
                 )}
               </div>

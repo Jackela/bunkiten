@@ -5,7 +5,7 @@
 import { fetchPresets, postPresetImport, type PresetBundle } from "../../lib/acp";
 import { audioManager } from "../../lib/audio";
 import { saveSettings, type GameSettings } from "../../lib/settings";
-import type { StoreContext } from "../context";
+import type { SliceContext } from "../context";
 import type { GameStore } from "../types";
 
 /**
@@ -31,7 +31,7 @@ export function parsePresetBundle(text: string): PresetBundle | null {
 }
 
 export function createNavSlice(
-  ctx: StoreContext,
+  ctx: SliceContext<"set" | "get" | "clearWatchdog" | "resetRunState">,
 ): Pick<
   GameStore,
   | "toTitle"

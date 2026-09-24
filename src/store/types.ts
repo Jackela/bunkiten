@@ -56,9 +56,9 @@ export interface PortraitState {
  */
 export type PreloadPhase = "init" | "planning" | "queue" | "starting" | "finished";
 
-/** 正文幕：「第 N 幕」+ 过滤协议行后的回合正文（kind 可选，旧字面量 {n,t} 原样可用） */
+/** 正文幕：「第 N 幕」+ 过滤协议行后的回合正文（v1.13：kind 收成必填，与回退分割线构成真判别联合） */
 export interface HistoryEntry {
-  kind?: "act";
+  kind: "act";
   n: string;
   t: string;
 }

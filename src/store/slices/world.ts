@@ -3,7 +3,7 @@
 // 由 game.ts 原样再导出，组件与测试的 import 路径不变。
 import { postWorldImport, postWorldUpdate, type WorldBundle } from "../../lib/acp";
 import { buildResumeCommand } from "../../lib/parser";
-import type { StoreContext } from "../context";
+import type { SliceContext } from "../context";
 import type { GameStore } from "../types";
 
 /**
@@ -25,14 +25,15 @@ export function parseWorldBundle(text: string): WorldBundle | null {
   if (!data || typeof data !== "object") return null;
   const b = data as Partial<WorldBundle>;
   const version = b.version;
-  if (b.format !== "bunkiten-world" || typeof version !== "number" || !Number.isInteger(version) || version < 1) return null;
+  if (b.format !== "bunkiten-world" || typeof version !== "number" || !Number.isInteger(version) || version < 1)
+    return null;
   const world = b.world as { worldId?: unknown } | undefined;
   if (!world || typeof world.worldId !== "string" || !world.worldId) return null;
   return b as WorldBundle;
 }
 
 export function createWorldSlice(
-  ctx: StoreContext,
+  ctx: SliceContext<"set" | "get" | "clearWatchdog" | "resetRunState" | "refreshTurnSnapshots">,
 ): Pick<GameStore, "beginNewWorld" | "resumeWorld" | "updateWorld" | "importWorldText" | "clearWorldNotice"> {
   const { set, get } = ctx;
 

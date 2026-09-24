@@ -1,5 +1,6 @@
 // 全局状态机：boot → title → protagonist → crafting → game；overlay 屏 assets（画廊）/creation（创作）从 game/title 进入、返回原屏。
-// SSE 事件 → handleEvent（段过滤/标记/选项的处理迁移自 shell/index.html，行为对齐旧版）。
+// SSE 事件 → handleEvent（段过滤/标记/选项都在 slices/gameplay.ts；行为与 v1.0 的网页原型一致，那份原型已删除，
+// 这里不再指向它——见 AGENTS.md「历史遗留」）。
 // crafting 屏由章节制作流水线驱动（v1.2）：开局指令（待命版）→ 规划（制作清单）→ 逐项美术指令 → 「开演。」；
 // game 屏收到【章】标记后切回 crafting，规划下一章。
 // v1.3：【立绘】表情切换事件驱动差分立绘、【新剧本】事件刷新轮播、画廊重绘回合与游戏态共用引擎。
@@ -16,7 +17,7 @@
 //   3. 组装：`createStoreContext` 建一次共享上下文，再 `{...slice(ctx)}` 拼出整个 store；
 //   4. 再导出：类型（./types）、立绘纯函数（./portrait）、世界线包校验（./slices/world）——
 //      组件与测试的 `from "../store/game"` import 一行都不用改，公共 API 逐字不变。
-// 拆分边界按原 v1.x 注释里的功能块走：nav/world/tree/assets/creation/crafting/gameplay（slices/*.ts）；
+// 拆分边界按 v1.x 的功能块走：nav/world/tree/assets/creation/crafting/gameplay/characters（slices/*.ts，8 片）；
 // 跨片共享的闭包与定时器单例集中在 context.ts（那里的文件头注释解释了为什么必须共享、时序为何不变）。
 // 唯一可观测的差别：动作名在 Object.keys(state) 里的先后随 slice 组装顺序变化（字段集合与值完全相同，语义无关）。
 import { create } from "zustand";

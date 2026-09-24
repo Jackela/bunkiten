@@ -244,7 +244,11 @@ export type AcpEvent =
   | { type: "turn_start" }
   | { type: "seg"; seg: number; label: string }
   | { type: "chunk"; seg: number; text: string }
-  | { type: "turn_end" }
+  | {
+      type: "turn_end";
+      /** 本回合对应的**快照序号**（幕号真源；v1.13 起服务端广播时带上）。缺省 = 更老的 server */
+      seq?: number | null;
+    }
   | { type: "error"; message: string }
   | { type: "expression"; character: string; variant: string }
   | { type: "presetAdded"; id: string }
@@ -462,7 +466,15 @@ export interface CredentialsView {
 export interface CredentialsPatch {
   engine?: string;
   llm?: { mode?: string; provider?: string; baseUrl?: string; apiKey?: string; model?: string };
-  image?: { mode?: string; provider?: string; baseUrl?: string; apiKey?: string; model?: string; size?: string; sizeBackground?: string };
+  image?: {
+    mode?: string;
+    provider?: string;
+    baseUrl?: string;
+    apiKey?: string;
+    model?: string;
+    size?: string;
+    sizeBackground?: string;
+  };
   clear?: ("llm" | "image")[];
 }
 
@@ -497,7 +509,9 @@ export async function fetchCredentials(signal?: AbortSignal): Promise<Credential
  * @param {CredentialsPatch} patch 要写的字段（空串=清该字段）
  * @returns {Promise<{ok: boolean; error?: string; view?: CredentialsView}>} 失败在 error 里返回，不抛错
  */
-export async function postCredentials(patch: CredentialsPatch): Promise<{ ok: boolean; error?: string; view?: CredentialsView }> {
+export async function postCredentials(
+  patch: CredentialsPatch,
+): Promise<{ ok: boolean; error?: string; view?: CredentialsView }> {
   const r = await fetch("/api/credentials", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -505,7 +519,15 @@ export async function postCredentials(patch: CredentialsPatch): Promise<{ ok: bo
   });
   const data = (await r.json().catch(() => ({}))) as Partial<CredentialsView> & { ok?: boolean; error?: string };
   if (!r.ok || data.ok === false) return { ok: false, error: data.error || `HTTP ${r.status}` };
-  return { ok: true, view: { version: data.version ?? 1, engine: String(data.engine ?? DEFAULT_ENGINE_ID), llm: data.llm as CredentialGroupView, image: data.image as CredentialGroupView } };
+  return {
+    ok: true,
+    view: {
+      version: data.version ?? 1,
+      engine: String(data.engine ?? DEFAULT_ENGINE_ID),
+      llm: data.llm as CredentialGroupView,
+      image: data.image as CredentialGroupView,
+    },
+  };
 }
 
 /**
@@ -737,7 +759,11 @@ export async function postAssetDelete(p: {
     body: JSON.stringify({ action: "delete", preset: p.preset, file: name }),
   });
   const data = (await r.json().catch(() => ({}))) as { ok?: boolean; trashed?: boolean; error?: string };
-  return { ok: r.ok && data.ok !== false, trashed: data.trashed, error: data.error || (r.ok ? undefined : `HTTP ${r.status}`) };
+  return {
+    ok: r.ok && data.ok !== false,
+    trashed: data.trashed,
+    error: data.error || (r.ok ? undefined : `HTTP ${r.status}`),
+  };
 }
 
 /**

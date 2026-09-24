@@ -3,10 +3,12 @@
 // 只管开合与取数：打开拉一次、turn_end 后面板开着由 gameplay 重拉（见该 slice 的 turn_end）、
 // 换世界/resetRunState 清空；渲染（含秘密剧透折叠）全在 CharactersDrawer 组件。
 import { fetchState } from "../../lib/acp";
-import type { StoreContext } from "../context";
+import type { SliceContext } from "../context";
 import type { GameStore } from "../types";
 
-export function createCharactersSlice(ctx: StoreContext): Pick<GameStore, "toggleCharacters" | "refreshCharacters"> {
+export function createCharactersSlice(
+  ctx: SliceContext<"set" | "get">,
+): Pick<GameStore, "toggleCharacters" | "refreshCharacters"> {
   const { set, get } = ctx;
 
   return {

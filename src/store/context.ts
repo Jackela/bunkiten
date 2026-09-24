@@ -126,6 +126,16 @@ export interface StoreContext {
  * 建一次上下文（在 useGameStore 的 create 回调里调用）。
  * 内部的函数声明彼此引用（含相互递归），所以放在工厂作用域内、以函数声明形式定义。
  */
+/**
+ * 切片声明的上下文子集（v1.13）：切片只收自己真正用到的成员。
+ *
+ * 为什么改：此前每个切片都收**整个** StoreContext（20 个成员），而实测平均只用 3 个——
+ * 「这个切片依赖什么」只能靠读函数体才知道，签名等于没说话（tree/characters/creation 三个切片
+ * 明明只要 set/get，却拿着 18 个它不该调的函数）。收窄之后签名就是依赖清单，
+ * 跨片调用（`get().send` 这类）也更容易被发现。**纯类型改动，零运行时行为变化**。
+ */
+export type SliceContext<K extends keyof StoreContext> = Pick<StoreContext, K>;
+
 export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
   /**
    * 一条重绘收尾：解除挂起、刷新画廊清单，并推进顺序队列（批量重绘）。
@@ -329,7 +339,8 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
       .filter(Boolean);
     if (!bg && cast.length === 0) return items;
     const picked = items.filter((i) => {
-      if (i.kind === "background") return bg !== "" && assetNameMatches({ name: i.name, variant: "" }, { name: bg, variant: "" });
+      if (i.kind === "background")
+        return bg !== "" && assetNameMatches({ name: i.name, variant: "" }, { name: bg, variant: "" });
       if (i.variant) return false;
       return cast.some((c) => assetNameMatches({ name: i.name, variant: "" }, { name: c, variant: "" }));
     });
@@ -482,7 +493,10 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
     if (wasArtAsk) {
       // 补画回合失败：清标记（否则输入闸永远拦着，玩家再也发不出去）、在跑的那项记失败不再重试，
       // 下一次引擎空闲由泵取下一项（失败不阻塞整体，与制作队列同款纪律）
-      set({ artAsk: false, deferredArt: get().deferredArt.map((i) => (i.state === "running" ? { ...i, state: "failed" } : i)) });
+      set({
+        artAsk: false,
+        deferredArt: get().deferredArt.map((i) => (i.state === "running" ? { ...i, state: "failed" } : i)),
+      });
     }
     clearWatchdog();
     finishRegen(false); // 挂起中的重绘回合没了：未确认记账，解除挂起让按钮恢复并接队列下一条

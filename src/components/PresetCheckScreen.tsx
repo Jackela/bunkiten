@@ -24,6 +24,11 @@ const LEVEL_STYLE: Record<PresetCheckItem["level"], { label: string; chip: strin
   error: { label: "错误", chip: "border-red-400/45 bg-red-400/10 text-red-300", text: "text-ink" },
 };
 
+/**
+ * 剧本体检屏（overlay，从标题屏的「更多 ▾」进来）：只读 `GET /api/presets/check?id=` 的判定结果，
+ * 三档（ok/warn/error）渲染。判定逻辑一份都不在这里——真源是 `scripts/doctor.mjs` 的 `checkPreset`，
+ * server 只做 id 校验与归组（改判定口径去那边改，别在这里补第二份规则）。
+ */
 export default function PresetCheckScreen() {
   const presetId = useGameStore((s) => s.selected?.id ?? "");
   /** 眉标用的剧本标题（还没选剧本时给一句状态，别留空行） */
@@ -102,7 +107,11 @@ export default function PresetCheckScreen() {
             </button>
           </>
         }
-        footer={<span className="tracking-[.08em]">与 npm run doctor 同一份判定：错误会让剧本进不了轮播或素材永远 404，警告只是提示</span>}
+        footer={
+          <span className="tracking-[.08em]">
+            与 npm run doctor 同一份判定：错误会让剧本进不了轮播或素材永远 404，警告只是提示
+          </span>
+        }
       >
         {/* 正文整体淡入位移（与设置屏同款收尾动效：壳层屏进场统一、克制） */}
         <motion.div
@@ -123,7 +132,10 @@ export default function PresetCheckScreen() {
           )}
 
           {presetId && error && (
-            <div data-testid="preset-check-error" className="rounded-xl border border-red-400/25 bg-panel px-4 py-3 backdrop-blur-md">
+            <div
+              data-testid="preset-check-error"
+              className="rounded-xl border border-red-400/25 bg-panel px-4 py-3 backdrop-blur-md"
+            >
               <p className="text-ui text-red-400">体检失败：{error}</p>
               <p className="mt-1 text-meta text-ink-hint">点右上「重新检查」再试一次</p>
             </div>
@@ -147,7 +159,11 @@ export default function PresetCheckScreen() {
               </div>
 
               {groups.map(([group, list], i) => (
-                <section key={group} data-testid={`preset-check-group-${i}`} className="shell-panel rounded-xl px-4 py-3">
+                <section
+                  key={group}
+                  data-testid={`preset-check-group-${i}`}
+                  className="shell-panel rounded-xl px-4 py-3"
+                >
                   <h2 className="text-ui tracking-[.35em] text-gold/85">{group}</h2>
                   <ul className="mt-2.5 flex flex-col gap-2">
                     {list.map((item) => (

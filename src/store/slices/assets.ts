@@ -2,11 +2,11 @@
 // 重绘的流水线本体（finishRegen/pumpRegenQueue：队列派发与收尾提示）在 context.ts——
 // handleEvent 的【图|重绘】标记与 turn_end/error 都要驱动它，属跨片共享。
 import { postAssetDelete } from "../../lib/acp";
-import type { StoreContext } from "../context";
+import type { SliceContext } from "../context";
 import type { GameStore } from "../types";
 
 export function createAssetsSlice(
-  ctx: StoreContext,
+  ctx: SliceContext<"set" | "get" | "pumpRegenQueue">,
 ): Pick<
   GameStore,
   "openAssets" | "setAssetsPreview" | "startRegen" | "startRegenBatch" | "deleteAssets" | "clearAssetsNotice"
@@ -69,7 +69,10 @@ export function createAssetsSlice(
           failed.length > 0
             ? { kind: "error", text: `已删除 ${ok}/${files.length} 项，${failed.length} 项失败：${failed.join("、")}` }
             : purged > 0
-              ? { kind: "ok", text: `已删除 ${ok} 项素材（其中 ${purged} 项未能进回收站、已被直接删除，其余在 state/trash/ 可手工找回）` }
+              ? {
+                  kind: "ok",
+                  text: `已删除 ${ok} 项素材（其中 ${purged} 项未能进回收站、已被直接删除，其余在 state/trash/ 可手工找回）`,
+                }
               : { kind: "ok", text: `已删除 ${ok} 项素材（已移入回收站 state/trash/，可手工找回）` },
       });
     },

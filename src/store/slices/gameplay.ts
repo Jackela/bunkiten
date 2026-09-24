@@ -18,7 +18,7 @@ import {
   segStatusLabel,
 } from "../../lib/parser";
 import { applyExpression, castMember, nextPortraitOnExpression } from "../portrait";
-import type { StoreContext } from "../context";
+import type { SliceContext } from "../context";
 import type { GameStore } from "../types";
 
 /**
@@ -41,8 +41,39 @@ function dispatchEvent<K extends AcpEvent["type"]>(
 }
 
 export function createGameplaySlice(
-  ctx: StoreContext,
-): Pick<GameStore, "send" | "sendPlayerTurn" | "toggleDrawer" | "setTypingDone" | "armAutoAdvance" | "resumeAutoAdvance" | "cancelAutoAdvance" | "handleEvent"> {
+  ctx: SliceContext<
+    | "set"
+    | "get"
+    | "applyMarkers"
+    | "resetTurnState"
+    | "resetRunState"
+    | "armWatchdog"
+    | "clearWatchdog"
+    | "sendStart"
+    | "runNextPending"
+    | "beginPlanning"
+    | "advancePreload"
+    | "onEngineError"
+    | "armAutoAdvance"
+    | "resumeAutoAdvance"
+    | "cancelAutoAdvance"
+    | "clearAutoAdvanceTimer"
+    | "finishRegen"
+    | "pumpRegenQueue"
+    | "pumpDeferredArt"
+    | "refreshTurnSnapshots"
+  >,
+): Pick<
+  GameStore,
+  | "send"
+  | "sendPlayerTurn"
+  | "toggleDrawer"
+  | "setTypingDone"
+  | "armAutoAdvance"
+  | "resumeAutoAdvance"
+  | "cancelAutoAdvance"
+  | "handleEvent"
+> {
   const { set, get } = ctx;
 
   /**
@@ -96,7 +127,12 @@ export function createGameplaySlice(
       set({
         portraits: applyExpression(
           s.portraits,
-          nextPortraitOnExpression(castMember(s.portraits, event.character), event.character, event.variant, s.selected?.id ?? ""),
+          nextPortraitOnExpression(
+            castMember(s.portraits, event.character),
+            event.character,
+            event.variant,
+            s.selected?.id ?? "",
+          ),
         ),
       });
     },
@@ -126,8 +162,13 @@ export function createGameplaySlice(
     },
 
     /** SSE `turn_end`（回合收尾）：全量重放标记 → 重绘收尾 → 历史/选项定格 → 队列补发 → 章标记切屏 */
-    turn_end() {
+    turn_end(event) {
       const s = get();
+      // 幕号取事件带来的**快照序号**（v1.13 修）：存档点标注（「存档点 · 第 N 幕」）、回溯分割线
+      // （「已回溯到第 N 幕」）与重演目标全用快照 seq，只有幕标题此前用客户端回合计数 turnNo+1——
+      // 续玩（落一条空输入快照但不加幕）或回退之后，同一个抽屉里两套数字就错开。
+      // 事件没带 seq（更老的 server）时回落旧口径，功能不消失。
+      const actNo = typeof event.seq === "number" && event.seq > 0 ? event.seq : s.turnNo + 1;
       const finalText = s.segs[s.curSeg] ?? "";
       ctx.applyMarkers(finalMarkers(finalText), false);
       // 重绘回合结束：标记若未命中也解除挂起（文件落盘可能晚于标记，统一刷一次清单）。
@@ -146,7 +187,7 @@ export function createGameplaySlice(
         engineBusy: false,
         turnStartAt: null,
         artAsk: false, // 补画回合到此为止（下面的泵会给下一项置位）
-        history: clean ? [...s.history, { n: `第 ${s.turnNo + 1} 幕`, t: clean }] : s.history,
+        history: clean ? [...s.history, { kind: "act", n: `第 ${actNo} 幕`, t: clean }] : s.history,
         turnNo: clean ? s.turnNo + 1 : s.turnNo,
         // 回退后的第一个回合收尾 = 重同步成功：清徽章，提示条改写为「完成重同步」态。
         // 只有本轮发送的正是重同步指令（resyncing，restoreSnapshot/retryResync 置位）才认领这次收尾——
@@ -182,7 +223,9 @@ export function createGameplaySlice(
           .trim();
         const c = get();
         set({
-          ...(engineText ? { creationMessages: [...c.creationMessages, { role: "engine" as const, text: engineText }] } : {}),
+          ...(engineText
+            ? { creationMessages: [...c.creationMessages, { role: "engine" as const, text: engineText }] }
+            : {}),
           // 装配回合结束仍没有【新剧本】：置为可重试
           ...(c.assembling ? { assembling: false, assemblyStalled: true } : {}),
         });
@@ -279,7 +322,13 @@ export function createGameplaySlice(
       // 排队中的重演跟进同理作废（档没退回去，重发就无从谈起）
       const pending = get().pendingResync;
       if (pending && t !== buildResumeCommand(pending.worldId)) {
-        set({ pendingResync: null, resyncFailed: false, resyncing: false, pendingRerollPrompt: null, treeNotice: null });
+        set({
+          pendingResync: null,
+          resyncFailed: false,
+          resyncing: false,
+          pendingRerollPrompt: null,
+          treeNotice: null,
+        });
       }
       // 手选/自由输入即接管：倒计时作废（否则刚发出去的回合结束前倒计时会再补一条 409）
       ctx.clearAutoAdvanceTimer();

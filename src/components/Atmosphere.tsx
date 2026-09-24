@@ -2,6 +2,7 @@
 // 常驻 App 顶层、pointer-events-none；颗粒抖动只走 transform，成本极低。
 import { motion } from "framer-motion";
 
+/** 常驻的氛围层：胶片颗粒（SVG feTurbulence）+ 暗角。纯装饰、不接数据、不吃主题变量。 */
 export function Atmosphere() {
   return (
     <div className="pointer-events-none fixed inset-0 z-[60]">

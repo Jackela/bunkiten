@@ -1,11 +1,11 @@
 // creation slice（v1.6 拆分）：创作模式（creation overlay）——对话流、装配态、退出确认。
 // 排队补发（pendingCreationMessage）在 handleEvent 的 turn_end 里；装配标记点亮在 context.applyMarkers 里。
 import { BUILD_ASSEMBLE, ENTER_CREATION } from "../../lib/parser";
-import type { StoreContext } from "../context";
+import type { SliceContext } from "../context";
 import type { GameStore } from "../types";
 
 export function createCreationSlice(
-  ctx: StoreContext,
+  ctx: SliceContext<"set" | "get">,
 ): Pick<
   GameStore,
   "openCreation" | "sendCreation" | "finishCreation" | "requestCreationExit" | "closeCreationExitPrompt"

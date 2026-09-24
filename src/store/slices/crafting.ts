@@ -3,7 +3,7 @@
 // 它同时被 handleEvent（turn_end/error）驱动，属跨片共享的时序逻辑，留在组装侧原样复用。
 import { buildCustomOpening, buildQuickOpening, parseCardLines, type CardAnswer } from "../../lib/parser";
 import type { Preset } from "../../lib/acp";
-import type { StoreContext } from "../context";
+import type { SliceContext } from "../context";
 import type { GameStore } from "../types";
 
 /** 「选 1-2」类问题的最大选择数 */
@@ -17,7 +17,7 @@ function cardAnswersOf(preset: Preset, answers: Record<string, string[]>): CardA
 }
 
 export function createCraftingSlice(
-  ctx: StoreContext,
+  ctx: SliceContext<"set" | "get" | "armWatchdog" | "resetRunState" | "runNextPending" | "sendStart">,
 ): Pick<GameStore, "toggleCardAnswer" | "startGame" | "skipPreload"> {
   const { set, get } = ctx;
 
@@ -71,7 +71,9 @@ export function createCraftingSlice(
         return;
       }
       set({
-        preload: s.preload.map((i) => (i.state === "pending" || i.state === "running" ? { ...i, state: "skipped" } : i)),
+        preload: s.preload.map((i) =>
+          i.state === "pending" || i.state === "running" ? { ...i, state: "skipped" } : i,
+        ),
       });
       if (!s.engineBusy) {
         // 空闲：直接推进（已无 pending → 发「开演。」）
