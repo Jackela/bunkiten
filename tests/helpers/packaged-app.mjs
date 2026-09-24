@@ -40,11 +40,23 @@ export function findPackagedApp(root, platform = process.platform) {
     if (platform === "darwin") {
       if (!dir.name.startsWith("mac") || /x64|ia32/.test(dir.name)) continue;
       const app = path.join(base, "Bunkiten.app");
-      found = { exe: path.join(app, "Contents", "MacOS", "Bunkiten"), resources: path.join(app, "Contents", "Resources"), label: `${dir.name}/Bunkiten.app` };
+      found = {
+        exe: path.join(app, "Contents", "MacOS", "Bunkiten"),
+        resources: path.join(app, "Contents", "Resources"),
+        label: `${dir.name}/Bunkiten.app`,
+      };
     } else if (platform === "win32") {
-      found = { exe: path.join(base, "Bunkiten.exe"), resources: path.join(base, "resources"), label: `${dir.name}/Bunkiten.exe` };
+      found = {
+        exe: path.join(base, "Bunkiten.exe"),
+        resources: path.join(base, "resources"),
+        label: `${dir.name}/Bunkiten.exe`,
+      };
     } else {
-      found = { exe: path.join(base, "bunkiten"), resources: path.join(base, "resources"), label: `${dir.name}/bunkiten` };
+      found = {
+        exe: path.join(base, "bunkiten"),
+        resources: path.join(base, "resources"),
+        label: `${dir.name}/bunkiten`,
+      };
     }
     if (!fs.existsSync(found.exe)) continue;
     candidates.push({ ...found, mtime: fs.statSync(found.exe).mtimeMs });
@@ -56,8 +68,23 @@ export function findPackagedApp(root, platform = process.platform) {
 
 /** 产物缺失时的跳过提示（按平台给对应的打包命令） @param {NodeJS.Platform} [platform] @returns {string} */
 export function packagedSkipHint(platform = process.platform) {
-  const script = platform === "darwin" ? "npm run dist:mac:dir" : platform === "win32" ? "npm run dist:win:dir" : "npm run dist:linux:dir";
-  return `未找到打包产物：先跑 \`${script}\`（产物在 release/ 下，见 tests/helpers/packaged-app.mjs）`;
+  const script = platform === "darwin" ? "npm run dist:mac:dir" : platform === "win32" ? "npm run dist:win:dir" : null;
+  return script
+    ? `未找到打包产物：先跑 \`${script}\`（产物在 release/ 下，见 tests/helpers/packaged-app.mjs）`
+    : "未找到打包产物，且本平台没有对应的 --dir 打包脚本（只有 mac / win 两条线）";
+}
+
+/**
+ * 产物是否**必须**存在（v1.13）：CI 的 packaged-win job 刚跑完 `dist:win:dir` 就立刻跑冒烟，
+ * 那里「找不到产物」是真失败（布局改了 / 铺场脚本没跑 / 产物名变了），不该被 test.skip 吞成绿。
+ *
+ * 不加这个开关时的病：`findPackagedApp` 返回 null → 整组 test.skip → job 报告成功、**一条断言都没跑**，
+ * 「Windows 上的包真能开」这件事重新变成没有证据。开关由 CI 设（BUNKITEN_REQUIRE_PACKAGED=1），
+ * 本机手动跑不设——没打包的人依旧是干净跳过，而不是先撞一堵失败的墙。
+ * @returns {boolean} 是否要求产物必须存在
+ */
+export function packagedAppRequired() {
+  return process.env.BUNKITEN_REQUIRE_PACKAGED === "1";
 }
 
 /**
@@ -132,7 +159,9 @@ export async function waitForExit(proc, timeoutMs = 5000) {
   try {
     await Promise.race([
       new Promise((r) => proc.once("exit", () => r())),
-      new Promise((r) => { timer = setTimeout(r, timeoutMs); }),
+      new Promise((r) => {
+        timer = setTimeout(r, timeoutMs);
+      }),
     ]);
   } finally {
     if (timer) clearTimeout(timer);

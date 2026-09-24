@@ -32,13 +32,21 @@ afterEach(async () => {
 });
 
 /** 与 mock 服务不同的旧图（seed 进 assets，证明重绘真的把内容换成了 mock 的图） */
-const seedJpeg = (tag: string) => Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from(`BUNKITEN-${tag}`)]);
+const seedJpeg = (tag: string) =>
+  Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from(`BUNKITEN-${tag}`)]);
 
 /** image.mode=byok 且 baseUrl 指到本地假图片服务的凭据文档 */
 const imageByok = (base: string) => ({
   version: 1,
   llm: { mode: "session", provider: "openai", baseUrl: "", apiKey: "", model: "" },
-  image: { mode: "byok", provider: "custom", baseUrl: base, apiKey: "sk-mock-image-key-1234", model: "mock-image", size: "" },
+  image: {
+    mode: "byok",
+    provider: "custom",
+    baseUrl: base,
+    apiKey: "sk-mock-image-key-1234",
+    model: "mock-image",
+    size: "",
+  },
 });
 
 describe("集成：mock 出图链路（假引擎 tools/call → media-mcp → 假图片服务 → 落盘）", () => {
@@ -63,7 +71,9 @@ describe("集成：mock 出图链路（假引擎 tools/call → media-mcp → �
     const from = stack.events.length;
     const r = await stack.prompt("美术：重绘 立绘 薇拉");
     expect(r.status).toBe(200);
-    await stack.waitFor((ev: any[]) => ev.slice(from).some((e) => e.type === "turn_end"), { label: "turn_end(regen-1)" });
+    await stack.waitFor((ev: any[]) => ev.slice(from).some((e) => e.type === "turn_end"), {
+      label: "turn_end(regen-1)",
+    });
 
     // ① mock 图片服务恰好收到 1 次生成请求，参数合理（模型/尺寸/提示词/鉴权都来自凭据与指令）
     expect(mock.calls).toHaveLength(1);
@@ -80,7 +90,9 @@ describe("集成：mock 出图链路（假引擎 tools/call → media-mcp → �
     expect(readFileSync(target).equals(mock.imageBytes)).toBe(true);
 
     // ③ 事件流里有对应的【图】行（app 侧据此 finishRegen / 换图破缓存）
-    expect(stack.events.some((e: any) => e.type === "chunk" && String(e.text).includes(`【图】立绘|薇拉|${rel}|重绘`))).toBe(true);
+    expect(
+      stack.events.some((e: any) => e.type === "chunk" && String(e.text).includes(`【图】立绘|薇拉|${rel}|重绘`)),
+    ).toBe(true);
 
     // ④ 落盘契约的另一半：/img 直服这张图 200 且字节一致
     const served = await stack.getBytes("/img?" + new URLSearchParams({ p: rel }));
@@ -89,7 +101,8 @@ describe("集成：mock 出图链路（假引擎 tools/call → media-mcp → �
 
     // ⑤ 探针记下了 tools/call 的请求与结果（工具名 = catalog 全名，参数按指令推出）
     const callEntry = stack.engineProbeEntries().find((e: any) => e.kind === "mcp-call");
-    expect(callEntry, "假引擎没写下 mcp-call 探针（FAKE_ENGINE_CALL_MCP 没生效？）").toBeTruthy();
+    // 用 if 抛错而不是 expect().toBeTruthy()：既保留诊断信息，又把类型收窄（否则下面四行全是 possibly undefined）
+    if (!callEntry) throw new Error("假引擎没写下 mcp-call 探针（FAKE_ENGINE_CALL_MCP 没生效？）");
     expect(callEntry.tool).toBe("bunkiten-media__generate_image");
     expect(callEntry.ok).toBe(true);
     expect(callEntry.args).toMatchObject({ kind: "立绘", name: "薇拉", outRelPath: rel });

@@ -92,7 +92,15 @@ describe("credentials.mjs：出厂默认与容错读取", () => {
     const d = defaultCredentials();
     expect(d.version).toBe(CREDENTIALS_VERSION);
     expect(d.llm).toEqual({ mode: "session", provider: "openai", baseUrl: "", apiKey: "", model: "" });
-    expect(d.image).toEqual({ mode: "off", provider: "openai", baseUrl: "", apiKey: "", model: "", size: "", sizeBackground: "" });
+    expect(d.image).toEqual({
+      mode: "off",
+      provider: "openai",
+      baseUrl: "",
+      apiKey: "",
+      model: "",
+      size: "",
+      sizeBackground: "",
+    });
   });
 
   it("normalize：缺键/多余键/类型不对逐键回默认；provider 只要形态合法就保留（可能是目录新加的）", () => {
@@ -122,12 +130,17 @@ describe("credentials.mjs：出厂默认与容错读取", () => {
     // 不带任何目录上下文（正是「目录暂时抓不到 → bundled」那一态）：已存的远程 id 也必须原样回来
     const remoteId = "newcomer-llm"; // 内置表里没有；形态合法
     expect(PROVIDER_IDS).not.toContain(remoteId);
-    const raw = { llm: { mode: "byok", provider: remoteId, baseUrl: "https://newcomer.example/v1", apiKey: "sk-remote-key-4f2a" } };
+    const raw = {
+      llm: { mode: "byok", provider: remoteId, baseUrl: "https://newcomer.example/v1", apiKey: "sk-remote-key-4f2a" },
+    };
     expect(normalizeCredentials(raw).llm.provider).toBe(remoteId);
 
     const home = tmpHome();
     try {
-      const written = writeCredentials(home, mergeCredentials(defaultCredentials(), { llm: { mode: "byok", provider: remoteId } }));
+      const written = writeCredentials(
+        home,
+        mergeCredentials(defaultCredentials(), { llm: { mode: "byok", provider: remoteId } }),
+      );
       expect(written.llm.provider).toBe(remoteId);
       expect(readCredentials(home).llm.provider).toBe(remoteId);
     } finally {
@@ -167,7 +180,13 @@ describe("credentials.mjs：写入往返与权限", () => {
     const home = tmpHome();
     try {
       const next = mergeCredentials(defaultCredentials(), {
-        llm: { mode: "byok", provider: "deepseek", baseUrl: "https://api.deepseek.com", apiKey: "sk-roundtrip-key-4f2a", model: "deepseek-chat" },
+        llm: {
+          mode: "byok",
+          provider: "deepseek",
+          baseUrl: "https://api.deepseek.com",
+          apiKey: "sk-roundtrip-key-4f2a",
+          model: "deepseek-chat",
+        },
       });
       const written = writeCredentials(home, next);
       expect(written.llm.provider).toBe("deepseek");
@@ -183,8 +202,14 @@ describe("credentials.mjs：写入往返与权限", () => {
   it("再次写入会覆盖旧值与旧权限（旧文件被换掉，不叠加）", () => {
     const home = tmpHome();
     try {
-      writeCredentials(home, mergeCredentials(defaultCredentials(), { llm: { mode: "byok", apiKey: "sk-first-key-0001" } }));
-      const second = writeCredentials(home, mergeCredentials(defaultCredentials(), { image: { mode: "byok", apiKey: "sk-second-key-0002" } }));
+      writeCredentials(
+        home,
+        mergeCredentials(defaultCredentials(), { llm: { mode: "byok", apiKey: "sk-first-key-0001" } }),
+      );
+      const second = writeCredentials(
+        home,
+        mergeCredentials(defaultCredentials(), { image: { mode: "byok", apiKey: "sk-second-key-0002" } }),
+      );
       const onDisk = readCredentials(home);
       expect(onDisk).toEqual(second);
       expect(onDisk.llm.apiKey).toBe("");
@@ -199,10 +224,23 @@ describe("credentials.mjs：merge / validate", () => {
   it("merge 只动出现的键；空串=清字段；clear 整组回默认", () => {
     const base = normalizeCredentials({
       llm: { mode: "byok", provider: "openai", baseUrl: "https://a.example/v1", apiKey: "sk-a-123456", model: "m1" },
-      image: { mode: "byok", provider: "openai", baseUrl: "https://b.example/v1", apiKey: "sk-b-123456", model: "m2", size: "512x512" },
+      image: {
+        mode: "byok",
+        provider: "openai",
+        baseUrl: "https://b.example/v1",
+        apiKey: "sk-b-123456",
+        model: "m2",
+        size: "512x512",
+      },
     });
     const patched = mergeCredentials(base, { llm: { model: "m3", apiKey: "" } });
-    expect(patched.llm).toEqual({ mode: "byok", provider: "openai", baseUrl: "https://a.example/v1", apiKey: "", model: "m3" });
+    expect(patched.llm).toEqual({
+      mode: "byok",
+      provider: "openai",
+      baseUrl: "https://a.example/v1",
+      apiKey: "",
+      model: "m3",
+    });
     expect(patched.image.size).toBe("512x512"); // 没给的组原样不动
     const cleared = mergeCredentials(patched, {}, ["image"]);
     expect(cleared.image).toEqual(defaultCredentials().image);
@@ -225,7 +263,10 @@ describe("credentials.mjs：merge / validate", () => {
       expect(validateCredentialsPatch(p).ok, `应拒绝 ${JSON.stringify(p)}`).toBe(false);
     }
     expect(validateCredentialsPatch({}, ["nope"]).ok).toBe(false);
-    expect(validateCredentialsPatch({ llm: { mode: "byok", baseUrl: "http://localhost:11434/v1", apiKey: "k", model: "m" } }).ok).toBe(true);
+    expect(
+      validateCredentialsPatch({ llm: { mode: "byok", baseUrl: "http://localhost:11434/v1", apiKey: "k", model: "m" } })
+        .ok,
+    ).toBe(true);
     expect(validateCredentialsPatch({ image: { size: "auto" } }).ok).toBe(true);
     expect(validateCredentialsPatch({ image: { size: "" } }).ok).toBe(true);
     expect(validateCredentialsPatch({ image: { sizeBackground: "1536x1024" } }).ok).toBe(true);
@@ -241,7 +282,9 @@ describe("credentials.mjs：merge / validate", () => {
     // 不同样注入的 id 仍拒（严校验：形状合法但不在允许集合里也要拦）
     expect(validateCredentialsPatch({ llm: { provider: "some-other-svc" } }, [], allowed).ok).toBe(false);
     // 数组形态也认（Iterable）
-    expect(validateCredentialsPatch({ llm: { provider: "newcomer-llm" } }, [], [...PROVIDER_IDS, "newcomer-llm"]).ok).toBe(true);
+    expect(
+      validateCredentialsPatch({ llm: { provider: "newcomer-llm" } }, [], [...PROVIDER_IDS, "newcomer-llm"]).ok,
+    ).toBe(true);
   });
 });
 
@@ -285,7 +328,13 @@ describe("credentials.mjs：engine 字段（v1.11，docs/adr/0022）", () => {
 
   it("磁盘往返：engine=codex 写下去读回来还是 codex", () => {
     const home = tmpHome();
-    writeCredentials(home, normalizeCredentials({ engine: "codex", llm: { mode: "byok", baseUrl: "https://a.example/v1", apiKey: "sk-a-123456", model: "m" } }));
+    writeCredentials(
+      home,
+      normalizeCredentials({
+        engine: "codex",
+        llm: { mode: "byok", baseUrl: "https://a.example/v1", apiKey: "sk-a-123456", model: "m" },
+      }),
+    );
     const back = readCredentials(home);
     expect(back.engine).toBe("codex");
     expect(back.llm.mode).toBe("byok");
@@ -304,7 +353,13 @@ describe("credentials.mjs：掩码与脱敏视图", () => {
 
   it("publicView 永不含明文：键只有 mode/provider/baseUrl/model/size/sizeBackground/hasKey/apiKeyMasked", () => {
     const creds = normalizeCredentials({
-      llm: { mode: "byok", provider: "xai", baseUrl: "https://api.x.ai/v1", apiKey: "sk-view-secret-4f2a", model: "grok-4.6" },
+      llm: {
+        mode: "byok",
+        provider: "xai",
+        baseUrl: "https://api.x.ai/v1",
+        apiKey: "sk-view-secret-4f2a",
+        model: "grok-4.6",
+      },
       image: {
         mode: "byok",
         provider: "openai",
@@ -335,7 +390,10 @@ describe("credentials.mjs：掩码与脱敏视图", () => {
     expect(hasKey(session, "llm")).toBe(false);
     expect(llmReady(session)).toBe(false);
     expect(secretsOf(session)).toEqual([]);
-    const byok = normalizeCredentials({ llm: { mode: "byok", baseUrl: "https://x.example/v1", apiKey: "sk-llm-key-1111" }, image: { mode: "byok", apiKey: "sk-img-key-2222" } });
+    const byok = normalizeCredentials({
+      llm: { mode: "byok", baseUrl: "https://x.example/v1", apiKey: "sk-llm-key-1111" },
+      image: { mode: "byok", apiKey: "sk-img-key-2222" },
+    });
     expect(llmReady(byok)).toBe(true);
     expect(secretsOf(byok)).toEqual(["sk-llm-key-1111", "sk-img-key-2222"]);
     // 只有 key 没有地址：不算「可以开玩」（CLI 不知道往哪打）
@@ -346,11 +404,15 @@ describe("credentials.mjs：掩码与脱敏视图", () => {
 describe("credentials.mjs：credentialsToEnv（注入引擎子进程的键集合）", () => {
   it("session/off 模式不产生任何键", () => {
     expect(credentialsToEnv(defaultCredentials())).toEqual({});
-    expect(credentialsToEnv(normalizeCredentials({ image: { mode: "byok", baseUrl: "https://i.example/v1", apiKey: "k" } }))).toEqual({});
+    expect(
+      credentialsToEnv(normalizeCredentials({ image: { mode: "byok", baseUrl: "https://i.example/v1", apiKey: "k" } })),
+    ).toEqual({});
   });
 
   it("byok 模式逐键生成，空字段不产生空串键", () => {
-    const full = normalizeCredentials({ llm: { mode: "byok", baseUrl: "https://api.example/v1", apiKey: "sk-env-key-4f2a", model: "m" } });
+    const full = normalizeCredentials({
+      llm: { mode: "byok", baseUrl: "https://api.example/v1", apiKey: "sk-env-key-4f2a", model: "m" },
+    });
     expect(credentialsToEnv(full)).toEqual({
       GROK_MODELS_BASE_URL: "https://api.example/v1",
       XAI_API_KEY: "sk-env-key-4f2a",
@@ -358,14 +420,23 @@ describe("credentials.mjs：credentialsToEnv（注入引擎子进程的键集合
       // 会话标题那一下也指到自备模型（否则 CLI 拿自己的默认模型名去打 {base}/responses，必然 404）
       GROK_CONFIG: JSON.stringify({ models: { session_summary: "m" } }),
     });
-    const noModel = normalizeCredentials({ llm: { mode: "byok", baseUrl: "https://api.example/v1", apiKey: "sk-env-key-4f2a" } });
-    expect(credentialsToEnv(noModel)).toEqual({ GROK_MODELS_BASE_URL: "https://api.example/v1", XAI_API_KEY: "sk-env-key-4f2a" });
+    const noModel = normalizeCredentials({
+      llm: { mode: "byok", baseUrl: "https://api.example/v1", apiKey: "sk-env-key-4f2a" },
+    });
+    expect(credentialsToEnv(noModel)).toEqual({
+      GROK_MODELS_BASE_URL: "https://api.example/v1",
+      XAI_API_KEY: "sk-env-key-4f2a",
+    });
     const onlyKey = normalizeCredentials({ llm: { mode: "byok", apiKey: "sk-env-key-4f2a" } });
     expect(credentialsToEnv(onlyKey)).toEqual({ XAI_API_KEY: "sk-env-key-4f2a" });
   });
 
   it("GROK_CONFIG 只夹带 session_summary（不覆盖玩家配置文件里的其它键；无模型时整键不出现）", () => {
-    const env = credentialsToEnv(normalizeCredentials({ llm: { mode: "byok", baseUrl: "https://a.example/v1", apiKey: "k-123456", model: "my-model" } }));
+    const env = credentialsToEnv(
+      normalizeCredentials({
+        llm: { mode: "byok", baseUrl: "https://a.example/v1", apiKey: "k-123456", model: "my-model" },
+      }),
+    );
     const parsed = JSON.parse(env.GROK_CONFIG);
     expect(Object.keys(parsed)).toEqual(["models"]);
     expect(Object.keys(parsed.models)).toEqual(["session_summary"]);
@@ -375,7 +446,9 @@ describe("credentials.mjs：credentialsToEnv（注入引擎子进程的键集合
 
   it("sanitizeErrorMessage：抹掉明文、压空白、截断 200 字", () => {
     expect(sanitizeErrorMessage("  bad\nkey  ", [])).toBe("bad key");
-    expect(sanitizeErrorMessage("rejected sk-abcdef1234564f2a here", ["sk-abcdef1234564f2a"])).toBe("rejected sk-…4f2a here");
+    expect(sanitizeErrorMessage("rejected sk-abcdef1234564f2a here", ["sk-abcdef1234564f2a"])).toBe(
+      "rejected sk-…4f2a here",
+    );
     const long = sanitizeErrorMessage("x".repeat(500), []);
     expect(long.length).toBe(201);
     expect(long.endsWith("…")).toBe(true);
@@ -472,21 +545,42 @@ describe("media-mcp.mjs：纯函数", () => {
   });
 
   it("resolveOutputPath：立绘/背景/封面按 outRelPath 的剧本 id 重建路径；坏输入给人话", () => {
-    expect(resolveOutputPath({ kind: "立绘", name: "薇拉", outRelPath: "presets/demo/assets/立绘-薇拉.jpg" })).toEqual({ rel: "presets/demo/assets/立绘-薇拉.jpg" });
-    expect(resolveOutputPath({ kind: "立绘", name: "薇拉", variant: "微笑", outRelPath: "presets/demo/assets/立绘-薇拉.jpg" })).toEqual({
+    expect(resolveOutputPath({ kind: "立绘", name: "薇拉", outRelPath: "presets/demo/assets/立绘-薇拉.jpg" })).toEqual({
+      rel: "presets/demo/assets/立绘-薇拉.jpg",
+    });
+    expect(
+      resolveOutputPath({
+        kind: "立绘",
+        name: "薇拉",
+        variant: "微笑",
+        outRelPath: "presets/demo/assets/立绘-薇拉.jpg",
+      }),
+    ).toEqual({
       rel: "presets/demo/assets/立绘-薇拉-微笑.jpg",
     });
     // 引擎把变体写进 name 又另给 variant：不重复拼
-    expect(resolveOutputPath({ kind: "立绘", name: "薇拉-微笑", variant: "微笑", outRelPath: "presets/demo/assets/x.jpg" })).toEqual({
+    expect(
+      resolveOutputPath({ kind: "立绘", name: "薇拉-微笑", variant: "微笑", outRelPath: "presets/demo/assets/x.jpg" }),
+    ).toEqual({
       rel: "presets/demo/assets/立绘-薇拉-微笑.jpg",
     });
     // 封面：剧本 id 以 outRelPath 为准（不看标题——同名剧本才不会被写错地方）
-    expect(resolveOutputPath({ kind: "封面", name: "随便什么标题", outRelPath: "presets/demo/cover.jpg" })).toEqual({ rel: "presets/demo/cover.jpg" });
+    expect(resolveOutputPath({ kind: "封面", name: "随便什么标题", outRelPath: "presets/demo/cover.jpg" })).toEqual({
+      rel: "presets/demo/cover.jpg",
+    });
     // 名字里的路径分隔符被 sanitize（穿越不到 assets/ 之外）
-    expect(resolveOutputPath({ kind: "立绘", name: "../../etc/passwd", outRelPath: "presets/demo/assets/x.jpg" }).rel).toBe("presets/demo/assets/立绘-.._.._etc_passwd.jpg");
-    expect(resolveOutputPath({ kind: "海报", name: "薇拉", outRelPath: "presets/demo/assets/x.jpg" })).toEqual({ error: "kind 必须是 立绘/背景/封面" });
+    expect(
+      resolveOutputPath({ kind: "立绘", name: "../../etc/passwd", outRelPath: "presets/demo/assets/x.jpg" }),
+    ).toMatchObject({
+      rel: "presets/demo/assets/立绘-.._.._etc_passwd.jpg",
+    });
+    expect(resolveOutputPath({ kind: "海报", name: "薇拉", outRelPath: "presets/demo/assets/x.jpg" })).toEqual({
+      error: "kind 必须是 立绘/背景/封面",
+    });
     expect("error" in resolveOutputPath({ kind: "立绘", name: "薇拉", outRelPath: "images/1.jpg" })).toBe(true);
-    expect("error" in resolveOutputPath({ kind: "立绘", name: "  ", outRelPath: "presets/demo/assets/x.jpg" })).toBe(true);
+    expect("error" in resolveOutputPath({ kind: "立绘", name: "  ", outRelPath: "presets/demo/assets/x.jpg" })).toBe(
+      true,
+    );
   });
 
   it("requestImage 的失败路径（非法 kind/无 outRelPath 时 generateImage 直接回错误，不发请求）", async () => {
@@ -495,14 +589,19 @@ describe("media-mcp.mjs：纯函数", () => {
       image: { mode: "byok", baseUrl: "https://img.example/v1", apiKey: "sk-img-key-5555", model: "img" },
     });
     const { impl, calls } = makeFetch(() => ({ json: {} }));
-    const bad = await generateImage({ prompt: "p", kind: "海报", name: "薇拉", outRelPath: "presets/demo/assets/x.jpg" }, { creds, gameRoot: os.tmpdir(), fetchImpl: impl });
+    const bad = await generateImage(
+      { prompt: "p", kind: "海报", name: "薇拉", outRelPath: "presets/demo/assets/x.jpg" },
+      { creds, gameRoot: os.tmpdir(), fetchImpl: impl },
+    );
     expect(bad.ok).toBe(false);
     expect(calls.length).toBe(0);
   });
 
   it("pickImagePayload：b64_json / url / 裸字符串，缺 data 时给错误", () => {
     expect("bytes" in pickImagePayload({ data: [{ b64_json: PNG.toString("base64") }] })).toBe(true);
-    expect(pickImagePayload({ data: [{ url: "https://cdn.example/a.png" }] })).toEqual({ url: "https://cdn.example/a.png" });
+    expect(pickImagePayload({ data: [{ url: "https://cdn.example/a.png" }] })).toEqual({
+      url: "https://cdn.example/a.png",
+    });
     expect("bytes" in pickImagePayload({ data: PNG.toString("base64") })).toBe(true);
     expect(pickImagePayload({ data: [{ nope: 1 }] })).toEqual({ error: "响应里既没有 b64_json 也没有 url" });
     expect("error" in pickImagePayload({})).toBe(true);
@@ -543,28 +642,45 @@ describe("media-mcp.mjs：MCP 协议面（直喂消息，不必 spawn 子进程�
   });
 
   it("tools/call 把执行结果包成 content + isError（成功/失败两条路径都覆盖）", async () => {
-    const ok = await ask({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: MEDIA_TOOL_NAME, arguments: { prompt: "p" } } }, async () => ({
+    const ok = await ask(
+      { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: MEDIA_TOOL_NAME, arguments: { prompt: "p" } } },
+      async () => ({
+        ok: true,
+        relPath: "presets/demo/assets/立绘-薇拉.jpg",
+      }),
+    );
+    expect(ok[0].result.isError).toBe(false);
+    expect(JSON.parse(ok[0].result.content[0].text)).toEqual({
       ok: true,
       relPath: "presets/demo/assets/立绘-薇拉.jpg",
-    }));
-    expect(ok[0].result.isError).toBe(false);
-    expect(JSON.parse(ok[0].result.content[0].text)).toEqual({ ok: true, relPath: "presets/demo/assets/立绘-薇拉.jpg" });
+    });
 
-    const failed = await ask({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: MEDIA_TOOL_NAME, arguments: {} } }, async () => ({ ok: false, error: "未配置图片服务" }));
+    const failed = await ask(
+      { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: MEDIA_TOOL_NAME, arguments: {} } },
+      async () => ({ ok: false, error: "未配置图片服务" }),
+    );
     expect(failed[0].result.isError).toBe(true);
     expect(JSON.parse(failed[0].result.content[0].text)).toEqual({ ok: false, error: "未配置图片服务" });
   });
 
   it("tools/call 的执行器抛异常也不会打穿协议（兜成 isError 结果）", async () => {
-    const [r] = await ask({ jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: MEDIA_TOOL_NAME, arguments: {} } }, async () => {
-      throw new Error("boom");
-    });
+    const [r] = await ask(
+      { jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: MEDIA_TOOL_NAME, arguments: {} } },
+      async () => {
+        throw new Error("boom");
+      },
+    );
     expect(r.result.isError).toBe(true);
     expect(String(r.result.content[0].text)).toContain("boom");
   });
 
   it("未知工具名与未知方法：前者回 isError 结果，后者回 JSON-RPC -32601；垃圾输入不抛", async () => {
-    const [unknownTool] = await ask({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "nope", arguments: {} } });
+    const [unknownTool] = await ask({
+      jsonrpc: "2.0",
+      id: 7,
+      method: "tools/call",
+      params: { name: "nope", arguments: {} },
+    });
     expect(unknownTool.result.isError).toBe(true);
     const [unknownMethod] = await ask({ jsonrpc: "2.0", id: 8, method: "resources/list", params: {} });
     expect(unknownMethod.error.code).toBe(-32601);
@@ -580,7 +696,9 @@ describe("media-mcp.mjs：挂载项与 asar 路径（打包态前提）", () => 
     expect(mediaMcpServers(off)).toEqual([]);
     expect(mediaMcpServers(normalizeCredentials({ image: { mode: "session" } }))).toEqual([]);
 
-    const byok = normalizeCredentials({ image: { mode: "byok", baseUrl: "https://img.example/v1", apiKey: "sk-x-1234", model: "m" } });
+    const byok = normalizeCredentials({
+      image: { mode: "byok", baseUrl: "https://img.example/v1", apiKey: "sk-x-1234", model: "m" },
+    });
     const servers = mediaMcpServers(byok);
     expect(servers).toHaveLength(1);
     expect(servers[0]).toEqual({
@@ -616,54 +734,117 @@ describe("media-mcp.mjs：挂载项与 asar 路径（打包态前提）", () => 
 describe("media-mcp.mjs：requestImage 的兼容梯子", () => {
   it("成功：POST /images/generations，Bearer 认证，回字节与状态", async () => {
     const { impl, calls } = makeFetch(() => ({ json: { created: 1, data: [{ b64_json: PNG.toString("base64") }] } }));
-    const out = await requestImage({ baseUrl: "https://api.example.com/v1", apiKey: "sk-req-key-1234", model: "m", prompt: "p", size: "1024x1024", fetchImpl: impl });
+    const out = await requestImage({
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "sk-req-key-1234",
+      model: "m",
+      prompt: "p",
+      size: "1024x1024",
+      fetchImpl: impl,
+    });
     expect("bytes" in out && out.bytes.equals(PNG)).toBe(true);
     expect(calls[0].url).toBe("https://api.example.com/v1/images/generations");
     expect(calls[0].init.headers.authorization).toBe("Bearer sk-req-key-1234");
-    expect(JSON.parse(calls[0].init.body)).toMatchObject({ model: "m", prompt: "p", n: 1, size: "1024x1024", response_format: "b64_json" });
+    expect(JSON.parse(calls[0].init.body)).toMatchObject({
+      model: "m",
+      prompt: "p",
+      n: 1,
+      size: "1024x1024",
+      response_format: "b64_json",
+    });
   });
 
   it("服务抱怨 response_format（gpt-image-1 一类）→ 去掉它重试一次", async () => {
-    const { impl, calls } = makeFetch((url, init, call) =>
+    const { impl, calls } = makeFetch((_url, _init, call) =>
       call === 1
         ? { status: 400, text: "Unsupported parameter: response_format" }
         : { json: { data: [{ b64_json: PNG.toString("base64") }] } },
     );
-    const out = await requestImage({ baseUrl: "https://api.example.com/v1", apiKey: "k", model: "m", prompt: "p", size: "1024x1024", fetchImpl: impl });
+    const out = await requestImage({
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "k",
+      model: "m",
+      prompt: "p",
+      size: "1024x1024",
+      fetchImpl: impl,
+    });
     expect("bytes" in out).toBe(true);
     expect(calls.length).toBe(2);
     expect("response_format" in JSON.parse(calls[1].init.body)).toBe(false);
   });
 
   it("服务不认 size（xAI 一类）→ 去掉 size 重试；两次都不行才放弃并回脱敏错误", async () => {
-    const { impl, calls } = makeFetch((url, init, call) =>
-      call === 1 ? { status: 400, text: "unknown field size" } : { json: { data: [{ b64_json: PNG.toString("base64") }] } },
+    const { impl, calls } = makeFetch((_url, _init, call) =>
+      call === 1
+        ? { status: 400, text: "unknown field size" }
+        : { json: { data: [{ b64_json: PNG.toString("base64") }] } },
     );
-    const out = await requestImage({ baseUrl: "https://api.example.com/v1", apiKey: "sk-drop-size-1234", model: "m", prompt: "p", size: "1024x1024", fetchImpl: impl });
+    const out = await requestImage({
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "sk-drop-size-1234",
+      model: "m",
+      prompt: "p",
+      size: "1024x1024",
+      fetchImpl: impl,
+    });
     expect("bytes" in out).toBe(true);
     expect("size" in JSON.parse(calls[1].init.body)).toBe(false);
 
     const always = makeFetch(() => ({ status: 400, text: "nope size and response_format" }));
-    const bad = await requestImage({ baseUrl: "https://api.example.com/v1", apiKey: "sk-secret-key-7777", model: "m", prompt: "p", size: "1x1", fetchImpl: always.impl });
+    const bad = await requestImage({
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "sk-secret-key-7777",
+      model: "m",
+      prompt: "p",
+      size: "1x1",
+      fetchImpl: always.impl,
+    });
     expect("error" in bad && bad.error.includes("HTTP 400")).toBe(true);
     expect(always.calls.length).toBeLessThanOrEqual(3); // 最多三次尝试，不会无限退让
   });
 
   it("回 url 时下载；下载失败也算失败（不落半张图）", async () => {
-    const ok = makeFetch((url) => (url.includes("/images/generations") ? { json: { data: [{ url: "https://cdn.example/a.png" }] } } : { bytes: PNG }));
-    const out = await requestImage({ baseUrl: "https://api.example.com/v1", apiKey: "k", model: "m", prompt: "p", size: "1x1", fetchImpl: ok.impl });
+    const ok = makeFetch((url) =>
+      url.includes("/images/generations") ? { json: { data: [{ url: "https://cdn.example/a.png" }] } } : { bytes: PNG },
+    );
+    const out = await requestImage({
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "k",
+      model: "m",
+      prompt: "p",
+      size: "1x1",
+      fetchImpl: ok.impl,
+    });
     expect("bytes" in out && out.bytes.equals(PNG)).toBe(true);
     expect(ok.calls[1].url).toBe("https://cdn.example/a.png");
 
-    const bad = makeFetch((url) => (url.includes("/images/generations") ? { json: { data: [{ url: "https://cdn.example/a.png" }] } } : { status: 404, text: "gone" }));
-    const out2 = await requestImage({ baseUrl: "https://api.example.com/v1", apiKey: "k", model: "m", prompt: "p", size: "1x1", fetchImpl: bad.impl });
+    const bad = makeFetch((url) =>
+      url.includes("/images/generations")
+        ? { json: { data: [{ url: "https://cdn.example/a.png" }] } }
+        : { status: 404, text: "gone" },
+    );
+    const out2 = await requestImage({
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "k",
+      model: "m",
+      prompt: "p",
+      size: "1x1",
+      fetchImpl: bad.impl,
+    });
     expect("error" in out2 && out2.error.includes("下载图片失败")).toBe(true);
   });
 
   it("错误信息脱敏：服务端把 key 回显出来也不会原样返回", async () => {
     const key = "sk-echoed-back-9911";
     const { impl } = makeFetch(() => ({ status: 401, text: `invalid key ${key}` }));
-    const out = await requestImage({ baseUrl: "https://api.example.com/v1", apiKey: key, model: "m", prompt: "p", size: "1x1", fetchImpl: impl });
+    const out = await requestImage({
+      baseUrl: "https://api.example.com/v1",
+      apiKey: key,
+      model: "m",
+      prompt: "p",
+      size: "1x1",
+      fetchImpl: impl,
+    });
     expect("error" in out && out.error.includes(key)).toBe(false);
     expect("error" in out && out.error.includes("sk-…9911")).toBe(true);
   });
@@ -681,7 +862,9 @@ describe("credentials-probe.mjs：测试连接的判定", () => {
   });
 
   it("testLlm：/models 通了就通过（不消耗生成额度），并回模型条数", async () => {
-    const { impl, calls } = makeFetch(() => ({ json: { object: "list", data: [{ id: "a" }, { id: "b" }, { id: "c" }] } }));
+    const { impl, calls } = makeFetch(() => ({
+      json: { object: "list", data: [{ id: "a" }, { id: "b" }, { id: "c" }] },
+    }));
     const out = await testLlm({ baseUrl: "https://a.example/v1/", apiKey: "k", model: "m" }, { fetchImpl: impl });
     expect(out.ok).toBe(true);
     expect(out.status).toBe(200);
@@ -690,7 +873,9 @@ describe("credentials-probe.mjs：测试连接的判定", () => {
   });
 
   it("testLlm：/models 404 → 退化最小对话；没填模型时明说先填模型", async () => {
-    const { impl, calls } = makeFetch((url) => (url.endsWith("/models") ? { status: 404, text: "not found" } : { json: { choices: [] } }));
+    const { impl, calls } = makeFetch((url) =>
+      url.endsWith("/models") ? { status: 404, text: "not found" } : { json: { choices: [] } },
+    );
     const noModel = await testLlm({ baseUrl: "https://a.example/v1", apiKey: "k", model: "" }, { fetchImpl: impl });
     expect(noModel.ok).toBe(false);
     expect(noModel.error).toContain("模型名");
@@ -732,7 +917,10 @@ describe("credentials-probe.mjs：测试连接的判定", () => {
     expect(ok.ok).toBe(true);
     expect(ok.detail).toContain("KB");
     const fail = makeFetch(() => ({ status: 403, text: "quota exceeded" }));
-    const bad = await testImage({ baseUrl: "https://a.example/v1", apiKey: "k", model: "img" }, { fetchImpl: fail.impl });
+    const bad = await testImage(
+      { baseUrl: "https://a.example/v1", apiKey: "k", model: "img" },
+      { fetchImpl: fail.impl },
+    );
     expect(bad.ok).toBe(false);
     expect(bad.status).toBe(403);
     expect(bad.error).toContain("quota");

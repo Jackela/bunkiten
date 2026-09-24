@@ -14,9 +14,32 @@ import {
   parseWorldBundle,
   speakerOf,
   useGameStore,
+  type HistoryItem,
 } from "../src/store/game";
 import { DEFAULT_SETTINGS } from "../src/lib/settings";
 import { assetPath, type AssetEntry, type Preset, type PresetsResponse } from "../src/lib/acp";
+
+/**
+ * 历史里最近一条**正文幕**的文本：`history` 是判别联合（回退分割线没有 `t`），
+ * 直接 `.at(-1)?.t` 在类型上不成立——先按 kind 收窄再取，比断言更贴近数据形状。
+ * @param {HistoryItem[]} history 历史条目
+ * @returns {string | undefined} 末条正文（末条是分割线或历史为空时 undefined）
+ */
+function lastActText(history: HistoryItem[]): string | undefined {
+  const last = history.at(-1);
+  return last?.kind === "act" ? last.t : undefined;
+}
+
+/**
+ * 历史里最近一条**正文幕**的幕标题（「第 N 幕」）。
+ * 与 {@link lastActText} 同一套收窄：分割线没有 `n`。
+ * @param {HistoryItem[]} history 历史条目
+ * @returns {string | undefined} 末条幕标题
+ */
+function lastActLabel(history: HistoryItem[]): string | undefined {
+  const last = history.at(-1);
+  return last?.kind === "act" ? last.n : undefined;
+}
 
 // presets/campus-summer/preset.md 手抄 fixture（「# 主要角色」的三个 ## 标题即 characters）
 const PRESET: Preset = {
@@ -49,8 +72,7 @@ const MANIFEST_CH1 =
   "【清单】立绘|沈屿\n【清单】立绘|程野\n【清单】立绘|教导主任·老蒋\n【清单】背景|旧教学楼\n【清单】背景|天台";
 const MANIFEST_CH2 = "【清单】立绘|沈屿\n【清单】立绘|林晚照\n【清单】背景|灰雀镇";
 
-const OPENING =
-  "蝉鸣把旧教学楼叫成一锅白粥。她抱着书包站在教室后门。\n**行动**\n1. 溜进座位\n2. 转身去天台";
+const OPENING = "蝉鸣把旧教学楼叫成一锅白粥。她抱着书包站在教室后门。\n**行动**\n1. 溜进座位\n2. 转身去天台";
 // v1.3 起「**行动**」选项段不进历史（选项由按钮呈现），历史只留正文
 const OPENING_PROSE = "蝉鸣把旧教学楼叫成一锅白粥。她抱着书包站在教室后门。";
 
@@ -198,7 +220,9 @@ describe("两段式制作（v1.13）：开场子集 + 延迟补画泵", () => {
     expect(useGameStore.getState().artAsk, "补画回合要标 artAsk").toBe(true);
 
     // 补画回合的确认句与【图】都不上玩家的屏：正文不进历史、背景不被换掉（只点亮槽位）
-    useGameStore.getState().handleEvent({ type: "chunk", seg: 0, text: "教导主任·老蒋 · 完成\n【图】背景|天台|images/9.jpg\n" });
+    useGameStore
+      .getState()
+      .handleEvent({ type: "chunk", seg: 0, text: "教导主任·老蒋 · 完成\n【图】背景|天台|images/9.jpg\n" });
     engineTurn();
     const s2 = useGameStore.getState();
     expect(s2.history.length, "补画回合的确认句不该进历史").toBe(historyAfterOpening + 1);
@@ -433,7 +457,7 @@ describe("章节制作流水线（store 公共 API 驱动）", () => {
     const s = useGameStore.getState();
     expect(s.screen).toBe("game");
     expect(s.preloadPhase).toBe("finished");
-    expect(s.history).toEqual([{ n: "第 1 幕", t: OPENING_PROSE }]); // **行动** 段不进历史
+    expect(s.history).toEqual([{ kind: "act", n: "第 1 幕", t: OPENING_PROSE }]); // **行动** 段不进历史
   });
 
   it("单项美术失败：标 failed 不阻塞，队列继续下一项直至「开演。」", async () => {
@@ -532,7 +556,7 @@ describe("章节制作流水线（store 公共 API 驱动）", () => {
     expect(c.chapterNo).toBe(2);
     expect(c.preloadPhase).toBe("planning");
     expect(prompts.at(-1)).toBe(PLAN_CH2);
-    expect(c.history.at(-1)).toEqual({ n: "第 2 幕", t: "晚风把答案吹散在天台上。" }); // 【章】行不进历史
+    expect(c.history.at(-1)).toEqual({ kind: "act", n: "第 2 幕", t: "晚风把答案吹散在天台上。" }); // 【章】行不进历史
 
     // 第 2 章规划回合：清单行落在工具调用之后的 seg 1
     const p = useGameStore.getState();
@@ -556,7 +580,27 @@ describe("章节制作流水线（store 公共 API 驱动）", () => {
     await vi.waitUntil(() => prompts.at(-1) === START); // 第 2 章开演
     engineTurn("灰雀镇的旅店亮着最后一盏灯。\n**行动**\n1. 推门进去");
     expect(useGameStore.getState().screen).toBe("game");
-    expect(useGameStore.getState().history.at(-1)?.t).toBe("灰雀镇的旅店亮着最后一盏灯。");
+    expect(lastActText(useGameStore.getState().history)).toBe("灰雀镇的旅店亮着最后一盏灯。");
+  });
+
+  it("幕号 = 服务端快照序号（v1.13 修）：事件带 seq 时用它，不带（更老的 server）才回落客户端计数", async () => {
+    await reachGame();
+    const s0 = useGameStore.getState();
+    // 制造「两套数字已经错开」的现场：续玩/回退会让快照 seq 跑到回合计数前面
+    const d = s0.turnNo;
+    expect(s0.history.at(-1)).toMatchObject({ kind: "act" });
+
+    // ① 事件带 seq（= d + 7，模拟快照被续玩/回退推高）→ 幕号取 seq
+    const s1 = useGameStore.getState();
+    s1.handleEvent({ type: "turn_start" });
+    s1.handleEvent({ type: "chunk", seg: 0, text: "带 seq 的一幕。\n**行动**\n1. 走" });
+    s1.handleEvent({ type: "turn_end", seq: d + 7 });
+    expect(lastActLabel(useGameStore.getState().history)).toBe(`第 ${d + 7} 幕`);
+
+    // ② 事件不带 seq（更老的 server）→ 回落客户端计数，功能不消失
+    const before = useGameStore.getState().turnNo;
+    engineTurn("第二段正文。\n**行动**\n1. 走");
+    expect(lastActLabel(useGameStore.getState().history)).toBe(`第 ${before + 1} 幕`);
   });
 
   it("【章】标记不在末段（正文后引擎又静默调了工具）：按该回合全文扫描，切屏与规划照常触发", async () => {
@@ -822,7 +866,11 @@ describe("表情切换与创作/画廊编排（v1.3 store 公共 API 驱动）",
     expect(speaker()?.name).toBe("薇拉");
     const t = useGameStore.getState();
     t.handleEvent({ type: "turn_start" });
-    t.handleEvent({ type: "chunk", seg: 0, text: "【图】立绘|薇拉-微笑|presets/campus-summer/assets/立绘-薇拉-微笑.jpg\n" });
+    t.handleEvent({
+      type: "chunk",
+      seg: 0,
+      text: "【图】立绘|薇拉-微笑|presets/campus-summer/assets/立绘-薇拉-微笑.jpg\n",
+    });
     const st = useGameStore.getState();
     expect(speaker()?.url).toContain("images%2F1.jpg"); // 主立绘未被差分替换
     expect(st.artReady["薇拉-微笑"]).toBeTruthy();
@@ -904,7 +952,11 @@ describe("表情切换与创作/画廊编排（v1.3 store 公共 API 驱动）",
 
     useGameStore.getState().handleEvent({ type: "presetAdded", id: "midnight-library" });
     const t = useGameStore.getState();
-    t.handleEvent({ type: "chunk", seg: 0, text: "【图】立绘|守夜人|presets/midnight-library/assets/立绘-守夜人.jpg\n" });
+    t.handleEvent({
+      type: "chunk",
+      seg: 0,
+      text: "【图】立绘|守夜人|presets/midnight-library/assets/立绘-守夜人.jpg\n",
+    });
 
     const after = new URL(speaker()!.url, "http://localhost");
     expect(after.searchParams.get("preset")).toBe("midnight-library");
@@ -1107,7 +1159,9 @@ describe("v1.5 世界线与剧情图（store 公共 API 驱动）", () => {
     expect(prompts.at(-1)).toBe("继续世界：campus-summer-1。");
 
     // 有显示名时显示名优先，且前后空白收敛；两者都空 → 空串（绝不回填裸 worldId）
-    useGameStore.getState().resumeWorld({ worldId: "campus-summer-2", chapterNo: 2, note: "第一次玩到这里", label: "  二周目  " });
+    useGameStore
+      .getState()
+      .resumeWorld({ worldId: "campus-summer-2", chapterNo: 2, note: "第一次玩到这里", label: "  二周目  " });
     expect(useGameStore.getState().worldLabel).toBe("二周目");
     useGameStore.getState().resumeWorld({ worldId: "campus-summer-3", chapterNo: 1, note: "", label: "" });
     expect(useGameStore.getState().worldLabel).toBe("");
@@ -1234,9 +1288,10 @@ describe("v1.6 批量重绘 / 素材删除 / 世界线管理（store 公共 API 
           return jsonResponse({ ok: true });
         }
         if (url.pathname === "/api/assets" && init?.method === "POST") {
-          const body = JSON.parse(String(init.body)) as { file: string };
+          // 形状与客户端 postWorld/postAsset 的请求体一致（action 必填，preset/file 视动作而定）
+          const body = JSON.parse(String(init.body)) as { action: string; preset?: string; file?: string };
           assetPosts.push(body);
-          const fail = deleteFails[body.file];
+          const fail = body.file ? deleteFails[body.file] : undefined;
           return fail ? jsonResponse({ error: fail }, 404) : jsonResponse({ ok: true });
         }
         if (url.pathname === "/api/assets") return jsonResponse([]);
@@ -1425,7 +1480,11 @@ describe("v1.6 批量重绘 / 素材删除 / 世界线管理（store 公共 API 
   });
 
   it("世界线导入：非法原文本地挡下（不打服务端），提示说清「不是导出包」", async () => {
-    for (const text of ["{ 这不是 JSON", JSON.stringify({ format: "other", version: 1 }), JSON.stringify({ format: "bunkiten-world", version: 0 })]) {
+    for (const text of [
+      "{ 这不是 JSON",
+      JSON.stringify({ format: "other", version: 1 }),
+      JSON.stringify({ format: "bunkiten-world", version: 0 }),
+    ]) {
       const r = await useGameStore.getState().importWorldText(text);
       expect(r.ok).toBe(false);
       expect(useGameStore.getState().worldNotice?.kind).toBe("error");
@@ -1524,12 +1583,14 @@ describe("v1.6 精确回退与自动前进（store 公共 API 驱动）", () => 
     useGameStore.setState({ bgUrl: null, portraits: [] }); // 清掉回退前的画面：下面看到的一切都得是引擎重发的
     await useGameStore.getState().restoreSnapshot(7);
 
-    engineTurn("雨还在下。你回到了走廊尽头。\n【图】背景|旧教学楼|images/40.jpg\n【图】立绘|沈屿|images/41.jpg\n**行动**\n1. 推门");
+    engineTurn(
+      "雨还在下。你回到了走廊尽头。\n【图】背景|旧教学楼|images/40.jpg\n【图】立绘|沈屿|images/41.jpg\n**行动**\n1. 推门",
+    );
 
     const s = useGameStore.getState();
     expect(new URL(s.bgUrl ?? "", "http://localhost").searchParams.get("p")).toBe("images/40.jpg");
     expect(s.portraits.map((x) => x.name)).toEqual(["沈屿"]);
-    expect(s.history.at(-1)?.t).toBe("雨还在下。你回到了走廊尽头。"); // 续档回合是正常回合（选项段照旧不进历史）
+    expect(lastActText(s.history)).toBe("雨还在下。你回到了走廊尽头。"); // 续档回合是正常回合（选项段照旧不进历史）
     expect(s.options?.map((o) => o.t)).toEqual(["推门"]);
   });
 
@@ -1605,7 +1666,12 @@ describe("v1.6 精确回退与自动前进（store 公共 API 驱动）", () => 
   it("自动前进：设置关 / 引擎忙 / 有排队指令 / 打字未完 / 无选项 / 非游戏屏都不启动", () => {
     const armed = () => useGameStore.getState().autoAdvanceDeadline;
     const ready = { screen: "game" as const, engineBusy: false, typingDone: true, options: OPTIONS };
-    useGameStore.setState({ ...ready, settings: { ...DEFAULT_SETTINGS, autoAdvance: 3000 }, autoAdvanceDeadline: null, autoAdvanceMuted: false });
+    useGameStore.setState({
+      ...ready,
+      settings: { ...DEFAULT_SETTINGS, autoAdvance: 3000 },
+      autoAdvanceDeadline: null,
+      autoAdvanceMuted: false,
+    });
 
     useGameStore.setState({ settings: { ...DEFAULT_SETTINGS, autoAdvance: 0 } });
     useGameStore.getState().armAutoAdvance();

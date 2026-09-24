@@ -91,12 +91,17 @@ jobs:
       - name: Install
         run: npm ci
 
-      # 测试门禁（评审 S3）：秒级的版本号核对之后、GB 级打包之前跑全量 `npm test`
-      # （vitest run --exclude "tests/e2e/**"：单测 + tests/integration，约 10s）。测试不过 → 整个 release
-      # 工作流失败，两个平台 job 因为 needs: guard 不会启动，也就不会产出可发布的 Release。
-      # e2e（真引擎 + Playwright）仍不进 CI。
-      - name: Test（单测 + 集成；e2e 不进 CI）
-        run: npm test
+      # 门禁（评审 S3；v1.13 补齐）：与 ci.yml 同一套判据——build / 两份 typecheck / 覆盖率阈值。
+      # 此前这里只跑 `npm test`：tag 打在一个没跑过完整 CI 的提交上时，server 树的类型错误、
+      # tests/** 的类型错误、覆盖率跌破阈值都能照发版（`guard` 是唯一门禁，两个平台 job 都 needs 它）。
+      - name: Gate（build + typecheck + 覆盖率阈值）
+        run: |
+          npm run format:check
+          npm run lint
+          npm run build
+          npm run typecheck:server
+          npm run typecheck:tests
+          npm run test:coverage
 
   build-mac:
     needs: guard

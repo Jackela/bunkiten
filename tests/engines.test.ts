@@ -10,7 +10,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ENGINES, ENGINE_IDS, DEFAULT_ENGINE_ID, engineById } from "../shared/engines.mjs";
-import { CODEX_SKILL_NAME, ENGINE_DESCRIPTORS, codexHome, engineFor, prepareSpawn, windowsSafeSpawn } from "../server/engines.mjs";
+import {
+  CODEX_SKILL_NAME,
+  ENGINE_DESCRIPTORS,
+  codexHome,
+  engineFor,
+  prepareSpawn,
+  windowsSafeSpawn,
+} from "../server/engines.mjs";
 import { defaultCredentials } from "../server/credentials.mjs";
 
 /** 建一个临时的「用户主目录 + 游戏根」小世界，结束即删 */
@@ -87,12 +94,20 @@ describe("spawn 三件套", () => {
     try {
       process.env.PATH = dir;
       const gameRoot = makeGameRoot();
-      const noGrok = engineFor("grok").spawn({ creds: defaultCredentials(), home: tmpDir("bunkiten-engines-home-"), gameRoot });
+      const noGrok = engineFor("grok").spawn({
+        creds: defaultCredentials(),
+        home: tmpDir("bunkiten-engines-home-"),
+        gameRoot,
+      });
       expect(noGrok.cmd).toBe("grok"); // PATH 里没有 → 回落裸名（交给系统）
 
       const shim = path.join(dir, "grok");
       fs.writeFileSync(shim, "#!/bin/sh\n", { mode: 0o755 });
-      const plan = engineFor("grok").spawn({ creds: defaultCredentials(), home: tmpDir("bunkiten-engines-home-"), gameRoot });
+      const plan = engineFor("grok").spawn({
+        creds: defaultCredentials(),
+        home: tmpDir("bunkiten-engines-home-"),
+        gameRoot,
+      });
       expect(plan.cmd).toBe(shim);
       expect(plan.args).toEqual(["agent", "--always-approve", "--plugin-dir", path.join(gameRoot, ".grok"), "stdio"]);
       expect(plan.env).toEqual({}); // session 模式：不注 BYOK
@@ -103,7 +118,8 @@ describe("spawn 三件套", () => {
 
   it("grok：BUNKITEN_GROK_MODEL 显式给定才加 --model（真引擎冒烟用便宜档跑）；缺省/空白逐字不变", () => {
     const prev = process.env.BUNKITEN_GROK_MODEL;
-    const spawnGrok = () => engineFor("grok").spawn({ creds: defaultCredentials(), gameRoot: "/g" });
+    // home 是 SpawnContext 的必填项（codex 要用它准备 CODEX_HOME）；grok 的 spawn 不读它，给个占位值即可
+    const spawnGrok = () => engineFor("grok").spawn({ creds: defaultCredentials(), home: "/h", gameRoot: "/g" });
     const base = ["agent", "--always-approve", "--plugin-dir", "/g/.grok"];
     try {
       delete process.env.BUNKITEN_GROK_MODEL;
@@ -120,9 +136,14 @@ describe("spawn 三件套", () => {
 
   it("grok：windowsSafeSpawn —— Windows 上的 .cmd/.bat 换成「整条命令行 + shell:true」（带空格的路径要加引号）", () => {
     const prev = process.platform;
-    const as = (platform: NodeJS.Platform) => Object.defineProperty(process, "platform", { value: platform, configurable: true });
+    const as = (platform: NodeJS.Platform) =>
+      Object.defineProperty(process, "platform", { value: platform, configurable: true });
     try {
-      const plan = { cmd: "C:\\Users\\a b\\AppData\\Roaming\\npm\\grok.cmd", args: ["agent", "--plugin-dir", "C:\\g a m e\\.grok", "stdio"], env: {} };
+      const plan = {
+        cmd: "C:\\Users\\a b\\AppData\\Roaming\\npm\\grok.cmd",
+        args: ["agent", "--plugin-dir", "C:\\g a m e\\.grok", "stdio"],
+        env: {},
+      };
       // 非 Windows：逐字返回（产品路径一字不变）
       as("darwin");
       expect(windowsSafeSpawn(plan)).toEqual(plan);
@@ -131,30 +152,49 @@ describe("spawn 三件套", () => {
       const win = windowsSafeSpawn(plan);
       expect(win.shell).toBe(true);
       expect(win.args).toEqual([]);
-      expect(win.cmd).toBe('"C:\\Users\\a b\\AppData\\Roaming\\npm\\grok.cmd" agent --plugin-dir "C:\\g a m e\\.grok" stdio');
+      expect(win.cmd).toBe(
+        '"C:\\Users\\a b\\AppData\\Roaming\\npm\\grok.cmd" agent --plugin-dir "C:\\g a m e\\.grok" stdio',
+      );
       // Windows + .exe：不换形态（原生可执行文件直接 spawn）
-      expect(windowsSafeSpawn({ ...plan, cmd: "C:\\tools\\grok.exe" })).toEqual({ ...plan, cmd: "C:\\tools\\grok.exe" });
+      expect(windowsSafeSpawn({ ...plan, cmd: "C:\\tools\\grok.exe" })).toEqual({
+        ...plan,
+        cmd: "C:\\tools\\grok.exe",
+      });
     } finally {
       as(prev);
     }
   });
 
   it("grok：byok 凭据 → GROK_* 四件套进 env（我们的值优先，合并序在 acp.mjs）", () => {
-    const creds = { ...defaultCredentials(), llm: { mode: "byok", provider: "openai", baseUrl: "https://x.example/v1", apiKey: "sk-k", model: "m-1" } };
+    const creds = {
+      ...defaultCredentials(),
+      llm: { mode: "byok", provider: "openai", baseUrl: "https://x.example/v1", apiKey: "sk-k", model: "m-1" },
+    };
     const plan = engineFor("grok").spawn({ creds, home: tmpDir("bunkiten-engines-home-"), gameRoot: makeGameRoot() });
     expect(plan.env.GROK_MODELS_BASE_URL).toBe("https://x.example/v1");
     expect(plan.env.XAI_API_KEY).toBe("sk-k");
     expect(plan.env.GROK_DEFAULT_MODEL).toBe("m-1");
-    expect(Object.keys(plan.env).sort()).toEqual(["GROK_CONFIG", "GROK_DEFAULT_MODEL", "GROK_MODELS_BASE_URL", "XAI_API_KEY"]);
+    expect(Object.keys(plan.env).sort()).toEqual([
+      "GROK_CONFIG",
+      "GROK_DEFAULT_MODEL",
+      "GROK_MODELS_BASE_URL",
+      "XAI_API_KEY",
+    ]);
   });
 
   it("codex：默认吃仓内 node_modules 里的入口（process.execPath + dist/index.js），env 带 CODEX_HOME / INITIAL_AGENT_MODE / NO_BROWSER", () => {
     const home = tmpDir("bunkiten-engines-home-");
-    const plan = engineFor("codex").spawn({ creds: { ...defaultCredentials(), engine: "codex" }, home, gameRoot: makeGameRoot() });
+    const plan = engineFor("codex").spawn({
+      creds: { ...defaultCredentials(), engine: "codex" },
+      home,
+      gameRoot: makeGameRoot(),
+    });
     // 开发态直接跑仓内那份入口（npm i 装好即可，不必进 PATH）；打包态换成 resources 下的同一入口 + ELECTRON_RUN_AS_NODE
     expect(plan.cmd).toBe(process.execPath);
     expect(plan.args).toHaveLength(1);
-    expect(plan.args[0]).toMatch(new RegExp(`node_modules[/\\\\]@agentclientprotocol[/\\\\]codex-acp[/\\\\]dist[/\\\\]index\\.js$`));
+    expect(plan.args[0]).toMatch(
+      new RegExp(`node_modules[/\\\\]@agentclientprotocol[/\\\\]codex-acp[/\\\\]dist[/\\\\]index\\.js$`),
+    );
     expect(fs.existsSync(plan.args[0]), `入口脚本不存在：${plan.args[0]}（跑过 npm ci 吗？）`).toBe(true);
     expect(plan.env.CODEX_HOME).toBe(codexHome(home));
     expect(plan.env.INITIAL_AGENT_MODE).toBe("agent-full-access");
@@ -166,7 +206,11 @@ describe("spawn 三件套", () => {
     const prev = process.env.BUNKITEN_CODEX_ACP;
     process.env.BUNKITEN_CODEX_ACP = "/tmp/shim/codex-acp";
     try {
-      const plan = engineFor("codex").spawn({ creds: { ...defaultCredentials(), engine: "codex" }, home: tmpDir("bunkiten-engines-home-"), gameRoot: makeGameRoot() });
+      const plan = engineFor("codex").spawn({
+        creds: { ...defaultCredentials(), engine: "codex" },
+        home: tmpDir("bunkiten-engines-home-"),
+        gameRoot: makeGameRoot(),
+      });
       expect(plan.cmd).toBe("/tmp/shim/codex-acp");
       expect(plan.args).toEqual([]);
     } finally {
@@ -194,14 +238,19 @@ describe("规则注入与会话扩展（grok 的 _meta ↔ codex 的 config.toml
   });
 
   it("档位下发形状：grok 嵌套、codex 裸串（docs/adr/0022 第 0 步实证）", () => {
-    expect(engineFor("grok").effortOption("medium")).toEqual({ configId: "reasoning_effort", value: { value: "medium" } });
+    expect(engineFor("grok").effortOption("medium")).toEqual({
+      configId: "reasoning_effort",
+      value: { value: "medium" },
+    });
     expect(engineFor("codex").effortOption("medium")).toEqual({ configId: "reasoning_effort", value: "medium" });
   });
 
   it("登录探测与图片根：grok 看 ~/.grok/auth.json 与会话图目录；codex 看玩家 ~/.codex/auth.json、无图片通道", () => {
     expect(engineFor("grok").loginFile("/h")).toBe(path.join("/h", ".grok", "auth.json"));
     expect(engineFor("codex").loginFile("/h")).toBe(path.join("/h", ".codex", "auth.json"));
-    expect(engineFor("grok").sessionImagesRoot({ home: "/h", gameRoot: "/g" })).toBe(path.join("/h", ".grok", "sessions", encodeURIComponent("/g")));
+    expect(engineFor("grok").sessionImagesRoot({ home: "/h", gameRoot: "/g" })).toBe(
+      path.join("/h", ".grok", "sessions", encodeURIComponent("/g")),
+    );
     expect(engineFor("codex").sessionImagesRoot({ home: "/h", gameRoot: "/g" })).toBeNull();
   });
 });
@@ -269,12 +318,12 @@ describe("登录 / 登出命令（GUI 按钮的服务端面，v1.11 收尾）", 
       const shim = path.join(dir, "grok");
       fs.writeFileSync(shim, "#!/bin/sh\n", { mode: 0o755 });
       process.env.PATH = dir;
-      const plan = engineFor("grok").spawn({ creds: defaultCredentials(), gameRoot: "/g" });
+      const plan = engineFor("grok").spawn({ creds: defaultCredentials(), home: "/h", gameRoot: "/g" });
       expect(plan.cmd).toBe(shim); // 解析到真实路径（Windows 分支会把 .exe/.cmd/.bat 也认下来）
       expect(plan.args).toEqual(["agent", "--always-approve", "--plugin-dir", path.join("/g", ".grok"), "stdio"]);
 
       process.env.PATH = path.join(dir, "empty"); // PATH 里没有 → 回落裸名，交给系统去找
-      expect(engineFor("grok").spawn({ creds: defaultCredentials(), gameRoot: "/g" }).cmd).toBe("grok");
+      expect(engineFor("grok").spawn({ creds: defaultCredentials(), home: "/h", gameRoot: "/g" }).cmd).toBe("grok");
     } finally {
       process.env.PATH = prev;
     }
@@ -285,14 +334,21 @@ describe("prepareSpawn：codex 的 CODEX_HOME 准备（幂等、失败不抛）"
   it("建目录（0700）+ 落 skill + 写 config.toml（developer_instructions / project_doc_max_bytes=0 / skills.config）", () => {
     const home = tmpDir("bunkiten-engines-home-");
     const gameRoot = makeGameRoot();
-    const plan = prepareSpawn({ creds: { ...defaultCredentials(), engine: "codex" }, home, gameRoot, rules: "规则原文。" });
+    const plan = prepareSpawn({
+      creds: { ...defaultCredentials(), engine: "codex" },
+      home,
+      gameRoot,
+      rules: "规则原文。",
+    });
 
     const codHome = codexHome(home);
     expect(fs.existsSync(codHome)).toBe(true);
     expect(fs.statSync(codHome).mode & 0o777).toBe(0o700);
 
     const skill = path.join(codHome, "skills", CODEX_SKILL_NAME, "SKILL.md");
-    expect(fs.readFileSync(skill, "utf8")).toBe(fs.readFileSync(path.join(gameRoot, ".grok", "skills", CODEX_SKILL_NAME, "SKILL.md"), "utf8"));
+    expect(fs.readFileSync(skill, "utf8")).toBe(
+      fs.readFileSync(path.join(gameRoot, ".grok", "skills", CODEX_SKILL_NAME, "SKILL.md"), "utf8"),
+    );
 
     const toml = fs.readFileSync(path.join(codHome, "config.toml"), "utf8");
     expect(toml).toContain("project_doc_max_bytes = 0"); // 关掉 AGENTS.md 注入（第 0 步实证）
@@ -333,7 +389,9 @@ describe("prepareSpawn：codex 的 CODEX_HOME 准备（幂等、失败不抛）"
   it("玩家没登录 / 游戏根没有 skill 源 → 不抛（spawn 仍以未登录态起来）", () => {
     const home = tmpDir("bunkiten-engines-home-");
     const gameRoot = makeGameRoot(false); // 故意没有 skill 源
-    expect(() => prepareSpawn({ creds: { ...defaultCredentials(), engine: "codex" }, home, gameRoot, rules: "r" })).not.toThrow();
+    expect(() =>
+      prepareSpawn({ creds: { ...defaultCredentials(), engine: "codex" }, home, gameRoot, rules: "r" }),
+    ).not.toThrow();
     expect(fs.existsSync(path.join(codexHome(home), "auth.json"))).toBe(false);
   });
 

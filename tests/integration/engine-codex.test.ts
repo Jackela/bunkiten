@@ -9,23 +9,26 @@
 import { afterEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import { startStack } from "./harness.mjs";
+import { startStack, type StackHandle } from "./harness.mjs";
 
-/** @type {Array<{stop: () => Promise<void>}>} 本文件起过的栈（afterEach 统一收尾） */
-const started = [];
+/** startStack 的入参形状（真源在 harness 的 JSDoc，不在这里抄第二份） */
+type StackOptions = NonNullable<Parameters<typeof startStack>[0]>;
+
+/** 本文件起过的栈（afterEach 统一收尾） */
+const started: StackHandle[] = [];
 afterEach(async () => {
-  while (started.length) await started.pop().stop();
+  while (started.length) await started.pop()?.stop();
 });
 
-/** @param {object} [opts] 见 harness.startStack @returns {Promise<any>} */
-async function stack(opts = {}) {
+/** 起一套栈并登记（afterEach 统一收尾） */
+async function stack(opts: StackOptions = {}): Promise<StackHandle> {
   const s = await startStack(opts);
   started.push(s);
   return s;
 }
 
 /** 预置一份 engine=codex 的凭据文档（对话沿用终端登录；出图默认不用） */
-const codexCreds = (/** @type {any} */ llmOver = {}, /** @type {any} */ imageOver = {}) => ({
+const codexCreds = (llmOver: Record<string, unknown> = {}, imageOver: Record<string, unknown> = {}) => ({
   version: 1,
   engine: "codex",
   llm: { mode: "session", provider: "openai", baseUrl: "", apiKey: "", model: "", ...llmOver },
@@ -39,8 +42,19 @@ const legacyGrokCreds = () => ({
   image: { mode: "off", provider: "openai", baseUrl: "", apiKey: "", model: "", size: "" },
 });
 
-const startsOf = (/** @type {any} */ s) => s.engineProbeEntries().filter((/** @type {any} */ e) => e.kind === "start");
-const sessionsOf = (/** @type {any} */ s) => s.engineProbeEntries().filter((/** @type {any} */ e) => e.kind === "session");
+const startsOf = (s: StackHandle) => s.engineProbeEntries().filter((e) => e.kind === "start");
+const sessionsOf = (s: StackHandle) => s.engineProbeEntries().filter((e) => e.kind === "session");
+
+/**
+ * 最后一条 session 探针——**没有就抛**。
+ * 为什么不用 `sessionsOf(s).at(-1)`：返回 `T | undefined`，下面每一处属性访问都得写 `?.`，
+ * 而「压根没有 session 条目」本该当场炸成一条看得懂的错。
+ */
+function lastSession(s: StackHandle): Record<string, any> {
+  const last = sessionsOf(s).at(-1);
+  if (!last) throw new Error("假引擎探针里没有 session 条目（假引擎没收到 session/new？）");
+  return last;
+}
 
 describe("engine=codex：spawn 面与 CODEX_HOME 的准备", () => {
   it("argv 不含 grok 的 flag；env 换成 CODEX_HOME/INITIAL_AGENT_MODE/NO_BROWSER；会话不带 _meta", async () => {
@@ -63,7 +77,7 @@ describe("engine=codex：spawn 面与 CODEX_HOME 的准备", () => {
     expect(toml).toContain("[[skills.config]]");
 
     // 会话参数：codex 没有 grok 的 `_meta:{yoloMode,rules}`（规则走 config.toml）
-    const last = sessionsOf(s).at(-1);
+    const last = lastSession(s);
     expect(last.method).toBe("session/new");
     expect(last.meta).toBeNull();
 
@@ -73,22 +87,46 @@ describe("engine=codex：spawn 面与 CODEX_HOME 的准备", () => {
   it("/api/auth 按引擎分支：codex 的登录态看 ~/.codex/auth.json，且自备 key 不参与放行（byok=false）", async () => {
     // 未登录：boot 屏走未登录态
     const missing = await stack({ credentials: codexCreds(), codexAuth: "missing" });
-    expect((await missing.getJSON("/api/auth")).body).toEqual({ loggedIn: false, hasCredentials: false, engine: "codex", canLogin: true });
+    expect((await missing.getJSON("/api/auth")).body).toEqual({
+      loggedIn: false,
+      hasCredentials: false,
+      engine: "codex",
+      canLogin: true,
+    });
 
     // 已登录 + 连 llm 都配了 byok：codex 侧仍不算「可以开玩」（自备 key 不转发给它，见描述符）
     const ready = await stack({
-      credentials: codexCreds({ mode: "byok", baseUrl: "http://127.0.0.1:9/v1", apiKey: "sk-integration-codex-key", model: "m" }),
+      credentials: codexCreds({
+        mode: "byok",
+        baseUrl: "http://127.0.0.1:9/v1",
+        apiKey: "sk-integration-codex-key",
+        model: "m",
+      }),
       codexAuth: "ok",
     });
-    expect((await ready.getJSON("/api/auth")).body).toEqual({ loggedIn: true, hasCredentials: false, engine: "codex", canLogin: true });
+    expect((await ready.getJSON("/api/auth")).body).toEqual({
+      loggedIn: true,
+      hasCredentials: false,
+      engine: "codex",
+      canLogin: true,
+    });
   });
 
   it("codex + 图片自备 key：mcpServers 照常按 ACP 字段透传（media-mcp 零改造）", async () => {
     const s = await stack({
-      credentials: codexCreds({}, { mode: "byok", provider: "custom", baseUrl: "http://127.0.0.1:9/v1", apiKey: "sk-integration-image-key", model: "it-image" }),
+      credentials: codexCreds(
+        {},
+        {
+          mode: "byok",
+          provider: "custom",
+          baseUrl: "http://127.0.0.1:9/v1",
+          apiKey: "sk-integration-image-key",
+          model: "it-image",
+        },
+      ),
       codexAuth: "ok",
     });
-    const last = sessionsOf(s).at(-1);
+    const last = lastSession(s);
     expect(last.mcpServers).toHaveLength(1);
     expect(last.mcpServers[0].name).toBe("bunkiten-media");
     expect(last.mcpServers[0].args[0]).toContain("media-mcp.mjs");
@@ -114,8 +152,8 @@ describe("换引擎：v1.10 旧凭据回落 grok、切到 codex 后重启并弃�
     expect(restarted.status).toBe(200);
     const starts = startsOf(s);
     expect(starts).toHaveLength(2);
-    expect(starts.at(-1).env.CODEX_HOME).toBe(s.codexHome);
-    expect(starts.at(-1).env.INITIAL_AGENT_MODE).toBe("agent-full-access");
+    expect(starts.at(-1)?.env.CODEX_HOME).toBe(s.codexHome);
+    expect(starts.at(-1)?.env.INITIAL_AGENT_MODE).toBe("agent-full-access");
     expect(s.stdout()).toContain("codex session ready");
 
     // 断线续档文件换成新引擎；第二次 boot 走 session/new（旧 grok 的 sessionId 不会被拿去 load）

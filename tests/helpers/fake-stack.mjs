@@ -5,7 +5,7 @@
 //      解析 stdout 的 `Local:` 行得 pageUrl，再等 URL http ok。
 // 返回 { stack, pageUrl, stop() }；options 透传 startStack 的全部参数（turns/presets/sessionImages/
 // assets/audioFiles/trees/stateFiles/worlds/snapshots/indexSchema/indexExtra/legacyIndexArray，
-// 见 harness.mjs 顶部注释）。
+// 见 harness.mjs 顶部注释）。stack 的形态复用 harness 的 StackHandle typedef（不抄第二份）。
 //
 // stop 顺序：先停 vite 再 stack.stop()——vite 是页面入口，先关入口避免收尾窗口里浏览器/代理还在向
 // 正在关闭的 acp-server 发请求（ECONNRESET 噪音）；且 stack.stop() 会删临时 game root，vite 若还活着
@@ -17,8 +17,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { startStack } from "../integration/harness.mjs";
 
+/** @typedef {import("../integration/harness.mjs").StackHandle} StackHandle */
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const VITE_BIN = path.join(ROOT, "node_modules", "vite", "bin", "vite.js");
+// oxlint-disable-next-line eslint/no-control-regex -- 同上：ANSI 颜色码本身就是控制字符
 const ANSI_RE = /\x1B\[[0-9;]*m/g; // 防御性去色（NO_COLOR=1 已设，双保险）
 
 /** 诊断 tee：把 vite stdout 原样落盘（test-results-ui/vite-dev.log），排查启动问题时看 */
@@ -121,7 +124,7 @@ function killProc(proc, graceMs = 4000) {
 /**
  * 起一套假引擎 UI 栈（假 ACP 引擎 + 真 acp-server + vite dev）。
  * @param {object} [options] 透传 startStack：{turns, presets, sessionImages, assets, audioFiles, trees, stateFiles, worlds, snapshots, indexSchema, indexExtra, legacyIndexArray}
- * @returns {Promise<{stack: object, pageUrl: string, stop: () => Promise<void>}>}
+ * @returns {Promise<{stack: StackHandle, pageUrl: string, stop: () => Promise<void>}>}
  */
 export async function startFakeStack(options = {}) {
   const stack = await startStack(options); // 先起后端（含引擎握手与 SSE），失败自回收
@@ -195,7 +198,11 @@ export async function startFakeStack(options = {}) {
         if (!settled) {
           settled = true;
           clearTimeout(timer);
-          reject(new Error(`vite dev server exited early with code ${code} (stderr: ${Buffer.concat(stderrTail).toString().slice(-800)})`));
+          reject(
+            new Error(
+              `vite dev server exited early with code ${code} (stderr: ${Buffer.concat(stderrTail).toString().slice(-800)})`,
+            ),
+          );
         }
       });
     });
@@ -205,7 +212,10 @@ export async function startFakeStack(options = {}) {
     // 再等一次**经 Vite 代理**的 /api/auth：上面的只等 index.html，页面已能加载不等于 /api/* 的转发已热。
     // 冷代理下测试的首个 goto 会撞上「页面起来了、boot 的第一个 GET 却卡住」——启动屏停在
     // 「正在确认登录状态…」直到断言超时（历史上 flaky 的那一段）。先戳一次把代理路径捂热再交给用例。
-    await waitFor(() => httpProbe(pageUrl + "/api/auth", probe), { label: "vite proxy /api/auth", detail: () => probe.last });
+    await waitFor(() => httpProbe(pageUrl + "/api/auth", probe), {
+      label: "vite proxy /api/auth",
+      detail: () => probe.last,
+    });
     return { stack, pageUrl, stop };
   } catch (e) {
     await stop(); // 启动中途失败也要回收子进程

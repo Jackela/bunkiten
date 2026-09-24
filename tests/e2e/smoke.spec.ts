@@ -7,7 +7,16 @@
 // 回合预算：Grok 两条合计约 5 个真实回合；Codex 一条 1 个回合（省 token，够证明链路通）。
 // 前置（缺哪条就 skip 哪条）：Grok 要 PATH 上有 grok CLI + ~/.grok/auth.json；Codex 要 ~/.codex/auth.json。
 // @slow 标记便于 grep 过滤。
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,7 +30,9 @@ const WORLDS_INDEX = path.join(ROOT, "state", "worlds", "index.json");
 
 /** PATH 上找一个可执行文件（与 server/engines.mjs 的 spawn 口径一致：真引擎就是按 PATH 找的） */
 function resolveOnPath(name: string): string | null {
-  for (const dir of String(process.env.PATH || "").split(path.delimiter).filter(Boolean)) {
+  for (const dir of String(process.env.PATH || "")
+    .split(path.delimiter)
+    .filter(Boolean)) {
     if (existsSync(path.join(dir, name))) return path.join(dir, name);
   }
   return null;
@@ -60,7 +71,10 @@ function dropPresetWorlds() {
   }
   if (keep.length === index.length) return;
   // 写回当前形态；磁盘上原本是版本化对象时保留它的顶层其它键（同 server writeWorldsIndex 的读改写口径）
-  writeFileSync(WORLDS_INDEX, JSON.stringify(envelope ? { ...envelope, worlds: keep } : { schema: 1, worlds: keep }, null, 2) + "\n");
+  writeFileSync(
+    WORLDS_INDEX,
+    JSON.stringify(envelope ? { ...envelope, worlds: keep } : { schema: 1, worlds: keep }, null, 2) + "\n",
+  );
 }
 
 function cleanArtifacts() {
@@ -130,13 +144,20 @@ test("快速开局冒烟：两个真实引擎回合 @slow", async () => {
   await expect
     .poll(async () => (await page.getByTestId("dialogue-text").innerText()).length, { timeout: 90_000 })
     .toBeGreaterThan(50);
-  // 选项 ≥2：选项在打字机完成后才浮入（OptionList 依赖 typingDone），必须轮询等待
+  // 选项 ≥2：选项在打字机完成后才浮入（OptionList 依赖 typingDone），必须轮询等待。
+  // 诊断并进**被轮询的值**：Playwright 的 `message` 只收字符串，传函数会被当成普通值拼进报错
+  // （拿到的是函数源码文本，「对话区内容」其实一次都没渲染过——v1.13 修正）。
   await expect
-    .poll(async () => page.getByTestId("options").locator("button").count(), {
-      timeout: 90_000,
-      message: async () => `options 为 0，对话区内容：${(await page.getByTestId("dialogue-text").innerText()).slice(0, 300)}`,
-    })
-    .toBeGreaterThanOrEqual(2);
+    .poll(
+      async () => {
+        const count = await page.getByTestId("options").locator("button").count();
+        if (count >= 2) return "就绪";
+        const seen = (await page.getByTestId("dialogue-text").innerText()).slice(0, 300);
+        return `options 只有 ${count} 个；对话区内容：${seen}`;
+      },
+      { timeout: 90_000 },
+    )
+    .toBe("就绪");
   // 选项段不进对话窗：正文只留剧情文本，「**行动**」与选项行由按钮呈现（显示层截断的回归断言。
   // options ≥2 时打字机已完成，若截断回归，纯文本渲染的 dialogue-text 里必含字面量「**行动**」）
   await expect(page.getByTestId("dialogue-text")).not.toContainText("**行动**");
@@ -190,13 +211,18 @@ test("章节制作冒烟：规划第 1 章后跳过并开演 @slow", async () =>
   await expect
     .poll(async () => (await page.getByTestId("dialogue-text").innerText()).length, { timeout: 90_000 })
     .toBeGreaterThan(50);
-  // 选项 ≥2：树首节点的出边各化身为一个选项（规格 2–4 个）
+  // 选项 ≥2：树首节点的出边各化身为一个选项（规格 2–4 个）。诊断并进被轮询的值（理由同上一处）
   await expect
-    .poll(async () => page.getByTestId("options").locator("button").count(), {
-      timeout: 90_000,
-      message: async () => `options 为 0，对话区内容：${(await page.getByTestId("dialogue-text").innerText()).slice(0, 300)}`,
-    })
-    .toBeGreaterThanOrEqual(2);
+    .poll(
+      async () => {
+        const count = await page.getByTestId("options").locator("button").count();
+        if (count >= 2) return "就绪";
+        const seen = (await page.getByTestId("dialogue-text").innerText()).slice(0, 300);
+        return `options 只有 ${count} 个；对话区内容：${seen}`;
+      },
+      { timeout: 90_000 },
+    )
+    .toBe("就绪");
 });
 
 /**
@@ -204,7 +230,11 @@ test("章节制作冒烟：规划第 1 章后跳过并开演 @slow", async () =>
  * 省 token 的取舍：**只跑一个回合**（跳过美术的快速开局）——够证明「链路通 + 协议行对 + 状态落盘」，
  * 不想把每次冒烟都变成一次完整章节。
  */
-test("Codex 后端冒烟：真随包 codex-acp + 真登录态，一个真实引擎回合 @slow", async ({ browser }: { browser: Browser }) => {
+test("Codex 后端冒烟：真随包 codex-acp + 真登录态，一个真实引擎回合 @slow", async ({
+  browser,
+}: {
+  browser: Browser;
+}) => {
   test.skip(Boolean(CODEX_SKIP_REASON), CODEX_SKIP_REASON);
   test.setTimeout(900_000);
 
@@ -239,11 +269,16 @@ test("Codex 后端冒烟：真随包 codex-acp + 真登录态，一个真实引�
       .poll(async () => (await codexPage.getByTestId("dialogue-text").innerText()).length, { timeout: 120_000 })
       .toBeGreaterThan(50);
     await expect
-      .poll(async () => codexPage.getByTestId("options").locator("button").count(), {
-        timeout: 120_000,
-        message: async () => `options 为 0，对话区内容：${(await codexPage.getByTestId("dialogue-text").innerText()).slice(0, 300)}`,
-      })
-      .toBeGreaterThanOrEqual(2);
+      .poll(
+        async () => {
+          const count = await codexPage.getByTestId("options").locator("button").count();
+          if (count >= 2) return "就绪";
+          const seen = (await codexPage.getByTestId("dialogue-text").innerText()).slice(0, 300);
+          return `options 只有 ${count} 个；对话区内容：${seen}`;
+        },
+        { timeout: 120_000 },
+      )
+      .toBe("就绪");
     await expect(codexPage.getByTestId("dialogue-text")).not.toContainText("**行动**");
 
     // SKILL 的状态纪律：引擎按世界线写了 state.md（「它真的在按 bunkiten 的规则演」的硬证据）

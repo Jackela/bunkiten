@@ -22,6 +22,14 @@ jobs:
       - name: Install
         run: npm ci
 
+      # 最快的一对先跑（秒级、零依赖）：风格与静态规则。放在 build 之前是为了让最常见的
+      # 「忘了跑 npm run format」在这里就断掉，不必等完构建与测试。
+      - name: Format check（prettier --check）
+        run: npm run format:check
+
+      - name: Lint（oxlint：correctness 作 error + no-floating-promises / rules-of-hooks）
+        run: npm run lint
+
       - name: Build（tsc -b && vite build）
         run: npm run build
 
@@ -29,6 +37,12 @@ jobs:
       # 独立于 src 的 tsconfig.json；tsc 已在 devDependencies，无新依赖）
       - name: Server typecheck（checkJs）
         run: npm run typecheck:server
+
+      # tests/** 的类型门禁（tsconfig.tests.json，v1.13 补）：此前 tests/** 不在任何 tsconfig 里，
+      # 最大的测试文件（ui.test.tsx 6000+ 行、contract.test.ts）里的类型错误静默存在——
+      # esbuild 只剥类型不检查，编译器看不到它们。
+      - name: Tests typecheck（tests/** 此前不在任何 tsconfig 里）
+        run: npm run typecheck:tests
 
       # 单测 + 覆盖率（同一套测试文件，coverage provider 只是加仪表——替代原 `npm test` 步骤而非并列，
       # 避免 CI 双跑同一套测试拖 2 倍时长）。thresholds = 基线 - 2pp 的防下滑线（vitest.config.ts）。
@@ -63,6 +77,9 @@ jobs:
     env:
       # 打包态冒烟不联网查更新（main.js 认这个开关）；_electron 不需要浏览器下载
       BUNKITEN_DISABLE_UPDATE: "1"
+      # 本 job 刚跑完 dist:win:dir，产物**必须**存在（v1.13）:此前 findPackagedApp 找不到产物时
+      # 整组 test.skip → job 绿、零断言，「Windows 上的包能开」重新失去证据。
+      BUNKITEN_REQUIRE_PACKAGED: "1"
     steps:
       - uses: actions/checkout@v7
 

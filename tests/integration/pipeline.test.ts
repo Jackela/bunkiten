@@ -18,7 +18,8 @@ import path from "node:path";
 import { startStack } from "./harness.mjs";
 
 // 可辨识的假 JPEG 字节（内容断言用）：JPEG SOI 前缀 + 可读标记
-const fakeJpeg = (tag: string) => Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from(`BUNKITEN-${tag}`)]);
+const fakeJpeg = (tag: string) =>
+  Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from(`BUNKITEN-${tag}`)]);
 // /img 查询串构造：URLSearchParams 会把 chinese 与 `/` 正确百分号编码（穿越用例依赖这个）
 const imgUrl = (params: Record<string, string>) => "/img?" + new URLSearchParams(params).toString();
 // 轮询等待（stdout 断言用；events 用 stack.waitFor）
@@ -61,7 +62,9 @@ describe("集成：假 ACP 引擎 + 真 acp-server（CONTRACTS §8 1–5、7–8
     await stack.waitFor((ev: any[]) => ev.some((e) => e.type === "turn_end"), { label: "turn_end(①)" });
 
     // 流式识别到完整【图】行（只有完整行才生效）
-    expect(stack.events.some((e: any) => e.type === "chunk" && String(e.text).includes("【图】立绘|薇拉|images/1.jpg"))).toBe(true);
+    expect(
+      stack.events.some((e: any) => e.type === "chunk" && String(e.text).includes("【图】立绘|薇拉|images/1.jpg")),
+    ).toBe(true);
 
     const target = path.join(stack.root, "presets", "demo", "assets", "立绘-薇拉.jpg");
     expect(existsSync(target)).toBe(false); // 标记自身拿不到剧本 id → 不落盘（B1 落盘纪律）
@@ -85,7 +88,9 @@ describe("集成：假 ACP 引擎 + 真 acp-server（CONTRACTS §8 1–5、7–8
   }, 15000);
 
   it("② /img 目录穿越（编码后的 ../）不得直服", async () => {
-    const payloads = [
+    // 显式标注成 Record<string,string>：不标的话字面量数组会推成「可选键各不相同」的联合，
+    // 与 imgUrl 的入参对不上（值本身全是字符串）
+    const payloads: Record<string, string>[] = [
       { p: "presets/demo/assets/../../../etc/passwd" },
       { p: "presets/demo/assets/../../../server/acp-server.mjs" },
       { p: "../../etc/passwd" },
@@ -154,7 +159,9 @@ describe("集成：假 ACP 引擎 + 真 acp-server（CONTRACTS §8 1–5、7–8
 
     const got = stack.events.slice(from);
     expect(got.filter((e: any) => e.type === "treeEdited")).toHaveLength(1);
-    expect(got.findIndex((e: any) => e.type === "treeEdited")).toBeLessThan(got.findIndex((e: any) => e.type === "turn_end"));
+    expect(got.findIndex((e: any) => e.type === "treeEdited")).toBeLessThan(
+      got.findIndex((e: any) => e.type === "turn_end"),
+    );
   }, 15000);
 
   it("⑦ API 冒烟：/api/presets、/api/assets（preset 必填，缺/非法 400）、/api/worlds CRUD", async () => {
@@ -198,7 +205,9 @@ describe("集成：假 ACP 引擎 + 真 acp-server（CONTRACTS §8 1–5、7–8
     expect(existsSync(path.join(forkedDir, "fork.md"))).toBe(true);
 
     // 未知世界 fork → 400
-    expect((await stack.postJSON("/api/worlds", { action: "fork", worldId: "nope-1", nodeId: "1-1" })).status).toBe(400);
+    expect((await stack.postJSON("/api/worlds", { action: "fork", worldId: "nope-1", nodeId: "1-1" })).status).toBe(
+      400,
+    );
 
     // delete 冒烟（删掉 create 出来的那个）
     const deleted = await stack.postJSON("/api/worlds", { action: "delete", worldId: created.body.worldId });
@@ -212,7 +221,9 @@ describe("集成：假 ACP 引擎 + 真 acp-server（CONTRACTS §8 1–5、7–8
     const fromEnter = stack.events.length;
     const enter = await stack.prompt("继续世界：w1。");
     expect(enter.status).toBe(200);
-    await stack.waitFor((ev: any[]) => ev.slice(fromEnter).some((e) => e.type === "turn_end"), { label: "turn_end(⑧-enter)" });
+    await stack.waitFor((ev: any[]) => ev.slice(fromEnter).some((e) => e.type === "turn_end"), {
+      label: "turn_end(⑧-enter)",
+    });
     const histDir = path.join(stack.root, "state", "worlds", "w1", "history");
     const countSnapshots = () => (existsSync(histDir) ? readdirSync(histDir).length : 0);
     const before = countSnapshots();
@@ -309,7 +320,9 @@ describe("集成 §8-6：sniffPreset 世界→剧本（继续世界：w1。→ �
     const from = stack.events.length;
     const free = await stack.prompt("世界：other。");
     expect(free.status).toBe(200);
-    await stack.waitFor((ev: any[]) => ev.slice(from).some((e) => e.type === "turn_end"), { label: "turn_end(⑥-free)" });
+    await stack.waitFor((ev: any[]) => ev.slice(from).some((e) => e.type === "turn_end"), {
+      label: "turn_end(⑥-free)",
+    });
     const still = await stack.getBytes(imgUrl({ p: "assets/立绘-林夏.jpg" }));
     expect(still.status).toBe(200);
     expect(still.bytes.equals(fakeJpeg("linxia-demo"))).toBe(true);
@@ -347,7 +360,9 @@ describe("集成：回合原文日志 + 质量守卫（v1.7）", () => {
     const from = stack.events.length;
     const r = await stack.prompt("继续世界：w1。");
     expect(r.status).toBe(200);
-    await stack.waitFor((ev: any[]) => ev.slice(from).some((e: any) => e.type === "turn_end"), { label: "turn_end(logs-⑪)" });
+    await stack.waitFor((ev: any[]) => ev.slice(from).some((e: any) => e.type === "turn_end"), {
+      label: "turn_end(logs-⑪)",
+    });
 
     const logsDir = path.join(stack.root, "state", "worlds", "w1", "logs");
     expect(readdirSync(logsDir)).toEqual(["0001.json"]);
@@ -359,7 +374,9 @@ describe("集成：回合原文日志 + 质量守卫（v1.7）", () => {
     expect(typeof entry.at).toBe("string");
 
     // seq 与同回合快照对齐：history/0001.json 就是这一轮的三文件档
-    const snap = JSON.parse(readFileSync(path.join(stack.root, "state", "worlds", "w1", "history", "0001.json"), "utf8"));
+    const snap = JSON.parse(
+      readFileSync(path.join(stack.root, "state", "worlds", "w1", "history", "0001.json"), "utf8"),
+    );
     expect(snap.seq).toBe(entry.seq);
 
     // 回合自带 **行动** → 守卫不触发：先等日志行刷出（它写在守卫点之后、stdout 有序），
@@ -372,7 +389,9 @@ describe("集成：回合原文日志 + 质量守卫（v1.7）", () => {
     const from = stack.events.length;
     const r = await stack.prompt("自由回合：凑近看她。");
     expect(r.status).toBe(200);
-    await stack.waitFor((ev: any[]) => ev.slice(from).some((e: any) => e.type === "turn_end"), { label: "turn_end(logs-⑫)" });
+    await stack.waitFor((ev: any[]) => ev.slice(from).some((e: any) => e.type === "turn_end"), {
+      label: "turn_end(logs-⑫)",
+    });
     const got = stack.events.slice(from);
 
     // 追问属于同一回合：追问补的选项段以 chunk 流进同一回合，且整个窗口只有一次 turn_end
@@ -408,7 +427,9 @@ describe("集成：回合原文日志 + 质量守卫（v1.7）", () => {
     const from = stack.events.length;
     const r = await stack.prompt("美术：立绘 新角色。待命：");
     expect(r.status).toBe(200);
-    await stack.waitFor((ev: any[]) => ev.slice(from).some((e) => e.type === "turn_end"), { label: "turn_end(logs-⑬)" });
+    await stack.waitFor((ev: any[]) => ev.slice(from).some((e) => e.type === "turn_end"), {
+      label: "turn_end(logs-⑬)",
+    });
 
     expect(readdirSync(logsDir).length).toBe(logsBefore); // 非正戏回合不产生日志条目
     expect(readdirSync(histDir).length).toBe(histBefore);
@@ -420,7 +441,9 @@ describe("集成：回合原文日志 + 质量守卫（v1.7）", () => {
     const from = stack.events.length;
     const r = await stack.prompt("终章：走进最后一扇门。");
     expect(r.status).toBe(200); // 守卫豁免不产生任何失败路径
-    await stack.waitFor((ev: any[]) => ev.slice(from).some((e) => e.type === "turn_end"), { label: "turn_end(logs-⑭)" });
+    await stack.waitFor((ev: any[]) => ev.slice(from).some((e) => e.type === "turn_end"), {
+      label: "turn_end(logs-⑭)",
+    });
 
     // 回合缺 **行动** 但带章标记 → 守卫不追问：先等本回合日志行刷出（它在守卫点之后落定），
     // 追问计数仍是 ⑫ 那一次；若误追问，fake 引擎会按顺次消费吃掉后续条目并把「自动追问一次」打成第二遍
@@ -495,7 +518,12 @@ describe("集成：剧本导出包导出/导入（bunkiten-preset v1.7）", () =
     expect((await stack.getJSON("/api/presets/export?id=" + encodeURIComponent("../etc"))).status).toBe(400);
     expect((await stack.getJSON("/api/presets/export?id=nope")).status).toBe(404);
     expect(
-      (await stack.postJSON("/api/presets", { action: "import", bundle: { format: "x", version: 1, id: "x", presetMd: "# y" } })).status,
+      (
+        await stack.postJSON("/api/presets", {
+          action: "import",
+          bundle: { format: "x", version: 1, id: "x", presetMd: "# y" },
+        })
+      ).status,
     ).toBe(400);
     expect((await stack.postJSON("/api/presets", { action: "other" })).status).toBe(400);
     // 拒绝后不落盘

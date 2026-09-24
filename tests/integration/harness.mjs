@@ -26,6 +26,39 @@ const BOOT_TIMEOUT_MS = 20000;
 // 单引号 shell 转义（垫片脚本里嵌路径用）
 const shQuote = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
 
+/**
+ * 集成栈句柄（{@link startStack} 的返回值）：测试用例通过它打 HTTP、读 SSE 事件、断言引擎探针。
+ *
+ * 为什么逐字段写全而不是 `@returns {Promise<object>}`（v1.13 修正）：后者让 **所有** `.ts` 用例里的
+ * `stack.getJSON(...)` 都变成 `Property 'getJSON' does not exist on type 'object'`——`npm run typecheck:tests`
+ * 一开就报 125 条同类错误，把真正的类型问题埋掉了。句柄形态本来就是测试层的公共契约，
+ * 写在这里既是文档也是类型真源（tests/helpers/fake-stack.mjs 直接引用这个 typedef）。
+ * @typedef {object} StackHandle
+ * @property {string} tmp 临时根目录（game root 与 home 的父级）
+ * @property {string} root game root（子进程的 GROK_GAME_ROOT）
+ * @property {string} home 临时 HOME（凭据、登录态、目录缓存都在这下面）
+ * @property {string} binDir 垫片目录（grok/codex 的 CLI 垫片放这里，PATH 前置）
+ * @property {string} sessionId 假引擎的固定会话 id
+ * @property {string} sessionImagesDir 会话图片目录（引擎落盘、客户端直服）
+ * @property {(name: string, bytes: Buffer) => string} putSessionImage 写一张会话图片，返回相对路径
+ * @property {string} codexHome 游戏管理的 CODEX_HOME（v1.11 起 spawn 时指向它）
+ * @property {Array<{type: string} & Record<string, any>>} events 实时 SSE 事件（JSON 解析后的载荷）
+ * @property {number|null} port 实际监听端口（boot 握手完成后才有值）
+ * @property {string|null} base `http://localhost:<port>`（boot 握手完成后才有值）
+ * @property {() => string} stdout acp-server 的 stdout 全文（日志断言与排障）
+ * @property {string} engineProbe 假引擎探针 JSONL 的路径
+ * @property {() => Array<Record<string, any>>} engineProbeEntries 探针条目（文件不存在时空数组）
+ * @property {() => Promise<void>} stop 收尾：杀 server + 删临时目录（幂等）
+ * @property {(p: string, init?: RequestInit) => Promise<Response>} fetch 相对 base 的 fetch
+ * @property {(p: string) => Promise<{status: number, headers: Headers, body: any}>} getJSON
+ * @property {(p: string) => Promise<{status: number, headers: Headers, body: string}>} getText
+ * @property {(p: string) => Promise<{status: number, type: string|null, bytes: Buffer}>} getBytes
+ * @property {(p: string, body: unknown) => Promise<{status: number, body: any}>} postJSON
+ * @property {(text: string) => Promise<{status: number, body: any}>} prompt 发一句玩家输入（POST /prompt）
+ * @property {(pred: (events: Array<{type: string} & Record<string, any>>) => boolean,
+ *   opts?: {timeout?: number, interval?: number, label?: string}) => Promise<void>} waitFor 轮询断言
+ */
+
 // 预置剧本：frontmatter id/title + `# 主要角色`（server parseCharacters 按 `## 名` 抓取）；
 // body 追加在角色小节之后的额外小节（如 `# protagonist_card`，供 UI e2e 走捏人开局）
 function presetMarkdown(id, title, body = "") {
@@ -54,8 +87,7 @@ function presetMarkdown(id, title, body = "") {
 
 // 预置剧本元素形态：string（只给 id）或 { id, title?, body? }
 const presetIdOf = (p) => (typeof p === "string" ? p : p?.id);
-const presetTitleOf = (p) =>
-  typeof p === "string" ? undefined : typeof p?.title === "string" ? p.title : undefined;
+const presetTitleOf = (p) => (typeof p === "string" ? undefined : typeof p?.title === "string" ? p.title : undefined);
 
 // 单个世界的三文件 + 返回 index 条目（w1 与追加世界共用一套生成逻辑）
 function seedWorld(worldsRoot, worldId, preset, title, meta = {}) {
@@ -91,7 +123,6 @@ function seedWorld(worldsRoot, worldId, preset, title, meta = {}) {
 //   · indexSchema: number        → 版本化索引的 schema 号（缺省 1 = 当前形态；2 = 未来版本，验「读到、不降级写回」）
 //   · indexExtra:  object        → 版本化索引里追加的未知顶层键（验读改写保留）
 //   · legacyIndexArray: boolean  → 写 v1.8 及以前的**裸数组**索引（验启动期 migrateWorldsSchema 真的升了它）
-//   · auth: "ok" | "missing"     → 是否在临时 HOME 里写 ~/.grok/auth.json（缺省 "ok"；"missing" = boot 屏未登录态）
 //   · credentials: object        → 写临时 HOME 的 ~/.bunkiten/credentials.json（0600；验自备 key 的注入与端点）
 function seedStack(root, presets, extra = {}) {
   const {
@@ -106,7 +137,6 @@ function seedStack(root, presets, extra = {}) {
     legacyIndexArray = false,
     presetMd = {},
     covers = {},
-    auth = "ok",
   } = extra;
   mkdirSync(path.join(root, "presets"), { recursive: true });
   const worldsRoot = path.join(root, "state", "worlds");
@@ -271,7 +301,7 @@ async function httpOk(url) {
  *   `BUNKITEN_PROVIDERS_URL` 指向本地 mock、`BUNKITEN_DISABLE_UPDATE:"0"` 打开抓取）
  * @param {string|null} [opts.homeDir] 复用已有的 HOME（跨多次 startStack 共享 `~/.bunkiten` 缓存；
  *   给了就归调用方所有——stop() 只删临时目录、不动它）
- * @returns {Promise<object>} stack 句柄（root/home/events/waitFor/prompt/stop 等）
+ * @returns {Promise<StackHandle>} stack 句柄（形态见文件头的 StackHandle typedef）
  */
 export async function startStack({
   turns = [],
@@ -310,7 +340,8 @@ export async function startStack({
   // v1.11：codex 的登录态（玩家 `~/.codex/auth.json`，即「沿用终端登录」的来源）。
   // codexAuth:"ok" 时才写；engine=codex 的栈靠它让 /api/auth 回 loggedIn=true，并由 prepare() 拷进 ~/.bunkiten/codex。
   mkdirSync(path.join(home, ".codex"), { recursive: true });
-  if (codexAuth === "ok") writeFileSync(path.join(home, ".codex", "auth.json"), '{"token":"fake-codex"}\n', { mode: 0o600 });
+  if (codexAuth === "ok")
+    writeFileSync(path.join(home, ".codex", "auth.json"), '{"token":"fake-codex"}\n', { mode: 0o600 });
   // 引擎凭据（v1.10）：预置进临时 HOME 的 ~/.bunkiten/credentials.json。mode 与真实写入一致（0600 / 目录 0700），
   // 这样「保存后的权限」与「读路径」在集成层是同一份行为，不必额外伪造。
   if (credentials) {
@@ -318,7 +349,20 @@ export async function startStack({
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     writeFileSync(path.join(dir, "credentials.json"), JSON.stringify(credentials, null, 2) + "\n", { mode: 0o600 });
   }
-  seedStack(root, presets, { assets, audioFiles, trees, stateFiles, worlds, snapshots, indexSchema, indexExtra, legacyIndexArray, presetMd, covers, auth });
+  seedStack(root, presets, {
+    assets,
+    audioFiles,
+    trees,
+    stateFiles,
+    worlds,
+    snapshots,
+    indexSchema,
+    indexExtra,
+    legacyIndexArray,
+    presetMd,
+    covers,
+    auth,
+  });
 
   // 会话图片目录：server 用 os.homedir()（=HOME）+ encodeURIComponent(GAME_ROOT) + sessionId 拼接
   const sessionImagesDir = path.join(home, ".grok", "sessions", encodeURIComponent(root), SESSION_ID, "images");
@@ -331,13 +375,22 @@ export async function startStack({
 
   // PATH 垫片：bin/grok → exec <同一个 node> fake-engine.mjs "$@"（FAKE_ENGINE_AS 告诉假引擎「你是哪家 CLI」，
   // 它据此扮演同名的登录/登出——见 fake-engine.mjs 顶部）
-  writeFileSync(path.join(binDir, "grok"), `#!/bin/sh\nexec env FAKE_ENGINE_AS=grok ${shQuote(process.execPath)} ${shQuote(FAKE_ENGINE)} "$@"\n`);
+  writeFileSync(
+    path.join(binDir, "grok"),
+    `#!/bin/sh\nexec env FAKE_ENGINE_AS=grok ${shQuote(process.execPath)} ${shQuote(FAKE_ENGINE)} "$@"\n`,
+  );
   chmodSync(path.join(binDir, "grok"), 0o755);
   // v1.11：codex 后端的垫片（engine=codex 的栈走它）——同一个假引擎，argv 为空（codex-acp 不带 CLI 参数）
-  writeFileSync(path.join(binDir, "codex-acp"), `#!/bin/sh\nexec env FAKE_ENGINE_AS=codex ${shQuote(process.execPath)} ${shQuote(FAKE_ENGINE)} "$@"\n`);
+  writeFileSync(
+    path.join(binDir, "codex-acp"),
+    `#!/bin/sh\nexec env FAKE_ENGINE_AS=codex ${shQuote(process.execPath)} ${shQuote(FAKE_ENGINE)} "$@"\n`,
+  );
   chmodSync(path.join(binDir, "codex-acp"), 0o755);
   // v1.11 收尾：随包 codex **CLI** 的垫片（GUI 的「登录 Codex」按钮走它）——同样由假引擎扮演 login/logout
-  writeFileSync(path.join(binDir, "codex"), `#!/bin/sh\nexec env FAKE_ENGINE_AS=codex ${shQuote(process.execPath)} ${shQuote(FAKE_ENGINE)} "$@"\n`);
+  writeFileSync(
+    path.join(binDir, "codex"),
+    `#!/bin/sh\nexec env FAKE_ENGINE_AS=codex ${shQuote(process.execPath)} ${shQuote(FAKE_ENGINE)} "$@"\n`,
+  );
   chmodSync(path.join(binDir, "codex"), 0o755);
 
   const port = 20000 + Math.floor(Math.random() * 40000); // 随机高位端口，避开开发中的 7800
@@ -421,7 +474,12 @@ export async function startStack({
     } catch {}
   };
   process.once("exit", killServer);
-  for (const [sig, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129], ["SIGQUIT", 131]]) {
+  for (const [sig, code] of [
+    ["SIGINT", 130],
+    ["SIGTERM", 143],
+    ["SIGHUP", 129],
+    ["SIGQUIT", 131],
+  ]) {
     process.on(sig, () => {
       killServer();
       process.exit(code);
@@ -488,7 +546,11 @@ export async function startStack({
     return { status: r.status, type: r.headers.get("content-type"), bytes: Buffer.from(await r.arrayBuffer()) };
   };
   stack.postJSON = async (p, body) => {
-    const r = await stack.fetch(p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const r = await stack.fetch(p, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
     return { status: r.status, body: await r.json().catch(() => null) };
   };
   stack.prompt = (text) => stack.postJSON("/prompt", { text });
@@ -504,7 +566,8 @@ export async function startStack({
           ok = false;
         }
         if (ok) return resolve();
-        if (Date.now() > deadline) return reject(new Error(`timeout waiting for ${label}（events: ${JSON.stringify(events)}）`));
+        if (Date.now() > deadline)
+          return reject(new Error(`timeout waiting for ${label}（events: ${JSON.stringify(events)}）`));
         setTimeout(tick, interval);
       };
       tick();

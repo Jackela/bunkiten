@@ -33,12 +33,22 @@
 //   · 打包态 GAME_ROOT 是 .app 内的 resources/game（main.js 写死），重绘会**覆盖**里面的一张 jpg——
 //     本 spec 在收尾把原字节恢复回去（内容与运行前逐字一致，只多一次 mtime 变化）。
 //   · 真 grok 会在真实 `~/.grok/sessions/` 下为这个 gameRoot 落一份会话目录（不在本 spec 清理范围内）。
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
-import { findPackagedApp, killTree, packagedSkipHint, rmTemp } from "../helpers/packaged-app.mjs";
+import { findPackagedApp, killTree, packagedAppRequired, packagedSkipHint, rmTemp } from "../helpers/packaged-app.mjs";
 import { maskKey, normalizeCredentials, writeCredentials } from "../../server/credentials.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -112,6 +122,16 @@ const SKIP_LOGIN = !existsSync(path.join(REAL_HOME, ".grok", "auth.json"));
 const SKIP_OPT_IN = process.env.BUNKITEN_E2E_REAL_IMAGE !== "1";
 
 /**
+ * 产物必须存在时（`BUNKITEN_REQUIRE_PACKAGED=1`，CI 打完包立刻跑的那条路）不走 `test.skip`，
+ * 而是当场断言失败——理由同 packaged.spec 的 requireApp：跳过 = 绿 + 零断言。
+ */
+function skipOrFailOnMissingApp(): void {
+  if (!SKIP_APP) return;
+  if (packagedAppRequired()) expect(APP_BIN, packagedSkipHint()).not.toBeNull();
+  test.skip(true, packagedSkipHint());
+}
+
+/**
  * 收尾：**先关窗口再 close**，close 卡住就 SIGKILL——SSE 长连接会让主进程的 will-quit 一直等下去
  * （同 packaged.spec：`/events` 不断，stopServer() 就永远等连接散尽）。冒烟/出图都不该把 worker 挂死。
  * @param {ElectronApplication} app 已启动的应用
@@ -119,7 +139,10 @@ const SKIP_OPT_IN = process.env.BUNKITEN_E2E_REAL_IMAGE !== "1";
 async function closeApp(app: ElectronApplication): Promise<void> {
   for (const w of app.windows()) await w.close().catch(() => {});
   const closed = await Promise.race([
-    app.close().then(() => true).catch(() => true),
+    app
+      .close()
+      .then(() => true)
+      .catch(() => true),
     new Promise<boolean>((r) => setTimeout(() => r(false), 15_000)),
   ]);
   if (!closed) {
@@ -163,13 +186,16 @@ test("打包态真出图：真 grok CLI + 真图片服务，画廊重绘落一�
     "真出图会真花一次图片额度 + 一个真回合：默认跳过；要跑就带上 `BUNKITEN_E2E_REAL_IMAGE=1`" +
       "（例如 `BUNKITEN_E2E_REAL_IMAGE=1 npm run test:e2e:packaged`）——跑过就不必反复跑",
   );
-  test.skip(SKIP_APP, packagedSkipHint());
+  skipOrFailOnMissingApp();
   test.skip(
     SKIP_CREDS,
     `无可用图片服务凭据（${CREDS_PICK.source}）：需要 image 组 mode=byok 且 baseUrl/apiKey/model 齐全` +
       "——可用 env BUNKITEN_E2E_CREDENTIALS 传 JSON，或配置真实 ~/.bunkiten/credentials.json",
   );
-  test.skip(SKIP_GROK, "解析不到真 grok 二进制：本机需安装并登录 grok CLI（候选 ~/.grok/bin、/usr/local/bin、/opt/homebrew/bin）");
+  test.skip(
+    SKIP_GROK,
+    "解析不到真 grok 二进制：本机需安装并登录 grok CLI（候选 ~/.grok/bin、/usr/local/bin、/opt/homebrew/bin）",
+  );
   test.skip(SKIP_LOGIN, "本机没有 grok 登录态（~/.grok/auth.json）：终端 `grok login` 后重跑");
 
   const tmp = mkdtempSync(path.join(os.tmpdir(), "bunkiten-realimg-"));
@@ -247,7 +273,9 @@ test("打包态真出图：真 grok CLI + 真图片服务，画廊重绘落一�
     // 目标：该剧本 assets 里的一张**基础立绘**（文件名 `立绘-<名>.jpg`，无差分后缀）。
     // 重绘它 → 引擎必按 SKILL 覆盖同名文件，名字完全可确定。
     assetsDir = path.join(APP_GAME_ROOT as string, "presets", presetId, "assets");
-    const basePortraits = existsSync(assetsDir) ? readdirSync(assetsDir).filter((f) => /^立绘-[^-]+\.jpg$/.test(f)) : [];
+    const basePortraits = existsSync(assetsDir)
+      ? readdirSync(assetsDir).filter((f) => /^立绘-[^-]+\.jpg$/.test(f))
+      : [];
     if (!existsSync(assetsDir) || basePortraits.length === 0) {
       console.log(`[real-image] 剧本 ${presetId} 的 assets 目录没有可重绘的基础立绘：${assetsDir}`);
       test.skip(true, `打包态剧本 ${presetId} 的 assets 里没有可重绘的基础立绘（${assetsDir}）`);
@@ -299,7 +327,10 @@ test("打包态真出图：真 grok CLI + 真图片服务，画廊重绘落一�
         .toBe(true);
     } catch (e) {
       // 轮询后的实况（poll 的字符串消息拿不到）：目录现状 / 画廊提示 / 日志尾巴都打出来再原样抛
-      const notice = await win.getByTestId("assets-regen-notice").textContent().catch(() => null);
+      const notice = await win
+        .getByTestId("assets-regen-notice")
+        .textContent()
+        .catch(() => null);
       console.log(`[real-image] 目标未更新：${targetRel}`);
       console.log(`[real-image] 目录现状=${JSON.stringify(snapshotDir(assetsDir))}`);
       console.log(`[real-image] 画廊提示=${notice ?? "(无)"}`);

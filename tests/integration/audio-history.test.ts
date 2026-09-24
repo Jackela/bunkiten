@@ -152,7 +152,9 @@ describe("集成：逐轮快照 + 世界线精确回退/导出导入（CONTRACTS
     // 续玩指令 → sniffPreset 记下 currentWorldId=w1（该指令本身是正戏回合）
     let from = stack.events.length;
     expect((await stack.prompt("继续世界：w1。")).status).toBe(200);
-    await stack.waitFor((ev: any[]) => ev.slice(from).some((e) => e.type === "turn_end"), { label: "turn_end(history-1)" });
+    await stack.waitFor((ev: any[]) => ev.slice(from).some((e) => e.type === "turn_end"), {
+      label: "turn_end(history-1)",
+    });
     expect(readdirSync(histDir)).toEqual(["0001.json"]);
     const snap = JSON.parse(readFileSync(path.join(histDir, "0001.json"), "utf8"));
     expect(snap).toMatchObject({ seq: 1, kind: "turn", nodeId: "1-1", chapterNo: 1 });
@@ -165,7 +167,9 @@ describe("集成：逐轮快照 + 世界线精确回退/导出导入（CONTRACTS
     //（v1.13 去重是 files + prompt 全等：files 相同 ≠ 同一幕——这条不变量是重演的地基）
     from = stack.events.length;
     expect((await stack.prompt("看看四周。")).status).toBe(200);
-    await stack.waitFor((ev: any[]) => ev.slice(from).some((e) => e.type === "turn_end"), { label: "turn_end(history-2)" });
+    await stack.waitFor((ev: any[]) => ev.slice(from).some((e) => e.type === "turn_end"), {
+      label: "turn_end(history-2)",
+    });
     expect(readdirSync(histDir)).toEqual(["0001.json", "0002.json"]);
     expect(JSON.parse(readFileSync(path.join(histDir, "0002.json"), "utf8")).prompt).toBe("看看四周。");
 
@@ -181,19 +185,36 @@ describe("集成：逐轮快照 + 世界线精确回退/导出导入（CONTRACTS
 
     // 存档点命名（v1.12）：名字写进世界索引（snapshotLabels），**不碰快照文件**；/api/history 两条路都带出来
     const before = readFileSync(path.join(histDir, "0001.json"), "utf8");
-    expect((await stack.postJSON("/api/worlds", { action: "labelSnapshot", worldId: "w1", seq: 1, label: "雨夜遇袭前" })).status).toBe(200);
+    expect(
+      (await stack.postJSON("/api/worlds", { action: "labelSnapshot", worldId: "w1", seq: 1, label: "雨夜遇袭前" }))
+        .status,
+    ).toBe(200);
     expect(readFileSync(path.join(histDir, "0001.json"), "utf8")).toBe(before); // append-only 的引擎真相一字不动
+    // 幕号契约（v1.13）：`turn_end` 事件带**本回合的快照序号**——客户端拿它当「第 N 幕」，
+    // 与存档点标注/回溯分割线同基底（此前客户端用自己的回合计数，续玩或回退一次两套数字就错开）。
+    const ends = stack.events.filter((e: any) => e.type === "turn_end");
+    const lastSeq = ends.at(-1)?.seq;
+    expect(typeof lastSeq).toBe("number");
+    // 事件里报的序号必须**与盘上的快照文件对得上**（这才是「幕号 = 快照序号」的可验证形式；
+    // 硬写某个具体数字会随本用例的回合数漂移）
+    const files = readdirSync(path.join(w1Dir(stack), "history"));
+    expect(files).toContain(`${String(lastSeq).padStart(4, "0")}.json`);
+
     expect((await stack.getJSON("/api/history?worldId=w1")).body.snapshots[0].label).toBe("雨夜遇袭前");
     expect((await stack.getJSON("/api/history?worldId=w1&seq=1")).body.snapshots[0].label).toBe("雨夜遇袭前");
     // 清除：空串 → 名字没了（快照本身仍在）
-    expect((await stack.postJSON("/api/worlds", { action: "labelSnapshot", worldId: "w1", seq: 1, label: "" })).status).toBe(200);
+    expect(
+      (await stack.postJSON("/api/worlds", { action: "labelSnapshot", worldId: "w1", seq: 1, label: "" })).status,
+    ).toBe(200);
     expect((await stack.getJSON("/api/history?worldId=w1")).body.snapshots[0].label).toBe("");
     expect((await stack.getJSON("/api/history?worldId=" + encodeURIComponent("../etc"))).status).toBe(400);
 
     // 规划回合 → 判定为非正戏，不落盘
     from = stack.events.length;
     expect((await stack.prompt("规划：第 2 章。")).status).toBe(200);
-    await stack.waitFor((ev: any[]) => ev.slice(from).some((e) => e.type === "turn_end"), { label: "turn_end(history-3)" });
+    await stack.waitFor((ev: any[]) => ev.slice(from).some((e) => e.type === "turn_end"), {
+      label: "turn_end(history-3)",
+    });
     expect(readdirSync(histDir)).toEqual(["0001.json", "0002.json"]);
 
     // 档位分档（CONTRACTS §4）：规划回合切到 EFFORT_PLANNING（默认 low），正戏回合不动档
@@ -289,7 +310,11 @@ describe("集成：逐轮快照 + 世界线精确回退/导出导入（CONTRACTS
     expect(readWorldFile(fdir, "fork.md")).toBe(forkMd);
     const after = (await stack.getJSON("/api/worlds")).body.worlds as any[];
     // 家谱只读 forkedFrom：seq 一起回来，导入回来的分叉线才不会变成根
-    expect(after.find((w) => w.worldId === fimp.body.worldId).forkedFrom).toEqual({ worldId: "w1", nodeId: "1-1", seq: 1 });
+    expect(after.find((w) => w.worldId === fimp.body.worldId).forkedFrom).toEqual({
+      worldId: "w1",
+      nodeId: "1-1",
+      seq: 1,
+    });
 
     // v1 包（没有血缘键、快照条目也没有 prompt 字段）照收：forkedFrom null、不落 fork.md、
     // prompt normalize 为空串——「接受旧版本」不许在下一次重构里被顺手收紧
@@ -297,38 +322,89 @@ describe("集成：逐轮快照 + 世界线精确回退/导出导入（CONTRACTS
     delete v1.world.forkedFrom;
     delete v1.world.forkMd;
     v1.world.snapshots = v1.world.snapshots.map((s: any) => ({
-      seq: s.seq, at: s.at, kind: s.kind, nodeId: s.nodeId, chapterNo: s.chapterNo, files: s.files,
+      seq: s.seq,
+      at: s.at,
+      kind: s.kind,
+      nodeId: s.nodeId,
+      chapterNo: s.chapterNo,
+      files: s.files,
     }));
     const v1imp = await stack.postJSON("/api/worlds", { action: "import", bundle: v1 });
     expect(v1imp.status).toBe(200);
     expect(existsSync(path.join(stack.root, "state", "worlds", v1imp.body.worldId, "fork.md"))).toBe(false);
-    expect((await stack.getJSON("/api/worlds")).body.worlds.find((w: any) => w.worldId === v1imp.body.worldId).forkedFrom).toBe(null);
+    expect(
+      (await stack.getJSON("/api/worlds")).body.worlds.find((w: any) => w.worldId === v1imp.body.worldId).forkedFrom,
+    ).toBe(null);
 
     // v2 包（有快照、但条目没有 prompt 字段）同样照收：normalize 为空串（重演入口给降级提示）
-    const v2 = { ...bundle, version: 2, world: { ...bundle.world, snapshots: bundle.world.snapshots.map((s: any) => ({
-      seq: s.seq, at: s.at, kind: s.kind, nodeId: s.nodeId, chapterNo: s.chapterNo, files: s.files,
-    })) } };
+    const v2 = {
+      ...bundle,
+      version: 2,
+      world: {
+        ...bundle.world,
+        snapshots: bundle.world.snapshots.map((s: any) => ({
+          seq: s.seq,
+          at: s.at,
+          kind: s.kind,
+          nodeId: s.nodeId,
+          chapterNo: s.chapterNo,
+          files: s.files,
+        })),
+      },
+    };
     const v2imp = await stack.postJSON("/api/worlds", { action: "import", bundle: v2 });
     expect(v2imp.status).toBe(200);
-    const v2snap = JSON.parse(readFileSync(path.join(stack.root, "state", "worlds", v2imp.body.worldId, "history", "0002.json"), "utf8"));
+    const v2snap = JSON.parse(
+      readFileSync(path.join(stack.root, "state", "worlds", v2imp.body.worldId, "history", "0002.json"), "utf8"),
+    );
     expect(v2snap.prompt).toBe(""); // 缺字段 → 唯一形状入口收敛为空串
 
     // 非法 bundle → 400
-    expect((await stack.postJSON("/api/worlds", { action: "import", bundle: { format: "x", version: 1, world: { worldId: "w1" } } })).status).toBe(400);
-    expect((await stack.postJSON("/api/worlds", { action: "import", bundle: { format: "bunkiten-world", version: 1, world: { worldId: "../etc" } } })).status).toBe(400);
+    expect(
+      (
+        await stack.postJSON("/api/worlds", {
+          action: "import",
+          bundle: { format: "x", version: 1, world: { worldId: "w1" } },
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await stack.postJSON("/api/worlds", {
+          action: "import",
+          bundle: { format: "bunkiten-world", version: 1, world: { worldId: "../etc" } },
+        })
+      ).status,
+    ).toBe(400);
     // 版本过新（> WORLD_BUNDLE_VERSION=3）→ 400（版本闸是唯一上限判据，客户端不许再抄一份）
-    expect((await stack.postJSON("/api/worlds", { action: "import", bundle: { format: "bunkiten-world", version: 4, world: { worldId: "w1" } } })).status).toBe(400);
+    expect(
+      (
+        await stack.postJSON("/api/worlds", {
+          action: "import",
+          bundle: { format: "bunkiten-world", version: 4, world: { worldId: "w1" } },
+        })
+      ).status,
+    ).toBe(400);
   }, 15000);
 
   it("⑧ update（label/note 校验）与素材 delete（/api/assets 不再列出）", async () => {
     // update：label 写入、note 空串清除、越界 400
-    const upd = await stack.postJSON("/api/worlds", { action: "update", worldId: "w1", label: "第一周目", note: "雨夜开场" });
+    const upd = await stack.postJSON("/api/worlds", {
+      action: "update",
+      worldId: "w1",
+      label: "第一周目",
+      note: "雨夜开场",
+    });
     expect(upd.status).toBe(200);
     expect(upd.body.entry).toMatchObject({ label: "第一周目", note: "雨夜开场" });
     const worlds = await stack.getJSON("/api/worlds");
     expect(worlds.body.worlds.find((w: any) => w.worldId === "w1").label).toBe("第一周目");
-    expect((await stack.postJSON("/api/worlds", { action: "update", worldId: "w1", label: "字".repeat(61) })).status).toBe(400);
-    expect((await stack.postJSON("/api/worlds", { action: "update", worldId: "w1", note: "字".repeat(201) })).status).toBe(400);
+    expect(
+      (await stack.postJSON("/api/worlds", { action: "update", worldId: "w1", label: "字".repeat(61) })).status,
+    ).toBe(400);
+    expect(
+      (await stack.postJSON("/api/worlds", { action: "update", worldId: "w1", note: "字".repeat(201) })).status,
+    ).toBe(400);
 
     // 素材 delete：先落一个立绘
     const file = path.join(stack.root, "presets", "demo", "assets", "立绘-可删.jpg");
@@ -351,10 +427,18 @@ describe("集成：逐轮快照 + 世界线精确回退/导出导入（CONTRACTS
     expect(after.body.some((a: any) => a.file === "presets/demo/assets/立绘-可删.jpg")).toBe(false);
 
     // 404 / 400 语义
-    expect((await stack.postJSON("/api/assets", { action: "delete", preset: "demo", file: "立绘-不存在.jpg" })).status).toBe(404);
-    expect((await stack.postJSON("/api/assets", { action: "delete", preset: "demo", file: "cover.jpg" })).status).toBe(400); // 封面不可删
-    expect((await stack.postJSON("/api/assets", { action: "delete", preset: "demo", file: "../x.jpg" })).status).toBe(400); // 穿越
-    expect((await stack.postJSON("/api/assets", { action: "delete", preset: "../etc", file: "a.jpg" })).status).toBe(400); // preset 非法
+    expect(
+      (await stack.postJSON("/api/assets", { action: "delete", preset: "demo", file: "立绘-不存在.jpg" })).status,
+    ).toBe(404);
+    expect((await stack.postJSON("/api/assets", { action: "delete", preset: "demo", file: "cover.jpg" })).status).toBe(
+      400,
+    ); // 封面不可删
+    expect((await stack.postJSON("/api/assets", { action: "delete", preset: "demo", file: "../x.jpg" })).status).toBe(
+      400,
+    ); // 穿越
+    expect((await stack.postJSON("/api/assets", { action: "delete", preset: "../etc", file: "a.jpg" })).status).toBe(
+      400,
+    ); // preset 非法
     expect((await stack.postJSON("/api/assets", { action: "nope", preset: "demo", file: "a.jpg" })).status).toBe(400);
   }, 15000);
 
@@ -400,7 +484,10 @@ describe("集成：索引 schema 的启动迁移（ROADMAP §1）", () => {
   }, 30000);
 
   it("⑪ 未来 schema（schema:2）：读得到、迁移不动它，之后的索引写入也不降级、未知顶层键保留", async () => {
-    const stack = await startStack({ indexSchema: 2, indexExtra: { futureField: { someDay: ["新版本才认识的数据"] } } });
+    const stack = await startStack({
+      indexSchema: 2,
+      indexExtra: { futureField: { someDay: ["新版本才认识的数据"] } },
+    });
     try {
       const indexFile = path.join(stack.root, "state", "worlds", "index.json");
       const doc = JSON.parse(readFileSync(indexFile, "utf8"));

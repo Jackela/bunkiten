@@ -9,36 +9,47 @@
 //   · 重启 → 改 restartAcp（没真正重 spawn 就看不到第二条探针）；
 //   · media-mcp 的协议/落盘 → 改 server/media-mcp.mjs。
 import { afterEach, describe, expect, it } from "vitest";
-import http from "node:http";
+import http, { type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
+import type { AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
-import { startStack } from "./harness.mjs";
+import { startStack, type StackHandle } from "./harness.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const MEDIA_MCP = path.join(ROOT, "server", "media-mcp.mjs");
 
-/** @type {Array<{stop: () => Promise<void>}>} 本文件起过的栈（afterEach 统一收尾） */
-const started = [];
+/** startStack 的入参形状（真源在 harness 的 JSDoc，不在这里抄第二份） */
+type StackOptions = NonNullable<Parameters<typeof startStack>[0]>;
+
+/** 本文件起过的栈（afterEach 统一收尾） */
+const started: StackHandle[] = [];
 
 afterEach(async () => {
-  while (started.length) await started.pop().stop();
+  while (started.length) await started.pop()?.stop();
 });
 
-/** @param {object} [opts] 见 harness.startStack @returns {Promise<any>} */
-async function stack(opts = {}) {
+/** 起一套栈并登记（afterEach 统一收尾） */
+async function stack(opts: StackOptions = {}): Promise<StackHandle> {
   const s = await startStack(opts);
   started.push(s);
   return s;
 }
 
 /** 预置一份「LLM 自备 key」的凭据文档 */
-const llmByok = (over = {}) => ({
+const llmByok = (over: Record<string, unknown> = {}) => ({
   version: 1,
-  llm: { mode: "byok", provider: "custom", baseUrl: "http://127.0.0.1:9/v1", apiKey: "sk-integration-llm-key-4f2a", model: "it-model", ...over },
+  llm: {
+    mode: "byok",
+    provider: "custom",
+    baseUrl: "http://127.0.0.1:9/v1",
+    apiKey: "sk-integration-llm-key-4f2a",
+    model: "it-model",
+    ...over,
+  },
   image: { mode: "off", provider: "custom", baseUrl: "", apiKey: "", model: "", size: "" },
 });
 
@@ -46,20 +57,29 @@ const llmByok = (over = {}) => ({
 const imageByok = () => ({
   version: 1,
   llm: { mode: "session", provider: "openai", baseUrl: "", apiKey: "", model: "" },
-  image: { mode: "byok", provider: "custom", baseUrl: "http://127.0.0.1:9/v1", apiKey: "sk-integration-image-key-9b7c", model: "it-image", size: "" },
+  image: {
+    mode: "byok",
+    provider: "custom",
+    baseUrl: "http://127.0.0.1:9/v1",
+    apiKey: "sk-integration-image-key-9b7c",
+    model: "it-image",
+    size: "",
+  },
 });
 
-const credentialsFile = (/** @type {any} */ s) => path.join(s.home, ".bunkiten", "credentials.json");
+const credentialsFile = (s: StackHandle) => path.join(s.home, ".bunkiten", "credentials.json");
+
+/** 假出图端点的回包脚本：拿到请求（已解析 body）后自己写响应 */
+type ImagesHandler = (req: IncomingMessage, res: ServerResponse, body: Record<string, unknown>) => void;
 
 /** 假的 OpenAI 兼容出图端点（记录请求；按脚本回包） */
-async function fakeImages(handler) {
-  /** @type {Array<{url: string, body: any, headers: any}>} */
-  const requests = [];
+async function fakeImages(handler: ImagesHandler) {
+  const requests: Array<{ url: string; body: any; headers: IncomingHttpHeaders }> = [];
   const server = http.createServer((req, res) => {
     let body = "";
     req.on("data", (c) => (body += c));
     req.on("end", () => {
-      let parsed = {};
+      let parsed: Record<string, unknown> = {};
       try {
         parsed = JSON.parse(body || "{}");
       } catch {}
@@ -68,8 +88,13 @@ async function fakeImages(handler) {
     });
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", () => r(undefined)));
-  const port = /** @type {import("net").AddressInfo} */ (server.address()).port;
-  return { port, requests, base: `http://127.0.0.1:${port}/v1`, close: () => new Promise((r) => server.close(() => r(undefined))) };
+  const port = (server.address() as AddressInfo).port;
+  return {
+    port,
+    requests,
+    base: `http://127.0.0.1:${port}/v1`,
+    close: () => new Promise((r) => server.close(() => r(undefined))),
+  };
 }
 
 const TINY_JPEG = Buffer.from(
@@ -78,19 +103,41 @@ const TINY_JPEG = Buffer.from(
 );
 
 /**
- * 起一个 media-mcp 子进程并给它发 JSON-RPC（逐行）。
- * @param {Record<string, string>} env 子进程 env（HOME/GROK_GAME_ROOT 由调用方给）
- * @returns {{request: (method: string, params?: object) => Promise<any>, lines: string[], stop: () => void}}
+ * 取假引擎探针里第一条匹配的条目——**找不到就抛**。
+ * 为什么不用 `find(...)` 直接上：返回 `T | undefined`，后面每一处属性访问都成了类型噪声；
+ * 而「探针压根没写下来」这件事本该当场炸，而不是等某个断言报一句看不懂的错。
+ * @param s 栈句柄
+ * @param pred 匹配条件
  */
-function mcpClient(env) {
-  const proc = spawn(process.execPath, [MEDIA_MCP], { env: { ...process.env, ...env }, stdio: ["pipe", "pipe", "pipe"] });
-  /** @type {string[]} */
-  const lines = [];
+function probeEntry(s: StackHandle, pred: (e: Record<string, any>) => boolean): Record<string, any> {
+  const hit = s.engineProbeEntries().find(pred);
+  if (!hit) throw new Error("假引擎探针里没有匹配的条目（假引擎脚本没跑起来 / FAKE_ENGINE_PROBE 没指对？）");
+  return hit;
+}
+
+/** media-mcp 子进程的逐行 JSON-RPC 客户端 */
+type McpClient = {
+  /** 子进程 stdout 的原始行（协议断言用） */
+  lines: string[];
+  stderr: () => string;
+  request: (method: string, params?: object) => Promise<any>;
+  stop: () => void;
+};
+
+/**
+ * 起一个 media-mcp 子进程并给它发 JSON-RPC（逐行）。
+ * @param env 子进程 env（HOME/GROK_GAME_ROOT 由调用方给）
+ */
+function mcpClient(env: Record<string, string>): McpClient {
+  const proc = spawn(process.execPath, [MEDIA_MCP], {
+    env: { ...process.env, ...env },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const lines: string[] = [];
   let stderr = "";
   proc.stderr.on("data", (d) => (stderr += d.toString()));
   const rl = readline.createInterface({ input: proc.stdout });
-  /** @type {Map<number, (m: any) => void>} */
-  const pending = new Map();
+  const pending = new Map<number, (m: unknown) => void>();
   rl.on("line", (line) => {
     if (!line.trim()) return;
     lines.push(line);
@@ -138,9 +185,23 @@ describe("引擎凭据端点（GET/POST /api/credentials）", () => {
   it("POST 部分更新：只动给出的键，回脱敏视图（掩码可见、明文不可见），盘上文件 0600", async () => {
     const s = await stack({});
     const key = "sk-secret-value-4f2a";
-    const r = await s.postJSON("/api/credentials", { llm: { mode: "byok", provider: "deepseek", baseUrl: "https://api.deepseek.com", apiKey: key, model: "deepseek-chat" } });
+    const r = await s.postJSON("/api/credentials", {
+      llm: {
+        mode: "byok",
+        provider: "deepseek",
+        baseUrl: "https://api.deepseek.com",
+        apiKey: key,
+        model: "deepseek-chat",
+      },
+    });
     expect(r.status).toBe(200);
-    expect(r.body.llm).toMatchObject({ mode: "byok", provider: "deepseek", baseUrl: "https://api.deepseek.com", model: "deepseek-chat", hasKey: true });
+    expect(r.body.llm).toMatchObject({
+      mode: "byok",
+      provider: "deepseek",
+      baseUrl: "https://api.deepseek.com",
+      model: "deepseek-chat",
+      hasKey: true,
+    });
     expect(r.body.llm.apiKeyMasked).toBe("sk-…4f2a");
     expect(JSON.stringify(r.body)).not.toContain(key);
     // 图片组没给 → 原样不动（默认 off）
@@ -180,7 +241,9 @@ describe("引擎凭据端点（GET/POST /api/credentials）", () => {
     const s = await stack({});
     // 哨兵形状：短、不像真 key（secret scanning 的 push protection 已开，别写成 48 位随机串那种形状）
     const key = "sk-no-plaintext-4f2a";
-    await s.postJSON("/api/credentials", { llm: { mode: "byok", baseUrl: "https://example.com/v1", apiKey: key, model: "m" } });
+    await s.postJSON("/api/credentials", {
+      llm: { mode: "byok", baseUrl: "https://example.com/v1", apiKey: key, model: "m" },
+    });
     const got = await s.getText("/api/credentials");
     expect(got.body).not.toContain(key);
     const auth = await s.getText("/api/auth");
@@ -216,13 +279,24 @@ describe("在线目录的新 provider 可保存（v1.10，docs/adr/0020）", () 
         JSON.stringify({
           version: 1,
           updatedAt: "2026-01-02T03:04:05.000Z",
-          providers: [{ id: "newcomer-llm", label: "新来的服务", kind: "llm", baseUrl: "https://newcomer.example/v1", models: [] }],
+          providers: [
+            {
+              id: "newcomer-llm",
+              label: "新来的服务",
+              kind: "llm",
+              baseUrl: "https://newcomer.example/v1",
+              models: [],
+            },
+          ],
         }),
       );
     });
     await new Promise((r) => server.listen(0, "127.0.0.1", () => r(undefined)));
-    const port = /** @type {import("net").AddressInfo} */ (server.address()).port;
-    return { url: `http://127.0.0.1:${port}/providers.json`, close: () => new Promise((r) => server.close(() => r(undefined))) };
+    const port = (server.address() as AddressInfo).port;
+    return {
+      url: `http://127.0.0.1:${port}/providers.json`,
+      close: () => new Promise((r) => server.close(() => r(undefined))),
+    };
   }
 
   /** 轮询 /api/providers 直到 source 到期望值（启动期抓取是异步的；拿可见证据而不是 sleep） */
@@ -231,7 +305,8 @@ describe("在线目录的新 provider 可保存（v1.10，docs/adr/0020）", () 
     for (;;) {
       const r = await s.getJSON("/api/providers");
       if (r.status === 200 && r.body?.source === want) return r.body;
-      if (Date.now() > deadline) throw new Error(`timeout waiting for source=${want}（最后一次：${JSON.stringify(r.body)}）`);
+      if (Date.now() > deadline)
+        throw new Error(`timeout waiting for source=${want}（最后一次：${JSON.stringify(r.body)}）`);
       await new Promise((res) => setTimeout(res, 25));
     }
   }
@@ -245,10 +320,21 @@ describe("在线目录的新 provider 可保存（v1.10，docs/adr/0020）", () 
 
       // 用**只存在于在线目录里**的 id 保存：必须 200（旧行为是 400「不在服务目录里」——目录的核心收益被挡住）
       const saved = await s.postJSON("/api/credentials", {
-        llm: { mode: "byok", provider: "newcomer-llm", baseUrl: "https://newcomer.example/v1", apiKey: "sk-remote-svc-4f2a", model: "m" },
+        llm: {
+          mode: "byok",
+          provider: "newcomer-llm",
+          baseUrl: "https://newcomer.example/v1",
+          apiKey: "sk-remote-svc-4f2a",
+          model: "m",
+        },
       });
       expect(saved.status).toBe(200);
-      expect(saved.body.llm).toMatchObject({ mode: "byok", provider: "newcomer-llm", baseUrl: "https://newcomer.example/v1", hasKey: true });
+      expect(saved.body.llm).toMatchObject({
+        mode: "byok",
+        provider: "newcomer-llm",
+        baseUrl: "https://newcomer.example/v1",
+        hasKey: true,
+      });
 
       // GET 回显同一 id（读路径也不改写它）
       const got = await s.getJSON("/api/credentials");
@@ -269,7 +355,13 @@ describe("在线目录的新 provider 可保存（v1.10，docs/adr/0020）", () 
     const s = await stack({
       credentials: {
         version: 1,
-        llm: { mode: "byok", provider: "newcomer-llm", baseUrl: "https://newcomer.example/v1", apiKey: "sk-remote-svc-4f2a", model: "m" },
+        llm: {
+          mode: "byok",
+          provider: "newcomer-llm",
+          baseUrl: "https://newcomer.example/v1",
+          apiKey: "sk-remote-svc-4f2a",
+          model: "m",
+        },
         image: { mode: "off", provider: "openai", baseUrl: "", apiKey: "", model: "", size: "" },
       },
     });
@@ -283,7 +375,7 @@ describe("在线目录的新 provider 可保存（v1.10，docs/adr/0020）", () 
 describe("凭据 → 引擎子进程（env 与 MCP 挂载）", () => {
   it("LLM 自备 key：四个变量真的出现在引擎进程 env 里；session 模式则一个都没有（codex 的三件套也不出现）", async () => {
     const byokStack = await stack({ credentials: llmByok() });
-    const first = byokStack.engineProbeEntries().find((e) => e.kind === "start");
+    const first = probeEntry(byokStack, (e) => e.kind === "start");
     expect(first.env).toEqual({
       GROK_MODELS_BASE_URL: "http://127.0.0.1:9/v1",
       XAI_API_KEY: "sk-integration-llm-key-4f2a",
@@ -297,7 +389,7 @@ describe("凭据 → 引擎子进程（env 与 MCP 挂载）", () => {
     });
 
     const sessionStack = await stack({});
-    const plain = sessionStack.engineProbeEntries().find((e) => e.kind === "start");
+    const plain = probeEntry(sessionStack, (e) => e.kind === "start");
     expect(plain.env).toEqual({
       GROK_MODELS_BASE_URL: null,
       XAI_API_KEY: null,
@@ -311,7 +403,7 @@ describe("凭据 → 引擎子进程（env 与 MCP 挂载）", () => {
 
   it("图片自备 key 才挂 MCP：挂载项指向 server/media-mcp.mjs，off 时不挂", async () => {
     const withImage = await stack({ credentials: imageByok() });
-    const session = withImage.engineProbeEntries().find((e) => e.kind === "session" && e.method === "session/new");
+    const session = probeEntry(withImage, (e) => e.kind === "session" && e.method === "session/new");
     expect(Array.isArray(session.mcpServers)).toBe(true);
     expect(session.mcpServers).toHaveLength(1);
     expect(session.mcpServers[0].name).toBe("bunkiten-media");
@@ -320,7 +412,7 @@ describe("凭据 → 引擎子进程（env 与 MCP 挂载）", () => {
     expect(session.mcpServers[0].env).toEqual([{ name: "ELECTRON_RUN_AS_NODE", value: "1" }]);
 
     const noImage = await stack({ credentials: llmByok() });
-    const plain = noImage.engineProbeEntries().find((e) => e.kind === "session" && e.method === "session/new");
+    const plain = probeEntry(noImage, (e) => e.kind === "session" && e.method === "session/new");
     expect(plain.mcpServers).toEqual([]);
   });
 
@@ -349,7 +441,7 @@ describe("凭据 → 引擎子进程（env 与 MCP 挂载）", () => {
 describe("引擎 skill 注入（spawn 的 --plugin-dir，ADR 0021）", () => {
   it("grok 参数含 --plugin-dir 且值 = <gameRoot>/.grok（未信托的会话也要宣告 bunkiten skill）", async () => {
     const s = await stack({});
-    const start = s.engineProbeEntries().find((e: any) => e.kind === "start");
+    const start = probeEntry(s, (e) => e.kind === "start");
     expect(start.argv).toContain("--plugin-dir");
     const i = start.argv.indexOf("--plugin-dir");
     expect(start.argv[i + 1]).toBe(path.join(s.root, ".grok"));
@@ -378,7 +470,7 @@ describe("/api/auth 扩展（登录态 + 自备 key 两态）", () => {
 
 describe("POST /api/credentials/test（真连一次）", () => {
   it("LLM：服务提供 /models 时通过，并回延迟与模型条数", async () => {
-    const fake = await fakeImages((req, res) => {
+    const fake = await fakeImages((_req, res) => {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ object: "list", data: [{ id: "a" }, { id: "b" }] }));
     });
@@ -395,7 +487,7 @@ describe("POST /api/credentials/test（真连一次）", () => {
   it("LLM：没有 /models 时退化为一次最小对话；密钥错误时失败且原因里不出现明文 key", async () => {
     const key = "sk-should-not-leak-77aa";
     const fake = await fakeImages((req, res) => {
-      if (req.url.endsWith("/models")) {
+      if (req.url?.endsWith("/models")) {
         res.writeHead(404, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: { message: "no models endpoint" } }));
         return;
@@ -413,7 +505,7 @@ describe("POST /api/credentials/test（真连一次）", () => {
   });
 
   it("图片：最小生成打的是 /images/generations，通过时给出尺寸与体积", async () => {
-    const fake = await fakeImages((req, res) => {
+    const fake = await fakeImages((_req, res) => {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ created: 1, data: [{ b64_json: TINY_JPEG.toString("base64") }] }));
     });
@@ -437,7 +529,7 @@ describe("POST /api/credentials/test（真连一次）", () => {
 
 describe("media-mcp 冒烟（直接 spawn 子进程走 MCP 协议）", () => {
   it("initialize → tools/list → tools/call：出图落盘到 presets/<id>/assets/ 并按契约命名", async () => {
-    const fake = await fakeImages((req, res) => {
+    const fake = await fakeImages((_req, res) => {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ created: 1, data: [{ b64_json: TINY_JPEG.toString("base64") }] }));
     });
@@ -449,7 +541,14 @@ describe("media-mcp 冒烟（直接 spawn 子进程走 MCP 协议）", () => {
       JSON.stringify({
         version: 1,
         llm: { mode: "session", provider: "openai", baseUrl: "", apiKey: "", model: "" },
-        image: { mode: "byok", provider: "custom", baseUrl: fake.base, apiKey: "sk-mcp-image-key-1234", model: "img-model", size: "" },
+        image: {
+          mode: "byok",
+          provider: "custom",
+          baseUrl: fake.base,
+          apiKey: "sk-mcp-image-key-1234",
+          model: "img-model",
+          size: "",
+        },
       }),
       { mode: 0o600 },
     );
@@ -463,7 +562,13 @@ describe("media-mcp 冒烟（直接 spawn 子进程走 MCP 协议）", () => {
 
       const call = await mcp.request("tools/call", {
         name: "generate_image",
-        arguments: { prompt: "a portrait", kind: "立绘", name: "薇拉", variant: "微笑", outRelPath: "presets/demo/assets/立绘-薇拉-微笑.jpg" },
+        arguments: {
+          prompt: "a portrait",
+          kind: "立绘",
+          name: "薇拉",
+          variant: "微笑",
+          outRelPath: "presets/demo/assets/立绘-薇拉-微笑.jpg",
+        },
       });
       const payload = JSON.parse(call.result.content[0].text);
       expect(payload.ok).toBe(true);

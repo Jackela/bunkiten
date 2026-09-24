@@ -21,8 +21,7 @@
 // v1.10 续：设置屏「引擎与密钥」的服务目录候选（在线目录画下拉 / 读不到静默回落内置真源 / 目录更新
 //      不让玩家已存的那家从下拉里消失），见 EngineKeysSection 的用例组。
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import React from "react";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import TopBar from "../src/components/game/TopBar";
 import ChapterCard, { CHAPTER_CARD_FADE_MS, CHAPTER_CARD_MS } from "../src/components/game/ChapterCard";
 import CharactersDrawer from "../src/components/game/CharactersDrawer";
@@ -37,7 +36,11 @@ import CreationScreen from "../src/components/CreationScreen";
 import CraftingScreen, { preloadEtaLabel } from "../src/components/CraftingScreen";
 import AssetsScreen from "../src/components/AssetsScreen";
 import WorldsScreen, { relativeTime, worldDisplayName } from "../src/components/WorldsScreen";
-import StoryTreeScreen, { earliestSnapshotByNode, prevSnapshotSeq, snapshotTurnNo } from "../src/components/StoryTreeScreen";
+import StoryTreeScreen, {
+  earliestSnapshotByNode,
+  prevSnapshotSeq,
+  snapshotTurnNo,
+} from "../src/components/StoryTreeScreen";
 import SettingsScreen from "../src/components/SettingsScreen";
 import EngineKeysSection from "../src/components/EngineKeysSection";
 import PresetCheckScreen from "../src/components/PresetCheckScreen";
@@ -45,13 +48,30 @@ import App, { StatusAnnouncer } from "../src/App";
 import { useGameStore, type PreloadItem } from "../src/store/game";
 import { FADE_MS, MAX_SFX, SFX_TIMEOUT_MS, audioManager } from "../src/lib/audio";
 import { focusableElements } from "../src/lib/focusTrap";
-import { AUTO_ADVANCE_OPTIONS, DEFAULT_SETTINGS, SETTINGS_STORAGE_KEY, TEXT_SPEED_MS, loadSettings } from "../src/lib/settings";
+import {
+  AUTO_ADVANCE_OPTIONS,
+  DEFAULT_SETTINGS,
+  SETTINGS_STORAGE_KEY,
+  TEXT_SPEED_MS,
+  loadSettings,
+} from "../src/lib/settings";
 import { isLegacyForkNote } from "../src/lib/worlds";
 import { playerStatus } from "../src/lib/status";
 import { TREE_ZOOM_MAX, clampZoom, fitView, panView, viewBoxOf, zoomViewAt } from "../src/lib/treeLayout";
 import { layoutGenealogy } from "../src/lib/genealogy";
 import { FONT_STACKS, dialogClass, getTheme, themeVars } from "../src/theme";
-import { BOOT_FETCH_TIMEOUT_MS, fetchPresets, fetchProviders, type AssetEntry, type AudioItem, type Preset, type PresetCheckResult, type StateView, type WorldEntry, type WorldSnapshotMeta } from "../src/lib/acp";
+import {
+  BOOT_FETCH_TIMEOUT_MS,
+  fetchPresets,
+  fetchProviders,
+  type AssetEntry,
+  type AudioItem,
+  type Preset,
+  type PresetCheckResult,
+  type StateView,
+  type WorldEntry,
+  type WorldSnapshotMeta,
+} from "../src/lib/acp";
 
 /** ui 测试用的最小剧本 fixture（与世界线屏/顶栏的展示字段对齐） */
 const PRESET: Preset = {
@@ -284,7 +304,11 @@ describe("TopBar：命令轨的分组菜单（v1.12 菜单信息架构）", () =
     expect(menu.getAttribute("aria-labelledby")).toBe(trigger.id);
     // 弹层朝左开（命令轨贴屏幕右缘）：布局在 jsdom 里量不出，但 side 的意图可以断言
     expect(menu.getAttribute("data-side")).toBe("left");
-    expect(within(menu).getAllByRole("menuitem").map((el) => el.textContent)).toEqual(["历史", "前情"]);
+    expect(
+      within(menu)
+        .getAllByRole("menuitem")
+        .map((el) => el.textContent),
+    ).toEqual(["历史", "前情"]);
     // 开菜单把焦点送进弹层（鼠标路径：Radix 只聚焦弹层本身、不落到某一项，与行 ⋯ 菜单同款；
     // 键盘用户接着按 Tab/↓ 走项，走位由下一条用例钉住）
     await waitFor(() => expect(menu.contains(document.activeElement)).toBe(true));
@@ -342,7 +366,6 @@ describe("TopBar：命令轨的分组菜单（v1.12 菜单信息架构）", () =
     );
     const trigger = screen.getByTestId("rail-review");
     openRailGroup("回顾");
-    const history = screen.getByTestId("history");
     const recap = screen.getByTestId("recap");
     await waitFor(() => expect(screen.getByTestId("rail-review-menu").contains(document.activeElement)).toBe(true));
 
@@ -658,7 +681,9 @@ describe("WorldsScreen：世界线列表与动作（v1.5）", () => {
     cleanup();
     render(<WorldsScreen />);
     await waitFor(() => expect(screen.getByTestId("worlds-error")).toBeTruthy());
-    expect(screen.getByTestId("worlds-error").textContent).toContain("世界线加载失败：Error: GET /api/worlds -> HTTP 500");
+    expect(screen.getByTestId("worlds-error").textContent).toContain(
+      "世界线加载失败：Error: GET /api/worlds -> HTTP 500",
+    );
     // 失败 ≠ 空态：说成「还没有世界线」玩家会去建重复的线
     expect(screen.queryByTestId("worlds-empty")).toBeNull();
     expect(listCalls).toBe(1);
@@ -731,7 +756,9 @@ describe("制作中屏与创作屏的可预期性读数（v1.13）", () => {
     // 再完成两张（共 3 张）：样本够了 → 读数出现。setState 在 act 里跑，读的是重渲染后的 DOM
     act(() => {
       useGameStore.setState({
-        preload: useGameStore.getState().preload.map((i, idx) => (idx === 1 || idx === 2 ? { ...i, state: "done" as const } : i)),
+        preload: useGameStore
+          .getState()
+          .preload.map((i, idx) => (idx === 1 || idx === 2 ? { ...i, state: "done" as const } : i)),
       });
     });
     const line2 = screen.getByTestId("crafting-progress").textContent ?? "";
@@ -740,7 +767,13 @@ describe("制作中屏与创作屏的可预期性读数（v1.13）", () => {
   });
 
   it("创作屏：状态行说出引擎在干什么（不再是只有 title 的灰点）", () => {
-    useGameStore.setState({ screen: "creation", screenReturn: "title", status: "引擎演绎中…", engineBusy: true, turnStartAt: Date.now() - 3000 });
+    useGameStore.setState({
+      screen: "creation",
+      screenReturn: "title",
+      status: "引擎演绎中…",
+      engineBusy: true,
+      turnStartAt: Date.now() - 3000,
+    });
     render(<CreationScreen />);
     const line = screen.getByTestId("creation-status").textContent ?? "";
     expect(line, "引擎口吻要转成玩家说法（lib/status 唯一映射）").toContain("故事展开中…");
@@ -775,14 +808,22 @@ describe("两段式制作的屏上痕迹（v1.13）", () => {
     useGameStore.setState({ screen: "crafting", selected: null, preloadPhase: "queue", preload: [], deferredArt: [] });
     const { rerender } = render(<CraftingScreen />);
     act(() => {
-      useGameStore.setState({ selected: PRESET, preload: [item("沈屿", "done")], deferredArt: [item("天台", "pending")] });
+      useGameStore.setState({
+        selected: PRESET,
+        preload: [item("沈屿", "done")],
+        deferredArt: [item("天台", "pending")],
+      });
     });
     rerender(<CraftingScreen />);
     expect(screen.getByTestId("crafting-progress").textContent).toContain("其余 1 项开演后补画");
   });
 
   it("TopBar：补画进行中挂「补画 N/M」徽章，平时不挂", () => {
-    useGameStore.setState({ status: "作画中…", artAsk: true, deferredArt: [item("沈屿", "done"), item("天台", "running")] });
+    useGameStore.setState({
+      status: "作画中…",
+      artAsk: true,
+      deferredArt: [item("沈屿", "done"), item("天台", "running")],
+    });
     const { rerender } = render(<TopBar />);
     expect(screen.getByTestId("art-pump").textContent).toContain("补画 1/2");
 
@@ -1154,7 +1195,10 @@ describe("AssetsScreen：分组、未使用徽标与预览", () => {
     expect(screen.queryByText("在用")).toBeNull();
     expect(screen.getAllByText("未使用")).toHaveLength(3);
     // 清单请求按当前剧本过滤
-    expect(fetchMock).toHaveBeenCalledWith("/api/assets?preset=campus-summer", expect.objectContaining({ signal: expect.anything() }));
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/assets?preset=campus-summer",
+      expect.objectContaining({ signal: expect.anything() }),
+    );
   });
 
   it("点击卡片打开大图预览（store 状态），Esc 关闭链入口可用", async () => {
@@ -1250,7 +1294,8 @@ describe("SettingsScreen：设置项、持久化与入口（v1.6）", () => {
     expect(screen.getByTestId("settings-textspeed-standard").getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByTestId("settings-auto-0").getAttribute("aria-pressed")).toBe("true");
     // 四档文本速度与三档自动前进都在（缺档 = 玩家改不了）
-    for (const s of ["slow", "standard", "fast", "instant"]) expect(screen.getByTestId(`settings-textspeed-${s}`)).toBeTruthy();
+    for (const s of ["slow", "standard", "fast", "instant"])
+      expect(screen.getByTestId(`settings-textspeed-${s}`)).toBeTruthy();
     for (const ms of [0, 3000, 5000]) expect(screen.getByTestId(`settings-auto-${ms}`)).toBeTruthy();
   });
 
@@ -1321,7 +1366,11 @@ describe("SettingsScreen：设置项、持久化与入口（v1.6）", () => {
       expect(screen.getByTestId(`${id}-value`).textContent).toBe(shown);
     }
     expect(useGameStore.getState().settings).toMatchObject({ bgm: 0.2, ambient: 0.4, sfx: 0.6 });
-    expect(JSON.parse(window.localStorage.getItem(SETTINGS_STORAGE_KEY)!)).toMatchObject({ bgm: 0.2, ambient: 0.4, sfx: 0.6 });
+    expect(JSON.parse(window.localStorage.getItem(SETTINGS_STORAGE_KEY)!)).toMatchObject({
+      bgm: 0.2,
+      ambient: 0.4,
+      sfx: 0.6,
+    });
 
     // 主音量与静音**不在**披露里（顶层常驻）：收起细分音量后它们照旧在
     fireEvent.click(toggle);
@@ -1427,7 +1476,16 @@ describe("EngineKeysSection：服务目录候选（v1.10）", () => {
       version: 1,
       engine: "grok",
       llm: { mode: "session", provider: "openai", baseUrl: "", model: "", hasKey: false, apiKeyMasked: "" },
-      image: { mode: "off", provider: "openai", baseUrl: "", model: "", size: "", sizeBackground: "", hasKey: false, apiKeyMasked: "" },
+      image: {
+        mode: "off",
+        provider: "openai",
+        baseUrl: "",
+        model: "",
+        size: "",
+        sizeBackground: "",
+        hasKey: false,
+        apiKeyMasked: "",
+      },
     };
   }
   /** 服务端视图的本地态（POST 后更新） */
@@ -1445,7 +1503,12 @@ describe("EngineKeysSection：服务目录候选（v1.10）", () => {
     fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(String(input), "http://localhost");
       if (url.pathname === "/api/auth") {
-        return jsonResponse({ loggedIn: authState.loggedIn, hasCredentials: false, engine: creds.engine, canLogin: authState.canLogin });
+        return jsonResponse({
+          loggedIn: authState.loggedIn,
+          hasCredentials: false,
+          engine: creds.engine,
+          canLogin: authState.canLogin,
+        });
       }
       if (url.pathname === "/api/engine/login") return jsonResponse({ ok: true });
       if (url.pathname === "/api/engine/logout") {
@@ -1454,13 +1517,22 @@ describe("EngineKeysSection：服务目录候选（v1.10）", () => {
       }
       if (url.pathname === "/api/credentials") {
         if (init?.method === "POST") {
-          const patch = JSON.parse(String(init.body)) as { engine?: string; llm?: Record<string, string>; image?: Record<string, string> };
+          const patch = JSON.parse(String(init.body)) as {
+            engine?: string;
+            llm?: Record<string, string>;
+            image?: Record<string, string>;
+          };
           // key 不出现在视图里：只把它折成 hasKey（与 server 的 publicView 同一口径）
           const merge = (prev: Record<string, string | boolean>, next?: Record<string, string>) => {
             const { apiKey, ...rest } = next ?? {};
             return { ...prev, ...rest, ...(apiKey === undefined ? {} : { hasKey: apiKey !== "" }) };
           };
-          creds = { ...creds, engine: patch.engine ?? creds.engine, llm: merge(creds.llm, patch.llm), image: merge(creds.image, patch.image) };
+          creds = {
+            ...creds,
+            engine: patch.engine ?? creds.engine,
+            llm: merge(creds.llm, patch.llm),
+            image: merge(creds.image, patch.image),
+          };
         }
         return jsonResponse({ ok: true, ...creds });
       }
@@ -1488,9 +1560,22 @@ describe("EngineKeysSection：服务目录候选（v1.10）", () => {
       updatedAt: "2026-01-02T03:04:05.000Z",
       providers: [
         // 已有 id 改名 + 换地址：屏上必须显示远端这一份，而不是内置表那份
-        { id: "deepseek", label: "深海探路者", kind: "llm", baseUrl: "https://api.deepseek.com/online", models: ["deepseek-chat"] },
+        {
+          id: "deepseek",
+          label: "深海探路者",
+          kind: "llm",
+          baseUrl: "https://api.deepseek.com/online",
+          models: ["deepseek-chat"],
+        },
         { id: "newcomer-llm", label: "新来的服务", kind: "llm", baseUrl: "https://newcomer.example/v1", models: [] },
-        { id: "newcomer-image", label: "新来的出图服务", kind: "image", baseUrl: "https://newcomer.example/img", models: [], imageModels: ["new-image-1"] },
+        {
+          id: "newcomer-image",
+          label: "新来的出图服务",
+          kind: "image",
+          baseUrl: "https://newcomer.example/img",
+          models: [],
+          imageModels: ["new-image-1"],
+        },
       ],
       source: "remote",
       fetchedAt: "2026-01-02T03:04:05.000Z",
@@ -1507,8 +1592,12 @@ describe("EngineKeysSection：服务目录候选（v1.10）", () => {
 
     // 选中远端条目：地址按远端目录预填（不是内置表的 https://api.deepseek.com）
     fireEvent.change(llm, { target: { value: "deepseek" } });
-    expect((screen.getByTestId("engine-llm-baseurl") as HTMLInputElement).value).toBe("https://api.deepseek.com/online");
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/credentials", expect.objectContaining({ method: "POST" })));
+    expect((screen.getByTestId("engine-llm-baseurl") as HTMLInputElement).value).toBe(
+      "https://api.deepseek.com/online",
+    );
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith("/api/credentials", expect.objectContaining({ method: "POST" })),
+    );
 
     // 出图组同样吃远端候选
     const image = await openGroup("image");
@@ -1517,7 +1606,9 @@ describe("EngineKeysSection：服务目录候选（v1.10）", () => {
 
   it("读不到在线目录（非 2xx）：下拉回落内置表，且不出现「在线目录」标注", async () => {
     render(<EngineKeysSection />);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/providers", expect.objectContaining({ signal: expect.anything() })));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith("/api/providers", expect.objectContaining({ signal: expect.anything() })),
+    );
     await act(async () => {
       await Promise.resolve(); // 让失败那一跳落地：失败是静默的（不占错误态、不打日志）
     });
@@ -1531,7 +1622,9 @@ describe("EngineKeysSection：服务目录候选（v1.10）", () => {
   it("在线目录是空的（HTTP 200 但一条候选都没有）：这一份不算目录，同样回落内置表", async () => {
     providersResp = { version: 1, providers: [], source: "remote", fetchedAt: "2026-01-02T03:04:05.000Z" };
     render(<EngineKeysSection />);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/providers", expect.objectContaining({ signal: expect.anything() })));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith("/api/providers", expect.objectContaining({ signal: expect.anything() })),
+    );
     await act(async () => {
       await Promise.resolve();
     });
@@ -1545,7 +1638,9 @@ describe("EngineKeysSection：服务目录候选（v1.10）", () => {
     // source=cache 也算「非内置」，标注同样要出现
     providersResp = {
       version: 1,
-      providers: [{ id: "newcomer-llm", label: "新来的服务", kind: "llm", baseUrl: "https://newcomer.example/v1", models: [] }],
+      providers: [
+        { id: "newcomer-llm", label: "新来的服务", kind: "llm", baseUrl: "https://newcomer.example/v1", models: [] },
+      ],
       source: "cache",
       fetchedAt: "2026-01-02T03:04:05.000Z",
     };
@@ -1562,7 +1657,16 @@ describe("EngineKeysSection：服务目录候选（v1.10）", () => {
   it("在线目录里这一组一条都不匹配（示例：远端只加了出图服务）→ 该组按组回落内置表，不画空下拉", async () => {
     providersResp = {
       version: 1,
-      providers: [{ id: "newcomer-image", label: "新来的出图服务", kind: "image", baseUrl: "https://newcomer.example/img", models: [], imageModels: ["new-image-1"] }],
+      providers: [
+        {
+          id: "newcomer-image",
+          label: "新来的出图服务",
+          kind: "image",
+          baseUrl: "https://newcomer.example/img",
+          models: [],
+          imageModels: ["new-image-1"],
+        },
+      ],
       source: "remote",
       fetchedAt: "2026-01-02T03:04:05.000Z",
     };
@@ -1648,7 +1752,9 @@ describe("EngineKeysSection：服务目录候选（v1.10）", () => {
     expect((screen.getByTestId("engine-llm-mode-byok") as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByTestId("engine-llm-byok-locked").textContent).toBeTruthy();
     expect(screen.queryByTestId("engine-llm-baseurl")).toBeNull();
-    expect((screen.getByTestId("engine-llm-mode-session") as HTMLButtonElement).getAttribute("aria-pressed")).toBe("true");
+    expect((screen.getByTestId("engine-llm-mode-session") as HTMLButtonElement).getAttribute("aria-pressed")).toBe(
+      "true",
+    );
 
     // 出图组两引擎通用：自备照常可开、表单照常画
     fireEvent.click(screen.getByTestId("engine-image-mode-byok"));
@@ -1668,7 +1774,7 @@ describe("AudioManager：索引、交叉淡入与静默降级（v1.6）", () => 
   /** pause() 收到的元素（淡出结束 / stopAll 时才会出现） */
   let paused: HTMLAudioElement[];
   let fetchMock: ReturnType<typeof vi.fn>;
-  let debugSpy: ReturnType<typeof vi.spyOn>;
+  let debugSpy: MockInstance<typeof console.debug>;
 
   /** jsdom 会把相对 src 解析成绝对 URL，断言前先解码（中文路径全被 encodeURIComponent 过） */
   const decode = (s: string) => decodeURIComponent(s);
@@ -2020,7 +2126,9 @@ describe("App：Esc 关闭链里的设置屏（v1.6）", () => {
 
     // 逐问选满：摘要 chip 跟着变、入口解锁；「制作美术并开演」进制作屏，指令待命结尾（美术随后逐项发）
     fireEvent.click(within(screen.getByTestId("protagonist-question-姓名")).getByRole("button", { name: "顾迟" }));
-    fireEvent.click(within(screen.getByTestId("protagonist-question-身份")).getByRole("button", { name: "自由调查员" }));
+    fireEvent.click(
+      within(screen.getByTestId("protagonist-question-身份")).getByRole("button", { name: "自由调查员" }),
+    );
     expect(within(screen.getByTestId("protagonist-summary-姓名")).getByText("顾迟")).toBeTruthy();
     expect(screen.getByTestId("protagonist-card-summary").textContent).toContain("已填 2 / 2");
     fireEvent.click(screen.getByTestId("protagonist-start"));
@@ -2030,7 +2138,13 @@ describe("App：Esc 关闭链里的设置屏（v1.6）", () => {
 
     // 另一个入口：快速开局 + 跳过美术 → 直接进游戏屏（指令换成跳过预载的结尾）
     cleanup();
-    useGameStore.setState({ screen: "protagonist", selected: cardPreset, cardAnswers: {}, worldId: "campus-summer-3", engineBusy: false });
+    useGameStore.setState({
+      screen: "protagonist",
+      selected: cardPreset,
+      cardAnswers: {},
+      worldId: "campus-summer-3",
+      engineBusy: false,
+    });
     render(<App />);
     fireEvent.click(screen.getByTestId("quick-start"));
     fireEvent.click(screen.getByTestId("skip-preload"));
@@ -2041,9 +2155,33 @@ describe("App：Esc 关闭链里的设置屏（v1.6）", () => {
     // 制作中屏（App 按状态渲屏）：一个槽位一张卡（testid = 种类-名字），就绪的出图、进行中/失败项给状态
     cleanup();
     const preload: PreloadItem[] = [
-      { kind: "portrait", name: "薇拉", variant: "", label: "薇拉", command: "美术：立绘 薇拉", state: "done", url: null },
-      { kind: "background", name: "灰雀镇廉价旅店", variant: "", label: "灰雀镇廉价旅店", command: "美术：背景 灰雀镇廉价旅店", state: "running", url: null },
-      { kind: "portrait", name: "沈屿", variant: "", label: "沈屿", command: "美术：立绘 沈屿", state: "failed", url: null },
+      {
+        kind: "portrait",
+        name: "薇拉",
+        variant: "",
+        label: "薇拉",
+        command: "美术：立绘 薇拉",
+        state: "done",
+        url: null,
+      },
+      {
+        kind: "background",
+        name: "灰雀镇廉价旅店",
+        variant: "",
+        label: "灰雀镇廉价旅店",
+        command: "美术：背景 灰雀镇廉价旅店",
+        state: "running",
+        url: null,
+      },
+      {
+        kind: "portrait",
+        name: "沈屿",
+        variant: "",
+        label: "沈屿",
+        command: "美术：立绘 沈屿",
+        state: "failed",
+        url: null,
+      },
     ];
     useGameStore.setState({
       screen: "crafting",
@@ -2052,7 +2190,10 @@ describe("App：Esc 关闭链里的设置屏（v1.6）", () => {
       status: "美术进行中…",
       preloadPhase: "queue",
       preload,
-      artReady: { 薇拉: "presets/campus-summer/assets/立绘-薇拉.jpg", 沈屿: "presets/campus-summer/assets/立绘-沈屿.jpg" },
+      artReady: {
+        薇拉: "presets/campus-summer/assets/立绘-薇拉.jpg",
+        沈屿: "presets/campus-summer/assets/立绘-沈屿.jpg",
+      },
       worldLabel: "",
     });
     render(<App />);
@@ -2138,7 +2279,12 @@ describe("WorldsScreen：改名 / 导出 / 导入（v1.6）", () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = new URL(String(input), "http://localhost");
         if (url.pathname === "/api/worlds" && init?.method === "POST") {
-          const body = JSON.parse(String(init.body)) as { action: string; worldId?: string; label?: string; note?: string };
+          const body = JSON.parse(String(init.body)) as {
+            action: string;
+            worldId?: string;
+            label?: string;
+            note?: string;
+          };
           worldPosts.push(body);
           if (body.action === "update") {
             // 服务端落定后 listWorlds 应回带新值（空串=清除），屏内靠重取清单回显
@@ -2230,8 +2376,12 @@ describe("WorldsScreen：改名 / 导出 / 导入（v1.6）", () => {
     );
     await waitFor(() => expect(screen.queryByTestId("world-editor-campus-summer-2")).toBeNull());
     // 显示名清掉后：主行回退剧本名（旧版分叉备注不算备注）、次行仍不铺，分叉徽标还在
-    await waitFor(() => expect(within(screen.getByTestId("world-row-campus-summer-2")).getByText("盛夏偏差值")).toBeTruthy());
-    expect(within(screen.getByTestId("world-row-campus-summer-2")).queryByTestId("world-note-campus-summer-2")).toBeNull();
+    await waitFor(() =>
+      expect(within(screen.getByTestId("world-row-campus-summer-2")).getByText("盛夏偏差值")).toBeTruthy(),
+    );
+    expect(
+      within(screen.getByTestId("world-row-campus-summer-2")).queryByTestId("world-note-campus-summer-2"),
+    ).toBeNull();
     expect(within(screen.getByTestId("world-row-campus-summer-2")).getByText("自《盛夏偏差值》延伸")).toBeTruthy();
 
     // Esc 取消：不发请求、编辑器收起（从 ⋯ 菜单进）
@@ -2474,7 +2624,9 @@ describe("WorldsScreen：改名 / 导出 / 导入（v1.6）", () => {
     fireEvent.change(screen.getByTestId("worlds-import-input"), { target: { files: [file] } });
 
     await waitFor(() => expect(worldPosts).toEqual([{ action: "import", bundle }]));
-    await waitFor(() => expect(screen.getByTestId("worlds-notice").textContent).toContain("已导入世界线 campus-summer-9"));
+    await waitFor(() =>
+      expect(screen.getByTestId("worlds-notice").textContent).toContain("已导入世界线 campus-summer-9"),
+    );
     expect(screen.getByTestId("worlds-notice").getAttribute("data-kind")).toBe("ok");
     await waitFor(() => expect(screen.getByTestId("world-row-campus-summer-9")).toBeTruthy()); // 重取清单可见
   });
@@ -2490,7 +2642,10 @@ describe("WorldsScreen：改名 / 导出 / 导入（v1.6）", () => {
     expect(worldPosts).toEqual([]);
 
     importResp = { ok: false, error: "bundle 校验失败" };
-    const file = new File([JSON.stringify({ format: "bunkiten-world", version: 1, world: { worldId: "x" } })], "x.world.json");
+    const file = new File(
+      [JSON.stringify({ format: "bunkiten-world", version: 1, world: { worldId: "x" } })],
+      "x.world.json",
+    );
     fireEvent.change(screen.getByTestId("worlds-import-input"), { target: { files: [file] } });
     await waitFor(() => expect(screen.getByTestId("worlds-notice").textContent).toContain("导入失败：bundle 校验失败"));
     expect(screen.getByTestId("worlds-notice").getAttribute("data-kind")).toBe("error");
@@ -2518,7 +2673,12 @@ describe("WorldsScreen：家谱视图（v1.7）", () => {
   beforeEach(() => {
     worldsResp = [
       world({ worldId: "w3", label: "三周目", forkedFrom: { worldId: "w2", nodeId: "3-1" }, lastPlayed: NOW - 60_000 }),
-      world({ worldId: "w2", label: "二周目", forkedFrom: { worldId: "w1", nodeId: "2-2" }, lastPlayed: NOW - 3_600_000 }),
+      world({
+        worldId: "w2",
+        label: "二周目",
+        forkedFrom: { worldId: "w1", nodeId: "2-2" },
+        lastPlayed: NOW - 3_600_000,
+      }),
       world({ worldId: "w1", label: "一周目", lastPlayed: NOW - 2 * 86_400_000 }),
     ];
     useGameStore.setState({
@@ -2701,10 +2861,12 @@ describe("AssetsScreen：选择模式、批量重绘与批量删除（v1.6）", 
     fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(String(input), "http://localhost");
       if (url.pathname === "/api/assets" && init?.method === "POST") {
-        const body = JSON.parse(String(init.body)) as { file: string };
+        // 形状与 postAssetDelete 的请求体一致（action 必填；file 是收敛后的单层文件名）
+        const body = JSON.parse(String(init.body)) as { action: string; preset?: string; file?: string };
         assetPosts.push(body);
+        const name = body.file ?? "";
         // 请求体已收敛为单层文件名（postAssetDelete），清单条目是完整相对路径：按 basename 命中移除
-        assetsResp = assetsResp.filter((a) => a.file !== body.file && !a.file.endsWith("/" + body.file));
+        assetsResp = assetsResp.filter((a) => a.file !== name && !a.file.endsWith("/" + name));
         return jsonResponse({ ok: true });
       }
       if (url.pathname === "/api/assets") {
@@ -2733,7 +2895,12 @@ describe("AssetsScreen：选择模式、批量重绘与批量删除（v1.6）", 
     expect(screen.getByLabelText("选择 背景-灰雀镇廉价旅店")).toBeTruthy();
 
     fireEvent.click(screen.getByTestId("assets-select-all"));
-    for (const label of ["选择 立绘-薇拉", "选择 立绘-薇拉 · 微笑", "选择 背景-灰雀镇廉价旅店", "选择 封面-盛夏偏差值"]) {
+    for (const label of [
+      "选择 立绘-薇拉",
+      "选择 立绘-薇拉 · 微笑",
+      "选择 背景-灰雀镇廉价旅店",
+      "选择 封面-盛夏偏差值",
+    ]) {
       expect((screen.getByLabelText(label) as HTMLInputElement).checked).toBe(true);
     }
     expect(screen.getByTestId("assets-regen-selected").textContent).toContain("重绘选中(4)");
@@ -2910,7 +3077,9 @@ describe("AssetsScreen：选择模式、批量重绘与批量删除（v1.6）", 
     expect(screen.getByTestId("assets-regen-progress").textContent).toContain("重绘中 1/1");
 
     await engineTurn("【图】立绘|薇拉-微笑|presets/campus-summer/assets/立绘-薇拉-微笑.jpg|重绘\n");
-    await waitFor(() => expect(screen.getByTestId("assets-regen-notice").textContent).toContain("重绘完成：1 项已换图"));
+    await waitFor(() =>
+      expect(screen.getByTestId("assets-regen-notice").textContent).toContain("重绘完成：1 项已换图"),
+    );
 
     // 关闭走 store（App 的 Esc 链与点遮罩同一条路）；退场动画期间节点还在，只断言状态
     fireEvent.click(close);
@@ -2982,10 +3151,10 @@ describe("StoryTreeScreen：快照标注、原地回退与分叉带 seq（v1.6�
 
   /** 快照索引：2-1 最早是 #3；2-2 有 #7（turn）与 #9（backup，回退前备份，最早匹配仍是 #7）；#11 不挂节点 */
   const SNAPSHOTS: WorldSnapshotMeta[] = [
-    { seq: 3, at: "2026-01-01T00:00:00.000Z", kind: "turn", nodeId: "2-1", chapterNo: 2 },
-    { seq: 7, at: "2026-01-01T01:00:00.000Z", kind: "turn", nodeId: "2-2", chapterNo: 2 },
-    { seq: 9, at: "2026-01-01T02:00:00.000Z", kind: "backup", nodeId: "2-2", chapterNo: 2 },
-    { seq: 11, at: "2026-01-01T03:00:00.000Z", kind: "turn", nodeId: null, chapterNo: 2 },
+    { seq: 3, at: "2026-01-01T00:00:00.000Z", kind: "turn", nodeId: "2-1", chapterNo: 2, label: "" },
+    { seq: 7, at: "2026-01-01T01:00:00.000Z", kind: "turn", nodeId: "2-2", chapterNo: 2, label: "" },
+    { seq: 9, at: "2026-01-01T02:00:00.000Z", kind: "backup", nodeId: "2-2", chapterNo: 2, label: "" },
+    { seq: 11, at: "2026-01-01T03:00:00.000Z", kind: "turn", nodeId: null, chapterNo: 2, label: "" },
   ];
 
   let snapshots: WorldSnapshotMeta[] = [];
@@ -3034,7 +3203,13 @@ describe("StoryTreeScreen：快照标注、原地回退与分叉带 seq（v1.6�
             if (!meta) return jsonResponse({ worldId: "campus-summer-1", snapshots: [] });
             return jsonResponse({
               worldId: "campus-summer-1",
-              snapshots: [{ ...meta, files: { state: "# 状态\n", summary: null, tree: TREE_MD }, prompt: promptsBySeq[seq] ?? "" }],
+              snapshots: [
+                {
+                  ...meta,
+                  files: { state: "# 状态\n", summary: null, tree: TREE_MD },
+                  prompt: promptsBySeq[seq] ?? "",
+                },
+              ],
             });
           }
           return jsonResponse({ worldId: "campus-summer-1", snapshots });
@@ -3246,13 +3421,35 @@ describe("StoryTreeScreen：快照对比 diff 面板（v1.7）", () => {
 
   /** 快照索引：#1 挂 2-1（全局最小，没有对比基线）、#3 挂 2-2（基线是 #1） */
   const SNAPSHOTS: WorldSnapshotMeta[] = [
-    { seq: 1, at: "2026-01-01T00:00:00.000Z", kind: "turn", nodeId: "2-1", chapterNo: 2 },
-    { seq: 3, at: "2026-01-01T01:00:00.000Z", kind: "turn", nodeId: "2-2", chapterNo: 2 },
+    { seq: 1, at: "2026-01-01T00:00:00.000Z", kind: "turn", nodeId: "2-1", chapterNo: 2, label: "" },
+    { seq: 3, at: "2026-01-01T01:00:00.000Z", kind: "turn", nodeId: "2-2", chapterNo: 2, label: "" },
   ];
 
   /** state.md 造 10 行 equal 前缀 + 改动行 + 10 行 equal 后缀（折叠视图需要足够长的未变段） */
-  const STATE_PREFIX = ["# 剧情状态", "周目: 1", "时间: 深夜", "场景: 旅店大堂", "张力: 中", "在场: 沈屿、来客", "天气: 雨", "道具: 信", "线索: 缺页", "地点: 二楼"].join("\n");
-  const STATE_SUFFIX = ["伏笔: 拖拽声", "目标: 拆穿", "好感: 中立", "信任: 低", "警觉: 高", "体力: 正常", "情绪: 平稳", "衣着: 湿透", "照明: 烛火", "门: 关"].join("\n");
+  const STATE_PREFIX = [
+    "# 剧情状态",
+    "周目: 1",
+    "时间: 深夜",
+    "场景: 旅店大堂",
+    "张力: 中",
+    "在场: 沈屿、来客",
+    "天气: 雨",
+    "道具: 信",
+    "线索: 缺页",
+    "地点: 二楼",
+  ].join("\n");
+  const STATE_SUFFIX = [
+    "伏笔: 拖拽声",
+    "目标: 拆穿",
+    "好感: 中立",
+    "信任: 低",
+    "警觉: 高",
+    "体力: 正常",
+    "情绪: 平稳",
+    "衣着: 湿透",
+    "照明: 烛火",
+    "门: 关",
+  ].join("\n");
   /** seq → 三文件全文（fetchSnapshot mock 数据；tree 两边全等 → 「无变化」tab） */
   const FILES: Record<number, { state: string; summary: string; tree: string }> = {
     1: { state: `${STATE_PREFIX}\n好感度: 42\n${STATE_SUFFIX}`, summary: "第 1 轮：门口初遇。", tree: TREE_MD },
@@ -3302,7 +3499,13 @@ describe("StoryTreeScreen：快照对比 diff 面板（v1.7）", () => {
     expect(prevSnapshotSeq(SNAPSHOTS, 1)).toBeNull();
     expect(prevSnapshotSeq(SNAPSHOTS, 3)).toBe(1);
     expect(
-      prevSnapshotSeq([...SNAPSHOTS, { seq: 2, at: "2026-01-01T00:30:00.000Z", kind: "backup", nodeId: "2-1", chapterNo: 2 }], 3),
+      prevSnapshotSeq(
+        [
+          ...SNAPSHOTS,
+          { seq: 2, at: "2026-01-01T00:30:00.000Z", kind: "backup", nodeId: "2-1", chapterNo: 2, label: "" },
+        ],
+        3,
+      ),
     ).toBe(2);
 
     render(<StoryTreeScreen />);
@@ -3807,7 +4010,14 @@ describe("游戏键盘：数字键选选项、空格补全、自动前进倒计�
   });
 
   it("打字已完成时空格不吞按键（聚焦按钮的激活语义照旧）", () => {
-    useGameStore.setState({ received: "", finalText: "", turnKey: 43, options: null, typingDone: true, status: "就绪" });
+    useGameStore.setState({
+      received: "",
+      finalText: "",
+      turnKey: 43,
+      options: null,
+      typingDone: true,
+      status: "就绪",
+    });
     render(<DialogueBox />);
 
     const ev = new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true });
@@ -3975,7 +4185,10 @@ describe("回退后的客户端语义：非破坏式分割线、待重同步与�
         const url = new URL(String(input), "http://localhost");
         if (url.pathname === "/prompt") {
           prompts.push((JSON.parse(String(init?.body)) as { text: string }).text);
-          return jsonResponse(promptResp.ok ? promptResp : { ok: false, error: promptResp.error ?? "HTTP 409" }, promptResp.ok ? 200 : 409);
+          return jsonResponse(
+            promptResp.ok ? promptResp : { ok: false, error: promptResp.error ?? "HTTP 409" },
+            promptResp.ok ? 200 : 409,
+          );
         }
         if (url.pathname === "/api/worlds" && init?.method === "POST") {
           const body = JSON.parse(String(init.body)) as { action: string };
@@ -3992,8 +4205,8 @@ describe("回退后的客户端语义：非破坏式分割线、待重同步与�
   it("回退成功：history 追加 rollback 分割线（旧幕一条不删），抽屉里旧幕置灰、分割线之后的新幕正常", async () => {
     useGameStore.setState({
       history: [
-        { n: "第 1 幕", t: "旧幕一：门口初遇" },
-        { n: "第 2 幕", t: "旧幕二：中殿对话" },
+        { kind: "act", n: "第 1 幕", t: "旧幕一：门口初遇" },
+        { kind: "act", n: "第 2 幕", t: "旧幕二：中殿对话" },
       ],
       turnNo: 2,
     });
@@ -4128,7 +4341,11 @@ describe("回退后的客户端语义：非破坏式分割线、待重同步与�
 describe("DialogueBox：动效降级（prefers-reduced-motion，v1.7）", () => {
   /** jsdom 没有 matchMedia 实现：手工挂一个（matches 固定、change 永不触发），测完删掉还原 */
   const stubMatchMedia = (matches: boolean) => {
-    window.matchMedia = (() => ({ matches, addEventListener: () => {}, removeEventListener: () => {} })) as unknown as typeof window.matchMedia;
+    window.matchMedia = (() => ({
+      matches,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    })) as unknown as typeof window.matchMedia;
   };
   const dropMatchMedia = () => {
     delete (window as { matchMedia?: typeof window.matchMedia }).matchMedia;
@@ -4260,10 +4477,7 @@ describe("同屏多立绘：发言者高亮带名牌、非发言者压暗，让�
   it("发言者切换（队列重排）：名牌跟着末位走，压暗随之易主——同一套元素不新增人形", () => {
     act(() =>
       useGameStore.setState({
-        portraits: [
-          { ...figure("薇拉"), url: "/img?p=x%2F%5Fvera-smile.jpg&n=薇拉", variant: "微笑" },
-          figure("沈屿"),
-        ],
+        portraits: [{ ...figure("薇拉"), url: "/img?p=x%2F%5Fvera-smile.jpg&n=薇拉", variant: "微笑" }, figure("沈屿")],
       }),
     );
     render(<GameStage />);
@@ -4319,7 +4533,11 @@ describe("回退后玩家继续走：普通指令不冒充重同步（v1.7）", 
         if (url.pathname === "/prompt") {
           prompts.push((JSON.parse(String(init?.body)) as { text: string }).text);
           const resp = promptResps.shift() ?? { ok: true };
-          if (promptGate) { const g = promptGate; promptGate = null; await g; } // 先记本次开关，响应挂到闸门放行
+          if (promptGate) {
+            const g = promptGate;
+            promptGate = null;
+            await g;
+          } // 先记本次开关，响应挂到闸门放行
           return jsonResponse(resp.ok ? resp : { ok: false, error: resp.error ?? "HTTP 409" }, resp.ok ? 200 : 409);
         }
         if (url.pathname === "/api/worlds" && init?.method === "POST") {
@@ -4390,7 +4608,9 @@ describe("回退后玩家继续走：普通指令不冒充重同步（v1.7）", 
   it("重同步仍在途时玩家发普通指令：迟到的 resume 失败不写「重同步失败」残影", async () => {
     promptResps = [{ ok: false, error: "上一回合还在进行" }]; // resume 的失败结果迟到一步
     let releaseResume!: () => void;
-    promptGate = new Promise<void>((r) => { releaseResume = r; }); // 挂起 resume 的响应
+    promptGate = new Promise<void>((r) => {
+      releaseResume = r;
+    }); // 挂起 resume 的响应
     await act(async () => {
       await useGameStore.getState().restoreSnapshot(7);
     });
@@ -4432,7 +4652,14 @@ describe("重演这一幕：解析目标幕与回退点、重同步收尾后重�
   let historyFails: boolean;
 
   /** 一条快照元信息（nodeId/chapterNo 对重演无意义，占位） */
-  const snap = (seq: number, kind: "turn" | "backup"): WorldSnapshotMeta => ({ seq, at: "2026-09-17T00:00:00.000Z", kind, nodeId: null, chapterNo: 1, label: "" });
+  const snap = (seq: number, kind: "turn" | "backup"): WorldSnapshotMeta => ({
+    seq,
+    at: "2026-09-17T00:00:00.000Z",
+    kind,
+    nodeId: null,
+    chapterNo: 1,
+    label: "",
+  });
 
   beforeEach(() => {
     promptOk = true;
@@ -4460,7 +4687,7 @@ describe("重演这一幕：解析目标幕与回退点、重同步收尾后重�
       resyncing: false,
       pendingRerollPrompt: null,
       turnSnapshots: null,
-      history: [{ n: "第 3 幕", t: "回合甲：门轴一声闷响。" }],
+      history: [{ kind: "act", n: "第 3 幕", t: "回合甲：门轴一声闷响。" }],
       turnNo: 3,
       segs: { 0: "" },
       curSeg: 0,
@@ -4485,7 +4712,9 @@ describe("重演这一幕：解析目标幕与回退点、重同步收尾后重�
           if (!meta) return jsonResponse({ worldId: "campus-summer-1", snapshots: [] });
           return jsonResponse({
             worldId: "campus-summer-1",
-            snapshots: [{ ...meta, files: { state: "# 状态\n", summary: null, tree: null }, prompt: promptsBySeq[seq] ?? "" }],
+            snapshots: [
+              { ...meta, files: { state: "# 状态\n", summary: null, tree: null }, prompt: promptsBySeq[seq] ?? "" },
+            ],
           });
         }
         if (url.pathname === "/api/worlds" && init?.method === "POST") {
@@ -4751,7 +4980,10 @@ describe("重演这一幕：解析目标幕与回退点、重同步收尾后重�
 
 describe("theme：字体族与对话框质感（v1.7）", () => {
   /** 带 theme 的剧本 fixture（font/dialog 两键是本组的主角） */
-  const themed = (theme: Partial<NonNullable<Preset["theme"]>>): Preset => ({ ...PRESET, theme: { accent: "#f0b95a", accent2: "#f7e3b0", motif: "summer", ...theme } });
+  const themed = (theme: Partial<NonNullable<Preset["theme"]>>): Preset => ({
+    ...PRESET,
+    theme: { accent: "#f0b95a", accent2: "#f7e3b0", motif: "summer", ...theme },
+  });
 
   it("themeVars 产出 --font-preset：缺省走 serif 栈，font 档位切换对应系统字体栈", () => {
     const base = themeVars(getTheme(null)) as Record<string, string>;
@@ -4768,7 +5000,8 @@ describe("theme：字体族与对话框质感（v1.7）", () => {
     expect(getTheme(themed({ font: "song" }))).toMatchObject({ font: "song", dialog: "plain" }); // 只配 font：dialog 缺省
     expect(getTheme(themed({ dialog: "paper" }))).toMatchObject({ font: "serif", dialog: "paper" }); // 只配 dialog：font 缺省
     for (const font of ["serif", "song", "kai", "hei"] as const) expect(getTheme(themed({ font })).font).toBe(font);
-    for (const dialog of ["plain", "silk", "paper", "glass"] as const) expect(getTheme(themed({ dialog })).dialog).toBe(dialog);
+    for (const dialog of ["plain", "silk", "paper", "glass"] as const)
+      expect(getTheme(themed({ dialog })).dialog).toBe(dialog);
   });
 
   it("dialogClass：四档映射 dialog-*，非法/缺省一律 dialog-plain（CSS 里 plain 无规则=现状）", () => {
@@ -4835,7 +5068,17 @@ describe("角色面板：渲染 / 秘密折叠 / turn_end 重拉 / 空态（v1.7
         secret: "缺页是她自己撕的",
         recentInteraction: "把账册推过来半寸",
       },
-      { name: "沈屿", role: "谜之少年", traits: "", catchphrase: "", favor: null, artFile: "", expression: "", secret: "无", recentInteraction: "" },
+      {
+        name: "沈屿",
+        role: "谜之少年",
+        traits: "",
+        catchphrase: "",
+        favor: null,
+        artFile: "",
+        expression: "",
+        secret: "无",
+        recentInteraction: "",
+      },
     ],
     flags: [{ name: "已读旧信", value: "true" }],
     foreshadowing: [
@@ -4861,7 +5104,7 @@ describe("角色面板：渲染 / 秘密折叠 / turn_end 重拉 / 空态（v1.7
     });
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
         const url = new URL(String(input), "http://localhost");
         if (url.pathname === "/prompt") return jsonResponse({ ok: true });
         if (url.pathname === "/api/state") {
@@ -5080,7 +5323,9 @@ describe("TitleScreen：剧本导出/导入（v1.7）", () => {
       "x.preset.json",
     );
     fireEvent.change(screen.getByTestId("preset-import-input"), { target: { files: [file] } });
-    await waitFor(() => expect(screen.getByTestId("title-notice").textContent).toContain("导入失败：非法的素材文件名: ../x.jpg"));
+    await waitFor(() =>
+      expect(screen.getByTestId("title-notice").textContent).toContain("导入失败：非法的素材文件名: ../x.jpg"),
+    );
     expect(screen.getByTestId("title-notice").getAttribute("data-kind")).toBe("error");
     expect(presetGets).toBe(1); // 失败不重取轮播
   });
@@ -5096,7 +5341,8 @@ describe("store handleEvent：未知事件类型兜底（v1.7 表驱动分发的
       const snap = { ...before } as Record<string, unknown>;
       // @ts-expect-error 故意投一个 AcpEvent 联合之外的类型：SSE JSON.parse 是盲转，这条路径真实可达
       useGameStore.getState().handleEvent({ type: "bogus-probe" });
-      const after = useGameStore.getState() as Record<string, unknown>;
+      // 两跳：GameStore 没有索引签名，直接 `as Record<string, unknown>` 会被 TS 判为「两类型不重叠」
+      const after = useGameStore.getState() as unknown as Record<string, unknown>;
       expect(warns.length).toBe(1);
       expect(String(warns[0][0])).toContain("bogus-probe");
       // 除监听器/函数引用外，任何数据字段都不被未知事件改写
@@ -5611,7 +5857,12 @@ describe("WorldsScreen：家谱画布缩放与渲染宽度上界（v1.8）", () 
   it("键盘 + / 0 与按钮同一条路：缩放不打扰节点焦点与选中；操作提示挂在画布工具条（家谱视图无页脚）", async () => {
     worldsResp = [
       world({ worldId: "w3", label: "三周目", forkedFrom: { worldId: "w2", nodeId: "3-1" }, lastPlayed: NOW - 60_000 }),
-      world({ worldId: "w2", label: "二周目", forkedFrom: { worldId: "w1", nodeId: "2-2" }, lastPlayed: NOW - 3_600_000 }),
+      world({
+        worldId: "w2",
+        label: "二周目",
+        forkedFrom: { worldId: "w1", nodeId: "2-2" },
+        lastPlayed: NOW - 3_600_000,
+      }),
       world({ worldId: "w1", label: "一周目", lastPlayed: NOW - 2 * 86_400_000 }),
     ];
     render(<WorldsScreen />);
@@ -5640,7 +5891,9 @@ describe("WorldsScreen：家谱画布缩放与渲染宽度上界（v1.8）", () 
     // 提示行住在画布工具条里（画布之上）：家谱视图整屏不铺页脚，所以它不可能挂在页脚
     const hint = screen.getByText(HINT);
     expect(screen.getByTestId("genealogy-canvas-wrap").contains(hint)).toBe(true);
-    expect(hint.compareDocumentPosition(screen.getByTestId("genealogy-canvas-cap")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(
+      hint.compareDocumentPosition(screen.getByTestId("genealogy-canvas-cap")) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
     expect(screen.queryByText("↑ ↓ 选择 · Enter 继续")).toBeNull(); // 家谱视图没有页脚那一行
 
     // 对照：列表视图的页脚是另一处，且那里的提示与本提示各行其是
@@ -5671,8 +5924,16 @@ describe("PresetCheckScreen：剧本体检（v1.9）", () => {
         label:
           "frontmatter id「campus-summer」≠ 目录名「campus_summer」——轮播按 id 认剧本、素材按目录名落盘，两边会互相找不到",
       },
-      { level: "ok", group: "theme", label: "theme：accent/accent2/motif/font/dialog 全部合法（server 与客户端两层判定都通过）" },
-      { level: "warn", group: "正文小节", label: "正文缺 `# protagonist_card` 小节——捏人屏没有问题可问（快速开局路径不受影响）" },
+      {
+        level: "ok",
+        group: "theme",
+        label: "theme：accent/accent2/motif/font/dialog 全部合法（server 与客户端两层判定都通过）",
+      },
+      {
+        level: "warn",
+        group: "正文小节",
+        label: "正文缺 `# protagonist_card` 小节——捏人屏没有问题可问（快速开局路径不受影响）",
+      },
       { level: "ok", group: "封面", label: "封面：cover.jpg 存在" },
     ],
   };
@@ -5909,7 +6170,14 @@ describe("TitleScreen：剧本体检入口（v1.9）", () => {
 describe("BootScreen：一键登录（v1.11 收尾）", () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    useGameStore.setState({ presets: [], screen: "boot", screenReturn: null, selected: null, worldId: null, engineBusy: false });
+    useGameStore.setState({
+      presets: [],
+      screen: "boot",
+      screenReturn: null,
+      selected: null,
+      worldId: null,
+      engineBusy: false,
+    });
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -5976,7 +6244,14 @@ describe("启动链超时：读接口挂住时落地到两屏既有的错误态�
 
   beforeEach(() => {
     vi.useFakeTimers(); // 超时是 setTimeout 驱动的（不是 AbortSignal.timeout 的内部计时器，那个假计时器推不动）
-    useGameStore.setState({ presets: [], screen: "boot", screenReturn: null, selected: null, worldId: null, engineBusy: false });
+    useGameStore.setState({
+      presets: [],
+      screen: "boot",
+      screenReturn: null,
+      selected: null,
+      worldId: null,
+      engineBusy: false,
+    });
   });
 
   afterEach(() => {

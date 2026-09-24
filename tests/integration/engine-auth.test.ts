@@ -9,16 +9,19 @@
 import { afterEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import { startStack } from "./harness.mjs";
+import { startStack, type StackHandle } from "./harness.mjs";
 
-/** @type {Array<{stop: () => Promise<void>}>} 本文件起过的栈（afterEach 统一收尾） */
-const started = [];
+/** startStack 的入参形状（真源在 harness 的 JSDoc，不在这里抄第二份） */
+type StackOptions = NonNullable<Parameters<typeof startStack>[0]>;
+
+/** 本文件起过的栈（afterEach 统一收尾） */
+const started: StackHandle[] = [];
 afterEach(async () => {
-  while (started.length) await started.pop().stop();
+  while (started.length) await started.pop()?.stop();
 });
 
-/** @param {object} [opts] 见 harness.startStack @returns {Promise<any>} */
-async function stack(opts = {}) {
+/** 起一套栈并登记（afterEach 统一收尾） */
+async function stack(opts: StackOptions = {}): Promise<StackHandle> {
   const s = await startStack(opts);
   started.push(s);
   return s;
@@ -26,10 +29,13 @@ async function stack(opts = {}) {
 
 /**
  * 轮询直到异步谓词为真（**不用 harness 的 waitFor**：那个谓词是同步口径，返回 Promise 会被当成真）。
- * @param {() => Promise<boolean>} pred 异步谓词
- * @param {{timeout?: number, label?: string}} [opts]
+ * @param pred 异步谓词
+ * @param opts 超时与失败标签
  */
-async function until(pred, { timeout = 15000, label = "条件" } = {}) {
+async function until(
+  pred: () => Promise<boolean>,
+  { timeout = 15000, label = "条件" }: { timeout?: number; label?: string } = {},
+) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     if (await pred()) return;
@@ -38,8 +44,8 @@ async function until(pred, { timeout = 15000, label = "条件" } = {}) {
   throw new Error(`超时：${label}`);
 }
 
-const grokAuthFile = (/** @type {any} */ s) => path.join(s.home, ".grok", "auth.json");
-const codexAuthFile = (/** @type {any} */ s) => path.join(s.home, ".codex", "auth.json");
+const grokAuthFile = (s: StackHandle) => path.join(s.home, ".grok", "auth.json");
+const codexAuthFile = (s: StackHandle) => path.join(s.home, ".codex", "auth.json");
 /** 预置一份 engine=codex 的凭据文档（对话沿用终端登录；出图不用） */
 const codexCreds = () => ({
   version: 1,
@@ -68,7 +74,9 @@ describe("POST /api/engine/login|logout：把玩家自己的 CLI 登录流程拉
   });
 
   it("codex：登录写玩家 ~/.codex/auth.json；重启引擎把副本同步进游戏 home；登出把两份都清掉", async () => {
-    const s = await stack({ engine: "codex", credentials: codexCreds(), codexAuth: "missing" });
+    // 引擎由**凭据文档**决定（codexCreds() 里的 engine 键），不是 startStack 的选项——
+    // 此前这里多传了一个 `engine: "codex"`，harness 根本不消费它：假绿来源，v1.13 去掉
+    const s = await stack({ credentials: codexCreds(), codexAuth: "missing" });
     expect((await s.getJSON("/api/auth")).body).toMatchObject({ loggedIn: false, engine: "codex", canLogin: true });
 
     const login = await s.postJSON("/api/engine/login", {});
@@ -85,7 +93,10 @@ describe("POST /api/engine/login|logout：把玩家自己的 CLI 登录流程拉
     const logout = await s.postJSON("/api/engine/logout", {});
     expect(logout.body.ok).toBe(true);
     expect(fs.existsSync(codexAuthFile(s))).toBe(false);
-    expect(fs.existsSync(path.join(s.codexHome, "auth.json")), "登出后游戏侧副本还留着（会变成「启动屏说未登录、引擎却能跑」）").toBe(false);
+    expect(
+      fs.existsSync(path.join(s.codexHome, "auth.json")),
+      "登出后游戏侧副本还留着（会变成「启动屏说未登录、引擎却能跑」）",
+    ).toBe(false);
   });
 
   it("canLogin 是布尔、按当前引擎算（登录入口在不在，GUI 据此禁用按钮）", async () => {

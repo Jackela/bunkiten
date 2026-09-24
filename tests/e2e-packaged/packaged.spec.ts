@@ -10,22 +10,57 @@
 // 不该让没打包的人「跑测试先失败」（CI 的 packaged-win job 会先打包再跑，见 .github/workflows/ci.yml）。
 // 已知副作用：打包态的 GAME_ROOT 是产物内的 resources/game（main.js 里写死，env 改不了），
 // 应用启动会往里写 state/worlds/（本 spec 只停在标题屏，不做世界线操作，写入量最小）。
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
 import readline from "node:readline";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { _electron as electron, expect, test, type ElectronApplication } from "@playwright/test";
-import { findPackagedApp, homeEnv, killTree, packagedSkipHint, rmTemp, waitForExit, writeCliShim } from "../helpers/packaged-app.mjs";
+import {
+  findPackagedApp,
+  homeEnv,
+  killTree,
+  packagedAppRequired,
+  packagedSkipHint,
+  rmTemp,
+  waitForExit,
+  writeCliShim,
+  type PackagedApp,
+} from "../helpers/packaged-app.mjs";
 import { startMockImageServer } from "../helpers/mock-image-server.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const FAKE_ENGINE = path.join(ROOT, "tests", "integration", "fake-engine.mjs");
 
 const APP = findPackagedApp(ROOT);
-const APP_BIN = APP?.exe ?? null;
 const SKIP_HINT = packagedSkipHint();
+
+/**
+ * 取打包产物——顺带把「产物缺失」这件事定性。
+ *
+ * 本机手动跑：没有产物就 `test.skip`（没打包的人不该「跑测试先失败」）。
+ * CI（`BUNKITEN_REQUIRE_PACKAGED=1`，见 ci.yml 的 packaged-win job）：产物必须存在——
+ * 那条 job 刚跑完 `dist:win:dir`，找不到产物说明布局/脚本出了真问题，必须**失败**而不是整组跳过
+ * （跳过 = job 绿、零断言，「Windows 上的包能开」重新失去证据，v1.13 修）。
+ * @returns {PackagedApp} 产物描述（exe 绝对路径 + resources 目录）
+ */
+function requireApp(): PackagedApp {
+  if (APP === null) {
+    if (packagedAppRequired()) expect(APP, SKIP_HINT).not.toBeNull();
+    test.skip(true, SKIP_HINT);
+  }
+  return APP as PackagedApp;
+}
 
 /**
  * 收尾：**先关窗口再 close**，close 卡住就 SIGKILL——冒烟不该把 worker 挂死。
@@ -40,7 +75,10 @@ const SKIP_HINT = packagedSkipHint();
 async function closeApp(app: ElectronApplication): Promise<void> {
   for (const w of app.windows()) await w.close().catch(() => {});
   const closed = await Promise.race([
-    app.close().then(() => true).catch(() => true),
+    app
+      .close()
+      .then(() => true)
+      .catch(() => true),
     new Promise<boolean>((r) => setTimeout(() => r(false), 15_000)),
   ]);
   if (!closed) {
@@ -49,8 +87,8 @@ async function closeApp(app: ElectronApplication): Promise<void> {
 }
 
 test("打包态：codex-acp 资源树就位，且打包态可执行文件（ELECTRON_RUN_AS_NODE）能把它跑出 initialize", async () => {
-  test.skip(APP_BIN === null, SKIP_HINT);
-  const acpRoot = path.join(APP!.resources, "codex-acp", "node_modules");
+  const pkg = requireApp();
+  const acpRoot = path.join(pkg.resources, "codex-acp", "node_modules");
   const entry = path.join(acpRoot, "@agentclientprotocol", "codex-acp", "dist", "index.js");
   expect(
     existsSync(entry),
@@ -60,7 +98,10 @@ test("打包态：codex-acp 资源树就位，且打包态可执行文件（ELEC
   // mac 只出 arm64（ADR-0011 修订），这条就是「交叉打包会把错架构的二进制装进产物」的守门断言。
   const openaiDir = path.join(acpRoot, "@openai");
   const platformPkgs = readdirSync(openaiDir).filter((n) => n.startsWith("codex-"));
-  expect(platformPkgs.length, "resources/codex-acp 里没有平台二进制包（@openai/codex-<platform>-<arch>）").toBeGreaterThan(0);
+  expect(
+    platformPkgs.length,
+    "resources/codex-acp 里没有平台二进制包（@openai/codex-<platform>-<arch>）",
+  ).toBeGreaterThan(0);
   const expectedPlatform = `codex-${process.platform}-${process.arch}`;
   expect(
     platformPkgs,
@@ -77,7 +118,7 @@ test("打包态：codex-acp 资源树就位，且打包态可执行文件（ELEC
   let child: ChildProcess | null = null;
   try {
     const result = await new Promise<{ ok: boolean; detail: string }>((resolve) => {
-      const proc = spawn(APP_BIN as string, [entry], {
+      const proc = spawn(pkg.exe, [entry], {
         env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", CODEX_HOME: codexHome, NO_BROWSER: "1" },
         stdio: ["pipe", "pipe", "pipe"],
       });
@@ -91,14 +132,26 @@ test("打包态：codex-acp 资源树就位，且打包态可执行文件（ELEC
       }, 25_000);
       readline.createInterface({ input: proc.stdout }).on("line", (line) => {
         let msg: any;
-        try { msg = JSON.parse(line); } catch { return; }
+        try {
+          msg = JSON.parse(line);
+        } catch {
+          return;
+        }
         if (msg.id !== 1) return;
         clearTimeout(timer);
         killTree(proc);
-        if (msg.error) resolve({ ok: false, detail: `initialize 回错误：${msg.error.message ?? JSON.stringify(msg.error)}` });
+        if (msg.error)
+          resolve({ ok: false, detail: `initialize 回错误：${msg.error.message ?? JSON.stringify(msg.error)}` });
         else resolve({ ok: true, detail: String(msg.result?.agentInfo?.name ?? "(无 agentInfo)") });
       });
-      proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: 1, clientCapabilities: {} } }) + "\n");
+      proc.stdin.write(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: { protocolVersion: 1, clientCapabilities: {} },
+        }) + "\n",
+      );
     });
     expect(result.ok, `codex-acp 入口跑不起来：${result.detail}`).toBe(true);
     expect(result.detail).toContain("codex-acp");
@@ -110,7 +163,7 @@ test("打包态：codex-acp 资源树就位，且打包态可执行文件（ELEC
 });
 
 test("打包态：窗口能开、标题屏渲染、/app 与 resources/game 资源可达", async () => {
-  test.skip(APP_BIN === null, SKIP_HINT);
+  const pkg = requireApp();
   const tmp = mkdtempSync(path.join(os.tmpdir(), "bunkiten-packaged-"));
   const home = path.join(tmp, "home");
   const binDir = path.join(tmp, "bin");
@@ -126,7 +179,14 @@ test("打包态：窗口能开、标题屏渲染、/app 与 resources/game 资�
     JSON.stringify({
       version: 1,
       llm: { mode: "session", provider: "openai", baseUrl: "", apiKey: "", model: "" },
-      image: { mode: "byok", provider: "custom", baseUrl: "http://127.0.0.1:9/v1", apiKey: "sk-packaged-e2e-0001", model: "img", size: "" },
+      image: {
+        mode: "byok",
+        provider: "custom",
+        baseUrl: "http://127.0.0.1:9/v1",
+        apiKey: "sk-packaged-e2e-0001",
+        model: "img",
+        size: "",
+      },
     }),
     { mode: 0o600 },
   );
@@ -141,7 +201,7 @@ test("打包态：窗口能开、标题屏渲染、/app 与 resources/game 资�
   writeCliShim(path.join(home, ".grok", "bin"), "grok", process.execPath, FAKE_ENGINE);
 
   const app = await electron.launch({
-    executablePath: APP_BIN as string,
+    executablePath: pkg.exe,
     env: {
       ...process.env,
       ...homeEnv(home),
@@ -219,10 +279,16 @@ test("打包态：窗口能开、标题屏渲染、/app 与 resources/game 资�
     // app.asar.unpacked/，运行时 mediaMcpPath() 把 `app.asar` 段换成 `app.asar.unpacked`。
     // 断言面不只是「media-mcp 在」：它相对 import 的每一层兄弟都必须在同一棵 unpacked 树里——
     // 只解一个文件时那些兄弟不在，子进程第一步就 ERR_MODULE_NOT_FOUND（v1.10 实测抓到过）。
-    const unpackedRoot = path.join(APP!.resources, "app.asar.unpacked");
+    const unpackedRoot = path.join(pkg.resources, "app.asar.unpacked");
     const unpacked = path.join(unpackedRoot, "server", "media-mcp.mjs");
-    expect(existsSync(unpacked), `asarUnpack 没把出图 MCP 解开到 asar 外：${unpacked}（检查 electron-builder.yml 的 asarUnpack）`).toBe(true);
-    expect(existsSync(path.join(APP!.resources, "app.asar")), "app.asar 不在预期位置（打包布局变了，mediaMcpPath 的替换规则要跟着看）").toBe(true);
+    expect(
+      existsSync(unpacked),
+      `asarUnpack 没把出图 MCP 解开到 asar 外：${unpacked}（检查 electron-builder.yml 的 asarUnpack）`,
+    ).toBe(true);
+    expect(
+      existsSync(path.join(pkg.resources, "app.asar")),
+      "app.asar 不在预期位置（打包布局变了，mediaMcpPath 的替换规则要跟着看）",
+    ).toBe(true);
     // 顺着 import 图把 server/ 与 shared/ 的整棵依赖树逐个 stat（不是硬编码文件清单：
     // 从 media-mcp.mjs 出发递归读 `from "…"` 相对路径，谁缺了都报出来）
     const missing: string[] = [];
@@ -242,7 +308,10 @@ test("打包态：窗口能开、标题屏渲染、/app 与 resources/game 资�
       }
     };
     walk(unpacked);
-    expect(missing, `unpacked 树里缺这些被 import 的模块（子进程会 ERR_MODULE_NOT_FOUND）：${missing.join("、")}`).toEqual([]);
+    expect(
+      missing,
+      `unpacked 树里缺这些被 import 的模块（子进程会 ERR_MODULE_NOT_FOUND）：${missing.join("、")}`,
+    ).toEqual([]);
     expect(seen.size, "import 图走下来只看到一个文件？递归没生效（这条断言就白写了）").toBeGreaterThan(5);
     expect(readFileSync(unpacked, "utf8")).toContain('export const MEDIA_TOOL_NAME = "generate_image"');
 
@@ -278,7 +347,7 @@ test("打包态：窗口能开、标题屏渲染、/app 与 resources/game 资�
     expect(mcp.ok, `打包态 MCP 握手失败：${mcp.error ?? "(无原因)"}`).toBe(true);
     expect(mcp.serverInfo?.name).toBe("bunkiten-media");
     expect(mcp.tools).toContain("generate_image");
-    expect(String(mcp.command)).toContain(path.basename(APP!.exe)); // 命令就是打包态可执行文件本身（ELECTRON_RUN_AS_NODE 让它当 node 跑）
+    expect(String(mcp.command)).toContain(path.basename(pkg.exe)); // 命令就是打包态可执行文件本身（ELECTRON_RUN_AS_NODE 让它当 node 跑）
     expect(String(mcp.args?.[0])).toContain("app.asar.unpacked"); // 且指向 asar 外的真实脚本
     const sessionEntry = probeEntries().find((e) => e.kind === "session");
     expect(sessionEntry?.mcpServers?.map((s: any) => s.name)).toEqual(["bunkiten-media"]);
@@ -329,7 +398,7 @@ function snapshotPackagedAssets(presetsRoot: string): Record<string, { size: num
 // 用一个包里没有的唯一立绘名，让假引擎兜底落「排序第一个剧本目录」，于是断言面就是「跑前后快照里多出的那张 jpg」。
 // 已知副作用：同第一条冒烟，应用启动会往 resources/game 写 state/worlds/；收尾只删本次新增的 jpg。
 test("打包态 mock 出图：假引擎真发 tools/call + 本地假图片服务，resources/game 落一张新 jpg 且 /img 直服 200", async () => {
-  test.skip(APP_BIN === null, SKIP_HINT);
+  const pkg = requireApp();
   test.setTimeout(180_000);
 
   const mock = await startMockImageServer();
@@ -347,7 +416,14 @@ test("打包态 mock 出图：假引擎真发 tools/call + 本地假图片服务
     JSON.stringify({
       version: 1,
       llm: { mode: "session", provider: "openai", baseUrl: "", apiKey: "", model: "" },
-      image: { mode: "byok", provider: "custom", baseUrl: mock.base, apiKey: "sk-packaged-mock-0001", model: "mock-image", size: "" },
+      image: {
+        mode: "byok",
+        provider: "custom",
+        baseUrl: mock.base,
+        apiKey: "sk-packaged-mock-0001",
+        model: "mock-image",
+        size: "",
+      },
     }),
     { mode: 0o600 },
   );
@@ -356,7 +432,7 @@ test("打包态 mock 出图：假引擎真发 tools/call + 本地假图片服务
   writeCliShim(path.join(home, ".grok", "bin"), "grok", process.execPath, FAKE_ENGINE);
 
   // 打包态 GAME_ROOT = .app 内 resources/game（main.js 写死；extraResources 把仓库 presets/ 铺到这）
-  const gameRoot = path.join(APP!.resources, "game");
+  const gameRoot = path.join(pkg.resources, "game");
   const presetsRoot = path.join(gameRoot, "presets");
   const before = snapshotPackagedAssets(presetsRoot);
   // 包里没有的唯一立绘名：重绘后必然是一个「新文件」（与包里自带的资产区分开）
@@ -367,7 +443,7 @@ test("打包态 mock 出图：假引擎真发 tools/call + 本地假图片服务
   const appLogs: string[] = [];
   try {
     app = await electron.launch({
-      executablePath: APP_BIN as string,
+      executablePath: pkg.exe,
       env: {
         ...process.env,
         ...homeEnv(home),
@@ -410,7 +486,10 @@ test("打包态 mock 出图：假引擎真发 tools/call + 本地假图片服务
     //  探针走文件，是这两条 spec 都实测可靠的信号。）
     try {
       await expect
-        .poll(() => probeEntries().some((e) => e.kind === "session"), { timeout: 60_000, message: "假引擎没写下 session 握手探针（FAKE_ENGINE_PROBE 没生效？）" })
+        .poll(() => probeEntries().some((e) => e.kind === "session"), {
+          timeout: 60_000,
+          message: "假引擎没写下 session 握手探针（FAKE_ENGINE_PROBE 没生效？）",
+        })
         .toBe(true);
     } catch (e) {
       console.log("[packaged-mock] probe:", JSON.stringify(probeEntries()));
@@ -420,7 +499,10 @@ test("打包态 mock 出图：假引擎真发 tools/call + 本地假图片服务
     // 就绪前 POST /prompt 会 409（引擎未就绪/上一回合在跑）；轮询到 200——成功那一次就是唯一一次真正发指令
     try {
       await expect
-        .poll(async () => (await postPrompt()).status, { timeout: 60_000, message: "POST /prompt 一直不是 200（409=引擎未就绪）" })
+        .poll(async () => (await postPrompt()).status, {
+          timeout: 60_000,
+          message: "POST /prompt 一直不是 200（409=引擎未就绪）",
+        })
         .toBe(200);
     } catch (e) {
       console.log("[packaged-mock] probe:", JSON.stringify(probeEntries()));
@@ -437,7 +519,9 @@ test("打包态 mock 出图：假引擎真发 tools/call + 本地假图片服务
       .toBe(1);
     created = Object.keys(snapshotPackagedAssets(presetsRoot)).filter((k) => !(k in before));
     const newRel = created[0];
-    expect(newRel, "新 jpg 的文件名应就是本次重绘的目标").toMatch(new RegExp(`^presets/[^/]+/assets/立绘-${name}\\.jpg$`));
+    expect(newRel, "新 jpg 的文件名应就是本次重绘的目标").toMatch(
+      new RegExp(`^presets/[^/]+/assets/立绘-${name}\\.jpg$`),
+    );
     const bytes = readFileSync(path.join(gameRoot, newRel));
     expect(bytes.length, "新 jpg 应非空").toBeGreaterThan(0);
     expect(bytes.equals(mock.imageBytes), "落盘字节应等于假服务返回的图").toBe(true);

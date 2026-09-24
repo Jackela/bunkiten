@@ -100,9 +100,14 @@ describe("writeCliShim：垫片按平台给对形态", () => {
 });
 
 describe("packagedSkipHint：按平台给对应的打包命令", () => {
-  it("mac / win / 其它", () => {
+  it("mac / win 给真命令；其它平台**不许**编一个不存在的脚本名", () => {
     expect(packagedSkipHint("darwin")).toContain("npm run dist:mac:dir");
     expect(packagedSkipHint("win32")).toContain("npm run dist:win:dir");
-    expect(packagedSkipHint("linux")).toContain("npm run dist:linux:dir");
+    // v1.13 修正：此前这里断言 linux 提示里含 `npm run dist:linux:dir`——而 package.json 里**没有**这个脚本。
+    // 断言「提示里写着一条不存在的命令」等于把死引用钉成了契约；现在反过来守：不许出现它，且要说清原因。
+    const linux = packagedSkipHint("linux");
+    expect(linux).not.toContain("dist:linux:dir");
+    expect(linux).toContain("mac");
+    expect(linux).toContain("win");
   });
 });

@@ -15,7 +15,7 @@
 import { mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect } from "@playwright/test";
 import { startFakeStack } from "../helpers/fake-stack.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -147,14 +147,41 @@ test("六张界面图：标题屏 / 世界线屏 / 家谱 / 游戏屏 / 剧情�
     // 四条世界线：一个有血缘的家谱（两条从 1 分出、一条从 2 分出）+ 各自不同的最近游玩时间
     worlds: [
       { id: "rift-mark-1", preset: "rift-mark", label: "雨夜账册线", chapterNo: 2, lastPlayed: NOW - HOUR },
-      { id: "rift-mark-2", preset: "rift-mark", label: "围猎前夜", chapterNo: 1, lastPlayed: NOW - 26 * HOUR, forkedFrom: { worldId: "rift-mark-1", nodeId: "2-1" } },
-      { id: "rift-mark-3", preset: "rift-mark", label: "折返驿站", chapterNo: 1, lastPlayed: NOW - 3 * 24 * HOUR, forkedFrom: { worldId: "rift-mark-1", nodeId: "2-2" } },
-      { id: "rift-mark-4", preset: "rift-mark", label: "神父的信", chapterNo: 1, lastPlayed: NOW - 5 * 24 * HOUR, forkedFrom: { worldId: "rift-mark-2", nodeId: "2-4" } },
+      {
+        id: "rift-mark-2",
+        preset: "rift-mark",
+        label: "围猎前夜",
+        chapterNo: 1,
+        lastPlayed: NOW - 26 * HOUR,
+        forkedFrom: { worldId: "rift-mark-1", nodeId: "2-1" },
+      },
+      {
+        id: "rift-mark-3",
+        preset: "rift-mark",
+        label: "折返驿站",
+        chapterNo: 1,
+        lastPlayed: NOW - 3 * 24 * HOUR,
+        forkedFrom: { worldId: "rift-mark-1", nodeId: "2-2" },
+      },
+      {
+        id: "rift-mark-4",
+        preset: "rift-mark",
+        label: "神父的信",
+        chapterNo: 1,
+        lastPlayed: NOW - 5 * 24 * HOUR,
+        forkedFrom: { worldId: "rift-mark-2", nodeId: "2-4" },
+      },
     ],
-    trees: { "rift-mark-1": storyTree(), "rift-mark-2": storyTree(), "rift-mark-3": storyTree(), "rift-mark-4": storyTree() },
+    trees: {
+      "rift-mark-1": storyTree(),
+      "rift-mark-2": storyTree(),
+      "rift-mark-3": storyTree(),
+      "rift-mark-4": storyTree(),
+    },
     // 存档点（剧情图上的「存档点 · 第 N 幕」标注与节点详情的回退/重演入口都靠它）
     stateFiles: {
-      "rift-mark-1": "# 剧情状态\n- preset: rift-mark\n- 场景: 林缘围猎场\n\n## 角色卡\n\n### 薇拉\n- 好感度: 62\n- 表情: 微笑\n- 秘密: 账册缺的那一页是她自己撕的\n\n### 布洛克\n- 好感度: 41\n- 表情: 动容\n",
+      "rift-mark-1":
+        "# 剧情状态\n- preset: rift-mark\n- 场景: 林缘围猎场\n\n## 角色卡\n\n### 薇拉\n- 好感度: 62\n- 表情: 微笑\n- 秘密: 账册缺的那一页是她自己撕的\n\n### 布洛克\n- 好感度: 41\n- 表情: 动容\n",
     },
     snapshots: {
       "rift-mark-1": [1, 2, 3].map((seq) => ({

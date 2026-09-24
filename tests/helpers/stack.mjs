@@ -51,12 +51,17 @@ async function httpOk(url) {
   }
 }
 
+// oxlint-disable-next-line eslint/no-control-regex -- ANSI 颜色码本身就是控制字符（\x1B），这条正则要的就是它
 const ANSI_RE = /\x1B\[[0-9;]*m/g; // vite 在 CI 环境会给 banner 上色，颜色码会打断行匹配
 
 /** 起一个进程并逐行监听 stdout，直到 matcher 命中某行；onSpawn 在 spawn 后立刻回调（供清理注册） */
 function spawnAndAwaitLine(cmd, args, { env, matcher, label, timeoutMs = 90_000, onSpawn }) {
   return new Promise((resolve, reject) => {
-    const proc = spawn(cmd, args, { cwd: ROOT, env: env ? { ...process.env, ...env } : process.env, stdio: ["ignore", "pipe", "pipe"] });
+    const proc = spawn(cmd, args, {
+      cwd: ROOT,
+      env: env ? { ...process.env, ...env } : process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     onSpawn?.(proc);
     const tee = teeFactory(label.replace(/\W+/g, "-"));
     let buf = "";
@@ -93,7 +98,11 @@ function spawnAndAwaitLine(cmd, args, { env, matcher, label, timeoutMs = 90_000,
       if (!settled) {
         settled = true;
         clearTimeout(timer);
-        reject(new Error(`${label} exited early with code ${code} (stderr: ${Buffer.concat(stderrBuf).toString().slice(-800)})`));
+        reject(
+          new Error(
+            `${label} exited early with code ${code} (stderr: ${Buffer.concat(stderrBuf).toString().slice(-800)})`,
+          ),
+        );
       }
     });
   });
@@ -154,7 +163,12 @@ export async function startStack({ homeDir = null, credentials = null, env = {} 
     }
   };
   process.on("exit", emergencyKill);
-  for (const [sig, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129], ["SIGQUIT", 131]]) {
+  for (const [sig, code] of [
+    ["SIGINT", 130],
+    ["SIGTERM", 143],
+    ["SIGHUP", 129],
+    ["SIGQUIT", 131],
+  ]) {
     process.on(sig, () => {
       emergencyKill();
       process.exit(code);

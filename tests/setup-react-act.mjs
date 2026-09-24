@@ -14,6 +14,7 @@ if (typeof globalThis.window !== "undefined") {
         result = callback();
       });
       if (result && typeof result.then === "function") return Promise.resolve(result);
+      // oxlint-disable-next-line unicorn/no-thenable -- 这个垫片的意义**就是**造一个 thenable（React.act 认它）
       return { then: (resolve) => resolve(undefined) };
     };
   }

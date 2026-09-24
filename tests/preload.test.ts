@@ -36,9 +36,12 @@ function entry(preset: string, name: string, variant = "", type: "立绘" | "背
   return { type, name, variant, preset, file, ready, inUse: false, mtime: 1 };
 }
 
-/** 把清单塞进假 fetch；返回调用记录 */
+/** 把清单塞进假 fetch；返回调用记录（显式声明参数：mock.calls 的元组类型由它决定） */
 function stubAssets(items: unknown) {
-  const mock = vi.fn(async () => new Response(JSON.stringify(items), { status: 200, headers: { "content-type": "application/json" } }));
+  const mock = vi.fn(
+    async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify(items), { status: 200, headers: { "content-type": "application/json" } }),
+  );
   vi.stubGlobal("fetch", mock);
   return mock;
 }
