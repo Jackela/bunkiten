@@ -1,7 +1,7 @@
 // ACP 子进程封装（v1.7 拆模块，v1.11 多后端；docs/adr/0022）：spawn 引擎、JSON-RPC request/响应分发、
 // sessionId 存取（断线续档）、boot 握手（session/load 降级 session/new + 推理档位）、权限请求兜底、会话图片定位。
 // 与 HTTP 层的接缝是两个回调：onChunk（agent_message_chunk 文本）与 onSeg（tool_call 进度 label）——
-// 流式【图】标记扫描、seg 计数与 SSE broadcast 留在入口的 startServer 闭包里（那里才有 registry 与 clients）。
+// 流式【图】标记扫描、seg 计数与 SSE broadcast 住在 server/turn-pipeline.mjs（入口的装配把两个回调直通过去）。
 //
 // 多后端形态：本工厂**只认 server/engines.mjs 的描述符**（spawn 三件套、会话扩展、档位形状、图片根），
 // 不出现品牌字面量——grok 与 Codex（codex-acp）走同一条 ACP 传输。描述符里的每个字面量都有
@@ -46,8 +46,8 @@ function answerPermission(params) {
  * @param {string} opts.sessionFile 断线续档文件（config.SESSION_FILE；记 `{engine, sessionId}`）
  * @param {string} opts.rules 注入 agent 的规则原文（grok 进 `_meta`、codex 进 config.toml 的 developer_instructions）
  * @param {string} opts.effort 初始推理档位（entry.EFFORT；下发形状由描述符决定）
- * @param {(text: string) => void} opts.onChunk agent_message_chunk 的文本（入口做标记扫描 + broadcast）
- * @param {(label: string) => void} opts.onSeg tool_call/tool_call_update 的进度标题（入口 seg+=1 + broadcast）
+ * @param {(text: string) => void} opts.onChunk agent_message_chunk 的文本（turn-pipeline 做标记扫描 + broadcast）
+ * @param {(label: string) => void} opts.onSeg tool_call/tool_call_update 的进度标题（turn-pipeline 里 seg+=1 + broadcast）
  * @param {Array<object>} [opts.mcpServers] 挂到会话上的 MCP server 列表（ACP McpServerStdio 形态；
  *   配了图片自备 key 时才给，见 server/media-mcp.mjs 的 mediaMcpServers——两引擎都支持该字段）
  * @returns {{proc: import("child_process").ChildProcess, request: (method: string, params?: object|null, timeoutMs?: number) => Promise<any>,

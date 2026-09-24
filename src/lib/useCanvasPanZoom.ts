@@ -1,6 +1,5 @@
 import {
   useCallback,
-  useEffect,
   useLayoutEffect,
   useRef,
   useState,
@@ -69,10 +68,21 @@ export function useCanvasPanZoom(layout: { width: number; height: number }): Can
   const dragRef = useRef<{ x: number; y: number; moved: boolean } | null>(null);
   const draggedRef = useRef(false);
 
-  // 布局换了（切章/切世界/改树/增删世界线）：回到「适应」，别让上一张图的缩放平移漂到新图上
-  useEffect(() => {
+  // 布局换了（切章/切世界/改树/增删世界线）：回到「适应」，别让上一张图的缩放平移漂到新图上。
+  //
+  // 用 React 的「渲染阶段调整 state」形态，而不是 useEffect/useLayoutEffect：
+  //   · 被动 effect 是一次**排队写入**——画布提交之后它仍挂在调度器队列里，这中间落到画布上的任何交互
+  //     （缩放按钮 / 滚轮）都会被它随后那次 setView(fitView(...)) 抹掉，viewBox 看起来像被复位回「适应」。
+  //     渲染阶段调整与触发它的那次提交同拍落定，不留队列写入。证据：tests/ui/story-tree.test.tsx 的
+  //     「画布落地那一拍就点缩放」用例——把被动 effect 临时放回去，它会红。
+  //   · 顺带去掉了挂载时那次冗余写入：初始化器 `useState(() => fitView(...))` 已经适应过，旧 effect
+  //     每次挂载都再写一次相同的 view（新对象，仍引发一次重渲染）。
+  // 只说形状：这里消掉的是「排队写入窗口 + 挂载冗余写入」，不声称它就是负载下那次红的全部成因。
+  const [prev, setPrev] = useState({ w: width, h: height });
+  if (prev.w !== width || prev.h !== height) {
+    setPrev({ w: width, h: height });
     setView(fitView(width, height));
-  }, [width, height]);
+  }
 
   const fit = useCallback(() => setView(fitView(width, height)), [width, height]);
   const zoomBy = useCallback(
@@ -82,8 +92,9 @@ export function useCanvasPanZoom(layout: { width: number; height: number }): Can
 
   // 滚轮缩放：以指针为锚点。必须自己挂非 passive 监听（React 的 onWheel 在根上是被动的，preventDefault 无效）。
   // 用 useLayoutEffect 而不是 useEffect：挂 DOM 监听属于「提交阶段就该做完」的事——被动 effect 由调度器择机
-  // 冲刷，中间存在「画布已可见、监听还没挂上」的窗口。（本条**不是**那次滚轮用例 flake 的成因，探针已排除；
-  // 但既然那个窗口真实存在，就按正确的形状写。）
+  // 冲刷，中间存在「画布已可见、监听还没挂上」的窗口。（本条**不是**那次滚轮用例 flake 的成因：探针里滚轮
+  // 确实收到了、`defaultPrevented=true`，红来自那次交互被排队中的被动 refit 抹回 fit——见上一段；但既然
+  // 这个窗口真实存在，就按正确的形状写。）
   useLayoutEffect(() => {
     const el = svgRef.current;
     if (!el) return;

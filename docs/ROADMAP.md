@@ -169,6 +169,8 @@ listbox/option + roving tabIndex 语义、`data-testid` 一族（jsdom 与 e2e �
   视图/指针/滚轮/键盘缩放从两份手抄变一份共享。
 - **可预期性**：制作中屏给「平均每张 / 约还需」，创作屏把状态摆上屏（此前只有一颗灰点的 `title`）。
 - **两段式制作**：默认路径先画开场要用的那几张就开演，其余美术在玩的过程里自动补画（详见 ARCHITECTURE 的「两段式制作」）。
+- **回合流水线拆出入口**：`server/turn-pipeline.mjs` 从入口 `startServer` 闭包接过一个回合的全部记账（逐回合七份状态 + 十个函数），入口 744 → 465 行、只做装配；注入面只有广播、资产落盘一族与两个惰性 getter（`getSession`/`getEngine`，`restartAcp` 会换掉它们）。契约 lint ⑥ 同批改抓 `server/turn-pipeline.mjs` 的函数体。
+- **data-testid 债务收口**：两处点名的（`tree-chapter-*` 的下标复合键、`tree-list-group-*` 的中文状态字面）与未点名的 `tree-archive-${i}` 下标键一次换成稳定键——章节键由 `lib/tree-view` 的 `chapterItems` 给（章号唯一即章号、重号退回 `章号-下标`），列表分组走 `STATUS_SLUG`（ASCII slug），归档药丸走 `archiveKey`（取行内 `第 N 章`、无号退回 `line-${i}`）。规则一句：**枚举类键用 ASCII slug，内容派生的键在它就是领域身份时正当**（见 ARCHITECTURE 的「data-testid 命名契约」）。
 
 ## 下一次候选（本轮明确不做，先记下以免反复讨论）
 
@@ -178,4 +180,15 @@ listbox/option + roving tabIndex 语义、`data-testid` 一族（jsdom 与 e2e �
 - **覆盖率徽章**：需要外部服务或在 CI 里生成 badge 提交回仓库；本项目覆盖率阈值刻意是「防下滑线」而非硬指标，挂一个会漂移的硬数字徽章与那个口径相冲。测试与 CI 状态两枚徽章已经有了。
 - **`tests/contract.test.ts` 之外的文档门禁**：目前只有三份文档被钉（README / AGENTS / ARCHITECTURE）；QUICKSTART 与 CONTEXT 的漂移只能靠人工巡检（本轮就是这么发现的）。
 - **§3 的手写浮层**：抽屉 / 滑杆 / 弹窗维持自写 `focusTrap`（理由见该节「刻意不迁」），不为一致性迁原语。
-- ~~**已知 flake（负载敏感）**~~ —— **已修**：`tests/ui.test.tsx` 的「StoryTreeScreen 滚轮以指针为锚点缩放」在负载高时偶发（约 4 次 1 次），根因是用例在 `fetch` 落地（act 之外）的那一拍就派发滚轮，撞进「画布已可见、被动 effect/状态尚未就绪」的窗口。修法是交互前 `await act(async () => {})` 排干队列（测试侧一处等待，不动组件）；验收见 PR。**这条的教训留着**：组件里挂原生监听这类「提交阶段就该做完的事」，用 `useEffect` 会由调度器择机冲刷，`useLayoutEffect` 才是对的形状（本轮试过、因不是根因故未采纳，改别处时按这条走）。
+- **已知 flake（负载敏感）—— 两段账分开说**：
+  - **滚轮那条（根因经探针证实，本轮换成组件侧形状）**：`tests/ui` 的「StoryTreeScreen 滚轮以指针为锚点缩放」在负载高时偶发（约 4 次 1 次），根因是用例在 `fetch` 落地（act 之外）的那一拍就派发滚轮，而布局 refit 当时是**被动 effect**、仍挂在调度器队列里——那发 `setView(fitView)` 会把刚写进去的缩放抹回「适应」。当时的修法是交互前 `await act(async () => {})` 排干队列（测试侧一处等待，不动组件）。**本轮改成组件侧形状**（见下条）后，那行等待一并撤掉。
+  - **点击那条（CI 上已实证「修复前红 / 修复后绿」，栈仍未抓到）**：同一族窗口在**点击路径**上还有一次观测——三套测试 + 构建同时跑时出现「点缩放后 viewBox 被拉回适应」（子代理观测约 4 次 1 次）。上一轮 11 次复现尝试、本轮按下面口径压机器一轮（构建循环 ∥ vitest 循环 ∥ 整条 e2e-ui 一起跑）都没复现，**但 CI 在修复前的代码上真红过一次**：`main` @ `dad5ffa` 的 `test` job（run 35971278228）在 `tests/ui/story-tree.test.tsx` 的缩放用例上断言 `expected '0 0 862 146' not to be '0 0 862 146'`（点击后 viewBox 原地不动）；同一 job 在本轮修复后的 PR（#35，run 35972332936）转绿。该用例里没有重取/重挂路径（`treeStamp` 不动、元素不可能过期），所以那一红只可能来自「视图被写回 fit」这一路——与 ① 的机制一致（**仍不是栈级证据**）。本轮把两条可疑形状改掉：① `lib/useCanvasPanZoom` 的布局复位从被动 effect 的排队写入改成**渲染阶段调整**（复位与触发它的提交同拍落定；挂载也不再白写一次）；② `StoryTreeScreen` 的树重取（`treeStamp` 变）不再清 data、不再拆画布——视图与 DOM 身份都留着；换世界线仍由响应自带的 worldId 闸门立刻清屏，重取失败也保留旧树（只多一条错误提示）。
+  - **证据边界（别当结论用）**：确定性用例「refit 不留排队写入：画布落地那一拍就点缩放」（把被动 refit 放回去它就红）钉住 **①** 的机制，「重取不拆画布」「重取失败保留旧树」两条钉住 **②**；**负载下的栈始终没抓到**——CI 那次红钉住的是「修复前的代码在真负载下会红、修复后同一环境绿」，调度器内部的交错过程没有被直接观测。
+  - **两条纪律（改别处时按它走）**：提交阶段就该做完的事（挂 DOM 监听、布局复位……）别用被动 `useEffect`——它由调度器择机冲刷，中间那段窗口里落进来的交互会被它抹掉；缩放类用例读 viewBox 一律走 `tests/ui/helpers.tsx` 的 `readViewBox`（先断言「抓的节点没被换掉」），把「视图被复位」与「抓的是旧 DOM 节点」两种红当场分开。
+  - **复现口径（要抓它就得压机器）**：三条流水线同时跑——
+    ```
+    ( for i in 1 2 3; do npm run build >/dev/null 2>&1 || break; done ) &
+    ( for i in $(seq 1 20); do npx vitest run tests/ui/story-tree.test.tsx tests/ui/worlds.test.tsx || break; done ) &
+    npm run test:e2e:ui &
+    wait
+    ```

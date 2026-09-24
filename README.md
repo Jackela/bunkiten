@@ -93,7 +93,7 @@ npm run dev:electron
 ```
 bunkiten/
 ├─ electron/            # Electron 主进程：GAME_ROOT 定位、PATH 补齐、起 acp-server、开窗口、打包态查更新
-├─ server/              # 本机 Node 服务（零依赖）：入口 acp-server.mjs + 协议行 / 路由 / SSE 广播 / ACP / 资产流水线 / 快照 / 世界线 / 状态视图 / 音频 / 凭据 / 出图 MCP / 引擎描述符与登录编排 / 错误与路径守卫
+├─ server/              # 本机 Node 服务（零依赖）：入口 acp-server.mjs + 协议行 / 路由 / SSE 广播 / ACP / 资产流水线 / 回合流水线 / 快照 / 世界线 / 状态视图 / 音频 / 凭据 / 出图 MCP / 引擎描述符与登录编排 / 错误与路径守卫
 ├─ shared/              # 唯一真源：协议常量、服务目录、引擎描述符、主题取值（配手写 .d.mts 供 tsc）
 ├─ src/                 # React 前端：components/ 各屏、store/ 状态机切片、lib/ 纯函数、theme.ts 主题
 ├─ .grok/               # 引擎侧加载物：skills/bunkiten/SKILL.md（引擎全部真相）+ commands/（元命令）——只许放这两棵树

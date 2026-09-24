@@ -1136,8 +1136,9 @@ describe("⑥ 指令前缀、章标记与主题白名单：shared 真源 ↔ ser
         `DIRECTIVE_PREFIX_RE 不该命中「${miss}」：开局/续玩是正戏回合（「待命：」才是非正戏的后缀判定），前缀集合失之过宽`,
       ).toBe(false);
     }
-    // server：两个消费点都在函数体内引用真源
-    const serverRel = "server/acp-server.mjs";
+    // server：两个消费点都在函数体内引用真源（v1.13 起它们真源在 server/turn-pipeline.mjs——入口只
+    // re-export；抓函数体的门禁跟着消费点走，别指着已经没有这两个函数的文件）
+    const serverRel = "server/turn-pipeline.mjs";
     const serverSrc = read(serverRel);
     const pickBody = /export function pickEffort\([\s\S]*?\n\}/.exec(serverSrc)?.[0] ?? "";
     expect(
@@ -1203,8 +1204,9 @@ describe("⑥ 指令前缀、章标记与主题白名单：shared 真源 ↔ ser
         `${file.rel} 里章标记正则字面「${chapterLiteral}」出现 ${copies} 次（应为 0 次）：真源已在 ${sharedRel}，第二份手写正则与 parseChapterMark/守卫豁免分叉就说不清哪个才对`,
       ).toBe(0);
     }
-    // server：质量守卫（supplementMissingOptions）的豁免判定引用真源
-    const serverRel = "server/acp-server.mjs";
+    // server：质量守卫（supplementMissingOptions）的豁免判定引用真源——v1.13 起它与 isMainTurn 一起
+    // 住在 server/turn-pipeline.mjs（入口只做装配），所以门禁的抓取目标与上面那条同款
+    const serverRel = "server/turn-pipeline.mjs";
     const serverSrc = read(serverRel);
     const guardBody = /async function supplementMissingOptions\([\s\S]*?\n {2}\}/.exec(serverSrc)?.[0] ?? "";
     expect(
