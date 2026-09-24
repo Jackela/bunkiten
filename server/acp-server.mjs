@@ -32,7 +32,6 @@ import { fileURLToPath } from "url";
 // 前者 pickEffort 与 isMainTurn 共用同一份值、后者 parseChapterMark（客户端）与质量守卫豁免（本文件）
 // 共用同一份值；本文件不再自持副本（契约 lint ⑤⑥组断言这一点）。
 import { CHAPTER_MARK_RE, DIRECTIVE_PREFIX_RE } from "../shared/protocol.mjs";
-import { PROVIDER_IDS } from "../shared/providers.mjs";
 import { GAME_ROOT, BASE_PORT, PORT_MAX_RETRY, SESSION_FILE, WORLDS_ROOT, gameHome } from "./config.mjs";
 import { PRESET_ID_RE } from "./assets.mjs";
 import {
@@ -55,22 +54,14 @@ import {
 export { parseStateFile, stateViewFor } from "./state-view.mjs"; // v1.13 拆出（角色面板解析）
 import { createAcpSession } from "./acp.mjs";
 import { engineFor, prepareSpawn } from "./engines.mjs";
-import { killPendingLogins, runLogout, startLogin } from "./engine-auth.mjs";
-import {
-  readCredentials,
-  writeCredentials,
-  mergeCredentials,
-  validateCredentialsPatch,
-  publicView,
-  secretsOf,
-  sanitizeErrorMessage,
-} from "./credentials.mjs";
-import { testLlm, testImage } from "./credentials-probe.mjs";
-import { loadCatalog, refreshCatalog, revalidateCatalog } from "./providers-catalog.mjs";
+import { killPendingLogins } from "./engine-auth.mjs";
+import { readCredentials } from "./credentials.mjs";
+import { refreshCatalog } from "./providers-catalog.mjs";
 import { mediaMcpServers } from "./media-mcp.mjs";
 import { createRequestHandler } from "./routes.mjs";
 import { createBroadcaster } from "./sse.mjs";
 import { createAssetPipeline } from "./assets-pipeline.mjs";
+import { createSettingsApi } from "./settings-api.mjs";
 import { errText } from "./errors.mjs";
 
 // ---------- 外部 import 面保活：拆出模块的既有导出符号逐名 re-export（electron/tests/doctor 从这里 import） ----------
@@ -296,6 +287,9 @@ export function startServer() {
   const sse = createBroadcaster();
   const broadcast = sse.broadcast;
 
+  // 设置面（凭据/登录/服务目录，v1.13 拆去 server/settings-api.mjs）
+  const settings = createSettingsApi();
+
   // 资产注册表与落盘（v1.13 拆去 server/assets-pipeline.mjs）：本闭包只留「协议行从哪来」的扫描，
   // 「该落到哪、落没落成」全在那边的模块里。会话图片定位用惰性箭头注入——acp 在本行之后才建。
   const assets = createAssetPipeline({ resolveImage: (name) => acp.resolveImage(name) });
@@ -378,93 +372,6 @@ export function startServer() {
     }
     console.log(`[acp] engine restarted: ${acp.sessionId}`);
     return { ok: true };
-  }
-
-  /** @returns {object} 脱敏视图（永不回明文 key） */
-  function credentialsView() {
-    return publicView(readCredentials());
-  }
-
-  /**
-   * GUI 的「登录」按钮（POST /api/engine/login）：把**玩家自己**的 CLI 登录流程拉起来（grok → `grok login`、
-   * codex → 随包 codex 二进制的 `login`，都写在玩家自己的 home 里）。登录是长事务，这里只回执——
-   * 客户端轮询 /api/auth 看玩家 home 里的登录产物出现没有（见 server/engine-auth.mjs）。
-   * @returns {Promise<{ok: boolean, error?: string, hint?: string}>}
-   */
-  function startEngineLogin() {
-    return startLogin({ engine: engineFor(readCredentials().engine), home: gameHome() });
-  }
-
-  /**
-   * GUI 的「登出」按钮（POST /api/engine/logout）：执行 CLI 自己的登出（**全局动作**——终端里那份也会没，
-   * GUI 已经先确认过），并把游戏侧的 codex 登录副本一并清掉。
-   * @returns {Promise<{ok: boolean, error?: string}>}
-   */
-  function logoutEngine() {
-    return runLogout({ engine: engineFor(readCredentials().engine), home: gameHome() });
-  }
-
-  /**
-   * 局部更新凭据：校验 → 合并 → 原子落盘 → 回脱敏视图。
-   * @param {{llm?: Record<string, unknown>, image?: Record<string, unknown>}} patch 待写入的分组字段（未出现的键不动；空串=清该字段）
-   * @param {string[]} clear 要整组清空的组名
-   * @returns {{ok: boolean, error?: string, view?: object}}
-   */
-  function updateCredentials(patch, clear) {
-    const check = validateCredentialsPatch(patch, clear, allowedProviderIds());
-    if (!check.ok) return { ok: false, error: check.error };
-    try {
-      const next = mergeCredentials(readCredentials(), patch, clear);
-      writeCredentials(gameHome(), next);
-      console.log(`[acp] credentials updated: llm=${next.llm.mode} image=${next.image.mode}`); // 只记模式，不记 key
-      return { ok: true, view: publicView(next) };
-    } catch (e) {
-      return { ok: false, error: `写入凭据失败：${errText(e)}` };
-    }
-  }
-
-  /**
-   * 测一次连接（读当前凭据；错误信息再过一遍 secretsOf 脱敏——探针自己也会脱敏，这里是第二道保险）。
-   * @param {string} target "llm" | "image"
-   * @returns {Promise<{ok: boolean, status: number, ms: number, error?: string, detail?: string}>}
-   */
-  async function testCredentials(target) {
-    const creds = readCredentials();
-    const secrets = secretsOf(creds);
-    const out = target === "llm" ? await testLlm(creds.llm) : await testImage(creds.image);
-    return out.error ? { ...out, error: sanitizeErrorMessage(out.error, secrets) } : out;
-  }
-
-  // ---------- 服务目录的闭包面（v1.10，docs/adr/0020）：路由链只转手，判定都在 providers-catalog.mjs ----------
-
-  /**
-   * 服务目录候选（GET /api/providers 的响应主体）。只读视图：GUI 拿它画下拉，
-   * **绝不据此改写玩家已存的 baseUrl / key**（见 server/providers-catalog.mjs 的铁律）。
-   * 顺带做 stale-while-revalidate（ADR-0020 的「修订」段）：先**立即**回当前 `loadCatalog()` 的结果，
-   * 再 fire-and-forget 触发一次后台刷新（`revalidateCatalog`——永不抛、非阻塞、进程内单飞、TTL/开关守卫照用）。
-   * 效果：长开着的应用下次设置屏 GET 就会后台刷新，不必等重启（发布→可见的窗口第 ③ 项）。
-   * @returns {{providers: object[], source: string, fetchedAt: string|null}} source = remote/cache/bundled
-   */
-  function providersView() {
-    const view = loadCatalog({ root: gameHome() });
-    void revalidateCatalog({ root: gameHome() });
-    return view;
-  }
-
-  /**
-   * POST /api/credentials 允许写入的 provider id 集合：**内置表 ∪ 当前目录**（remote/cache/bundled 都算）。
-   * 为什么写路径要合并目录 id：目录可被远端更新注入新 id，`providersView` 已经把它下发给下拉了，
-   * 不合并的话「不换版本用上新服务」在保存这一步就被 400「不在服务目录里」挡住——正是那条通道的核心收益不可达。
-   * 为什么读路径不这么做（读路径也不能这么做）：读路径不能依赖目录可达（一次抓不到就回落内置表），
-   * 否则玩家已存的远程 id 会被静默改写；所以读路径按「id 形态合法即保留」放宽（见 credentials.mjs 的 normalizeCredentials），
-   * 写路径仍严校验。方向：credentials.mjs 不 import 本模块的目录（providers-catalog.mjs 已 import credentials.mjs
-   * 的 CREDENTIALS_DIRNAME，反向会成环），故白名单从**调用点注入**，而不是让 credentials.mjs 自己拉目录。
-   * @returns {Set<string>} 允许写入的 provider id
-   */
-  function allowedProviderIds() {
-    const ids = new Set(PROVIDER_IDS);
-    for (const p of loadCatalog({ root: gameHome() }).providers) ids.add(p.id);
-    return ids;
   }
 
   /** @param {string} line 已到达完整行的协议行候选 */
@@ -734,13 +641,13 @@ export function startServer() {
       persistAssetFromFile: assets.persistAssetFromFile,
       resolveImage: (name) => acp.resolveImage(name),
       warnLegacyPathOnce: assets.warnLegacyPathOnce,
-      credentialsView,
-      updateCredentials,
-      testCredentials,
+      credentialsView: settings.credentialsView,
+      updateCredentials: settings.updateCredentials,
+      testCredentials: settings.testCredentials,
       restartEngine: restartAcp,
-      startEngineLogin,
-      logoutEngine,
-      providersView,
+      startEngineLogin: settings.startEngineLogin,
+      logoutEngine: settings.logoutEngine,
+      providersView: settings.providersView,
       get currentPresetId() {
         return currentPresetId;
       },
