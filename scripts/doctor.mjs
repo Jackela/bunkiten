@@ -28,6 +28,10 @@ import {
 } from "../server/acp-server.mjs";
 import { FALLBACK_THEME, HEX_RE, MOTIFS } from "../src/theme.ts";
 
+/** 客户端母题集宽化成「可查字符串的形态」：真源是字面元组、其 includes 只收字面联合，
+ *  而这里查的是 preset frontmatter 里的运行时字符串（.mjs 里不能用 `as` 断言——打包器解析不过）。 */
+const clientMotifs = /** @type {readonly string[]} */ (MOTIFS);
+
 // 开发模式 = 项目根；Electron 打包后由 main 进程注入资源目录（与 server 同款约定）
 const GAME_ROOT = process.env.GROK_GAME_ROOT || path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -86,7 +90,9 @@ function checkFrontmatter(fm, dirName) {
   if (pid && !PRESET_ID_RE.test(pid)) {
     out.push(error(`id「${pid}」非法（只允许字母数字与 -_）——scanPresets 会丢弃该剧本，资产/音频也无法按它落目录`));
   } else if (pid && pid !== dirName) {
-    out.push(error(`frontmatter id「${pid}」≠ 目录名「${dirName}」——轮播按 id 认剧本、素材按目录名落盘，两边会互相找不到`));
+    out.push(
+      error(`frontmatter id「${pid}」≠ 目录名「${dirName}」——轮播按 id 认剧本、素材按目录名落盘，两边会互相找不到`),
+    );
   }
   if (!out.length) return [ok(`frontmatter：必填键齐全（${FM_KEYS.join("/")}），id 合法且与目录名一致`)];
   return out;
@@ -120,9 +126,17 @@ function checkTheme(fm) {
     }
     // server 放行、客户端更严的第二层：这类值轮播里看不出问题，落到标题屏/对话框才会被兜底
     if ((key === "accent" || key === "accent2") && !HEX_RE.test(v.trim())) {
-      out.push(warn(`theme.${key}「${v.trim()}」不是 6 位 hex（#rrggbb）——客户端 HEX_RE 更严，将被客户端回退 ${FALLBACK_THEME[key]}`));
-    } else if (key === "motif" && !MOTIFS.includes(v.trim())) {
-      out.push(warn(`theme.motif「${v.trim()}」不在客户端母题集（${MOTIFS.join("/")}）内，将被客户端回退 ${FALLBACK_THEME.motif}`));
+      out.push(
+        warn(
+          `theme.${key}「${v.trim()}」不是 6 位 hex（#rrggbb）——客户端 HEX_RE 更严，将被客户端回退 ${FALLBACK_THEME[key]}`,
+        ),
+      );
+    } else if (key === "motif" && !clientMotifs.includes(v.trim())) {
+      out.push(
+        warn(
+          `theme.motif「${v.trim()}」不在客户端母题集（${MOTIFS.join("/")}）内，将被客户端回退 ${FALLBACK_THEME.motif}`,
+        ),
+      );
     }
   }
   if (!out.length) return [ok(`theme：${THEME_KEYS.join("/")} 全部合法（server 与客户端两层判定都通过）`)];
@@ -190,7 +204,11 @@ function checkAssetNames(assets) {
   if (assets == null || assets.length === 0) return [ok("资产：assets/ 无素材（尚未生成或已清空）")];
   const bad = assets.filter((f) => !ASSET_FILE_RE.test(f));
   if (bad.length) {
-    return bad.map((f) => error(`资产文件名非法：assets/${f}（应为 <${ASSET_KINDS.join("|")}>-<名>.jpg——落盘与直服白名单都认这个形态，别的名字永远 404）`));
+    return bad.map((f) =>
+      error(
+        `资产文件名非法：assets/${f}（应为 <${ASSET_KINDS.join("|")}>-<名>.jpg——落盘与直服白名单都认这个形态，别的名字永远 404）`,
+      ),
+    );
   }
   return [ok(`资产命名：assets/ ${assets.length} 个文件全部符合 <类型>-<名>.jpg`)];
 }
@@ -219,10 +237,12 @@ function checkOrphans(assets, ref) {
     if (!referenced) orphans.push(f);
   }
   if (!orphans.length) return [ok(`孤儿素材：无（${valid.length} 个素材都有 state.md 引用或 preset.md 提及）`)];
-  return [warn(
-    `孤儿素材 ${orphans.length} 个（不被任何世界 state.md 引用、也不被任何 preset.md 提及）：${orphans.join("、")}` +
-    "——若来自未提交的世界进度，把对应世界留在 state/worlds/ 即不再报；确认没用的可在画廊删除",
-  )];
+  return [
+    warn(
+      `孤儿素材 ${orphans.length} 个（不被任何世界 state.md 引用、也不被任何 preset.md 提及）：${orphans.join("、")}` +
+        "——若来自未提交的世界进度，把对应世界留在 state/worlds/ 即不再报；确认没用的可在画廊删除",
+    ),
+  ];
 }
 
 /**
@@ -240,7 +260,11 @@ function checkAudio(audio) {
   for (const f of audio) {
     const m = AUDIO_FILE_RE.exec(f);
     if (!m) {
-      out.push(error(`音频文件名非法：audio/${f}（应为 <${AUDIO_KINDS.join("|")}>-<名>.<${AUDIO_EXTS.join("|")}>——索引只认这个形态，别的文件永远不会被播到）`));
+      out.push(
+        error(
+          `音频文件名非法：audio/${f}（应为 <${AUDIO_KINDS.join("|")}>-<名>.<${AUDIO_EXTS.join("|")}>——索引只认这个形态，别的文件永远不会被播到）`,
+        ),
+      );
       continue;
     }
     valid += 1;
@@ -381,7 +405,9 @@ export function main(root = GAME_ROOT) {
     console.log(`${r.id} ${r.errors ? "✗" : "✓"} ${r.passed} 项通过 · ${r.warnings} 警告 · ${r.errors} 错误`);
     for (const f of r.findings) console.log(`  [${f.level}] ${f.message}`);
   }
-  console.log(`\n${results.length} 个剧本：${passed} 项通过 · ${warnings} 警告 · ${errors} 错误${errors ? "（存在 error 级问题，退出码 1）" : "（无 error，退出码 0；warning 不影响退出码）"}`);
+  console.log(
+    `\n${results.length} 个剧本：${passed} 项通过 · ${warnings} 警告 · ${errors} 错误${errors ? "（存在 error 级问题，退出码 1）" : "（无 error，退出码 0；warning 不影响退出码）"}`,
+  );
   return errors ? 1 : 0;
 }
 

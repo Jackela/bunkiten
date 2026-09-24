@@ -23,11 +23,6 @@ function pushOutput(line) {
   if (lastOutput.length > 40) lastOutput.splice(0, lastOutput.length - 40);
 }
 
-/** @returns {string[]} 最近一次登录的输出尾巴（只读浅拷贝） */
-export function lastLoginOutput() {
-  return [...lastOutput];
-}
-
 /**
  * 起一个登录进程（GUI 的「登录」按钮）。
  * @param {{engine: import("./engines.mjs").EngineDescriptor, home: string}} ctx 当前引擎描述符与用户主目录
@@ -39,7 +34,9 @@ export async function startLogin({ engine, home }) {
   // 上一个还没退就先杀掉：卡住的浏览器回调不该挡住第二次点击
   const prev = pending.get(engine.id);
   if (prev) {
-    try { prev.kill("SIGKILL"); } catch {}
+    try {
+      prev.kill("SIGKILL");
+    } catch {}
     pending.delete(engine.id);
   }
   lastOutput = [];
@@ -53,8 +50,16 @@ export async function startLogin({ engine, home }) {
   } catch (e) {
     return { ok: false, error: `没能启动登录：${/** @type {Error} */ (e).message}` };
   }
-  proc.stdout?.on("data", (d) => String(d).split("\n").forEach((l) => l.trim() && pushOutput(l)));
-  proc.stderr?.on("data", (d) => String(d).split("\n").forEach((l) => l.trim() && pushOutput(l)));
+  proc.stdout?.on("data", (d) =>
+    String(d)
+      .split("\n")
+      .forEach((l) => l.trim() && pushOutput(l)),
+  );
+  proc.stderr?.on("data", (d) =>
+    String(d)
+      .split("\n")
+      .forEach((l) => l.trim() && pushOutput(l)),
+  );
   proc.on("error", (e) => pushOutput(`启动失败：${e.message}`));
   proc.on("exit", (code) => {
     pushOutput(`登录进程退出（code ${code}）`);
@@ -89,28 +94,42 @@ export async function runLogout({ engine, home }) {
       resolve({ code: -1, text: /** @type {Error} */ (e).message });
       return;
     }
-    const cap = (/** @type {any} */ d) => { text += String(d); if (text.length > 2000) text = text.slice(-2000); };
+    const cap = (/** @type {any} */ d) => {
+      text += String(d);
+      if (text.length > 2000) text = text.slice(-2000);
+    };
     proc.stdout?.on("data", cap);
     proc.stderr?.on("data", cap);
     proc.on("error", (e) => resolve({ code: -1, text: e.message }));
-    const timer = setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} resolve({ code: -1, text: "登出超时" }); }, 20000);
-    proc.on("exit", (code) => { clearTimeout(timer); resolve({ code: code ?? -1, text }); });
+    const timer = setTimeout(() => {
+      try {
+        proc.kill("SIGKILL");
+      } catch {}
+      resolve({ code: -1, text: "登出超时" });
+    }, 20000);
+    proc.on("exit", (code) => {
+      clearTimeout(timer);
+      resolve({ code: code ?? -1, text });
+    });
   });
-  if (out.code !== 0) return { ok: false, error: `登出失败：${out.text.trim().split("\n").slice(-2).join(" ").slice(0, 200) || `退出码 ${out.code}`}` };
+  if (out.code !== 0)
+    return {
+      ok: false,
+      error: `登出失败：${out.text.trim().split("\n").slice(-2).join(" ").slice(0, 200) || `退出码 ${out.code}`}`,
+    };
   // 游戏侧的 codex 副本：登录态已经没了，副本不该留着（下一次 spawn 的同步也会删，这里立刻做掉）
-  try { fs.rmSync(path.join(codexHome(home), "auth.json"), { force: true }); } catch {}
+  try {
+    fs.rmSync(path.join(codexHome(home), "auth.json"), { force: true });
+  } catch {}
   return { ok: true };
-}
-
-/** 在途登录进程数（诊断/测试用） @returns {number} */
-export function pendingLoginCount() {
-  return pending.size;
 }
 
 /** 收尾：杀掉所有在途登录进程（stopServer / 进程退出时调用；登录是长事务，不该拖着服务器不放） */
 export function killPendingLogins() {
   for (const [, proc] of pending) {
-    try { proc.kill("SIGKILL"); } catch {}
+    try {
+      proc.kill("SIGKILL");
+    } catch {}
   }
   pending.clear();
 }

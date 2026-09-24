@@ -9,20 +9,14 @@
 // 的取舍做一次最小生成（小提示词、n=1、用户配的尺寸），成本是玩家点「测试连接」时要付的那一点点。
 import { requestImage } from "./media-mcp.mjs";
 import { sanitizeErrorMessage } from "./credentials.mjs";
+import { errName, errText } from "./errors.mjs";
+import { joinEndpoint, withTimeoutSignal } from "./http-util.mjs";
 
 /** 探活的单次 HTTP 上限（毫秒）：连接测试要快，不能像回合那样等 90s */
 export const PROBE_TIMEOUT_MS = 15_000;
 
 /** 测试用的最小出图尺寸（不占额度大头，也不挑服务的常见档位） */
 export const PROBE_IMAGE_SIZE = "1024x1024";
-
-/** @param {number} ms 超时毫秒 @returns {{signal: AbortSignal, clear: () => void}} */
-function timeoutSignal(ms) {
-  const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(new Error(`timeout ${ms}ms`)), ms);
-  t.unref?.();
-  return { signal: ac.signal, clear: () => clearTimeout(t) };
-}
 
 /**
  * 一次带超时的 fetch，永不抛：网络错误/超时统一成 `{error}`。
@@ -33,19 +27,19 @@ function timeoutSignal(ms) {
  * @returns {Promise<{res: Response} | {error: string}>}
  */
 async function fetchSafe(fetchImpl, url, init, timeoutMs) {
-  const t = timeoutSignal(timeoutMs);
+  const t = withTimeoutSignal(timeoutMs, "probe");
   try {
     return { res: await fetchImpl(url, { ...init, signal: t.signal }) };
   } catch (e) {
-    return { error: e?.name === "AbortError" || /timeout/.test(String(e?.message)) ? `连接超时（${Math.round(timeoutMs / 1000)}s）` : `连不上：${e?.message ?? e}` };
+    return {
+      error:
+        errName(e) === "AbortError" || /timeout/.test(errText(e))
+          ? `连接超时（${Math.round(timeoutMs / 1000)}s）`
+          : `连不上：${errText(e)}`,
+    };
   } finally {
     t.clear();
   }
-}
-
-/** @param {string} baseUrl 服务地址 @param {string} suffix 端点 @returns {string} 完整 URL */
-function endpoint(baseUrl, suffix) {
-  return `${String(baseUrl || "").trim().replace(/\/+$/, "")}${suffix}`;
 }
 
 /**
@@ -68,14 +62,18 @@ export async function testLlm({ baseUrl, apiKey, model = "" }, deps = {}) {
   const timeoutMs = deps.timeoutMs ?? PROBE_TIMEOUT_MS;
   const started = Date.now();
   const done = (/** @type {Partial<ProbeResult> & {ok: boolean, status: number}} */ r) => ({
-    ok: r.ok, status: r.status, ms: Date.now() - started, ...(r.error ? { error: r.error } : {}), ...(r.detail ? { detail: r.detail } : {}),
+    ok: r.ok,
+    status: r.status,
+    ms: Date.now() - started,
+    ...(r.error ? { error: r.error } : {}),
+    ...(r.detail ? { detail: r.detail } : {}),
   });
   const trim = (/** @type {string} */ s) => sanitizeErrorMessage(s, [apiKey]);
   if (!baseUrl) return done({ ok: false, status: 0, error: "还没填服务地址" });
   if (!apiKey) return done({ ok: false, status: 0, error: "还没填密钥" });
 
   const headers = { authorization: `Bearer ${apiKey}` };
-  const models = await fetchSafe(fetchImpl, endpoint(baseUrl, "/models"), { headers }, timeoutMs);
+  const models = await fetchSafe(fetchImpl, joinEndpoint(baseUrl, "/models"), { headers }, timeoutMs);
   if ("error" in models) return done({ ok: false, status: 0, error: models.error });
   if (models.res.ok) {
     // 模型条数只是锦上添花：解析失败不影响「通了」这个结论
@@ -90,19 +88,33 @@ export async function testLlm({ baseUrl, apiKey, model = "" }, deps = {}) {
   const canFallback = [404, 405, 501].includes(models.res.status);
   if (!canFallback) {
     const text = await models.res.text().catch(() => "");
-    return done({ ok: false, status: models.res.status, error: trim(`HTTP ${models.res.status} ${text.slice(0, 200)}`) });
+    return done({
+      ok: false,
+      status: models.res.status,
+      error: trim(`HTTP ${models.res.status} ${text.slice(0, 200)}`),
+    });
   }
-  if (!model) return done({ ok: false, status: models.res.status, error: "服务没有模型清单接口（HTTP " + models.res.status + "）：请先填模型名再测" });
+  if (!model)
+    return done({
+      ok: false,
+      status: models.res.status,
+      error: "服务没有模型清单接口（HTTP " + models.res.status + "）：请先填模型名再测",
+    });
 
   // 退化路径：一次最小 completion（max_tokens 与 max_completion_tokens 二选一，看服务端认哪个）
   /** @type {Record<string, unknown>} */
   let body = { model, messages: [{ role: "user", content: "ping" }], max_tokens: 1 };
   for (let attempt = 0; attempt < 2; attempt++) {
-    const r = await fetchSafe(fetchImpl, endpoint(baseUrl, "/chat/completions"), {
-      method: "POST",
-      headers: { ...headers, "content-type": "application/json" },
-      body: JSON.stringify(body),
-    }, timeoutMs);
+    const r = await fetchSafe(
+      fetchImpl,
+      joinEndpoint(baseUrl, "/chat/completions"),
+      {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      },
+      timeoutMs,
+    );
     if ("error" in r) return done({ ok: false, status: 0, error: r.error });
     if (r.res.ok) return done({ ok: true, status: r.res.status, detail: "对话端点可用" });
     const text = await r.res.text().catch(() => "");

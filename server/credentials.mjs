@@ -47,17 +47,24 @@ const MAX_SIZE = 40;
  * @property {string} baseUrl 服务地址（空串=未填）
  * @property {string} apiKey 明文 key（**只在磁盘与内存里**；任何响应/日志都不许落它）
  * @property {string} model 模型 id
- * @property {string} [size] 仅图片组：出图尺寸（空串=按类型自动；对有尺寸语义的服务是**通用覆盖**，背景优先看 sizeBackground）
- * @property {string} [sizeBackground] 仅图片组：背景专用尺寸（空串=回落 size，再回落按类型默认的横构图）
  */
+
+/**
+ * 图片组：公共键之外**恒有两个尺寸键**（缺省空串=按类型自动；对有尺寸语义的服务是通用覆盖，
+ * 背景优先看 sizeBackground）。为什么拆开写：此前两个尺寸键挂在公共 typedef 上当可选字段，
+ * 于是「图片组的 size 一定存在」这条事实在类型上表达不出来，测试与消费方只能 `?? ""` 或 `as any` 兜。
+ * @typedef {CredentialGroup & {size: string, sizeBackground: string}} ImageCredentialGroup
+ */
+
+/** 对话组：没有尺寸语义 @typedef {CredentialGroup} LlmCredentialGroup */
 
 /**
  * 凭据文档（磁盘形状，version 1）。
  * @typedef {Object} Credentials
  * @property {number} version 结构版本
  * @property {string} engine 叙事引擎后端 id（shared/engines.mjs 的 ENGINE_IDS 之一；缺省/未知值回落默认）
- * @property {CredentialGroup} llm LLM 组
- * @property {CredentialGroup} image 图片组
+ * @property {LlmCredentialGroup} llm LLM 组
+ * @property {ImageCredentialGroup} image 图片组
  */
 
 /** @returns {Credentials} 出厂默认（引擎 grok、LLM 沿用登录态、图片不出图——与 v1.10 的行为完全一致） */
@@ -190,7 +197,10 @@ export function mergeCredentials(current, patch = {}, clear = []) {
   for (const key of ["llm", "image"]) {
     const src = patchOf[key];
     if (!src || typeof src !== "object") continue;
-    const allowed = key === "image" ? ["mode", "provider", "baseUrl", "apiKey", "model", "size", "sizeBackground"] : ["mode", "provider", "baseUrl", "apiKey", "model"];
+    const allowed =
+      key === "image"
+        ? ["mode", "provider", "baseUrl", "apiKey", "model", "size", "sizeBackground"]
+        : ["mode", "provider", "baseUrl", "apiKey", "model"];
     for (const f of allowed) {
       if (f in src) next[key][f] = src[f];
     }
@@ -208,7 +218,8 @@ export function mergeCredentials(current, patch = {}, clear = []) {
  * 而本模块**不能 import providers-catalog.mjs**（后者已 import 本模块的 CREDENTIALS_DIRNAME，反向会成环），
  * 所以白名单（内置表 ∪ 当前目录）从调用点注入：入口 acp-server.mjs 的 updateCredentials 闭包持有目录 memo。
  * 默认值仍是内置 PROVIDER_IDS：直测/无目录上下文时写路径照旧只认内置表（**严**校验，形状合法但不在集合里也拒）。
- * @param {{engine?: string, llm?: Record<string, unknown>, image?: Record<string, unknown>}} patch 待写入的局部字段
+ * @param {Record<string, any>} [patch] 待写入的局部字段（HTTP 直入：形状未知，函数内逐字段校验，
+ *   故按 any 收口——与 isSnapshotEntry/importWorld 同一口径；`{engine: 7}` 这种要被**拒**，不是类型错误）
  * @param {string[]} [clear] 要整组清空的组名
  * @param {Iterable<string>} [allowedProviderIds] 允许写入的 provider id 集合（Set 或数组；缺省内置 PROVIDER_IDS）
  * @returns {{ok: true} | {ok: false, error: string}} 校验结果
@@ -222,11 +233,16 @@ export function validateCredentialsPatch(patch = {}, clear = [], allowedProvider
   // 顶层标量：引擎（v1.11，docs/adr/0022）——只认 shared/engines.mjs 真源里的 id
   if (patchOf.engine !== undefined) {
     if (typeof patchOf.engine !== "string") return { ok: false, error: "engine 必须是字符串" };
-    if (!ENGINE_IDS.includes(str(patchOf.engine))) return { ok: false, error: `engine 只能是 ${ENGINE_IDS.join(" / ")}` };
+    if (!ENGINE_IDS.includes(str(patchOf.engine)))
+      return { ok: false, error: `engine 只能是 ${ENGINE_IDS.join(" / ")}` };
   }
   const specs = [
     { key: "llm", modes: LLM_MODES, fields: ["mode", "provider", "baseUrl", "apiKey", "model"] },
-    { key: "image", modes: IMAGE_MODES, fields: ["mode", "provider", "baseUrl", "apiKey", "model", "size", "sizeBackground"] },
+    {
+      key: "image",
+      modes: IMAGE_MODES,
+      fields: ["mode", "provider", "baseUrl", "apiKey", "model", "size", "sizeBackground"],
+    },
   ];
   for (const spec of specs) {
     const src = patchOf[spec.key];
@@ -254,7 +270,8 @@ export function validateCredentialsPatch(patch = {}, clear = [], allowedProvider
     for (const sizeField of spec.key === "image" ? ["size", "sizeBackground"] : []) {
       if (!(sizeField in src)) continue;
       const s = str(/** @type {any} */ (src)[sizeField]);
-      if (s && !/^(auto|\d{1,5}x\d{1,5})$/.test(s)) return { ok: false, error: "出图尺寸形如 1024x1536，或留空按类型自动" };
+      if (s && !/^(auto|\d{1,5}x\d{1,5})$/.test(s))
+        return { ok: false, error: "出图尺寸形如 1024x1536，或留空按类型自动" };
       if (s.length > MAX_SIZE) return { ok: false, error: "出图尺寸过长" };
     }
   }
@@ -299,24 +316,41 @@ export function llmReady(creds) {
 /**
  * 脱敏视图（HTTP 出口的唯一形状）：**永不含明文**。
  * hasKey 让 GUI 画「已配置」；apiKeyMasked 让 key 格在失焦后显示 `sk-…4f2a`；engine 让设置屏画引擎选择器。
+ *
+ * 形状写全（v1.13）：此前 `@returns {{... llm: object, image: object}}`，消费方（设置屏、测试）碰到
+ * 任何一个字段都要先断言一次——出口形状是 HTTP 契约的一部分，值得逐字段钉住。
+ * @typedef {object} CredentialGroupView
+ * @property {string} mode
+ * @property {string} provider
+ * @property {string} baseUrl
+ * @property {string} model
+ * @property {boolean} hasKey 是否已配置 key（**只有布尔**，明文不出这里）
+ * @property {string} apiKeyMasked 掩码（`sk-…4f2a` 形态；未配置时空串）
+ *
+ * @typedef {object} CredentialsView
+ * @property {number} version
+ * @property {string} engine
+ * @property {CredentialGroupView} llm
+ * @property {CredentialGroupView & {size: string, sizeBackground: string}} image
+ *
  * @param {Credentials} creds 凭据
- * @returns {{version: number, engine: string, llm: object, image: object}} 脱敏视图
+ * @returns {CredentialsView} 脱敏视图
  */
 export function publicView(creds) {
-  const group = (/** @type {CredentialGroup} */ g, /** @type {boolean} */ withSize) => ({
+  /** @param {CredentialGroup} g 公共键那一层 @returns {CredentialGroupView} */
+  const base = (g) => ({
     mode: g.mode,
     provider: g.provider,
     baseUrl: g.baseUrl,
     model: g.model,
-    ...(withSize ? { size: g.size || "", sizeBackground: g.sizeBackground || "" } : {}),
     hasKey: g.apiKey.trim() !== "",
     apiKeyMasked: maskKey(g.apiKey),
   });
   return {
     version: CREDENTIALS_VERSION,
     engine: creds.engine,
-    llm: group(creds.llm, false),
-    image: group(creds.image, true),
+    llm: base(creds.llm),
+    image: { ...base(creds.image), size: creds.image.size || "", sizeBackground: creds.image.sizeBackground || "" },
   };
 }
 
@@ -353,7 +387,9 @@ export function credentialsToEnv(creds) {
  * @returns {string} 可安全回给客户端/日志的短句
  */
 export function sanitizeErrorMessage(message, secrets = []) {
-  let text = String(message ?? "").replace(/\s+/g, " ").trim();
+  let text = String(message ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
   for (const s of secrets) {
     const k = str(s);
     if (k.length >= 6) text = text.split(k).join(maskKey(k));

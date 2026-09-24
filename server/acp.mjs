@@ -11,6 +11,7 @@ import readline from "readline";
 import fs from "fs";
 import path from "path";
 import { gameHome } from "./config.mjs";
+import { errText } from "./errors.mjs";
 
 /**
  * ACP 的权限请求应答（规格：`{outcome:{outcome:"selected", optionId}}`；规格明文允许客户端自动放行）。
@@ -53,7 +54,20 @@ function answerPermission(params) {
  *   boot: () => Promise<void>, resolveImage: (name: string) => string|null, sessionId: string|null}} sessionId 是 getter——
  *   sendPrompt 与 /img 路由经它读当前会话；request 的 Promise resolve 整个响应 msg（result/error 都在）
  */
-export function createAcpSession({ engine, cmd, args, env = {}, shell = false, gameRoot, sessionFile, rules, effort, onChunk, onSeg, mcpServers = [] }) {
+export function createAcpSession({
+  engine,
+  cmd,
+  args,
+  env = {},
+  shell = false,
+  gameRoot,
+  sessionFile,
+  rules,
+  effort,
+  onChunk,
+  onSeg,
+  mcpServers = [],
+}) {
   // 引擎 skill 注入（ADR 0021 的 grok 面）：grok CLI 把项目级 skill 按「文件夹信任」门控，`--plugin-dir
   // <gameRoot>/.grok` 是 session 级、always-trusted 的注入通道（参数在描述符里）。前提：该目录里只有
   // commands/ 与 skills/（无 hooks/MCP），而 plugin-dir 会 always-trust 其 hooks/MCP。
@@ -84,10 +98,17 @@ export function createAcpSession({ engine, cmd, args, env = {}, shell = false, g
   rl.on("line", (line) => {
     if (!line.trim()) return;
     let msg;
-    try { msg = JSON.parse(line); } catch { return; }
+    try {
+      msg = JSON.parse(line);
+    } catch {
+      return;
+    }
     if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
       const r = pending.get(msg.id);
-      if (r) { pending.delete(msg.id); r(msg); }
+      if (r) {
+        pending.delete(msg.id);
+        r(msg);
+      }
       return;
     }
     if (!msg.method) return;
@@ -124,7 +145,10 @@ export function createAcpSession({ engine, cmd, args, env = {}, shell = false, g
         return;
       }
       const t = setTimeout(() => reject(new Error(`timeout ${method}`)), timeoutMs);
-      pending.set(id, (m) => { clearTimeout(t); resolve(m); });
+      pending.set(id, (m) => {
+        clearTimeout(t);
+        resolve(m);
+      });
       proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
     });
   }
@@ -204,7 +228,9 @@ export function createAcpSession({ engine, cmd, args, env = {}, shell = false, g
   }
 
   function saveSessionId() {
-    try { fs.writeFileSync(sessionFile, JSON.stringify({ engine: engine.id, sessionId }) + "\n"); } catch {}
+    try {
+      fs.writeFileSync(sessionFile, JSON.stringify({ engine: engine.id, sessionId }) + "\n");
+    } catch {}
   }
 
   /**
@@ -218,7 +244,9 @@ export function createAcpSession({ engine, cmd, args, env = {}, shell = false, g
       // v1.11 之前写的文件没有 engine 字段：按 grok 读（那时唯一的后端），行为与今天一致
       const engineId = typeof data.engine === "string" && data.engine ? data.engine : "grok";
       return { engine: engineId, sessionId: data.sessionId };
-    } catch { return null; }
+    } catch {
+      return null;
+    }
   }
 
   async function boot() {
@@ -237,20 +265,29 @@ export function createAcpSession({ engine, cmd, args, env = {}, shell = false, g
     let booted = false;
     if (loadSupported && saved && saved.engine === engine.id) {
       try {
-        const r = await request("session/load", {
-          sessionId: saved.sessionId, cwd: gameRoot, mcpServers, ...metaParam,
-        }, 60000);
+        const r = await request(
+          "session/load",
+          {
+            sessionId: saved.sessionId,
+            cwd: gameRoot,
+            mcpServers,
+            ...metaParam,
+          },
+          60000,
+        );
         if (r.error) throw new Error(r.error.message || "session/load rejected");
         sessionId = r.result?.sessionId || saved.sessionId;
         booted = true;
         console.log(`[acp] session/load 复用会话: ${sessionId}`);
       } catch (e) {
-        console.log(`[acp] session/load 失败（${e.message}），降级 session/new`);
+        console.log(`[acp] session/load 失败（${errText(e)}），降级 session/new`);
       }
     }
     if (!booted) {
       const s = await request("session/new", {
-        cwd: gameRoot, mcpServers, ...metaParam,
+        cwd: gameRoot,
+        mcpServers,
+        ...metaParam,
       });
       if (s.error) throw new Error(s.error.message || "session/new rejected");
       sessionId = s.result.sessionId;
@@ -265,7 +302,9 @@ export function createAcpSession({ engine, cmd, args, env = {}, shell = false, g
       try {
         await request("session/set_config_option", { sessionId, ...option });
         console.log(`[acp] reasoning_effort -> ${effort}`);
-      } catch { /* 不支持就保持默认 */ }
+      } catch {
+        /* 不支持就保持默认 */
+      }
     }
   }
 
@@ -274,6 +313,8 @@ export function createAcpSession({ engine, cmd, args, env = {}, shell = false, g
     request,
     boot,
     resolveImage,
-    get sessionId() { return sessionId; },
+    get sessionId() {
+      return sessionId;
+    },
   };
 }

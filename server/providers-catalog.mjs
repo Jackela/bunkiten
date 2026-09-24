@@ -23,6 +23,7 @@ import { gameHome } from "./config.mjs";
 import path from "path";
 import { PROVIDERS, PROVIDER_ID_RE } from "../shared/providers.mjs";
 import { CREDENTIALS_DIRNAME } from "./credentials.mjs";
+import { withTimeoutSignal } from "./http-util.mjs";
 
 /** 目录缓存文件名（落在凭据目录 `~/.bunkiten/` 里——目录名从 credentials.mjs 借用，不抄第二份） */
 export const CATALOG_FILENAME = "providers.json";
@@ -158,7 +159,8 @@ function normalizeEntry(raw) {
 export function validateCatalogDocument(doc) {
   if (!doc || typeof doc !== "object" || Array.isArray(doc)) return { ok: false, error: "目录不是对象" };
   const d = /** @type {Record<string, unknown>} */ (doc);
-  if (d.version !== CATALOG_VERSION) return { ok: false, error: `目录版本不匹配：${String(d.version)}（本机只认 ${CATALOG_VERSION}）` };
+  if (d.version !== CATALOG_VERSION)
+    return { ok: false, error: `目录版本不匹配：${String(d.version)}（本机只认 ${CATALOG_VERSION}）` };
   if (!Array.isArray(d.providers)) return { ok: false, error: "providers 不是数组" };
   const seen = new Set();
   /** @type {import("../shared/providers.mjs").ProviderEntry[]} */
@@ -260,7 +262,12 @@ function catalogState(root, now) {
   if (cached) {
     const parsed = cached.fetchedAt ? Date.parse(cached.fetchedAt) : NaN;
     // 时间戳不可信（缺失/解析不出）时 at 记 0：TTL 判它「过期」，下次启动会重抓一次
-    memo = { providers: cached.providers, source: "cache", fetchedAt: cached.fetchedAt, at: Number.isFinite(parsed) ? parsed : 0 };
+    memo = {
+      providers: cached.providers,
+      source: "cache",
+      fetchedAt: cached.fetchedAt,
+      at: Number.isFinite(parsed) ? parsed : 0,
+    };
     return memo;
   }
   memo = { providers: [...PROVIDERS], source: "bundled", fetchedAt: null, at: now };
@@ -287,17 +294,15 @@ export function loadCatalog({ root = gameHome(), now = Date.now() } = {}) {
  * @returns {Promise<string | null>} 响应体原文或 null
  */
 async function fetchTextSafe(fetchImpl, url) {
-  const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(new Error(`timeout ${CATALOG_TIMEOUT_MS}ms`)), CATALOG_TIMEOUT_MS);
-  t.unref?.();
+  const t = withTimeoutSignal(CATALOG_TIMEOUT_MS, "catalog");
   try {
-    const res = await fetchImpl(url, { signal: ac.signal, headers: { accept: "application/json" } });
+    const res = await fetchImpl(url, { signal: t.signal, headers: { accept: "application/json" } });
     if (!res.ok) return null;
     return await res.text();
   } catch {
     return null;
   } finally {
-    clearTimeout(t);
+    t.clear(); // 用完必须清：unref 只保证不吊住事件循环，定时器本身仍占着
   }
 }
 
@@ -373,7 +378,12 @@ function pickNewest(candidates) {
  * @param {{root?: string, fetchImpl?: typeof fetch, env?: Record<string, string | undefined>, now?: number}} [opts]
  * @returns {Promise<{ok: boolean}>} 抓取并落盘成功为 true；跳过（开关/TTL）或全源失败为 false
  */
-export async function refreshCatalog({ root = gameHome(), fetchImpl = fetch, env = process.env, now = Date.now() } = {}) {
+export async function refreshCatalog({
+  root = gameHome(),
+  fetchImpl = fetch,
+  env = process.env,
+  now = Date.now(),
+} = {}) {
   if (env.BUNKITEN_DISABLE_UPDATE === "1") return { ok: false };
   const state = catalogState(root, now);
   // 本地副本还新鲜：不打扰发布源（TTL 是「最多 6h 拉一次」的节流，不是缓存有效期的上限）

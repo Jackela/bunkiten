@@ -3,15 +3,15 @@
 // 剧本导出包（format:"bunkiten-preset"）的打包与落地。
 // 入口 server/acp-server.mjs 逐名 re-export 这些符号（tests/server.test.ts 与 scripts/doctor.mjs 都从入口 import）。
 //
-// 注意本模块 import 入口（acp-server.mjs）的 FONT_PRESETS/DIALOG_TEXTURES/DEFAULT_THEME：
-// 契约 lint（tests/contract.test.ts ⑥）从**入口源码**抓这三个字面量与 src/theme.ts 比对，
-// 它们钉在入口文件里；这里只在函数体内引用（不在模块顶层求值），ESM 环形引用安全。
 import fs from "fs";
 import path from "path";
 import { AUDIO_EXTS } from "../shared/protocol.mjs";
 import { GAME_ROOT } from "./config.mjs";
 import { PRESET_ID_RE, sanitizeAssetName, assetRelPath, ASSET_DELETE_FILE_RE, uniqueSuffixedName } from "./assets.mjs";
-import { FONT_PRESETS, DIALOG_TEXTURES, DEFAULT_THEME } from "./acp-server.mjs";
+// 主题取值真源在 shared/theme.mjs（v1.13 从这里改过）：此前 import 的是**入口** acp-server.mjs，
+// 于是 acp-server ↔ presets 成环、全靠「跨环引用都在函数体内」这条约定活着（谁在模块顶层用一次就静默 undefined）。
+import { FONT_PRESETS, DIALOG_TEXTURES, FALLBACK_THEME } from "../shared/theme.mjs";
+import { errText } from "./errors.mjs";
 
 // ---------- presets 解析（手写简易解析，不引依赖） ----------
 // FM_KEYS/THEME_KEYS 同样导出（doctor 的必填键与 theme 逐键对比与 server 解析口径同源）
@@ -73,16 +73,22 @@ export function parseFrontmatter(text) {
       const key = line.slice(0, i).trim();
       // inTheme 为真时 theme 块必已初始化（下方 `fm.theme = {}` 与 inTheme 同步）——cast 只表达这个不变式；
       // includes 的入参 cast 同理：把 string 键交给字面元组的 includes 前先声明「命中也是这五个之一才有意义」
-      if (THEME_KEYS.includes(/** @type {"accent"|"accent2"|"motif"|"font"|"dialog"} */ (key))) /** @type {Record<string, string>} */ (fm.theme)[key] = line.slice(i + 1).trim().replace(/^["']|["']$/g, "");
+      if (THEME_KEYS.includes(/** @type {"accent"|"accent2"|"motif"|"font"|"dialog"} */ (key)))
+        /** @type {Record<string, string>} */ (fm.theme)[key] = line
+          .slice(i + 1)
+          .trim()
+          .replace(/^["']|["']$/g, "");
       continue;
     }
     const i = line.indexOf(":");
     if (i === -1) continue;
     const key = line.slice(0, i).trim();
     inTheme = key === "theme"; // 顶层 key 到来即离开 theme 块
-    if (inTheme) fm.theme = {}; // 只支持块形式；内联值视为坏格式，由 normalizeTheme 逐键兜底
+    if (inTheme)
+      fm.theme = {}; // 只支持块形式；内联值视为坏格式，由 normalizeTheme 逐键兜底
     // THEME_KEYS/FM_KEYS 的 includes 入参 cast：字面元组的 includes 只收键联合，先声明键集合归属（见上一处注释）
-    else if (FM_KEYS.includes(/** @type {"id"|"title"|"tagline"|"genre"|"rating"} */ (key))) fm[/** @type {"id"|"title"|"tagline"|"genre"|"rating"} */ (key)] = line.slice(i + 1).trim();
+    else if (FM_KEYS.includes(/** @type {"id"|"title"|"tagline"|"genre"|"rating"} */ (key)))
+      fm[/** @type {"id"|"title"|"tagline"|"genre"|"rating"} */ (key)] = line.slice(i + 1).trim();
   }
   return fm; // 调用方校验必填字段
 }
@@ -100,11 +106,11 @@ export function normalizeTheme(fm) {
   /** @param {unknown} v @param {readonly string[]} list */
   const inList = (v, list) => (typeof v === "string" && list.includes(v.trim()) ? v.trim() : null);
   return {
-    accent: isColor(raw.accent) ? raw.accent : DEFAULT_THEME.accent,
-    accent2: isColor(raw.accent2) ? raw.accent2 : DEFAULT_THEME.accent2,
-    motif: typeof raw.motif === "string" && raw.motif.trim() ? raw.motif.trim() : DEFAULT_THEME.motif,
-    font: inList(raw.font, FONT_PRESETS) ?? DEFAULT_THEME.font,
-    dialog: inList(raw.dialog, DIALOG_TEXTURES) ?? DEFAULT_THEME.dialog,
+    accent: isColor(raw.accent) ? raw.accent : FALLBACK_THEME.accent,
+    accent2: isColor(raw.accent2) ? raw.accent2 : FALLBACK_THEME.accent2,
+    motif: typeof raw.motif === "string" && raw.motif.trim() ? raw.motif.trim() : FALLBACK_THEME.motif,
+    font: inList(raw.font, FONT_PRESETS) ?? FALLBACK_THEME.font,
+    dialog: inList(raw.dialog, DIALOG_TEXTURES) ?? FALLBACK_THEME.dialog,
   };
 }
 
@@ -179,7 +185,10 @@ export function scanPresets(root = GAME_ROOT) {
   const dir = path.join(root, "presets");
   let entries = [];
   try {
-    entries = fs.readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+    entries = fs
+      .readdirSync(dir, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name);
   } catch {
     return { presets, errors: [{ dir: "presets", error: "presets 目录不存在" }] };
   }
@@ -207,7 +216,7 @@ export function scanPresets(root = GAME_ROOT) {
         theme: normalizeTheme(fm),
       });
     } catch (e) {
-      errors.push({ dir: name, error: e.message });
+      errors.push({ dir: name, error: errText(e) });
     }
   }
   return { presets, errors };
@@ -249,9 +258,28 @@ const PRESET_AUDIO_IMPORT_RE = new RegExp(`^[^/\\\\]+\\.(${AUDIO_EXTS.join("|")}
 const COVER_FILE_RE = /^cover\.jpe?g$/;
 // Windows 保留设备名（大小写不敏感）：写成 `CON.jpg` 一样无法落盘/被系统吞掉，跨平台导入必须拒收
 const WIN_RESERVED_STEMS = new Set([
-  "CON", "PRN", "AUX", "NUL",
-  "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-  "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+  "CON",
+  "PRN",
+  "AUX",
+  "NUL",
+  "COM1",
+  "COM2",
+  "COM3",
+  "COM4",
+  "COM5",
+  "COM6",
+  "COM7",
+  "COM8",
+  "COM9",
+  "LPT1",
+  "LPT2",
+  "LPT3",
+  "LPT4",
+  "LPT5",
+  "LPT6",
+  "LPT7",
+  "LPT8",
+  "LPT9",
 ]);
 
 /**
@@ -417,7 +445,10 @@ export function importPresetBundle(root, bundle) {
   // rename 进位——中途失败（磁盘满/ENAMETOOLONG/被占用）不留半个剧本。整个写盘段包 try/catch，
   // 异常绝不冒出函数（见函数头注释：冒泡即 uncaughtException，Electron 主进程会同进程闪退）。
   const dir = path.join(presetsRoot, finalId);
-  const tmp = path.join(presetsRoot, `.tmp-${finalId}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`);
+  const tmp = path.join(
+    presetsRoot,
+    `.tmp-${finalId}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+  );
   try {
     // preset.md 原文落地；仅当 frontmatter id 与落地目录 id 不一致（重名改名或手写包）时改写 id 行——
     // scanPresets 按 frontmatter id 进轮播，不改写会出现「目录 demo-2、轮播里还叫 demo」的重复卡带，
@@ -437,7 +468,7 @@ export function importPresetBundle(root, bundle) {
     fs.renameSync(tmp, dir); // 同层 rename：要么整体进位、要么目录原样不动
   } catch (e) {
     fs.rmSync(tmp, { recursive: true, force: true }); // 清掉写了一半的临时目录，不留残留
-    return { error: `包体写入失败：${e.message}` };
+    return { error: `包体写入失败：${errText(e)}` };
   }
   console.log(`[acp] preset imported: ${id} → ${finalId}`);
   return { ok: true, id: finalId };

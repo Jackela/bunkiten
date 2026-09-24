@@ -1,4 +1,5 @@
-// 世界线（state/worlds/<worldId>/）的索引、迁移、建 / 分叉 / 删、导出导入与角色面板解析（v1.7 拆模块）。
+// 世界线（state/worlds/<worldId>/）的索引、迁移、建 / 分叉 / 删、导出导入（v1.7 拆模块）。
+// 角色面板的解析与视图 v1.13 拆去 server/state-view.mjs（那是本文件里唯一一块「只管读 state.md」的活）。
 // 每个世界三份文件：state.md / summary.md / story-tree.md；index.json 记录元数据（chapterNo/lastPlayed 由磁盘自愈）。
 // 三文件读写与快照逻辑在下层 server/snapshots.mjs，本模块只做索引与 CRUD。
 // 入口 server/acp-server.mjs 逐名 re-export 这些符号（tests/server.test.ts 与 scripts/doctor.mjs 都从入口 import）。
@@ -50,6 +51,30 @@ import {
  *   索引层的展示元数据，不写进 append-only 的快照文件
  */
 
+/**
+ * 世界线导出包的**对外形状**（`<worldId>.world.json`，v3）：exportWorld 造它、importWorld 认它，
+ * 客户端 `parseWorldBundle` 与测试都按同一形状读。
+ *
+ * 为什么单独写成一个 typedef（v1.13）：此前 exportWorld 的返回是 `{bundle?: object}`，
+ * 于是每个消费者都得 `as any` 才能碰 `.world.files`——测试里 70 处 `as any` 有一大半来自它。
+ * 形状写在这里，类型检查才管得住「导出/导入两侧字段对齐」这件事。
+ * @typedef {object} WorldBundle
+ * @property {string} format 恒为 WORLD_BUNDLE_FORMAT（导入侧据此拒绝杂包）
+ * @property {number} version 1..WORLD_BUNDLE_VERSION（导入接受区间，不是等值）
+ * @property {string} exportedAt 导出时刻（ISO）
+ * @property {object} world 世界本体
+ * @property {string} world.worldId
+ * @property {string} world.preset
+ * @property {string} world.title
+ * @property {string} world.label 玩家改的展示名（未改则空串）
+ * @property {string} world.note
+ * @property {number} world.chapterNo
+ * @property {{worldId: string, nodeId: string, seq?: number}|null} world.forkedFrom 血缘（v2 起；v1 包与手建世界为 null）
+ * @property {import("./snapshots.mjs").SnapshotFiles} world.files 三文件全文（不存在的为 null）
+ * @property {import("./snapshots.mjs").SnapshotEntry[]} world.snapshots 全部快照（含 at/kind/nodeId/chapterNo/prompt/files）
+ * @property {string|null} world.forkMd fork.md 全文（没有该文件时为 null）
+ */
+
 // label：可选归属标注（素材删除传 presetId）——跨剧本同名文件在 trash 里靠它区分该挪回哪个剧本。
 /** @param {string} root 游戏根目录 @param {string[]} rel 相对 root 的路径段 @param {string} [label] @returns {{trashed: boolean, fallback?: string}} */
 export function moveToTrash(root, rel, label = "") {
@@ -59,7 +84,13 @@ export function moveToTrash(root, rel, label = "") {
   const tag = label ? `-${label}` : "";
   try {
     fs.mkdirSync(trash, { recursive: true });
-    fs.renameSync(src, path.join(trash, `${Date.now()}-${Math.random().toString(36).slice(2, 6).padEnd(4, "0")}${tag}-${path.basename(src)}`));
+    fs.renameSync(
+      src,
+      path.join(
+        trash,
+        `${Date.now()}-${Math.random().toString(36).slice(2, 6).padEnd(4, "0")}${tag}-${path.basename(src)}`,
+      ),
+    );
     return { trashed: true };
   } catch {
     fs.rmSync(src, { recursive: true, force: true });
@@ -205,174 +236,6 @@ export function worldChapterNo(md) {
   return n;
 }
 
-// ---------- 角色面板（v1.7）：state.md 容错解析 → GET /api/state ----------
-// state.md 由引擎（LLM）维护：小节可能缺、顺序可能乱、值可能越界——这里只做「尽力解析、缺的静默缺省」，
-// 任何输入都不抛错；未知小节（场景美术等）与角色卡的未知键（art_prompt 等）一律忽略，不进响应。
-
-/** state.md 的键值行：`- <键>: <值>`（冒号全半角都认；值可为空串） */
-const STATE_KV_RE = /^-\s*([^:：]+?)\s*[:：]\s*(.*)$/;
-/** 未回收伏笔行尾的轮次标注：`（埋于第 N 轮）`（全半角括号都认） */
-const FORESHADOW_TURN_RE = /[（(]埋于第\s*(\d+)\s*轮[）)]\s*$/;
-
-/** 好感度解析：取行内第一个整数并夹进 [0,100]（引擎可能写出界）；解析不出（如「很高」）→ null
- *  @param {unknown} raw @returns {number|null} */
-function parseFavor(raw) {
-  const m = /-?\d+/.exec(String(raw ?? ""));
-  if (!m) return null;
-  const n = Number(m[0]);
-  return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : null;
-}
-
-/** 行内整数（周目）；解析不出 → null
- *  @param {unknown} raw @returns {number|null} */
-function parseIntOrNull(raw) {
-  const m = /-?\d+/.exec(String(raw ?? ""));
-  return m && Number.isFinite(Number(m[0])) ? Number(m[0]) : null;
-}
-
-/**
- * 角色面板里的单张角色卡（parseStateFile 的 characters 元素）。
- * @typedef {Object} CharacterCard
- * @property {string} name
- * @property {string} role 身份
- * @property {string} traits 性格关键词
- * @property {string} catchphrase 口癖
- * @property {number|null} favor 好感度（夹 0-100，解析不出 null）
- * @property {string} artFile
- * @property {string} expression 表情
- * @property {string} secret 秘密
- * @property {string} recentInteraction 最近互动
- */
-
-/**
- * 世界 state.md 解析出的角色面板视图（GET /api/state 的响应体骨架）。
- * @typedef {Object} WorldStateView
- * @property {{preset: string|null, playthrough: number|null, time: string|null, scene: string|null}} status
- * @property {Record<string, string>} protagonist
- * @property {Record<string, string>} director
- * @property {CharacterCard[]} characters
- * @property {Array<{name: string, value: string}>} flags
- * @property {Array<{text: string, turn: number|null}>} foreshadowing
- */
-
-/** 空角色卡（角色卡的缺省形状：字符串字段空串、好感度 null）
- *  @param {string} name @returns {CharacterCard} */
-function newCharacterCard(name) {
-  return { name, role: "", traits: "", catchphrase: "", favor: null, artFile: "", expression: "", secret: "", recentInteraction: "" };
-}
-
-/**
- * 解析世界 state.md 为角色面板视图（纯函数，容错见函数组头注释）。
- * `# 剧情状态` 的固定键 → status（preset/周目→playthrough/时间→time/场景→scene，缺省 null）；
- * `# 主角` / `# 导演手记` 的键值行原样收进 Record（键→值，引擎可自由加字段）；
- * `# 角色卡` 的 `## <角色名>` 子节 → characters（身份→role、性格关键词→traits、口癖→catchphrase、
- * 好感度→favor（夹 0-100，解析不出 null）、art_file→artFile、表情→expression、秘密→secret、最近互动→recentInteraction；
- * art_prompt 等未知键忽略）；`# Flags` → flags；`# 未回收伏笔` → foreshadowing（行尾「埋于第 N 轮」拆出 turn，缺省 null）。
- * @param {string} text state.md 全文（null/undefined 视同空文本）
- * @returns {WorldStateView}
- */
-export function parseStateFile(text) {
-  /** @type {WorldStateView} */
-  const out = {
-    status: { preset: null, playthrough: null, time: null, scene: null },
-    protagonist: {},
-    director: {},
-    characters: [],
-    flags: [],
-    foreshadowing: [],
-  };
-  /** @type {Record<string, "preset"|"playthrough"|"time"|"scene">} */
-  const STATUS_KEYS = { preset: "preset", 周目: "playthrough", 时间: "time", 场景: "scene" };
-  /** @type {Record<string, "role"|"traits"|"catchphrase"|"favor"|"artFile"|"expression"|"secret"|"recentInteraction">} */
-  const CHARACTER_KEYS = {
-    身份: "role",
-    性格关键词: "traits",
-    口癖: "catchphrase",
-    好感度: "favor",
-    art_file: "artFile",
-    表情: "expression",
-    秘密: "secret",
-    最近互动: "recentInteraction",
-  };
-  let section = ""; // 当前一级小节名（未知小节也跟踪，只是不解析内容）
-  /** @type {CharacterCard|null} */ let character = null; // 角色卡小节里当前的 ## 角色（其它小节恒为 null）
-  for (const rawLine of String(text ?? "").split(/\r?\n/)) {
-    const line = rawLine.trim();
-    const h2 = /^##(?!#)\s*(.+?)\s*$/.exec(line);
-    if (h2) {
-      // 二级标题：角色卡小节里是角色名（开一张新卡）；其它小节里出现只结束当前上下文。
-      // 同名卡 last-wins 去重：引擎整文件重写时旧卡新卡可能并存，不去重会撞 React key 与 testid。
-      if (section === "角色卡") {
-        const name = h2[1];
-        const prev = out.characters.findIndex((c) => c.name === name);
-        if (prev !== -1) out.characters.splice(prev, 1);
-        character = newCharacterCard(name);
-        out.characters.push(character);
-      } else {
-        character = null;
-      }
-      continue;
-    }
-    const h1 = /^#(?!#)\s*(.+?)\s*$/.exec(line);
-    if (h1) {
-      // 剥行尾括注再比对：SKILL 模板自带「# 角色卡（每个角色一节）」这类写给引擎看的说明，
-      // LLM 拷模板时带上括注是完全可能的漂移——精确匹配会把整节角色卡静默吞掉。
-      section = h1[1].replace(/[（(][^）)]*[）)]\s*$/, "").trim();
-      character = null;
-      continue;
-    }
-    const kv = STATE_KV_RE.exec(line);
-    if (section === "剧情状态" && kv) {
-      const key = STATUS_KEYS[kv[1].trim()];
-      if (!key) continue;
-      const v = kv[2].trim();
-      if (key === "playthrough") out.status.playthrough = parseIntOrNull(v);
-      else out.status[key] = v || null;
-    } else if (section === "主角" && kv) {
-      out.protagonist[kv[1].trim()] = kv[2].trim();
-    } else if (section === "导演手记" && kv) {
-      out.director[kv[1].trim()] = kv[2].trim();
-    } else if (section === "角色卡" && character && kv) {
-      const field = CHARACTER_KEYS[kv[1].trim()];
-      if (field === "favor") character.favor = parseFavor(kv[2]);
-      else if (field) character[field] = kv[2].trim();
-    } else if (section === "Flags" && kv) {
-      out.flags.push({ name: kv[1].trim(), value: kv[2].trim() });
-    } else if (section === "未回收伏笔" && line.startsWith("-")) {
-      let t = line.replace(/^-\s*/, "").trim();
-      if (!t) continue;
-      /** @type {number|null} */
-      let turn = null;
-      const m = FORESHADOW_TURN_RE.exec(t);
-      if (m) {
-        turn = Number(m[1]);
-        t = t.slice(0, m.index).trim();
-      }
-      out.foreshadowing.push({ text: t, turn });
-    }
-  }
-  return out;
-}
-
-/**
- * GET /api/state 的路由判定与响应体（导出纯函数，root 可注入以便单测）：
- * worldId 缺失或不过 WORLD_ID_RE → 400；世界没有 state.md → 404；否则 200 + `{worldId, ...parseStateFile}`。
- * @param {string} worldId 查询参数（调用方原样传入，缺失就是空串）
- * @param {string} [root] 世界根目录（缺省 WORLDS_ROOT）
- * @returns {{code: number, body: object}} 路由直接 writeHead/JSON 用
- */
-export function stateViewFor(worldId, root = WORLDS_ROOT) {
-  if (!worldId || !WORLD_ID_RE.test(worldId)) return { code: 400, body: { error: "缺少或非法的 worldId 参数" } };
-  let md = null;
-  try {
-    md = fs.readFileSync(path.join(root, worldId, "state.md"), "utf8");
-  } catch {
-    md = null;
-  }
-  if (md === null) return { code: 404, body: { error: "状态文件不存在" } };
-  return { code: 200, body: { worldId, ...parseStateFile(md) } };
-}
-
 /** 新建世界（分配 id、建目录、写索引）；新世界的三份文件由引擎在开局/规划时初始化
  *  @param {string} root 世界根目录 @param {string} preset 剧本 id @param {string} [title] @returns {WorldIndexEntry} */
 export function createWorld(root, preset, title = "") {
@@ -424,7 +287,12 @@ export function forkWorld(root, originId, nodeId, seq = null) {
   let forkedFrom;
   if (snap) {
     writeWorldFiles(dstDir, snap.files); // 精确：快照三文件原样落地，不本地改树（引擎按 fork.md 校准）
-    chapterNo = snap.chapterNo != null ? snap.chapterNo : snap.files.tree != null ? worldChapterNo(snap.files.tree) : entry.chapterNo;
+    chapterNo =
+      snap.chapterNo != null
+        ? snap.chapterNo
+        : snap.files.tree != null
+          ? worldChapterNo(snap.files.tree)
+          : entry.chapterNo;
     forkedFrom = { worldId: originId, nodeId, seq: snap.seq };
   } else {
     for (const f of WORLD_FILES) {
@@ -463,12 +331,17 @@ export function restoreWorld(root, worldId, seq) {
   if (!target) return { error: "快照不存在" };
   const dir = path.join(root, worldId);
   const current = readWorldFiles(dir);
-  const backup = writeSnapshot(root, worldId, {
-    kind: "backup",
-    nodeId: parseTreePointer(current.tree),
-    chapterNo: current.tree != null ? worldChapterNo(current.tree) : null,
-    files: current,
-  }, { dedupe: false });
+  const backup = writeSnapshot(
+    root,
+    worldId,
+    {
+      kind: "backup",
+      nodeId: parseTreePointer(current.tree),
+      chapterNo: current.tree != null ? worldChapterNo(current.tree) : null,
+      files: current,
+    },
+    { dedupe: false },
+  );
   if (!backup.ok) return { error: "写入备份快照失败" };
   writeWorldFiles(dir, target.files);
   console.log(`[acp] world restored: ${worldId} → #${target.seq}（备份 #${backup.seq}）`);
@@ -489,13 +362,15 @@ export function labelSnapshot(root, worldId, seq, label) {
   if (!WORLD_ID_RE.test(String(worldId || ""))) return { error: "参数不合法" };
   const n = Number(seq);
   if (!Number.isInteger(n) || n < 1) return { error: "seq 不合法" };
-  const clean = String(label ?? "").replace(/\s*\n+\s*/g, " ").trim();
+  const clean = String(label ?? "")
+    .replace(/\s*\n+\s*/g, " ")
+    .trim();
   if (clean.length > 40) return { error: "名字过长（≤40）" };
   const list = readWorldsIndex(root);
   const idx = list.findIndex((e) => e.worldId === worldId);
   if (idx === -1) return { error: "世界不存在" };
   const entry = { ...list[idx] };
-  const labels = { ...(entry.snapshotLabels ?? {}) };
+  const labels = { ...entry.snapshotLabels }; // 展开 nullish 本来就是 no-op（`{...undefined}` = `{}`），不必写 `?? {}`
   if (clean) labels[String(n)] = clean;
   else delete labels[String(n)];
   entry.snapshotLabels = labels;
@@ -567,7 +442,7 @@ function readForkMd(dir) {
  * 导入侧的引擎没有这段历史，带着它只会让新世界的时间线自相矛盾。
  * @param {string} root 世界根目录
  * @param {string} worldId 世界 id
- * @returns {{bundle?: object, error?: string}} 成功时 bundle、失败时 error（HTTP 层按字段有无分流）
+ * @returns {{bundle?: WorldBundle, error?: string}} 成功时 bundle、失败时 error（HTTP 层按字段有无分流）
  */
 export function exportWorld(root, worldId) {
   if (!WORLD_ID_RE.test(String(worldId || ""))) return { error: "参数不合法" };
@@ -576,7 +451,13 @@ export function exportWorld(root, worldId) {
   if (!entry && !fs.existsSync(dir)) return { error: "世界不存在" };
   const files = readWorldFiles(dir);
   const snapshots = readSnapshots(worldId, root).map((s) => ({
-    seq: s.seq, at: s.at, kind: s.kind, nodeId: s.nodeId, chapterNo: s.chapterNo, prompt: s.prompt, files: s.files,
+    seq: s.seq,
+    at: s.at,
+    kind: s.kind,
+    nodeId: s.nodeId,
+    chapterNo: s.chapterNo,
+    prompt: s.prompt,
+    files: s.files,
   }));
   return {
     bundle: {
@@ -627,11 +508,8 @@ function bundleForkedFrom(raw) {
  * 版本闸**不是硬等值**：接受 1..WORLD_BUNDLE_VERSION——v1 包照收、按当前形状补齐（forkedFrom null、不落
  * fork.md），v2 包才带血缘（见 bundleForkedFrom 的降级口径）。
  * @param {string} root 世界根目录
- * @param {{format?: unknown, version?: unknown, world?: {
- *   worldId?: unknown, preset?: unknown, title?: unknown, label?: unknown, note?: unknown, chapterNo?: unknown,
- *   forkedFrom?: unknown, forkMd?: unknown,
- *   files?: {state?: unknown, summary?: unknown, tree?: unknown},
- *   snapshots?: unknown[]|null}}} bundle 导出体（JSON 直入，函数内逐字段校验）
+ * @param {Record<string, any> | null} bundle 导出体（JSON 直入：字段类型未知，函数内逐字段校验，
+ *   故按 any 收口——与 isSnapshotEntry 同一口径；null/非对象一律回拒绝而不是抛）
  * @returns {{worldId?: string, error?: string}}
  */
 export function importWorld(root, bundle) {
@@ -678,7 +556,10 @@ export function importWorld(root, bundle) {
     const hdir = path.join(dir, HISTORY_DIRNAME);
     fs.mkdirSync(hdir, { recursive: true });
     for (const s of snaps) {
-      fs.writeFileSync(path.join(hdir, `${String(s.seq).padStart(4, "0")}.json`), JSON.stringify(normalizeSnapshot(s), null, 2) + "\n");
+      fs.writeFileSync(
+        path.join(hdir, `${String(s.seq).padStart(4, "0")}.json`),
+        JSON.stringify(normalizeSnapshot(s), null, 2) + "\n",
+      );
     }
   }
   const entry = {
@@ -700,7 +581,10 @@ export function importWorld(root, bundle) {
 export function deleteWorld(root, worldId) {
   const list = readWorldsIndex(root);
   if (!list.some((e) => e.worldId === worldId)) return { error: "世界不存在" };
-  writeWorldsIndex(root, list.filter((e) => e.worldId !== worldId));
+  writeWorldsIndex(
+    root,
+    list.filter((e) => e.worldId !== worldId),
+  );
   // 顺手释放该世界的快照缓存（长世界的 files 字符串可达 MB 级，别让它在 Electron 长驻进程里滞留）
   invalidateSnapshots(worldId, root);
   // root 是 worlds 根（<gameRoot>/state/worlds）：整个世界目录搬进 <gameRoot>/state/trash/（索引先移除，恢复需手工补条目）
@@ -720,7 +604,9 @@ export function listWorlds(root, presetFilter = null) {
       let chapterNo = e.chapterNo || 1;
       let lastPlayed = e.lastPlayed || 0;
       if (exists) {
-        try { chapterNo = worldChapterNo(fs.readFileSync(path.join(dir, TREE_FILE), "utf8")); } catch {}
+        try {
+          chapterNo = worldChapterNo(fs.readFileSync(path.join(dir, TREE_FILE), "utf8"));
+        } catch {}
         lastPlayed = Math.max(lastPlayed, ...WORLD_FILES.map((f) => mtimeOf(path.join(dir, f))), 0);
       }
       // label 是 v1.6 新增的展示名（update 写入）；老索引没有该字段时补空串，客户端不必判 undefined

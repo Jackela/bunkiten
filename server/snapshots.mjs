@@ -45,6 +45,9 @@ const WORLD_FILE_KEY = { "state.md": "state", "summary.md": "summary", [TREE_FIL
  */
 let warnedSnapshotOverflow = false; // 溢出告警只打一次（每回合都会触发判断，不去重会刷屏）
 
+/** 快照/日志文件名：4 位递增 seq（`NNNN.json`）——**只此一份**（v1.13 收口：此前同一个正则在本文件出现四遍） */
+const SEQ_FILE_RE = /^\d{1,4}\.json$/;
+
 // readSnapshots 的列表缓存（v1.7 读路径索引化，收尾改为**逐文件**复用）：/api/history 列表形态会 strip 掉
 // files，却照样为每次读付出「逐文件 readFileSync + JSON.parse 全文（含 files 大字符串）」——
 // 长世界 history 目录上百条时每次打开剧情图都要全量解析一遍。现在按「文件名 + mtimeMs」逐条复用：
@@ -118,12 +121,14 @@ export function writeWorldFiles(dir, files) {
 /**
  * 快照条目字段规范化（导出纯函数）：统一 seq 类型、at 默认当前时间、kind 归一、prompt 缺省空串、
  * files 三键缺省 null。写盘与读取都走它，保证磁盘上的条目形状只有一个（导入校验也复用同一形状）。
- * @param {Partial<SnapshotEntry>} [entry] 原始条目（可能是刚 JSON.parse 出来的任意形状）
+ * @param {Record<string, unknown>} [entry] 原始条目（刚 JSON.parse 出来的任意形状；字段逐个 typeof 收敛。
+ *   声明成 Partial<SnapshotEntry> 是在撒谎——本函数的全部意义就是把类型不对的输入收敛成合法形状）
  * @returns {SnapshotEntry}
  */
 export function normalizeSnapshot(entry = {}) {
   /** @type {Partial<SnapshotFiles>} */
-  const files = entry.files && typeof entry.files === "object" ? entry.files : {};
+  const files =
+    entry.files && typeof entry.files === "object" ? /** @type {Partial<SnapshotFiles>} */ (entry.files) : {};
   /** @param {unknown} v */
   const str = (v) => (typeof v === "string" ? v : null);
   const num = Number(entry.seq);
@@ -181,7 +186,7 @@ export function readSnapshots(worldId, root = WORLDS_ROOT) {
   /** @type {Map<string, number>} */
   const stamp = new Map();
   for (const d of dirents) {
-    if (!d.isFile() || !/^\d{1,4}\.json$/.test(d.name)) continue;
+    if (!d.isFile() || !SEQ_FILE_RE.test(d.name)) continue;
     try {
       stamp.set(d.name, fs.statSync(path.join(dir, d.name)).mtimeMs);
     } catch {}
@@ -243,7 +248,7 @@ function latestSnapshot(dir) {
   let seq = 0;
   let file = null;
   for (const name of names) {
-    if (!/^\d{1,4}\.json$/.test(name)) continue;
+    if (!SEQ_FILE_RE.test(name)) continue;
     const n = Number(name.slice(0, -5)); // 去掉末尾 ".json"，取数字部分
     if (n > seq) {
       seq = n;
@@ -282,7 +287,7 @@ export function readSnapshot(worldId, seq, root = WORLDS_ROOT) {
   } catch {
     return null;
   }
-  const name = names.find((f) => /^\d{1,4}\.json$/.test(f) && Number(f.slice(0, -5)) === n);
+  const name = names.find((f) => SEQ_FILE_RE.test(f) && Number(f.slice(0, -5)) === n);
   return name ? readSnapshotFile(dir, name) : null;
 }
 
@@ -311,7 +316,8 @@ export function writeSnapshot(root, worldId, entry, { dedupe = true } = {}) {
     const lastEntry = readSnapshotFile(dir, last.file);
     if (lastEntry) {
       // lastEntry 经 normalizeSnapshot，prompt 恒为字符串——空输入（指令/续玩）只有内容也全等才跳过
-      const nothingNew = sameFiles(lastEntry.files, norm.files) && (norm.prompt === "" || lastEntry.prompt === norm.prompt);
+      const nothingNew =
+        sameFiles(lastEntry.files, norm.files) && (norm.prompt === "" || lastEntry.prompt === norm.prompt);
       if (nothingNew) return { skipped: true, reason: "duplicate", seq: last.seq };
     }
   }
@@ -340,9 +346,14 @@ function sameFiles(a, b) {
 
 /**
  * 从快照列表里按节点挑「最早匹配」的一条（纯函数，CONTRACTS §2 的精确回退源）。
- * @param {SnapshotEntry[]} snapshots 快照列表（顺序无所谓，内部按 seq 排序）
+ *
+ * 类型按「实际读到什么」声明（v1.13）：函数只读 `nodeId` 与 `seq`，且显式容忍 null/非数组/非对象元素
+ * （读路径永不抛）。此前声明成 `SnapshotEntry[]` 同样是在撒谎——它让「传一条只有 seq/nodeId 的候选」
+ * 在类型上不成立，而实现明明吃得下。用模板参数保真：给什么形状就回什么形状。
+ * @template {{seq: number, nodeId: string|null}} T
+ * @param {readonly T[]|null} snapshots 快照列表（顺序无所谓，内部按 seq 排序；null/非数组 → 无匹配）
  * @param {string} nodeId 目标节点 id
- * @returns {SnapshotEntry|null} 最早（seq 最小）的那个匹配快照；无匹配时 null
+ * @returns {T|null} 最早（seq 最小）的那个匹配快照；无匹配时 null
  */
 export function selectSnapshotForNode(snapshots, nodeId) {
   const list = Array.isArray(snapshots) ? snapshots.filter((s) => s && typeof s === "object") : [];
@@ -396,7 +407,7 @@ function latestLogSeq(dir) {
   }
   let seq = 0;
   for (const name of names) {
-    if (!/^\d{1,4}\.json$/.test(name)) continue;
+    if (!SEQ_FILE_RE.test(name)) continue;
     const n = Number(name.slice(0, -5));
     if (n > seq) seq = n;
   }

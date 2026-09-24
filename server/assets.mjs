@@ -4,16 +4,19 @@
 // 入口 server/acp-server.mjs 逐名 re-export 这些符号（tests/server.test.ts 与 scripts/doctor.mjs 都从入口 import）。
 import fs from "fs";
 import path from "path";
-import { ASSET_FILE_RE } from "../shared/protocol.mjs";
 import { GAME_ROOT } from "./config.mjs";
 
-// 资产类型的文件名正则的真源在 shared/protocol.mjs（由 ASSET_KINDS 构造）；这里 re-export 给 doctor 与入口，不抄第二份
+// 资产类型的文件名正则的真源在 shared/protocol.mjs（由 ASSET_KINDS 构造）；这里 re-export 给 doctor 与入口，不抄第二份。
+// 注意是**纯 re-export**（v1.13 修正）：此前多写了一句 `import { ASSET_FILE_RE } from ...`，本模块自己并不用它——
+// 那句在 checkJs 打开 noUnusedLocals 后当场被点名，属于「从真源 import 了又不用」的噪声。
 export { ASSET_FILE_RE, ASSET_KINDS } from "../shared/protocol.mjs";
 
 // 文件名安全字符：名字里的路径分隔符与引号类字符一律替换为 _
 /** @param {string} name 标记里的原始名 @returns {string} 净化后的安全文件名（空名兜底 unnamed） */
 export function sanitizeAssetName(name) {
-  const safe = String(name).replace(/[\\/:*?"<>|「」『』\r\n\t]/g, "_").trim();
+  const safe = String(name)
+    .replace(/[\\/:*?"<>|「」『』\r\n\t]/g, "_")
+    .trim();
   return safe || "unnamed";
 }
 
@@ -86,7 +89,12 @@ export function legacyAssetCandidates(rel, presetId) {
  * @param {boolean} [ctx.validPreset] 本场景是否允许回退 currentPresetId
  * @returns {{presetId: string|null, reason: "query"|"path"|"current"|"query-illegal"|"none"}} 剧本 id 与命中来源
  */
-export function resolvePersistPreset({ queryPreset = "", srcRel = "", currentPresetId = "", validPreset = false } = {}) {
+export function resolvePersistPreset({
+  queryPreset = "",
+  srcRel = "",
+  currentPresetId = "",
+  validPreset = false,
+} = {}) {
   const q = String(queryPreset ?? "").trim();
   if (PRESET_ID_RE.test(q)) return { presetId: q, reason: "query" };
   const fromPath = presetIdFromPath(srcRel);
@@ -123,5 +131,9 @@ export function uniqueSuffixedName(taken, base) {
 
 /** @param {string} file 绝对路径 @returns {number} mtime 毫秒；读不到（不存在）为 0 */
 export function mtimeOf(file) {
-  try { return fs.statSync(file).mtimeMs; } catch { return 0; }
+  try {
+    return fs.statSync(file).mtimeMs;
+  } catch {
+    return 0;
+  }
 }

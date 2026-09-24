@@ -22,6 +22,9 @@ import { GAME_ROOT } from "./config.mjs";
 import { PRESET_ID_RE, presetIdFromPath, sanitizeAssetName } from "./assets.mjs";
 import { assetTargetFile } from "./presets.mjs";
 import { readCredentials, sanitizeErrorMessage } from "./credentials.mjs";
+import { errName, errText } from "./errors.mjs";
+import { joinEndpoint, withTimeoutSignal } from "./http-util.mjs";
+import { withinRoot } from "./fs-guard.mjs";
 
 /** MCP server 名（catalog 前缀，同时也是设置屏/文档里说的那个名字；契约 lint ⑦ 组钉住它与 SKILL 的一致） */
 export const MEDIA_MCP_NAME = "bunkiten-media";
@@ -70,7 +73,8 @@ export const TOOL_DEFINITION = Object.freeze({
       variant: { type: "string", description: "立绘表情差分名（可选，如 微笑；基础立绘留空）" },
       outRelPath: {
         type: "string",
-        description: "目标相对路径，形如 presets/<剧本 id>/assets/立绘-薇拉.jpg 或 presets/<剧本 id>/cover.jpg（剧本 id 由它解析）",
+        description:
+          "目标相对路径，形如 presets/<剧本 id>/assets/立绘-薇拉.jpg 或 presets/<剧本 id>/cover.jpg（剧本 id 由它解析）",
       },
     },
     required: ["prompt", "kind", "name", "outRelPath"],
@@ -101,7 +105,7 @@ export function imageSizeFor(kind, image = {}) {
  * @returns {string} 完整 URL
  */
 export function imagesEndpoint(baseUrl) {
-  return `${String(baseUrl || "").trim().replace(/\/+$/, "")}/images/generations`;
+  return joinEndpoint(baseUrl, "/images/generations");
 }
 
 /**
@@ -139,9 +143,14 @@ export function resolveOutputPath({ kind = "", name = "", variant = "", outRelPa
  * @returns {{bytes: Buffer} | {url: string} | {error: string}} 三种形态之一
  */
 export function pickImagePayload(payload) {
-  const item = Array.isArray(payload?.data) ? payload.data[0] : typeof payload?.data === "string" ? payload.data : undefined;
+  const item = Array.isArray(payload?.data)
+    ? payload.data[0]
+    : typeof payload?.data === "string"
+      ? payload.data
+      : undefined;
   if (item === undefined || item === null) return { error: "响应里没有 data[0]" };
-  const b64 = typeof item === "string" ? (item.startsWith("http") ? "" : item) : item.b64_json || item.b64 || item.base64 || "";
+  const b64 =
+    typeof item === "string" ? (item.startsWith("http") ? "" : item) : item.b64_json || item.b64 || item.base64 || "";
   if (b64) {
     try {
       return { bytes: Buffer.from(String(b64), "base64") };
@@ -152,14 +161,6 @@ export function pickImagePayload(payload) {
   const url = typeof item === "string" && item.startsWith("http") ? item : item.url;
   if (typeof url === "string" && /^https?:\/\//.test(url)) return { url };
   return { error: "响应里既没有 b64_json 也没有 url" };
-}
-
-/** @param {number} ms 超时毫秒 @returns {{signal: AbortSignal, clear: () => void}} */
-function timeoutSignal(ms) {
-  const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(new Error(`timeout ${ms}ms`)), ms);
-  t.unref?.();
-  return { signal: ac.signal, clear: () => clearTimeout(t) };
 }
 
 /**
@@ -184,7 +185,7 @@ export async function requestImage({ baseUrl, apiKey, model, prompt, size, fetch
   /** @type {Record<string, unknown>} */
   let body = { model, prompt, n: 1, size, response_format: "b64_json" };
   for (let attempt = 0; attempt < 3; attempt++) {
-    const t = timeoutSignal(GENERATE_TIMEOUT_MS);
+    const t = withTimeoutSignal(GENERATE_TIMEOUT_MS, "generate");
     try {
       const res = await fetchImpl(url, {
         method: "POST",
@@ -196,7 +197,10 @@ export async function requestImage({ baseUrl, apiKey, model, prompt, size, fetch
       if (!res.ok) {
         // 参数不被接受时退让：去 size / 去 response_format 各重试一次（只认服务端明说的那个参数）
         const lower = text.toLowerCase();
-        const canDropSize = "size" in body && /size/.test(lower) && /(unsupported|unknown|invalid|not\s+allowed|unrecognized)/.test(lower);
+        const canDropSize =
+          "size" in body &&
+          /size/.test(lower) &&
+          /(unsupported|unknown|invalid|not\s+allowed|unrecognized)/.test(lower);
         const canDropFormat = "response_format" in body && /response_format/.test(lower);
         if (attempt < 2 && canDropFormat) {
           body = { model, prompt, n: 1, size };
@@ -218,20 +222,23 @@ export async function requestImage({ baseUrl, apiKey, model, prompt, size, fetch
       const picked = pickImagePayload(payload);
       if ("bytes" in picked) return { bytes: picked.bytes, status: res.status };
       if ("url" in picked) {
-        const d = timeoutSignal(DOWNLOAD_TIMEOUT_MS);
+        const d = withTimeoutSignal(DOWNLOAD_TIMEOUT_MS, "download");
         try {
           const r2 = await fetchImpl(picked.url, { signal: d.signal });
           if (!r2.ok) return { error: `下载图片失败：HTTP ${r2.status}`, status: res.status };
           return { bytes: Buffer.from(await r2.arrayBuffer()), status: res.status };
         } catch (e) {
-          return { error: sanitizeErrorMessage(`下载图片失败：${e?.message ?? e}`, secrets), status: res.status };
+          return { error: sanitizeErrorMessage(`下载图片失败：${errText(e)}`, secrets), status: res.status };
         } finally {
           d.clear();
         }
       }
       return { error: picked.error, status: res.status };
     } catch (e) {
-      const msg = e?.name === "AbortError" || /timeout/.test(String(e?.message)) ? `出图超时（${GENERATE_TIMEOUT_MS / 1000}s）` : `出图请求失败：${e?.message ?? e}`;
+      const msg =
+        errName(e) === "AbortError" || /timeout/.test(errText(e))
+          ? `出图超时（${GENERATE_TIMEOUT_MS / 1000}s）`
+          : `出图请求失败：${errText(e)}`;
       return { error: sanitizeErrorMessage(msg, secrets) };
     } finally {
       t.clear();
@@ -265,11 +272,11 @@ export async function generateImage(params, deps = {}) {
   if ("error" in out) return { ok: false, error: out.error };
   const abs = path.join(gameRoot, target.rel);
   try {
-    if (!path.resolve(abs).startsWith(path.resolve(gameRoot) + path.sep)) return { ok: false, error: "落盘路径越界" };
+    if (!withinRoot(abs, gameRoot)) return { ok: false, error: "落盘路径越界" };
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     fs.writeFileSync(abs, out.bytes);
   } catch (e) {
-    return { ok: false, error: `写入失败：${e?.message ?? e}` };
+    return { ok: false, error: `写入失败：${errText(e)}` };
   }
   return { ok: true, relPath: target.rel, bytes: out.bytes.length };
 }
@@ -359,7 +366,10 @@ export async function handleMcpMessage(msg, respond, callTool = (p) => generateI
       respond({
         jsonrpc: "2.0",
         id,
-        result: { content: [{ type: "text", text: JSON.stringify({ ok: false, error: `未知工具：${name}` }) }], isError: true },
+        result: {
+          content: [{ type: "text", text: JSON.stringify({ ok: false, error: `未知工具：${name}` }) }],
+          isError: true,
+        },
       });
       return;
     }
@@ -368,7 +378,7 @@ export async function handleMcpMessage(msg, respond, callTool = (p) => generateI
       out = await callTool(args);
     } catch (e) {
       // 工具执行器理论上不抛（generateImage 自己兜底）；这里再兜一层，绝不让 MCP 会话因一次出图崩掉
-      out = { ok: false, error: `出图失败：${e?.message ?? e}` };
+      out = { ok: false, error: `出图失败：${errText(e)}` };
     }
     respond({
       jsonrpc: "2.0",

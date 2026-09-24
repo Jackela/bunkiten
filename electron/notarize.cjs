@@ -18,13 +18,16 @@ const { execFileSync } = require("child_process");
  *
  * 故意不抛错：spctl/stapler 在未签名或被 Gatekeeper 缓存干扰的环境下可能失败，而这不该让已经产出的包作废
  * —— 失败只打日志，构建照常成功（staple 缺失只影响离线首启体验，在线首启仍会回查公证结果）。
+ * @param {string} appPath 打包出来的 .app 绝对路径
  */
 function staple(appPath) {
   try {
     execFileSync("xcrun", ["stapler", "staple", appPath], { stdio: "inherit" });
     console.log(`[notarize] 已 staple：${appPath}`);
   } catch (err) {
-    console.warn(`[notarize] staple 失败（不 fail 构建，包仍可联网首启校验）：${err.message}`);
+    console.warn(
+      `[notarize] staple 失败（不 fail 构建，包仍可联网首启校验）：${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 }
 

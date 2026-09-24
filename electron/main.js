@@ -22,13 +22,21 @@ const HOME = process.env.BUNKITEN_HOME || os.homedir();
 const PATH_PREFIXES = [path.join(HOME, ".grok", "bin"), "/usr/local/bin", "/opt/homebrew/bin"];
 process.env.PATH = [...PATH_PREFIXES, process.env.PATH].filter(Boolean).join(path.delimiter);
 
+/**
+ * 轮询等一个 URL 可访问（开发态等 vite dev、启动链等都用它）。
+ * @param {string} url 目标地址
+ * @param {number} [timeoutMs] 上限（ms）
+ * @returns {Promise<boolean>} 到点仍不可达时 false（调用方自己决定是继续还是放弃）
+ */
 async function waitUntilReachable(url, timeoutMs = 30000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
       const res = await fetch(url);
       if (res.ok) return true;
-    } catch { /* vite 未起，继续等 */ }
+    } catch {
+      /* vite 未起，继续等 */
+    }
     await new Promise((r) => setTimeout(r, 300));
   }
   return false;
@@ -98,5 +106,7 @@ app.on("will-quit", (event) => {
   if (quitting) return;
   quitting = true;
   event.preventDefault();
-  Promise.resolve(stopServer()).catch(() => {}).finally(() => app.quit());
+  Promise.resolve(stopServer())
+    .catch(() => {})
+    .finally(() => app.quit());
 });

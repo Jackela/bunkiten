@@ -2,8 +2,10 @@
 // spawn grok agent stdio (ACP)、SSE 推流、资产落盘流水线、逐轮快照、进程生命周期都在这里的 startServer 闭包装配。
 // 用法：node server/acp-server.mjs  →  http://localhost:7800 ；或 import { startServer }
 //
-// 模块地图（同目录 server/）：
-//   config.mjs 路径/端口（GAME_ROOT/SESSION_FILE/WORLDS_ROOT 等公共依赖，零依赖叶子）
+// 模块地图（同目录 server/，v1.13 补全——这份地图此前停在 v1.7 的 10 个模块，
+// 而 AGENTS.md 又让读者来这里找地图，结果是「文档指着地图、地图缺一半」）：
+//   config.mjs 路径/端口（GAME_ROOT/SESSION_FILE/WORLDS_ROOT/gameHome 等公共依赖，零依赖叶子）
+//   errors.mjs 未知错误的读取口（errText/errName：catch 变量在 strict 下是 unknown）
 //   protocol-lines.mjs 注入 agent 的 RULES 原文 + 五种协议行 parse* + 质量守卫追问指令 SUPPLEMENT_PROMPT
 //   assets.mjs 美术资产路径契约纯函数（sanitize/白名单/落盘判定/差分拆分）
 //   presets.mjs preset.md 解析 + assetTargetFile + 剧本导出包（buildPresetBundle/importPresetBundle）
@@ -12,6 +14,12 @@
 //   audio.mjs presets/<id>/audio/ 扫描（AUDIO_KINDS/AUDIO_EXTS/AUDIO_FILE_RE re-export 给 doctor）
 //   http-util.mjs 本地端点防护（跨站 403/body 413）+ /app 静态托管的 MIME 与目录解析
 //   acp.mjs ACP 子进程封装（spawn/JSON-RPC request/sessionId 存取/boot/会话图片定位）
+//   engines.mjs 引擎描述符表（spawn 三件套/规则注入/档位形状/登录探测/CODEX_HOME 准备，v1.11）
+//   engine-auth.mjs 登录/登出编排（GUI 按钮 → 玩家自己 CLI 的单例在途登录 + 收尾，v1.11）
+//   credentials.mjs 引擎凭据（~/.bunkiten/credentials.json 的 normalize/读写/校验/env/脱敏，v1.10）
+//   credentials-probe.mjs 「测试连接」探活（LLM 先 /models 再退化最小 completion；图片走最小生成，v1.10）
+//   providers-catalog.mjs 服务目录在线更新（抓取/校验/缓存/三级回落/单飞刷新，v1.10，ADR-0020）
+//   media-mcp.mjs 自建出图 MCP server（bunkiten-media__generate_image，零依赖 stdio，v1.10）
 //   routes.mjs HTTP 路由链（createRequestHandler(ctx)，闭包能力由本文件注入）
 // 本文件继续逐名 re-export 拆出的全部符号——外部 import 面（electron/main.js、tests/、scripts/doctor.mjs）
 // 逐字不变。pickEffort 与 isMainTurn 留在这里：契约 lint（tests/contract.test.ts ⑥）从本文件源码
@@ -38,20 +46,56 @@ import {
   resolvePersistPreset,
 } from "./assets.mjs";
 import { scanPresets, assetTargetFile } from "./presets.mjs";
-import { RULES, SUPPLEMENT_PROMPT, parseArtLine, parseExpressionLine, parsePresetAddedLine, parseTreeLine, parseAudioLine } from "./protocol-lines.mjs";
+import {
+  RULES,
+  SUPPLEMENT_PROMPT,
+  parseArtLine,
+  parseExpressionLine,
+  parsePresetAddedLine,
+  parseTreeLine,
+  parseAudioLine,
+} from "./protocol-lines.mjs";
 import { WORLD_ID_RE, parseTreePointer, readWorldFiles, writeSnapshot, writeTurnLog } from "./snapshots.mjs";
-import { readWorldsIndex, presetFromStateFile, worldChapterNo, migrateLegacyState, migrateWorldsSchema } from "./worlds.mjs";
+import {
+  readWorldsIndex,
+  presetFromStateFile,
+  worldChapterNo,
+  migrateLegacyState,
+  migrateWorldsSchema,
+} from "./worlds.mjs";
+export { parseStateFile, stateViewFor } from "./state-view.mjs"; // v1.13 拆出（角色面板解析）
 import { createAcpSession } from "./acp.mjs";
 import { engineFor, prepareSpawn } from "./engines.mjs";
 import { killPendingLogins, runLogout, startLogin } from "./engine-auth.mjs";
-import { readCredentials, writeCredentials, mergeCredentials, validateCredentialsPatch, publicView, credentialsToEnv, secretsOf, sanitizeErrorMessage } from "./credentials.mjs";
+import {
+  readCredentials,
+  writeCredentials,
+  mergeCredentials,
+  validateCredentialsPatch,
+  publicView,
+  secretsOf,
+  sanitizeErrorMessage,
+} from "./credentials.mjs";
 import { testLlm, testImage } from "./credentials-probe.mjs";
 import { loadCatalog, refreshCatalog, revalidateCatalog } from "./providers-catalog.mjs";
 import { mediaMcpServers } from "./media-mcp.mjs";
 import { createRequestHandler } from "./routes.mjs";
+import { errText } from "./errors.mjs";
 
 // ---------- 外部 import 面保活：拆出模块的既有导出符号逐名 re-export（electron/tests/doctor 从这里 import） ----------
-export { PRESET_ID_RE, ASSET_FILE_RE, ASSET_KINDS, presetAssetsDir, assetRelPath, presetIdFromPath, legacyAssetCandidates, resolvePersistPreset } from "./assets.mjs";
+// v1.13 清理：删掉四个**零消费者**的 re-export（LOGS_DIRNAME / PROBE_IMAGE_SIZE / CATALOG_TIMEOUT_MS /
+// GENERATE_TIMEOUT_MS）——它们仍在自己模块里导出（内部用得上），只是没有外部 import 面，挂在桶里纯属噪声。
+// 判断口径：全仓（server/shared/src/tests/scripts/electron，去注释后）扫过一遍，确认无人引用。
+export {
+  PRESET_ID_RE,
+  ASSET_FILE_RE,
+  ASSET_KINDS,
+  presetAssetsDir,
+  assetRelPath,
+  presetIdFromPath,
+  legacyAssetCandidates,
+  resolvePersistPreset,
+} from "./assets.mjs";
 export { AUDIO_KINDS, AUDIO_EXTS, AUDIO_FILE_RE, scanPresetAudio } from "./audio.mjs";
 export {
   FM_KEYS,
@@ -66,7 +110,16 @@ export {
   buildPresetBundle,
   importPresetBundle,
 } from "./presets.mjs";
-export { RULES_SENTENCES, RULES, SUPPLEMENT_PROMPT, parseArtLine, parseExpressionLine, parsePresetAddedLine, parseTreeLine, parseAudioLine } from "./protocol-lines.mjs";
+export {
+  RULES_SENTENCES,
+  RULES,
+  SUPPLEMENT_PROMPT,
+  parseArtLine,
+  parseExpressionLine,
+  parsePresetAddedLine,
+  parseTreeLine,
+  parseAudioLine,
+} from "./protocol-lines.mjs";
 export {
   WORLD_FILES,
   parseTreePointer,
@@ -78,7 +131,6 @@ export {
   readSnapshot,
   writeSnapshot,
   writeTurnLog,
-  LOGS_DIRNAME,
   selectSnapshotForNode,
   forkTreeMarkdown,
   forkNote,
@@ -90,8 +142,6 @@ export {
   writeWorldsIndex,
   presetFromStateFile,
   worldChapterNo,
-  parseStateFile,
-  stateViewFor,
   createWorld,
   forkWorld,
   restoreWorld,
@@ -127,14 +177,13 @@ export {
   sanitizeErrorMessage,
   secretsOf,
 } from "./credentials.mjs";
-export { testLlm, testImage, PROBE_TIMEOUT_MS, PROBE_IMAGE_SIZE } from "./credentials-probe.mjs";
+export { testLlm, testImage, PROBE_TIMEOUT_MS } from "./credentials-probe.mjs";
 // 服务目录更新通道（v1.10，docs/adr/0020）：纯函数面经入口 re-export（与其余拆出符号同款；
 // 单测也可直接从 server/providers-catalog.mjs import）
 export {
   CATALOG_FILENAME,
   CATALOG_VERSION,
   CATALOG_TTL_MS,
-  CATALOG_TIMEOUT_MS,
   CATALOG_URLS,
   validateCatalogDocument,
   catalogCachePath,
@@ -145,7 +194,21 @@ export {
   revalidateCatalog,
   __resetCatalogMemo, // 测试探针（仅 tests/providers-catalog.test.ts 清进程内 memo 用，不是对外 API）
 } from "./providers-catalog.mjs";
-export { MEDIA_MCP_NAME, MEDIA_TOOL_NAME, TOOL_DEFINITION, DEFAULT_SIZES, GENERATE_TIMEOUT_MS, imageSizeFor, imagesEndpoint, resolveOutputPath, pickImagePayload, requestImage, generateImage, mediaMcpPath, mediaMcpServers, handleMcpMessage } from "./media-mcp.mjs";
+export {
+  MEDIA_MCP_NAME,
+  MEDIA_TOOL_NAME,
+  TOOL_DEFINITION,
+  DEFAULT_SIZES,
+  imageSizeFor,
+  imagesEndpoint,
+  resolveOutputPath,
+  pickImagePayload,
+  requestImage,
+  generateImage,
+  mediaMcpPath,
+  mediaMcpServers,
+  handleMcpMessage,
+} from "./media-mcp.mjs";
 // 剧本体检（v1.8）的纯函数视图：路由链住在 routes.mjs，这里只把测试面（tests/server.test.ts 直测 tmp 根）
 // 一起 re-export——与本文件其余拆出符号同款（外部 import 面永远是入口）。
 export { presetCheckResult, presetCheckView } from "./routes.mjs";
@@ -154,13 +217,11 @@ export const EFFORT = process.env.EFFORT || "medium"; // 正戏回合档位：�
 // 建档/规划类回合（出清单、改树、装配）不需要高推理：单独一档更省、更快（v1.6 分档）
 export const EFFORT_PLANNING = process.env.EFFORT_PLANNING || "low";
 
-// ---------- 主题白名单与兜底（钉在入口源码：契约 lint ⑥ 从这里抓字面量与 src/theme.ts 比对） ----------
-// 字体族/对话框质感白名单（v1.7）：与 src/theme.ts 的 FONT_PRESETS/DIALOG_TEXTURES 同集。
-// 导出给 server/presets.mjs 的 normalizeTheme（逐键兜底的真值），不抄第二份。
-export const FONT_PRESETS = ["serif", "song", "kai", "hei"];
-export const DIALOG_TEXTURES = ["plain", "silk", "paper", "glass"];
-// theme 兜底：块缺失或格式坏时整套默认（aurora 为兜底母题）
-export const DEFAULT_THEME = Object.freeze({ accent: "#c9a86a", accent2: "#e8e4da", motif: "aurora", font: "serif", dialog: "plain" });
+// ---------- 主题白名单与兜底：**真源在 shared/theme.mjs**（v1.13） ----------
+// 此前这三个常量定义在本文件、presets.mjs 反向 import 本文件（acp-server ↔ presets 成环，
+// 只靠「跨环引用都在函数体内」活着）。现在真源搬去 shared：环没有了，客户端也不再自己抄一份。
+// 这里 re-export 是给「外部 import 面逐字不变」用的（`parseFrontmatter`/`normalizeTheme` 那一族同款纪律）。
+export { FONT_PRESETS, DIALOG_TEXTURES, FALLBACK_THEME } from "../shared/theme.mjs";
 
 /**
  * 提示词里的世界段嗅探（纯函数）：开局指令中段的 `世界：<worldId>。` 与续玩指令的 `继续世界：<worldId>。`。
@@ -209,11 +270,25 @@ let instance = null;
 /** @type {(() => Promise<void>)|null} */
 let stopServerFn = null;
 
-// 优雅退出：停 HTTP server（先断 SSE）+ kill grok 子进程；幂等，供 Electron will-quit 与信号处理复用
+/**
+ * 优雅退出：停 HTTP server（先断 SSE 再等连接散尽）+ kill 引擎子进程。
+ * 幂等（重复调用是 no-op），且**允许在没起过服务时调用**——Electron 的 `will-quit` 与信号处理
+ * 都直接调它，不该因为「服务没起来」而抛。
+ * @returns {Promise<void>} 收尾完成（没有实例时立即 resolve）
+ */
 export function stopServer() {
   return stopServerFn ? stopServerFn() : Promise.resolve();
 }
 
+/**
+ * 起服务（**进程级单例**）：重复调用返回同一个 promise，不会起第二个实例。
+ *
+ * 装配面（这个闭包就是本文件的全部内容）：HTTP/SSE、资产落盘流水线、逐轮快照与回合日志、
+ * 质量守卫追问、引擎会话生命周期，以及凭据 / 服务目录 / 登录三条运行时闭包。
+ * 配置一律从 `config.mjs` 的进程全局读（GAME_ROOT/端口/`BUNKITEN_HOME`）——要换根目录请用环境变量，
+ * 不要指望在这里传参（集成测试正是以「起子进程 + 注入 env」的方式跑的）。
+ * @returns {Promise<ServerHandle>} 句柄（含实际端口与 base URL）
+ */
 export function startServer() {
   if (instance) return instance;
 
@@ -299,20 +374,30 @@ export function startServer() {
   async function restartAcp() {
     if (busy) return { ok: false, error: "正在演绎中，等这一回合结束再重启" };
     const old = acp;
-    try { old.proc.kill(); } catch {}
+    try {
+      old.proc.kill();
+    } catch {}
     // 等旧进程退出再拉新的：两个引擎进程同时持同一会话目录会互相踩 session 文件
     await new Promise((resolve) => {
       if (old.proc.exitCode !== null || old.proc.signalCode !== null) return resolve(undefined);
-      const t = setTimeout(() => { try { old.proc.kill("SIGKILL"); } catch {} resolve(undefined); }, 1500);
-      old.proc.once("exit", () => { clearTimeout(t); resolve(undefined); });
+      const t = setTimeout(() => {
+        try {
+          old.proc.kill("SIGKILL");
+        } catch {}
+        resolve(undefined);
+      }, 1500);
+      old.proc.once("exit", () => {
+        clearTimeout(t);
+        resolve(undefined);
+      });
     });
     acp = buildAcp();
     lastEffort = EFFORT; // 新会话的 boot() 会把档位设成 EFFORT，记账跟着复位（否则同档位不再下发）
     try {
       await acp.boot();
     } catch (e) {
-      console.error("[acp] restart failed:", e.message);
-      return { ok: false, error: `重启后引擎握手失败：${e.message}` };
+      console.error("[acp] restart failed:", errText(e));
+      return { ok: false, error: `重启后引擎握手失败：${errText(e)}` };
     }
     console.log(`[acp] engine restarted: ${acp.sessionId}`);
     return { ok: true };
@@ -357,7 +442,7 @@ export function startServer() {
       console.log(`[acp] credentials updated: llm=${next.llm.mode} image=${next.image.mode}`); // 只记模式，不记 key
       return { ok: true, view: publicView(next) };
     } catch (e) {
-      return { ok: false, error: `写入凭据失败：${e.message}` };
+      return { ok: false, error: `写入凭据失败：${errText(e)}` };
     }
   }
 
@@ -446,7 +531,15 @@ export function startServer() {
     const file = assetTargetFile(type, rawName, pid || "");
     if (!file) {
       const key = `${pid || ""}|${type}|${name}`;
-      const entry = assetRegistry.get(key) || { type, name, rawName, presetId: pid || "", file: "", srcRel, ready: false };
+      const entry = assetRegistry.get(key) || {
+        type,
+        name,
+        rawName,
+        presetId: pid || "",
+        file: "",
+        srcRel,
+        ready: false,
+      };
       entry.rawName = rawName;
       entry.srcRel = srcRel;
       entry.regen = regen;
@@ -488,11 +581,20 @@ export function startServer() {
   /** @param {string} line 已到达完整行的协议行候选 */
   function handleArtLine(line) {
     const art = parseArtLine(line);
-    if (art) { persistAsset(art.type, art.name, art.srcRel, art.regen); return; }
+    if (art) {
+      persistAsset(art.type, art.name, art.srcRel, art.regen);
+      return;
+    }
     const expr = parseExpressionLine(line);
-    if (expr) { broadcast({ type: "expression", character: expr.character, variant: expr.variant }); return; }
+    if (expr) {
+      broadcast({ type: "expression", character: expr.character, variant: expr.variant });
+      return;
+    }
     // 【树】= 剧情编辑回合的静默刷新信号（客户端收到即重取 /api/tree）：此前漏接线，只在单测里被直接调用过
-    if (parseTreeLine(line)) { broadcast({ type: "treeEdited" }); return; }
+    if (parseTreeLine(line)) {
+      broadcast({ type: "treeEdited" });
+      return;
+    }
     const added = parsePresetAddedLine(line);
     if (added) {
       const newId = String(added.id || "").trim();
@@ -529,6 +631,9 @@ export function startServer() {
     // 图片文件可能晚于标记落盘，回合结束补一次。
     // 剧本 id 一律用条目上记的（`e.presetId` 为空=装配期还没拿到新剧本 id）——**不回退 currentPresetId**（B1）：
     // 那一退回就是"新剧本的美术写进上一局剧本"，正确出口是【新剧本】<id> 的补落盘或带 &preset= 的 /img。
+    // 这里的 `[...assetRegistry]` **不是**多余的 spread：persistAsset 会在迭代过程中 delete 注册表键（同名未就绪项），
+    // 直接遍历活 Map 会踩「边遍历边删」——先取一份快照才是对的（oxlint 的 no-useless-spread 看不到这一层）。
+    // oxlint-disable-next-line unicorn/no-useless-spread -- 见上：快照是语义的一部分
     for (const [, e] of [...assetRegistry]) {
       if (!e.ready) persistAsset(e.type, e.rawName ?? e.name, e.srcRel, e.regen === true, e.presetId || "");
     }
@@ -546,7 +651,9 @@ export function startServer() {
     const stateTexts = [];
     for (const e of readWorldsIndex(WORLDS_ROOT)) {
       if (e.preset !== presetId) continue;
-      try { stateTexts.push(fs.readFileSync(path.join(WORLDS_ROOT, e.worldId, "state.md"), "utf8")); } catch {}
+      try {
+        stateTexts.push(fs.readFileSync(path.join(WORLDS_ROOT, e.worldId, "state.md"), "utf8"));
+      } catch {}
     }
     /** @param {string} name */
     const inUse = (name) => stateTexts.some((t) => t.includes(name));
@@ -555,7 +662,16 @@ export function startServer() {
     const push = (key, type, rest, file, ready) => {
       const { name, variant } = splitAssetVariant(rest);
       // preset 必填：客户端画廊按它做防御性过滤（跨剧本条目一律丢弃并告警）
-      out.set(key, { type, name, variant, file, ready, preset: presetId, inUse: inUse(name), mtime: mtimeOf(path.join(GAME_ROOT, file)) });
+      out.set(key, {
+        type,
+        name,
+        variant,
+        file,
+        ready,
+        preset: presetId,
+        inUse: inUse(name),
+        mtime: mtimeOf(path.join(GAME_ROOT, file)),
+      });
     };
     try {
       for (const f of fs.readdirSync(presetAssetsDir(presetId))) {
@@ -571,7 +687,8 @@ export function startServer() {
       // 封面随 preset 目录分发：presets/<id>/cover.jpg，name 用剧本标题
       const file = `presets/${presetId}/cover.jpg`;
       const preset = scanPresets().presets.find((p) => p.id === presetId);
-      if (preset && fs.existsSync(path.join(GAME_ROOT, file))) push(`封面|${preset.title}`, "封面", preset.title, file, true);
+      if (preset && fs.existsSync(path.join(GAME_ROOT, file)))
+        push(`封面|${preset.title}`, "封面", preset.title, file, true);
     } catch {}
     for (const [, e] of assetRegistry) {
       if (e.presetId !== presetId) continue;
@@ -606,7 +723,13 @@ export function startServer() {
     fs.copyFileSync(src, abs);
     const finalPid = presetIdFromPath(file) || pid || "";
     assetRegistry.set(`${finalPid}|${type}|${name}`, {
-      type, name, rawName, presetId: finalPid, file, srcRel, ready: true,
+      type,
+      name,
+      rawName,
+      presetId: finalPid,
+      file,
+      srcRel,
+      ready: true,
     });
     console.log(`[acp] asset persisted: ${file}`);
     return true;
@@ -635,11 +758,14 @@ export function startServer() {
     let preset = PRESET_ID_RE.test(entry?.preset || "") ? entry?.preset : "";
     if (!preset) {
       preset = presetFromStateFile(worldId);
-      if (preset) console.warn(`[acp] 世界 ${worldId} 未在 index.json 里记到合法 preset，改用其 state.md 的 preset: ${preset}`);
+      if (preset)
+        console.warn(`[acp] 世界 ${worldId} 未在 index.json 里记到合法 preset，改用其 state.md 的 preset: ${preset}`);
     }
     if (!PRESET_ID_RE.test(preset) || preset === currentPresetId) {
       if (!PRESET_ID_RE.test(preset)) {
-        console.warn(`[acp] 世界 ${worldId} 查不到合法 preset（索引与 state.md 都没有），保持当前剧本: ${currentPresetId || "（无）"}`);
+        console.warn(
+          `[acp] 世界 ${worldId} 查不到合法 preset（索引与 state.md 都没有），保持当前剧本: ${currentPresetId || "（无）"}`,
+        );
       }
       return;
     }
@@ -659,7 +785,9 @@ export function startServer() {
       await acp.request("session/set_config_option", { sessionId: acp.sessionId, ...option });
       lastEffort = effort;
       console.log(`[acp] reasoning_effort -> ${effort}`);
-    } catch { /* 引擎不支持档位：静默，不阻断回合 */ }
+    } catch {
+      /* 引擎不支持档位：静默，不阻断回合 */
+    }
   }
   /** @param {string} text 发给引擎的提示词原文 */
   function applyEffort(text) {
@@ -681,11 +809,17 @@ export function startServer() {
   // 调用点固定在 flushArtLines() 之后、busy=false 之前——此刻本轮所有落盘都已定型，内容不会再多变。
   // v1.13 起条目带 prompt（可重演的玩家输入，docs/adr/0023）：与 files 同条目绑定，
   // 重演（回退到前一条 turn 条目 + 重发该输入）不再依赖内存账本，刷新/重启后照样成立。
-  /** @param {string} text 发给引擎的提示词原文 */
+  /**
+   * 落本轮快照与回合日志。
+   * @param {string} text 发给引擎的提示词原文
+   * @returns {number|null} 本回合对应的**快照序号**（客户端拿它当「第 N 幕」的幕号，v1.13）：
+   *   写了新快照 → 新 seq；三文件全等被去重 → 仍是**当前最新** seq（状态没变，幕号不该跳号）；
+   *   非正戏回合 / 世界没定 / seq 溢出 → null（客户端回落到自己的回合计数）
+   */
   function writeTurnSnapshot(text) {
-    if (!isMainTurn(text)) return;
+    if (!isMainTurn(text)) return null;
     const worldId = currentWorldId;
-    if (!worldId || !WORLD_ID_RE.test(worldId)) return; // 还没定下世界（未开局）→ 无从落快照
+    if (!worldId || !WORLD_ID_RE.test(worldId)) return null; // 还没定下世界（未开局）→ 无从落快照
     const files = readWorldFiles(path.join(WORLDS_ROOT, worldId));
     const res = writeSnapshot(WORLDS_ROOT, worldId, {
       kind: "turn",
@@ -702,6 +836,7 @@ export function startServer() {
     // text 用 turnText 全文：若本回合触发过质量守卫追问，追问补发的回合尾已在其中（追问不另立条目）。
     const log = writeTurnLog(WORLDS_ROOT, worldId, { seq: res.seq, prompt: text, text: turnText });
     if (log.ok) console.log(`[acp] turn log written: ${worldId}/logs/${String(log.seq).padStart(4, "0")}.json`);
+    return res.seq ?? null;
   }
 
   // 质量守卫（v1.7，每轮协议要求每回合带 **行动** 选项段）：正戏回合缺 `**行动**` 时，在同一 busy
@@ -725,12 +860,17 @@ export function startServer() {
       await applyEffortValue(EFFORT_PLANNING);
       // 追问只要回合尾，120s 足够（主回合 600s 是整轮叙事+美术的预算，追问不该占满）；
       // 超时与引擎 error 同路：catch 里 warn 后放弃，不转 409、不影响回合成功收尾
-      const s = await acp.request("session/prompt", {
-        sessionId: acp.sessionId, prompt: [{ type: "text", text: SUPPLEMENT_PROMPT }],
-      }, 120_000);
+      const s = await acp.request(
+        "session/prompt",
+        {
+          sessionId: acp.sessionId,
+          prompt: [{ type: "text", text: SUPPLEMENT_PROMPT }],
+        },
+        120_000,
+      );
       if (s && s.error) throw new Error(`引擎补充回合失败：${s.error.message ?? JSON.stringify(s.error)}`);
     } catch (e) {
-      console.warn(`[acp] 追问失败，放弃（回合日志里留痕）: ${e.message}`);
+      console.warn(`[acp] 追问失败，放弃（回合日志里留痕）: ${errText(e)}`);
     }
   }
 
@@ -749,9 +889,14 @@ export function startServer() {
     broadcast({ type: "turn_start" });
     try {
       await applyEffort(text); // 档位变化才 set_config_option（在 session/prompt 之前）
-      const r = await acp.request("session/prompt", {
-        sessionId: acp.sessionId, prompt: [{ type: "text", text }],
-      }, 600000);
+      const r = await acp.request(
+        "session/prompt",
+        {
+          sessionId: acp.sessionId,
+          prompt: [{ type: "text", text }],
+        },
+        600000,
+      );
       // acp.request 会 resolve 整个响应 msg：引擎按 JSON-RPC 回 error response（而不是断流/超时）时
       // 以前被当成功回合处理（照写快照、广播 turn_end、HTTP 200）——这里显式抛错，落进下方 catch
       //（error 事件 + busy 复位 + 不写快照 + POST /prompt 409），与超时/进程崩掉同一错误路径。
@@ -762,17 +907,19 @@ export function startServer() {
       // 质量守卫：flushArtLines 之后、writeTurnSnapshot 之前——追问补的回合尾也要进本轮快照与日志的定稿
       await supplementMissingOptions(text);
       flushArtLines(); // 追问回合的输出里可能还有协议行（【立绘】/音频三行），补扫一次
-      writeTurnSnapshot(text); // 逐轮快照 + 回合日志：flushArtLines 之后、busy=false 之前
+      const turnSeq = writeTurnSnapshot(text); // 逐轮快照 + 回合日志：flushArtLines 之后、busy=false 之前
       // 先复位再广播：客户端收到 turn_end 会立即发下一条（制作流水线自动推进），
       // 若广播后才复位会撞 409 窗口（v1.4 实测抓到的竞态）
       busy = false;
-      broadcast({ type: "turn_end" });
+      // seq 随事件下发（v1.13）：幕号 = 快照序号，与存档点标注/回溯分割线同基底——
+      // 此前客户端用自己的回合计数，续玩或回退一次两套数字就错开
+      broadcast({ type: "turn_end", seq: turnSeq });
       return { ok: true };
     } catch (e) {
       flushArtLines();
       busy = false;
-      broadcast({ type: "error", message: e.message });
-      return { ok: false, error: e.message };
+      broadcast({ type: "error", message: errText(e) });
+      return { ok: false, error: errText(e) };
     }
   }
 
@@ -794,23 +941,29 @@ export function startServer() {
   void refreshCatalog({ root: gameHome() });
 
   // ---------- HTTP ----------
-  const server = http.createServer(createRequestHandler({
-    clients,
-    sendPrompt,
-    listAssets,
-    persistAssetFromFile,
-    resolveImage: (name) => acp.resolveImage(name),
-    warnLegacyPathOnce,
-    credentialsView,
-    updateCredentials,
-    testCredentials,
-    restartEngine: restartAcp,
-    startEngineLogin,
-    logoutEngine,
-    providersView,
-    get currentPresetId() { return currentPresetId; },
-    get sessionId() { return acp.sessionId; },
-  }));
+  const server = http.createServer(
+    createRequestHandler({
+      clients,
+      sendPrompt,
+      listAssets,
+      persistAssetFromFile,
+      resolveImage: (name) => acp.resolveImage(name),
+      warnLegacyPathOnce,
+      credentialsView,
+      updateCredentials,
+      testCredentials,
+      restartEngine: restartAcp,
+      startEngineLogin,
+      logoutEngine,
+      providersView,
+      get currentPresetId() {
+        return currentPresetId;
+      },
+      get sessionId() {
+        return acp.sessionId;
+      },
+    }),
+  );
 
   /** @param {number} attempt 端口重试序号（0 = BASE_PORT 本尊） @returns {Promise<ServerHandle>} */
   function listenWithRetry(attempt) {
@@ -840,7 +993,11 @@ export function startServer() {
   }
 
   instance = listenWithRetry(0).then(async (handle) => {
-    try { await acp.boot(); } catch (e) { console.error("[acp] boot failed:", e.message); }
+    try {
+      await acp.boot();
+    } catch (e) {
+      console.error("[acp] boot failed:", errText(e));
+    }
     return handle;
   });
 
@@ -849,13 +1006,23 @@ export function startServer() {
     if (stopped) return;
     stopped = true;
     let handle = null;
-    try { handle = await instance; } catch { /* 启动失败也要清理子进程 */ }
+    try {
+      handle = await instance;
+    } catch {
+      /* 启动失败也要清理子进程 */
+    }
     for (const res of clients) res.destroy(); // SSE 长连接会拖住 server.close 回调
     clients.clear();
     if (handle) await /** @type {Promise<void>} */ (new Promise((resolve) => handle.server.close(() => resolve())));
     // 杀**当前**的引擎进程：重启过就可能是新拉起的那个（旧 handle.proc 只是启动时的快照）
-    try { acp.proc.kill(); } catch {}
-    setTimeout(() => { try { acp.proc.kill("SIGKILL"); } catch {} }, 1500).unref(); // SIGTERM 不退则强杀
+    try {
+      acp.proc.kill();
+    } catch {}
+    setTimeout(() => {
+      try {
+        acp.proc.kill("SIGKILL");
+      } catch {}
+    }, 1500).unref(); // SIGTERM 不退则强杀
     // 在途的「登录」进程也一并收掉（登录是长事务：开浏览器等回调，可能挂着好几分钟）
     killPendingLogins();
   };
@@ -864,7 +1031,9 @@ export function startServer() {
   const signalExit = (sig) => {
     console.log(`[acp] ${sig} received, shutting down`);
     // signalExit 只在 startServer 已赋值 stopServerFn 之后才可能被进程信号触发——cast 表达这个顺序不变式
-    /** @type {() => Promise<void>} */ (stopServerFn)().catch(() => {}).finally(() => process.exit(0));
+    /** @type {() => Promise<void>} */ (stopServerFn)()
+      .catch(() => {})
+      .finally(() => process.exit(0));
   };
   process.on("SIGINT", () => signalExit("SIGINT"));
   process.on("SIGTERM", () => signalExit("SIGTERM"));

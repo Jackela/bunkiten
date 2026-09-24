@@ -89,3 +89,33 @@ function resolveAppDist() {
 }
 
 export { MIME, resolveAppDist };
+
+// ---------- 出网小工具（v1.13 收口）：三处「带超时的 fetch」此前各写一份 ----------
+// 那三份（credentials-probe 的 timeoutSignal、media-mcp 的同名副本、providers-catalog 的内联版）
+// 一字不差地重复了同一个决定：**定时器必须 unref**（抓取/探活进行中用户退出进程，不该被它拖住），
+// 且超时要变成 AbortSignal 而不是自己拼竞速。收在这里，改口径只改一处。
+
+/**
+ * 造一个「到点就 abort」的信号。
+ * @param {number} ms 超时毫秒
+ * @param {string} [label] abort 原因里的名字（排障时看得出是谁超的）
+ * @returns {{signal: AbortSignal, clear: () => void}} 信号与清理（用完必须 clear，否则定时器吊着事件循环）
+ */
+export function withTimeoutSignal(ms, label = "timeout") {
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(new Error(`${label} ${ms}ms`)), ms);
+  t.unref?.();
+  return { signal: ac.signal, clear: () => clearTimeout(t) };
+}
+
+/**
+ * 拼一个服务端点（纯函数）：base_url 去掉尾斜杠再挂后缀。
+ * OpenAI 兼容服务的 base_url 常以 `/` 结尾（`https://x/v1/`），不去尾斜杠会拼出 `//images/generations`。
+ * @param {string} baseUrl 服务地址 @param {string} suffix 后缀（以 `/` 开头）
+ * @returns {string} 完整 URL
+ */
+export function joinEndpoint(baseUrl, suffix) {
+  return `${String(baseUrl || "")
+    .trim()
+    .replace(/\/+$/, "")}${suffix}`;
+}
