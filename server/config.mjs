@@ -10,6 +10,11 @@ const BASE_PORT = Number(process.env.PORT) || 7800;
 const PORT_MAX_RETRY = 10;
 const SESSION_FILE = path.join(GAME_ROOT, ".shell-session.json"); // 断线续档：记录 ACP sessionId
 const WORLDS_ROOT = path.join(GAME_ROOT, "state", "worlds"); // 世界线：每世界一目录，另有 index.json 索引
+// 推理档位（v1.6 分档，v1.13 从入口搬来这里）：正戏回合低推理换节奏、建档/规划类回合再低一档更省更快。
+// 为什么真源在 config：回合流水线（turn-pipeline.mjs）要用它们，但**不能 import 入口**（成环），
+// 而它们本来就是「进程全局配置」的一类——与端口/根目录同处零依赖叶子正好。入口 re-export 保外部 import 面不变。
+const EFFORT = process.env.EFFORT || "medium"; // 正戏回合档位：低推理换节奏，可设 high
+const EFFORT_PLANNING = process.env.EFFORT_PLANNING || "low"; // 建档/规划类回合（出清单、改树、装配）不需要高推理
 
 /**
  * 用户主目录：`~/.bunkiten`（引擎凭据、服务目录缓存）、`~/.grok`/`~/.codex`（登录态探测）、
@@ -23,4 +28,4 @@ export function gameHome() {
   return process.env.BUNKITEN_HOME || os.homedir();
 }
 
-export { GAME_ROOT, BASE_PORT, PORT_MAX_RETRY, SESSION_FILE, WORLDS_ROOT };
+export { GAME_ROOT, BASE_PORT, PORT_MAX_RETRY, SESSION_FILE, WORLDS_ROOT, EFFORT, EFFORT_PLANNING };
