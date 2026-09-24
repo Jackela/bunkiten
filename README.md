@@ -93,14 +93,14 @@ npm run dev:electron
 ```
 bunkiten/
 ├─ electron/            # Electron 主进程：GAME_ROOT 定位、PATH 补齐、起 acp-server、开窗口、打包态查更新
-├─ server/              # 本机 Node 服务（零依赖）：入口 acp-server.mjs + 协议行 / 路由 / ACP / 资产 / 快照 / 世界线 / 音频 / 凭据 / 出图 MCP 模块
-├─ shared/              # 唯一真源：协议常量、服务目录、引擎描述符（配手写 .d.mts 供 tsc）
+├─ server/              # 本机 Node 服务（零依赖）：入口 acp-server.mjs + 协议行 / 路由 / SSE 广播 / ACP / 资产流水线 / 快照 / 世界线 / 状态视图 / 音频 / 凭据 / 出图 MCP / 引擎描述符与登录编排 / 错误与路径守卫
+├─ shared/              # 唯一真源：协议常量、服务目录、引擎描述符、主题取值（配手写 .d.mts 供 tsc）
 ├─ src/                 # React 前端：components/ 各屏、store/ 状态机切片、lib/ 纯函数、theme.ts 主题
 ├─ .grok/               # 引擎侧加载物：skills/bunkiten/SKILL.md（引擎全部真相）+ commands/（元命令）——只许放这两棵树
 ├─ presets/             # 剧本数据：一个子目录 = 一个自包含的故事（preset.md + assets/ + audio/ + cover.jpg）
 ├─ state/               # 运行时进度（不入库）：按世界线分目录，含三文件、逐轮快照、回合日志与索引
 ├─ scripts/             # 作者侧工具：剧本体检查（doctor）与服务目录发布源生成
-├─ tests/               # 单测 + 集成（vitest），以及三套 Playwright e2e（真引擎 / 假引擎 UI / 打包态）
+├─ tests/               # 单测 + 集成（vitest + helpers/ 原语），以及四套 Playwright e2e（真引擎 / 假引擎 UI / 打包态 / 截图）
 ├─ docs/                # ARCHITECTURE.md、adr/（裁决）、releases/（发布说明）、images/（界面截图）、providers.json（发布源）
 ├─ build/               # 应用图标与 mac 公证 entitlements（electron-builder 的 buildResources）
 ├─ .github/             # CI 与发版 workflow、issue / PR 模板、dependabot
@@ -121,7 +121,7 @@ bunkiten/
 
 - **单测 + 集成全量 645+ 例**（`npm test`，vitest，秒级）：含假引擎集成层（假 ACP 引擎 + 真 acp-server 子进程）；同一套里还有**契约 lint**，钉住协议常量真源、`RULES` 与引擎 SKILL 的逐字副本、主题白名单与用例数下限——防的是两侧悄悄分叉。
 - **假引擎确定性 UI e2e，22 个 spec**（`npm run test:e2e:ui`，Playwright + 真 acp-server + vite，零 token、几十秒）；**打包态冒烟**跨平台（mac `.app` / Windows `win-unpacked`），另有一条 opt-in 的真出图链路。
-- **CI**：每次 push / PR 跑构建 + `typecheck:server` + 覆盖率仪器下的全量测试 + 假引擎 UI e2e；`main` 上另有一个 Windows job 真跑打包态冒烟（`packaged-win`）。真引擎冒烟要登录态与真 token，只在开发机按需跑。
+- **CI**：每次 push / PR 跑 `format:check` + `lint`（oxlint）+ 构建 + 两份 `typecheck`（server / tests）+ 覆盖率仪器下的全量测试 + 假引擎 UI e2e；`main` 上另有一个 Windows job 真跑打包态冒烟（`packaged-win`）。真引擎冒烟要登录态与真 token，只在开发机按需跑。
 - 上面那几张界面图不是手截的：`npm run shots` 用假引擎栈（`tests/e2e-shots/`）按仓库真素材重出一遍，改完界面跑一次就能更新——零 token、不进 CI。
 - 要动代码：门禁与「改某句话要同批改哪些文件」见 [CONTRIBUTING.md](CONTRIBUTING.md) 与 [AGENTS.md](AGENTS.md)；每个设计决定为什么这么做见 [docs/adr/](docs/adr/)。
 
