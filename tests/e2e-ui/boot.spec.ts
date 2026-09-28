@@ -21,6 +21,8 @@ test("未登录：出「还没连上叙事引擎」提示；补上登录态后�
   try {
     await page.goto(stack.pageUrl);
     await expect(page.getByText("还没连上叙事引擎。")).toBeVisible();
+    // 品牌字标（v1.14）：首启第一眼就该认出这是同一个游戏（对齐标题屏的「bunkiten / 分岐点」口径）
+    await expect(page.getByTestId("boot-wordmark")).toHaveText("bunkiten");
     await expect(page.getByText("grok login")).toBeVisible();
     await expect(page.getByRole("button", { name: "重试" })).toBeVisible();
 
@@ -170,6 +172,10 @@ test("连不上叙事服务：checking → 错误提示 → 服务恢复后重�
     await expect.poll(() => gate.servedAt, { message: "502 未被写回浏览器" }).toBeGreaterThan(0);
     await expect(page.getByText("连不上叙事服务。")).toBeVisible({ timeout: 5_000 });
     await expect(page.getByRole("button", { name: "重试" })).toBeVisible();
+    // v1.14 的错误态三出口：重试 / 打开设置 / 查看日志。只断言可见与接线——「查看日志」打
+    // POST /api/open-dir（服务端 spawn 系统文件管理器），这里不真点，免得在开发机上弹 Finder。
+    await expect(page.getByTestId("boot-error-settings")).toBeVisible();
+    await expect(page.getByTestId("boot-error-logs")).toBeVisible();
 
     // 服务恢复（撤掉拦截）后重试：自检通过 → 标题屏
     await page.unroute("**/api/auth");

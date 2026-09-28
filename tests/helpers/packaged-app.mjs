@@ -8,6 +8,11 @@
 //   macOS   release/mac-<arch>/Bunkiten.app/Contents/MacOS/Bunkiten   （资源在 Contents/Resources）
 //   Windows release/win-unpacked/Bunkiten.exe                          （资源在同级 resources/）
 //   Linux   release/linux-unpacked/bunkiten                            （未发布，留个口子）
+//
+// 数据根（v1.14，ADR-0024）：产物里的 resources/game 自打包态起只是**只读内容根**（.grok/、app-dist、
+// 随包 presets 种子）；玩家的可写数据（state/、生成/导入的剧本、.shell-session.json）落在
+// `BUNKITEN_DATA_ROOT` 指的目录（默认 userData/game）。冒烟用 {@link dataRootEnv} 把它指到临时目录，
+// 让每条用例从空数据根起步、互不串数据，也不再往 .app 里写世界线。
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -120,6 +125,21 @@ export function writeCliShim(dir, name, nodeExe, script) {
  */
 export function homeEnv(home) {
   return { HOME: home, BUNKITEN_HOME: home };
+}
+
+/**
+ * 数据根的环境变量（v1.14，ADR-0024）：`BUNKITEN_DATA_ROOT` 指向一个**全新临时目录**——`electron/main.js`
+ * 据此把它当作可写数据根（首启迁移 bundle 的 state/presets 种子到这里、此后一切落盘都在它下面），
+ * 产物内的 resources/game 退化为只读内容根。
+ *
+ * 为什么每条打包态用例都要设它：不设时打包态数据根回落 `userData/game`（机器上真实的 app 数据）——
+ * 用例会跨跑互相污染、还会改到开发机自己的世界线。指到临时目录后，用例的写入（素材落盘、mock 出图、
+ * 快照恢复）全部针对这条数据根，跑完连目录一起删掉即可。
+ * @param {string} dataRoot 临时数据根（调用方负责建/删；不存在也没关系——主进程会 mkdir）
+ * @returns {Record<string, string>} 追加进子进程 env 的键值
+ */
+export function dataRootEnv(dataRoot) {
+  return { BUNKITEN_DATA_ROOT: dataRoot };
 }
 
 /**

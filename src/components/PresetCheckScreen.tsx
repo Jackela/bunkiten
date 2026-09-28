@@ -40,11 +40,16 @@ export default function PresetCheckScreen() {
   const [checkStamp, setCheckStamp] = useState(0);
 
   // 换剧本与每次「重新检查」都重取；卸载/换本即取消（在途响应不再回填）。
-  // 走 lib/useAsync：AbortController 与「写回前复查 signal.aborted」统一在 hook 里
+  // 走 lib/useAsync：AbortController 与「写回前复查 signal.aborted」统一在 hook 里。
+  // mapError 只翻「目录不在了」这一种：REST 路径与 404 是工程词，玩家看的是「剧本丢没丢」；
+  // 其余错误（服务端 500 等）原样透出——那条往往带可诊断的原文，别替它编一句。
   const checkReq = useAsync(
     (signal) => fetchPresetCheck(presetId, signal),
     // 还没选剧本：没有可查的目录，不白打一次 400（key=null 即不取数）
     presetId ? `check:${presetId}:${checkStamp}` : null,
+    {
+      mapError: (e) => (/HTTP 404/.test(String(e)) ? "没找到这个剧本的目录（可能已被删除或移动）" : String(e)),
+    },
   );
   const result = checkReq.data;
   const error = checkReq.error;
@@ -99,7 +104,7 @@ export default function PresetCheckScreen() {
         }
         footer={
           <span className="tracking-[.08em]">
-            与 npm run doctor 同一份判定：错误会让剧本进不了轮播或素材永远 404，警告只是提示
+            错误会让这个剧本没法开始、或素材永远显示不出来；警告只是提示，不影响使用
           </span>
         }
       >
@@ -143,8 +148,8 @@ export default function PresetCheckScreen() {
                   className={`mt-1 text-ui ${result.ok ? "text-gold/85" : "text-red-300"}`}
                 >
                   {result.ok
-                    ? "没有必须修的问题——警告只是提示，不影响发布"
-                    : "有必须修的问题：错误级会让剧本进不了轮播、或素材永远不可能被显示"}
+                    ? "没有必须修的问题——警告只是提示，不影响开玩"
+                    : "有必须修的问题：错误级会让这个剧本没法开始，或素材永远显示不出来"}
                 </p>
               </div>
 

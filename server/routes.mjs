@@ -5,9 +5,13 @@
 // 当前剧本 id 与 sessionId（getter——快照与嗅探会改它们，路由每次读最新值）。
 import fs from "fs";
 import path from "path";
+import { spawn } from "child_process";
 import { AUDIO_MIME, AUDIO_REL_RE } from "../shared/protocol.mjs";
 import { engineById } from "../shared/engines.mjs";
-import { GAME_ROOT, BASE_PORT, WORLDS_ROOT, gameHome } from "./config.mjs";
+// 剧本/资产/音频一律以**可写数据根**为根（v1.14，ADR-0024）：随包的 presets/ 只是种子，
+// 玩家看到与引擎写的是数据根里那一份（config.DATA_ROOT，dev 下与 GAME_ROOT 同一个）。GAME_ROOT 只留
+// 只读内容（.grok/、app-dist，后者在 http-util.mjs 的 resolveAppDist 里）。
+import { DATA_ROOT, BASE_PORT, WORLDS_ROOT, gameHome } from "./config.mjs";
 import { isCrossSiteRequest, readBodyText, MIME, resolveAppDist } from "./http-util.mjs";
 import { withinRoot } from "./fs-guard.mjs";
 import {
@@ -24,12 +28,13 @@ import {
   assetTargetFile,
   buildPresetBundle,
   importPresetBundle,
+  deletePreset,
   PRESET_IMPORT_MAX_BYTES,
 } from "./presets.mjs";
 import { scanPresetAudio } from "./audio.mjs";
 import { readCredentials, llmReady } from "./credentials.mjs";
 import { engineFor } from "./engines.mjs";
-import { WORLD_ID_RE, TREE_FILE, readSnapshot, readSnapshots } from "./snapshots.mjs";
+import { WORLD_ID_RE, TREE_FILE, readSnapshot, readSnapshots, readTurnLogs } from "./snapshots.mjs";
 import {
   moveToTrash,
   readWorldsIndex,
@@ -40,8 +45,11 @@ import {
   updateWorld,
   labelSnapshot,
   exportWorld,
+  exportAllWorlds,
   importWorld,
   deleteWorld,
+  listTrash,
+  restoreTrash,
 } from "./worlds.mjs";
 import { stateViewFor } from "./state-view.mjs";
 
@@ -61,7 +69,11 @@ import { stateViewFor } from "./state-view.mjs";
  *   局部更新凭据（校验 → 合并 → 原子落盘；空串=清该字段，clear 里的组整组回默认）
  * @property {(target: string) => Promise<{ok: boolean, status: number, ms: number, error?: string, detail?: string}>} testCredentials
  *   真连一次（LLM 走 /models 或最小 completion；图片走一次最小生成）
- * @property {() => Promise<{ok: boolean, error?: string}>} restartEngine 优雅重启引擎会话（保存 key / 切引擎后一键生效）
+ * @property {(opts?: {force?: boolean}) => Promise<{ok: boolean, error?: string}>} restartEngine 引擎会话重启
+ *   （保存 key / 切引擎后一键生效；`force:true` 时正在演绎中也重启——先停这一回合再换会话，见入口 restartAcp）
+ * @property {() => boolean} cancelTurn 停止当前回合（发 `session/cancel` 通知 + 作废本地在途回合）；
+ *   返回是否真的停了一个在途回合（空闲时回 false，不是错误）
+ * @property {() => {busy: boolean, turn: number}} engineStatus 引擎状态（SSE 断线重连的对账面）
  * @property {() => Promise<{ok: boolean, error?: string, hint?: string}>} startEngineLogin
  *   把玩家自己的 CLI 登录流程拉起来（回执式；结果靠客户端轮询 `/api/auth`，见 server/engine-auth.mjs）
  * @property {() => Promise<{ok: boolean, error?: string}>} logoutEngine
@@ -79,6 +91,30 @@ import { stateViewFor } from "./state-view.mjs";
 function sendJSON(res, code, obj) {
   res.writeHead(code, { "content-type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(obj));
+}
+
+/**
+ * 在文件管理器里打开一个目录（v1.14 的 POST /api/open-dir）：darwin `open` / win `explorer` /
+ * 其余 `xdg-open`，一律 `detached + stdio:ignore + unref`——拉起来的文件管理器不该被我们等，
+ * 也不该在它报错时冒成未捕获异常。**参数按数组传**（目录是进程内常量的 DATA_ROOT，不为拼接留口子）。
+ * 目录不存在时先建一个：空目录也能开（否则 dev 态点「打开日志目录」什么都不会发生，那比不提供更糟）。
+ * 起不来（没装 xdg-open / 无图形会话）静默：这是便利入口，不是功能路径。
+ * @param {string} dir 目标目录绝对路径
+ */
+function openDirectory(dir) {
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch {
+    /* 建不出来也照样试着开：可能是权限问题，但打开既有目录仍然有意义 */
+  }
+  const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
+  try {
+    const child = spawn(cmd, [dir], { detached: true, stdio: "ignore" });
+    child.on("error", () => {}); // 起不来就静默（端点的 ok 说的是「已发出打开请求」）
+    child.unref();
+  } catch {
+    /* spawn 本身抛（极罕见）：同上静默 */
+  }
 }
 
 // ---------- 剧本体检（v1.8）：GET /api/presets/check?id=<id> 的作者侧 doctor 直出 ----------
@@ -216,7 +252,7 @@ function loadCheckPreset() {
  */
 async function respondPresetCheck(id, res) {
   const check = await loadCheckPreset().catch(() => null);
-  const out = presetCheckView(id, GAME_ROOT, check);
+  const out = presetCheckView(id, DATA_ROOT, check);
   sendJSON(res, out.code, out.body);
 }
 
@@ -237,25 +273,27 @@ export function createRequestHandler(ctx) {
 
     if (req.method === "GET" && url.pathname === "/") {
       res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
-      // 首页导览：把 v1.6 的新路由（音频列表/直服、历史快照、世界导出）一并列上，方便 curl 排查
+      // 首页导览：把 v1.6 的新路由（音频列表/直服、历史快照、世界导出）与 v1.14 的一批（回合取消、
+      // 引擎状态、回合日志、回收站、剧本删除、全量导出、打开目录）一并列上，方便 curl 排查
       res.end(
-        "galgame acp-server running. API: /api/presets(GET,POST:import) /api/presets/export?id= /api/presets/check?id= /api/auth /api/providers /api/assets?preset=(GET,POST删除) " +
-          "/api/audio?preset= /api/worlds(POST: create/fork/restore/update/delete/import) /api/worlds/export?worldId= /api/history?worldId=[&seq=] " +
-          "/api/tree /api/state?worldId= /api/credentials(GET,POST) /api/credentials/test /api/engine/restart " +
+        "galgame acp-server running. API: /api/presets(GET,POST:import|delete) /api/presets/export?id= /api/presets/check?id= /api/auth /api/providers /api/assets?preset=(GET,POST删除) " +
+          "/api/audio?preset= /api/worlds(POST: create/fork/restore/update/delete/import) /api/worlds/export?worldId=|?all=1 /api/history?worldId=[&seq=] " +
+          "/api/tree /api/state?worldId= /api/logs?worldId= /api/trash(GET,POST:restore) /api/credentials(GET,POST) /api/credentials/test " +
+          "/api/engine/restart /api/engine/cancel /api/engine/status /api/open-dir " +
           "/events(SSE) /prompt(POST) /img?p=&t=&n=&preset= /audio?p=. 打包前端见 /app。",
       );
       return;
     }
 
     if (req.method === "GET" && url.pathname === "/api/presets") {
-      sendJSON(res, 200, scanPresets());
+      sendJSON(res, 200, scanPresets(DATA_ROOT));
       return;
     }
 
     // 剧本导出（v1.7）：GET /api/presets/export?id=<id> → 附件下载 <id>.preset.json（base64 图片/音频在包体里）
     if (req.method === "GET" && url.pathname === "/api/presets/export") {
       const id = url.searchParams.get("id") || "";
-      const out = buildPresetBundle(GAME_ROOT, id); // 内部已过 PRESET_ID_RE + preset.md 存在性校验
+      const out = buildPresetBundle(DATA_ROOT, id); // 内部已过 PRESET_ID_RE + preset.md 存在性校验
       if (out.error) {
         // 目录/ preset.md 不存在与「id 非法」分开说：前者 404（真路过期的 id），后者 400（坏请求）
         const status = out.error === "剧本不存在" ? 404 : 400;
@@ -278,8 +316,8 @@ export function createRequestHandler(ctx) {
       return;
     }
 
-    // 剧本导入（v1.7）：POST /api/presets {action:"import", bundle}——包里是 base64 图片/音频，
-    // 5MB 不够用：本端点单独放宽到 50MB（readBodyText 其余调用点仍走 5MB 缺省）
+    // 剧本写入（v1.7 导入 / v1.14 删除）：导入包里是 base64 图片/音频，5MB 不够用——本端点单独放宽到
+    // 50MB（readBodyText 其余调用点仍走 5MB 缺省）。删除的 body 极小，同一上限是路径级的，不额外开洞。
     if (req.method === "POST" && url.pathname === "/api/presets") {
       readBodyText(
         req,
@@ -290,12 +328,28 @@ export function createRequestHandler(ctx) {
           try {
             payload = JSON.parse(body) || {};
           } catch {}
-          if (String(payload.action || "") !== "import") {
-            sendJSON(res, 400, { ok: false, error: "未知动作" });
+          const action = String(payload.action || "");
+          if (action === "import") {
+            const out = importPresetBundle(DATA_ROOT, payload.bundle);
+            sendJSON(
+              res,
+              out.error ? 400 : 200,
+              out.error ? { ok: false, error: out.error } : { ok: true, id: out.id },
+            );
             return;
           }
-          const out = importPresetBundle(GAME_ROOT, payload.bundle);
-          sendJSON(res, out.error ? 400 : 200, out.error ? { ok: false, error: out.error } : { ok: true, id: out.id });
+          if (action === "delete") {
+            // 整目录挪进回收站（v1.14，ADR-0014 的「恢复 UI」修订）：id 白名单、存在性、随包种子不可删
+            // 三条判定都在 presets.deletePreset 里，路由只做参数归一与状态码分流——人话原因原样透给客户端
+            const out = deletePreset(DATA_ROOT, String(payload.id || ""));
+            sendJSON(
+              res,
+              out.error ? 400 : 200,
+              out.error ? { ok: false, error: out.error } : { ok: true, trashed: out.trashed === true },
+            );
+            return;
+          }
+          sendJSON(res, 400, { ok: false, error: "未知动作" });
         },
         PRESET_IMPORT_MAX_BYTES,
       );
@@ -331,12 +385,12 @@ export function createRequestHandler(ctx) {
         if (!PRESET_ID_RE.test(presetId) || !ASSET_DELETE_FILE_RE.test(file) || file === "cover.jpg") {
           return json(400, { error: "参数不合法" });
         }
-        const abs = path.join(GAME_ROOT, "presets", presetId, "assets", file);
+        const abs = path.join(DATA_ROOT, "presets", presetId, "assets", file);
         if (!fs.existsSync(abs)) return json(404, { error: "素材不存在" });
         try {
           // 删除进回收站（v1.7）：rename 进 state/trash/，EXDEV 等 rename 失败由 moveToTrash 回退直删；
           // label 带上 presetId——跨剧本同名素材在 trash 里靠它区分该挪回哪个剧本
-          const t = moveToTrash(GAME_ROOT, ["presets", presetId, "assets", file], presetId);
+          const t = moveToTrash(DATA_ROOT, ["presets", presetId, "assets", file], presetId);
           console.log(`[acp] asset deleted: presets/${presetId}/assets/${file}${t.trashed ? " → state/trash" : ""}`);
           return json(200, { ok: true, trashed: t.trashed });
         } catch {
@@ -354,7 +408,7 @@ export function createRequestHandler(ctx) {
         sendJSON(res, 400, { error: "缺少或非法的 preset 参数" });
         return;
       }
-      sendJSON(res, 200, { items: scanPresetAudio(presetId) });
+      sendJSON(res, 200, { items: scanPresetAudio(presetId, DATA_ROOT) });
       return;
     }
 
@@ -390,8 +444,45 @@ export function createRequestHandler(ctx) {
       return;
     }
 
+    // 回合原文日志（v1.14，A 泳道的 readTurnLogs）：GET /api/logs?worldId=[&before=&limit=]
+    // → `{entries:[{seq,at,prompt,text,cancelled?,error?}], nextBefore}`（**最新在前**，`before` 翻页）。
+    // 读的是 state/worlds/<w>/logs/NNNN.json（与 history/ 平级的 append-only 回溯面，不进导出包）——
+    // 客户端用它做「回想」的分页历史，`cancelled`/`error` 两个字段是 B 泳道写下的留痕。
+    if (req.method === "GET" && url.pathname === "/api/logs") {
+      const worldId = url.searchParams.get("worldId") || "";
+      if (!WORLD_ID_RE.test(worldId)) {
+        sendJSON(res, 400, { error: "缺少或非法的 worldId 参数" });
+        return;
+      }
+      // before/limit 交给 readTurnLogs 归一（它按数字语义收口径），这里只把缺省表达成 undefined/null
+      const beforeRaw = url.searchParams.get("before");
+      const limitRaw = url.searchParams.get("limit");
+      sendJSON(
+        res,
+        200,
+        readTurnLogs({
+          root: WORLDS_ROOT,
+          worldId,
+          before: beforeRaw == null || beforeRaw === "" ? null : Number(beforeRaw),
+          limit: limitRaw == null || limitRaw === "" ? undefined : Number(limitRaw),
+        }),
+      );
+      return;
+    }
+
     // 世界导出（CONTRACTS §2）：GET /api/worlds/export?worldId=<id> → 附件下载 <worldId>.world.json
+    // v1.14 加 `?all=1`：一次性打包**全部**世界线（`{format:"bunkiten-worlds", version:1, exportedAt, worlds:[…]}`，
+    // 客户端的一条备份入口；导入侧（A 泳道的 importWorld）认这个容器，循环导入）。
     if (req.method === "GET" && url.pathname === "/api/worlds/export") {
+      if (url.searchParams.get("all") === "1") {
+        const bundle = exportAllWorlds(WORLDS_ROOT);
+        res.writeHead(200, {
+          "content-type": "application/json; charset=utf-8",
+          "content-disposition": 'attachment; filename="bunkiten-worlds.json"',
+        });
+        res.end(JSON.stringify(bundle));
+        return;
+      }
       const worldId = url.searchParams.get("worldId") || "";
       const out = exportWorld(WORLDS_ROOT, worldId); // 内部已过 WORLD_ID_RE + 存在性校验
       if (out.error) {
@@ -476,6 +567,30 @@ export function createRequestHandler(ctx) {
         }
         const ok = !out.error;
         sendJSON(res, ok ? 200 : 400, { ok, ...out });
+      });
+      return;
+    }
+
+    // 回收站（v1.14，ADR-0014 的「恢复 UI」修订）：删掉的世界线目录与素材文件都躺在 state/trash/ 里。
+    // GET 列条目（id/kind/name/presetId?/at），POST {action:"restore", id} 把某一条挪回原位。
+    // 两类条目的判定与恢复动作都在 worlds.listTrash/restoreTrash，路由只做参数归一与状态码分流。
+    if (req.method === "GET" && url.pathname === "/api/trash") {
+      sendJSON(res, 200, { entries: listTrash(WORLDS_ROOT) });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/trash") {
+      readBodyText(req, res, (body) => {
+        // JSON.parse 边界：同 /api/presets，字段在下方逐个校验
+        let payload = /** @type {any} */ ({});
+        try {
+          payload = JSON.parse(body) || {};
+        } catch {}
+        if (String(payload.action || "") !== "restore") {
+          sendJSON(res, 400, { ok: false, error: "未知动作" });
+          return;
+        }
+        const out = restoreTrash(WORLDS_ROOT, String(payload.id || ""));
+        sendJSON(res, out.error ? 400 : 200, out.error ? { ok: false, error: out.error } : { ok: true });
       });
       return;
     }
@@ -572,11 +687,50 @@ export function createRequestHandler(ctx) {
       });
       return;
     }
-    // 保存 key 后一键生效：引擎会话的 env 只在 spawn 时读一次，必须重启才拿得到新配置
+    // 保存 key 后一键生效：引擎会话的 env 只在 spawn 时读一次，必须重启才拿得到新配置。
+    // `{force:true}`（v1.14）：正在演绎中也重启——入口先停这一回合（session/cancel + 本地作废）再换会话；
+    // 忙碌且没给 force 仍是 409（既有语义：宁可让玩家等这一回合结束）。
     if (req.method === "POST" && url.pathname === "/api/engine/restart") {
-      readBodyText(req, res, async () => {
-        const out = await ctx.restartEngine();
+      readBodyText(req, res, async (body) => {
+        let payload = /** @type {any} */ ({});
+        try {
+          payload = JSON.parse(body) || {};
+        } catch {}
+        const out = await ctx.restartEngine({ force: payload.force === true });
         sendJSON(res, out.ok ? 200 : 409, out);
+      });
+      return;
+    }
+    // 停止本回合（v1.14，P0）：客户端顶栏的「停止」→ 引擎侧 `session/cancel` 通知 + 本地作废在途回合
+    //（turn-pipeline 的 cancel 负责记账：busy 复位、广播 turn_cancelled、留 cancelled 日志、**不写快照**）。
+    // 不忙碌时回 `cancelled:false` 而不是错误——客户端可能比服务端先知道回合已经收尾。
+    if (req.method === "POST" && url.pathname === "/api/engine/cancel") {
+      readBodyText(req, res, () => {
+        sendJSON(res, 200, { ok: true, cancelled: ctx.cancelTurn() });
+      });
+      return;
+    }
+    // 引擎状态（v1.14）：SSE 断线重连后的对账面——`busy` 决定「停止」按钮可不可点，
+    // `turn` 是最近开始过的回合号（客户端拿它跟已收到的 turn_end 比，判断断线期间漏没漏收尾）。
+    if (req.method === "GET" && url.pathname === "/api/engine/status") {
+      sendJSON(res, 200, ctx.engineStatus());
+      return;
+    }
+    // 打开数据目录（v1.14）：帮助面板的「打开日志目录」与备份提示的两个去处。
+    // which 只认 data|logs 两个值（白名单，别的一律 400）——这两个是**数据根**，不是只读 bundle。
+    if (req.method === "POST" && url.pathname === "/api/open-dir") {
+      readBodyText(req, res, (body) => {
+        let payload = /** @type {any} */ ({});
+        try {
+          payload = JSON.parse(body) || {};
+        } catch {}
+        const which = String(payload.which || "");
+        if (which !== "data" && which !== "logs") {
+          sendJSON(res, 400, { ok: false, error: "which 只能是 data 或 logs" });
+          return;
+        }
+        openDirectory(path.join(DATA_ROOT, which === "logs" ? "logs" : ""));
+        sendJSON(res, 200, { ok: true });
       });
       return;
     }
@@ -640,11 +794,12 @@ export function createRequestHandler(ctx) {
 
     // 音频直服（CONTRACTS §1）：白名单形态 + path.resolve 前缀校验（与 /img 同款两道闸）；
     // 直接整文件 200（不做 Range——音频文件小，客户端拉全量即可），长缓存。
+    // 根是**数据根**（v1.14）：音频随剧本走，而剧本目录在可写数据根里（随包那份只是种子）。
     if (req.method === "GET" && url.pathname === "/audio") {
       const p = url.searchParams.get("p") || "";
       if (AUDIO_REL_RE.test(p)) {
-        const file = path.resolve(GAME_ROOT, p);
-        if (withinRoot(file, GAME_ROOT)) {
+        const file = path.resolve(DATA_ROOT, p);
+        if (withinRoot(file, DATA_ROOT)) {
           const ext = path.extname(file).slice(1).toLowerCase();
           fs.readFile(file, (err, data) => {
             if (err) {
@@ -690,7 +845,8 @@ export function createRequestHandler(ctx) {
       // t&n 齐备时，直服/落盘共用的目标：presets/<剧本 id>/assets/<类型>-<名>.jpg；
       // 封面（t=封面）走 assetTargetFile 的 presets/<id>/cover.jpg 分支——assets/封面-X.jpg 是死路径
       const targetRel = t && n ? assetTargetFile(t, n, targetPid || "") : "";
-      const target = targetRel ? path.join(GAME_ROOT, targetRel) : "";
+      // 根是数据根（v1.14）：引擎与 assets-pipeline 都往这里落盘，直服必须跟着同一个根
+      const target = targetRel ? path.join(DATA_ROOT, targetRel) : "";
       // 新契约 ?t=<类型>&n=<名字>[&p=<会话路径>][&preset=<剧本 id>]：该剧本 assets 永久命中优先
       if (target && fs.existsSync(target)) {
         serve(target);
@@ -720,19 +876,19 @@ export function createRequestHandler(ctx) {
         ctx.warnLegacyPathOnce(p);
         const legacyPid = qPreset || presetIdFromPath(p) || ctx.currentPresetId || "";
         const rel = legacyAssetCandidates(p, legacyPid)[0];
-        const file = rel ? path.join(GAME_ROOT, rel) : "";
+        const file = rel ? path.join(DATA_ROOT, rel) : "";
         if (file && fs.existsSync(file)) {
           serve(file);
           return;
         }
       }
-      // 已落盘资产直服白名单（统一 jpe?g）：presets/<id>/assets/<文件> 与 presets/<id>/cover.jpg（resolve 后必须仍在 GAME_ROOT 内）
+      // 已落盘资产直服白名单（统一 jpe?g）：presets/<id>/assets/<文件> 与 presets/<id>/cover.jpg（resolve 后必须仍在数据根内）
       if (
         /^presets\/[A-Za-z0-9_-]+\/assets\/[^/]+\.jpe?g$/.test(p) ||
         /^presets\/[A-Za-z0-9_-]+\/cover\.jpe?g$/.test(p)
       ) {
-        const file = path.resolve(GAME_ROOT, p);
-        if (withinRoot(file, GAME_ROOT)) {
+        const file = path.resolve(DATA_ROOT, p);
+        if (withinRoot(file, DATA_ROOT)) {
           serve(file);
           return;
         }
@@ -742,6 +898,9 @@ export function createRequestHandler(ctx) {
       return;
     }
 
+    // SSE（v1.14 起帧带单调 `id:`、每连接 20s 一帧 `: ping` 心跳——两者都在 server/sse.mjs 的广播器里，
+    // 路由只负责写响应头 + `retry:` + 登记连接）。`req.on("close")` 注销；收尾时 closeAll 会 destroy
+    // 全部连接（长连接不散的话 server.close 的回调永远等不到）。
     if (req.method === "GET" && url.pathname === "/events") {
       res.writeHead(200, {
         "content-type": "text/event-stream",

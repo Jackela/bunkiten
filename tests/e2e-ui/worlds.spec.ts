@@ -39,6 +39,19 @@ let page: Page;
 /** 封面 URL（`/img?p=<相对路径>` 的 p 参数，已解码）→ 最近一次响应状态；行缩略图用例读它钉 200/404 */
 const coverStatuses = new Map<string, number>();
 
+// w6 的章号真源是树文件（listWorlds 取 story-tree.md 里最后一个「## 第 N 章」，index 的 chapterNo 只是回退）——
+// 给一份「第 3 章」占位的树，筛选用例的「按章号排序」才真的在考章号（否则所有世界都是第 1 章，
+// 排序退化成 lastPlayed 平局序，看起来对、其实没测到东西）。
+const TREE_W6 = [
+  "# 剧情树",
+  "",
+  "## 第 1 章",
+  "- 当前进度: 节点 1-1（已走 0 轮）",
+  "",
+  "## 第 3 章",
+  "- 当前进度: 节点 3-1（已走 0 轮）",
+].join("\n");
+
 test.beforeAll(async ({ browser }) => {
   ({ stack, page } = await startUiStack(browser, {
     // 两个剧本：demo 有 cover.jpg（下面手写）、no-cover 没有——行缩略图的两态就摆在这两张卡上。
@@ -50,12 +63,15 @@ test.beforeAll(async ({ browser }) => {
     ],
     // w1 默认存在；w3 分叉自 w2（父子连线），w4 指向不存在的 ghost（孤儿 ⌫）；管理动作不推演，无需 turns。
     // w5 属 no-cover 剧本（世界线屏的清单按 selected 过滤，它只在那张卡的屏上出现）
+    // w6 给筛选/排序/回收站三条用例用：带显示名（搜索能按名筛到）与更大的章号（排序按章号时排最前）
     worlds: [
       { id: "w2" },
       { id: "w3", forkedFrom: { worldId: "w2", nodeId: "1-1" } },
       { id: "w4", forkedFrom: { worldId: "ghost", nodeId: "9-9" } },
       { id: "w5", preset: "no-cover", title: "无封面剧本", lastPlayed: 1_600_000_000_000 },
+      { id: "w6", label: "封存测试线", chapterNo: 3 },
     ],
+    trees: { w6: TREE_W6 },
   }));
   // w3 补一份 fork.md（forkWorld 落盘的同名文件）：导出包要能把它带走、导入侧要原样落回来
   writeFileSync(path.join(stack.stack.root, "state", "worlds", "w3", "fork.md"), FORK_MD_W3);
@@ -183,6 +199,13 @@ test("世界线管理：行内改名→导出→导入出重名副本 w2-2→两
   await page.getByTestId("protagonist-back").click();
   await expect(page.getByTestId("worlds-screen")).toBeVisible();
   await expect(page.getByTestId("world-row-w2")).toBeVisible();
+
+  // 收尾：按「新世界线」时服务端**当场**建好世界（id 由 server 分配，成功才进捏人屏）——返回不删它。
+  // 本用例自己清掉，别给后面的筛选/排序/回收站用例留一条无名的 demo-1（顺序相关的脏状态）。
+  const all = (await stack.stack.getJSON("/api/worlds")).body.worlds as Array<{ worldId: string }>;
+  for (const w of all.filter((x) => x.worldId.startsWith("demo-"))) {
+    expect((await stack.stack.postJSON("/api/worlds", { action: "delete", worldId: w.worldId })).status).toBe(200);
+  }
 });
 
 test("家谱视图：forkedFrom 链画成森林，点节点出快捷条，孤儿标 ⌫", async () => {
@@ -192,7 +215,7 @@ test("家谱视图：forkedFrom 链画成森林，点节点出快捷条，孤儿
   await card.click();
   await expect(page.getByTestId("worlds-screen")).toBeVisible();
 
-  // 切到家谱：四个节点（w1/w2 根、w3 分叉自 w2、w4 孤儿），一条父子连线（w2→w3）
+  // 切到家谱：根节点（w1/w2/w6）+ w3 分叉自 w2 + w4 孤儿，唯一一条父子连线是 w2→w3（w6 是根，不连线）
   await page.getByTestId("worlds-view-genealogy").click();
   const canvas = page.getByTestId("genealogy-canvas");
   await expect(canvas).toBeVisible();
@@ -295,9 +318,15 @@ test("⋯ 菜单键盘路径：Enter 开、Tab 走项、Esc 只收菜单不退�
   await page.keyboard.press("Tab");
   await expect(page.getByTestId("world-delete-w1")).toBeFocused();
 
-  // 两段确认的第一段：Enter 把「删除」换成确认按钮，焦点跟着换到确认按钮上
+  // 两段确认的第一段：Enter 把「删除」换成确认按钮；v1.14 起**默认焦点落在「取消」**——
+  // 破坏性操作默认安全：连按两下回车不该顺手删掉一条世界线（WCAG 3.3.4）
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("world-confirm-w1")).toBeVisible();
+  await expect(page.getByTestId("world-cancel-w1")).toBeFocused();
+
+  // 「取消」是确认态的末项：Shift+Tab 往回走一步到「确认删除」。正向 Tab 从末项走到头会把 Tab
+  // 交还页面、菜单随之收起（lib/menuTab 刻意不回绕），所以到确认项的路是 Shift+Tab
+  await page.keyboard.press("Shift+Tab");
   await expect(page.getByTestId("world-confirm-w1")).toBeFocused();
 
   // Esc 只收菜单：焦点回触发器、aria-expanded 复位，世界线屏（行清单）照旧在——
@@ -386,6 +415,10 @@ test("行缩略图：有封面的剧本上封面图，没封面的只剩同尺�
   await page.getByTestId("title-card-center").click();
   await expect(page.getByTestId("worlds-screen")).toBeVisible();
   await expect(page.getByTestId("world-row-w1")).toBeVisible();
+  // 一次性备份提示（v1.14）首次进屏会插在列表上方，把首行推下视口——本用例的点位断言
+  // （elementFromPoint / mouse.click 都用视口坐标）依赖行在首屏内，先把它关掉（关掉即记标记）。
+  const tipClose = page.getByTestId("worlds-backup-tip-close");
+  if (await tipClose.isVisible().catch(() => false)) await tipClose.click();
 
   // —— ① demo 有 cover.jpg ——
   const cover = page.getByTestId("world-cover-img-w1");
@@ -415,11 +448,15 @@ test("行缩略图：有封面的剧本上封面图，没封面的只剩同尺�
   const clickCenter = (box: { x: number; y: number; width: number; height: number }) =>
     page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
 
-  expect(await hitTest(coverBox)).toBe("world-row-w1");
-  await clickCenter(coverBox);
+  // 视口坐标的命中/点击都要求目标真在首屏内：先把行滚进视野再量（窗口高 720，长列表首行也可能在折下）
+  await page.getByTestId("world-row-w1").scrollIntoViewIfNeeded();
+  const coverHitBox = (await page.getByTestId("world-cover-w1").boundingBox())!;
+  expect(await hitTest(coverHitBox)).toBe("world-row-w1");
+  await clickCenter(coverHitBox);
   await expect(page.getByTestId("world-row-w1")).toBeFocused();
   await expect(page.getByTestId("world-row-w1")).toHaveAttribute("aria-selected", "true");
   // 换一行再点一次：选中确实跟着走（不是「本来就在第一行，看着对」）
+  await page.getByTestId("world-row-w2").scrollIntoViewIfNeeded();
   const cover2Box = (await page.getByTestId("world-cover-w2").boundingBox())!;
   expect(await hitTest(cover2Box)).toBe("world-row-w2");
   await clickCenter(cover2Box);
@@ -457,4 +494,70 @@ test("行缩略图：有封面的剧本上封面图，没封面的只剩同尺�
   await expect(page.getByTestId("world-continue-w5")).toBeEnabled();
   const bareRowH = (await page.getByTestId("world-row-w5").boundingBox())!.height;
   expectSamePx(bareRowH, demoRowH, "缺封面的行高与有封面的不一致（缩略图把行撑变形了）");
+});
+
+// 列表筛选与工具条（v1.14）：搜索（显示名/备注）、范围（本剧本 / 全部）、排序（最近游玩 / 章号）、
+// 工具条「导出全部」。都不改服务端返回，只动呈现层——所以断言的是「屏上谁在 / 谁不在」与控件读数。
+test("列表筛选与工具条：搜索按名筛、范围「全部」露出别的剧本、排序按章号；工具条有「导出全部」", async () => {
+  await page.goto(stack.pageUrl);
+  await page.getByTestId("title-card-center").click();
+  await expect(page.getByTestId("worlds-screen")).toBeVisible();
+  await expect(page.getByTestId("world-row-w1")).toBeVisible();
+
+  // 搜索：按显示名（w6 的 label = 「封存测试线」）筛出唯一一条
+  await page.getByTestId("worlds-search").fill("封存");
+  await expect(page.getByTestId("world-row-w6")).toBeVisible();
+  await expect(page.getByTestId("world-row-w1")).toHaveCount(0);
+  // 筛空：给「筛选后为空」的提示，不冒充「还没有世界线」
+  await page.getByTestId("worlds-search").fill("绝不存在");
+  await expect(page.getByTestId("worlds-filter-empty")).toBeVisible();
+  await expect(page.getByTestId("worlds-empty")).toHaveCount(0);
+  await page.getByTestId("worlds-search").fill("");
+  await expect(page.getByTestId("world-row-w1")).toBeVisible();
+
+  // 范围：默认「本剧本」看不到 no-cover 的 w5；切「全部」就露出来，切回来又收掉
+  await expect(page.getByTestId("world-row-w5")).toHaveCount(0);
+  await page.getByTestId("worlds-scope-all").click();
+  await expect(page.getByTestId("worlds-scope-all")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByTestId("world-row-w5")).toBeVisible();
+  await page.getByTestId("worlds-scope-preset").click();
+  await expect(page.getByTestId("world-row-w5")).toHaveCount(0);
+
+  // 排序：默认「最近游玩」；切「章号」→ 章号最大的 w6（seed 的 3）排到第一行
+  await expect(page.getByTestId("worlds-sort-recent")).toHaveAttribute("aria-pressed", "true");
+  await page.getByTestId("worlds-sort-chapter").click();
+  await expect(page.getByTestId("worlds-sort-chapter")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator('[data-testid^="world-row-"]').first()).toHaveAttribute("data-testid", "world-row-w6");
+
+  // 工具条「导出全部」：attachment 下载，指向容器端点（一次带走所有世界线）
+  await expect(page.getByTestId("worlds-export-all")).toHaveAttribute("href", "/api/worlds/export?all=1");
+});
+
+// 回收站视图（v1.14，ADR-0014「恢复 UI」修订）：删除进回收站 → 列出来 → 一键恢复回列表。
+// 用 w6（本文件不变量的小世界），删完再恢复，前后都点名它。
+test("回收站视图：删一条世界线 → 回收站列出现 → 一键恢复 → 回到列表", async () => {
+  await page.goto(stack.pageUrl);
+  await page.getByTestId("title-card-center").click();
+  await expect(page.getByTestId("worlds-screen")).toBeVisible();
+  await expect(page.getByTestId("world-row-w6")).toBeVisible();
+
+  // 删除（两段确认：首点变确认态，二点才发）
+  await page.getByTestId("world-menu-w6").click();
+  await page.getByTestId("world-delete-w6").click();
+  await page.getByTestId("world-confirm-w6").click();
+  await expect(page.getByTestId("world-row-w6")).toHaveCount(0);
+
+  // 回收站视图列出刚删的那条（kind=世界线）与「恢复」
+  await page.getByTestId("worlds-view-trash").click();
+  const trash = page.getByTestId("worlds-trash");
+  await expect(trash).toBeVisible();
+  await expect(trash).toContainText("世界线");
+  const restore = page.getByRole("button", { name: "恢复 w6" });
+  await expect(restore).toBeVisible();
+
+  // 恢复：行内提示 + 两边清单重取 → 回列表就能看到它
+  await restore.click();
+  await expect(page.getByText("已恢复「w6」")).toBeVisible();
+  await page.getByTestId("worlds-view-list").click();
+  await expect(page.getByTestId("world-row-w6")).toBeVisible();
 });

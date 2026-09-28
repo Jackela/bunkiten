@@ -18,7 +18,8 @@ import path from "path";
 import readline from "readline";
 import { fileURLToPath } from "url";
 import { ART_KINDS } from "../shared/protocol.mjs";
-import { GAME_ROOT } from "./config.mjs";
+import { DATA_ROOT } from "./config.mjs";
+import { writeFileAtomic } from "./atomic-fs.mjs";
 import { PRESET_ID_RE, presetIdFromPath, sanitizeAssetName } from "./assets.mjs";
 import { assetTargetFile } from "./presets.mjs";
 import { readCredentials, sanitizeErrorMessage } from "./credentials.mjs";
@@ -113,7 +114,7 @@ export function imagesEndpoint(baseUrl) {
  * 封面走 `presets/<id>/cover.jpg`（assetTargetFile 的封面分支），立绘/背景走 assetRelPath 形态；
  * 差分名拼在名字里（`<名>-<变体>`，与 splitAssetVariant 的口径一致）。
  * @param {{kind?: string, name?: string, variant?: string, outRelPath?: string}} p 工具入参
- * @returns {{rel: string} | {error: string}} 相对 GAME_ROOT 的落盘路径，或人话错误
+ * @returns {{rel: string} | {error: string}} 相对数据根的落盘路径，或人话错误
  */
 export function resolveOutputPath({ kind = "", name = "", variant = "", outRelPath = "" } = {}) {
   const k = String(kind || "").trim();
@@ -253,13 +254,13 @@ export async function requestImage({ baseUrl, apiKey, model, prompt, size, fetch
  * @param {{prompt?: string, kind?: string, name?: string, variant?: string, outRelPath?: string}} params 工具入参
  * @param {object} [deps] 依赖注入
  * @param {import("./credentials.mjs").Credentials} [deps.creds] 凭据（缺省读磁盘）
- * @param {string} [deps.gameRoot] 游戏根（缺省 GAME_ROOT）
+ * @param {string} [deps.gameRoot] 游戏根（缺省 DATA_ROOT——dev 下 = GAME_ROOT，打包态 = userData/game）
  * @param {typeof fetch} [deps.fetchImpl] fetch 实现
  * @returns {Promise<{ok: true, relPath: string, bytes: number} | {ok: false, error: string}>}
  */
 export async function generateImage(params, deps = {}) {
   const creds = deps.creds ?? readCredentials();
-  const gameRoot = deps.gameRoot ?? GAME_ROOT;
+  const gameRoot = deps.gameRoot ?? DATA_ROOT;
   const prompt = String(params?.prompt || "").trim();
   if (!prompt) return { ok: false, error: "prompt 不能为空" };
   if (creds.image.mode !== "byok") return { ok: false, error: "未配置图片服务" };
@@ -274,7 +275,7 @@ export async function generateImage(params, deps = {}) {
   try {
     if (!withinRoot(abs, gameRoot)) return { ok: false, error: "落盘路径越界" };
     fs.mkdirSync(path.dirname(abs), { recursive: true });
-    fs.writeFileSync(abs, out.bytes);
+    writeFileAtomic(abs, out.bytes); // 原子写：出图字节写到一半被杀不会留半张图
   } catch (e) {
     return { ok: false, error: `写入失败：${errText(e)}` };
   }

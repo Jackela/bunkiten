@@ -5,8 +5,10 @@
 // EVENT_HANDLERS 表里按键落位（键 = AcpEvent["type"] 全集，漏配新事件类型即编译错），表项函数体
 // 逐字来自原 switch 分支；其中 turn_end 的内部时序（先 applyMarkers → finishRegen → 落 finalText
 // → pumpRegenQueue → 创作/图屏补发 → 章标记）是行为契约的一部分，顺序逐字保留；引用的流水线函数全部来自 ctx。
+// v1.14：回合校验（事件带 turn 与当前回合不符即丢弃）、非正戏回合（main:false）不进历史、
+// 章待办（pendingChapter）、停止回合（cancelTurn/turn_cancelled）、数值差分刷新、打字机播种键。
 import { audioManager } from "../../lib/audio";
-import { fetchPresets, postPrompt, type AcpEvent } from "../../lib/acp";
+import { cancelEngine, fetchEngineStatus, fetchPresets, postPrompt, type AcpEvent } from "../../lib/acp";
 import {
   buildResumeCommand,
   cleanForHistory,
@@ -52,6 +54,8 @@ export function createGameplaySlice(
     | "sendStart"
     | "runNextPending"
     | "beginPlanning"
+    | "startChapter"
+    | "consumePendingChapter"
     | "advancePreload"
     | "onEngineError"
     | "armAutoAdvance"
@@ -69,12 +73,28 @@ export function createGameplaySlice(
   | "sendPlayerTurn"
   | "toggleDrawer"
   | "setTypingDone"
+  | "markTypingDone"
+  | "resumePendingChapter"
+  | "cancelTurn"
   | "armAutoAdvance"
   | "resumeAutoAdvance"
   | "cancelAutoAdvance"
+  | "reconcileAfterReconnect"
+  | "setSseDown"
   | "handleEvent"
 > {
   const { set, get } = ctx;
+
+  /**
+   * 回合校验（v1.14）：事件带 `turn`、且客户端**已知**当前回合、且两者不符 → 这条事件属于
+   * 迟到/串台的旧回合，整条丢弃（重量级副作用一个都不许发生）。
+   * 三处刻意放宽：事件不带 `turn`（更老的 server）、`currentTurn` 未知（turn_start 没带 turn、
+   * 或客户端刚重连还没对上账）都放行——宁可照旧处理，也不要因为一条对不上号的字段就把回合卡住。
+   */
+  const staleEvent = (turn?: number): boolean => {
+    const cur = get().currentTurn;
+    return turn !== undefined && cur !== null && turn !== cur;
+  };
 
   /**
    * 重同步指令没发出去（409/网络异常）或重同步回合在引擎侧失败（SSE error 事件）：保留徽章、亮「再同步」入口。
@@ -86,18 +106,43 @@ export function createGameplaySlice(
     set({ resyncFailed: true, resyncing: false, treeNotice: `重同步失败：${message}；点「再同步」重试` });
   };
 
+  /**
+   * 回合被停下的客户端语义（v1.14，cancelTurn 与 `turn_cancelled` 事件共用，幂等）：
+   * 复位忙态、状态写「已停止」、置待重同步——引擎侧可能停在半完成的位置，下一句输入先发
+   * `继续世界：` 让它重读档，叙事才不会接在残缺的上下文上。
+   * 回合产物（选项/补画标记）只在**确实打断了一个在跑的回合**（进去时 engineBusy 为真）时清掉：
+   * 重复的 turn_cancelled（回合已正常收尾）不该把玩家手上这份选项抹掉。
+   */
+  const applyTurnCancelled = () => {
+    const s = get();
+    const interrupted = s.engineBusy;
+    set({
+      engineBusy: false,
+      turnStartAt: null,
+      currentTurn: null,
+      status: "已停止",
+      // 没有世界线就没有可重同步的对象：此时只停止，不置徽章
+      pendingResync: s.worldId ? { worldId: s.worldId, seq: null } : null,
+      resyncFailed: false,
+      resyncing: false,
+      ...(interrupted ? { options: null, typingDone: false, artAsk: false } : {}),
+    });
+  };
+
   // SSE 事件 → 处理器表（表项体逐字来自原 handleEvent 的 switch 分支；原先在 switch 入口取一次的
   // `s = get()` 快照移到各表项首行——分发前没有任何状态写入，两次取值之间不可能有人插手，语义等价）。
   const EVENT_HANDLERS: EventHandlers = {
-    /** SSE `turn_start`（回合开始）：清段表、置忙、重置回合显示态 */
-    turn_start() {
+    /** SSE `turn_start`（回合开始）：清段表、置忙、重置回合显示态；记住服务端回合序号供后续校验 */
+    turn_start(event) {
+      if (staleEvent(event.turn)) return; // 迟到的旧回合不许把新回合的段表与显示态清掉
       const s = get();
-      set({ segs: { 0: "" }, curSeg: 0, engineBusy: true, turnStartAt: Date.now() });
+      set({ segs: { 0: "" }, curSeg: 0, engineBusy: true, turnStartAt: Date.now(), currentTurn: event.turn ?? null });
       ctx.resetTurnState(s.turnKey + 1);
     },
 
     /** SSE `seg`（段切换）：游标前移 + 按阶段选择状态文案，并重置新段的显示态 */
     seg(event) {
+      if (staleEvent(event.turn)) return;
       const s = get();
       if (event.seg > s.curSeg) {
         set({
@@ -111,6 +156,7 @@ export function createGameplaySlice(
 
     /** SSE `chunk`（增量正文）：追加进段表驱动打字机，并即时扫描【图】标记（流式按整行 key 去重） */
     chunk(event) {
+      if (staleEvent(event.turn)) return;
       const s = get();
       const segs = { ...s.segs, [event.seg]: (s.segs[event.seg] ?? "") + event.text };
       set({ segs, received: segs[event.seg] });
@@ -163,6 +209,7 @@ export function createGameplaySlice(
 
     /** SSE `turn_end`（回合收尾）：全量重放标记 → 重绘收尾 → 历史/选项定格 → 队列补发 → 章标记切屏 */
     turn_end(event) {
+      if (staleEvent(event.turn)) return; // 迟到/串台的收尾：不进历史、不推进流水线
       const s = get();
       // 幕号取事件带来的**快照序号**（v1.13 修）：存档点标注（「存档点 · 第 N 幕」）、回溯分割线
       // （「已回溯到第 N 幕」）与重演目标全用快照 seq，只有幕标题此前用客户端回合计数 turnNo+1——
@@ -178,14 +225,20 @@ export function createGameplaySlice(
       const craftingNoise =
         s.screen === "crafting" &&
         (s.preloadPhase === "init" || s.preloadPhase === "planning" || s.preloadPhase === "queue");
+      // v1.14 非正戏回合（`main:false`，服务端同时给 `seq:null`：重同步等客户端指令触发的内部回合）：
+      // 不进历史、不占幕号、不 bump 回合计数——它的正文只是引擎在回一句「读到了」。
+      // 缺省（更老的 server 不带 main）按正戏回合处理，行为与 v1.13 逐字一致。
+      const isMain = event.main !== false && event.seq !== null;
       // 后台补画回合（v1.13 两段式）与 treeAsk 同款：确认句不进正文/历史
-      const clean = craftingNoise || s.screen === "creation" || s.treeAsk || s.artAsk ? "" : cleanForHistory(finalText);
+      const clean =
+        !isMain || craftingNoise || s.screen === "creation" || s.treeAsk || s.artAsk ? "" : cleanForHistory(finalText);
       set({
         finalText,
         options: parseOptions(finalText),
         status: "就绪",
         engineBusy: false,
         turnStartAt: null,
+        currentTurn: null, // 本回合到此为止：之后的 chunk/turn_end 都不该再认它
         artAsk: false, // 补画回合到此为止（下面的泵会给下一项置位）
         history: clean ? [...s.history, { kind: "act", n: `第 ${actNo} 幕`, t: clean }] : s.history,
         turnNo: clean ? s.turnNo + 1 : s.turnNo,
@@ -203,7 +256,9 @@ export function createGameplaySlice(
                 ? {
                     pendingResync: null,
                     resyncFailed: false,
-                    treeNotice: `已回到第 ${s.pendingResync.seq} 幕，进度已同步`,
+                    // 停止回合并置的 pendingResync 没有「第 N 幕」（seq:null）：只说同步完成，不编一个幕号
+                    treeNotice:
+                      s.pendingResync.seq === null ? "进度已同步" : `已回到第 ${s.pendingResync.seq} 幕，进度已同步`,
                   }
                 : {}),
             }
@@ -211,8 +266,9 @@ export function createGameplaySlice(
       });
       // 批量重绘：本轮已结束、引擎空闲，派发队列里的下一条（上面若有排队指令，pump 会让它们先发）
       ctx.pumpRegenQueue();
-      // 角色面板开着：回合收尾即重拉 state.md 视图（好感度/导演手记/伏笔随回合变）；关着不拉
-      if (s.charactersOpen) get().refreshCharacters();
+      // v1.14：回合收尾**恒**重拉 state.md 视图（不再只在角色面板开着时刷新）——数值差分
+      // （lastTurnDeltas）是每一回合都要看的因果反馈；面板开着的既有刷新由同一条路带给它。
+      get().refreshTurnState();
       if (s.screen === "creation") {
         // 创作屏：引擎整轮回复（跨段全文）过滤协议行后进对话流；协议行只驱动画面/事件
         const engineText = Object.values(s.segs)
@@ -255,9 +311,8 @@ export function createGameplaySlice(
       // 重演的排队跟进：重同步回合成功收尾（上面的 resyncing 分支已清 pendingResync）后立即重发
       // 那一刻解析出的玩家输入（点击时已从快照条目取好），走正常玩家回合路径（连掷同理可用）。
       // 认领条件用进入本事件时的 s.resyncing：普通回合即使残留 pendingRerollPrompt 也不跟进
-      // （resync 失败后玩家改发普通指令的场景，send 入口已把它随 pendingResync 静默作废）；
-      // 先清后发，事件重入也不会二次发送。resync 失败不走这里——排队的重发保留到
-      // 玩家点「再同步」成功后的下一次收尾照常跟进。
+      // （resync 失败后的排队输入保留到玩家点「再同步」成功后的下一次收尾）。
+      // 先清后发，事件重入也不会二次发送。
       const rerollPrompt = get().pendingRerollPrompt;
       if (rerollPrompt && s.resyncing) {
         set({ pendingRerollPrompt: null });
@@ -277,37 +332,42 @@ export function createGameplaySlice(
       if (snaps === null || snaps < 2) ctx.refreshTurnSnapshots();
       ctx.clearWatchdog();
       void ctx.advancePreload();
-      const g = get();
-      if (g.awaitCommand === "/new-game" || g.awaitCommand === "/presets") {
-        set({ screen: "title", awaitCommand: null });
-        return;
-      }
-      // 章标记（终章回合，全文可能跨段）：切制作中屏并规划下一章
+      // 章标记（终章回合，全文可能跨段）：**始终**记待办（语义 = 待规划章号，口径同 beginPlanning(next)）。
+      // 正在 game 屏：即刻切制作中屏并规划（既有语义逐字保持，startChapter 里清掉待办）。
+      // 在别的屏（画廊/设置/剧情图 overlay 等）：只记待办，等回到 game 屏且引擎空闲时由
+      // context.consumePendingChapter 消费（四个回屏点），UI 另有「第 N 章待规划 · 继续」兜底按钮。
       const mark = parseChapterMark(Object.values(s.segs).join("\n"));
-      if (mark !== null && get().screen === "game") {
+      if (mark !== null) {
         const next = mark + 1;
-        set({
-          screen: "crafting",
-          chapterNo: next,
-          preload: [],
-          skipRequested: false,
-          artReady: {},
-          seenMarkerKeys: new Set(),
-          options: null,
-          typingDone: false,
-        });
-        ctx.beginPlanning(next);
+        if (get().screen === "game") ctx.startChapter(next);
+        else set({ pendingChapter: next });
       }
     },
 
     /**
-     * SSE `error`（引擎侧回合失败）：制作中屏按阶段降级（onEngineError），并给重同步回合记账
+     * SSE `error`（引擎侧回合失败）：制作中屏按阶段降级（onEngineError），并给重同步回合记账。
+     * v1.14 的 `stale:true`（迟到/失焦的失败）：它说的是一个已经不在跑的回合——不改忙态、
+     * 不推进制作流水线，空闲时给一句提示（在跑的回合的状态位归它自己）。
      */
     error(event) {
+      if (staleEvent(event.turn)) return;
+      if (event.stale) {
+        if (!get().engineBusy) set({ status: `出错：${event.message}` });
+        return;
+      }
       ctx.onEngineError(event.message);
       // 重同步回合在引擎侧失败（error response → SSE error）：徽章保留、亮「再同步」入口，
       // 提示条与 status 同说失败——不再出现「已回退成功」与「出错」互相矛盾的两张嘴
       markResyncFailed(event.message);
+    },
+
+    /**
+     * SSE `turn_cancelled`（v1.14 停止本回合）：与 cancelTurn 的那条路同源（幂等）——
+     * 复位忙态、状态「已停止」、置待重同步。服务端也可能不广播（投递失败），所以两条路都要能自己站住。
+     */
+    turn_cancelled(event) {
+      if (staleEvent(event.turn)) return;
+      applyTurnCancelled();
     },
   };
 
@@ -315,30 +375,24 @@ export function createGameplaySlice(
     send(text) {
       const t = text.trim();
       if (!t) return;
-      // 回退后的重同步还挂着（补发投递失败过、徽章在），玩家却发了普通指令：静默放弃重同步——
-      // 玩家选择继续走，不假称「完成重同步」（引擎并没有重读档）：徽章、失败入口与图屏提示一并撤下
-      //（treeNotice 不撤会在图屏留下「点「再同步」重试」的残影，而按钮已随徽章消失）；
-      // resyncing 同步落回 false，免得本次普通指令的失败被 markResyncFailed 记到已放弃的重同步头上；
-      // 排队中的重演跟进同理作废（档没退回去，重发就无从谈起）
+      // v1.14：重同步还挂着（补发投递失败过、徽章在）时玩家发了普通指令——**不再静默作废**。
+      // 直接放行这句会让叙事接在引擎没重读过的旧上下文上（回退等于白做）；先强推一次重同步
+      // （发「继续世界：」），并把玩家这句话排进「重同步收尾后补发」位（与重演跟进同一条路，
+      // 见 turn_end 的 pendingRerollPrompt 分支）——玩家的话不会丢，档也会真的退回去。
       const pending = get().pendingResync;
       if (pending && t !== buildResumeCommand(pending.worldId)) {
         set({
-          pendingResync: null,
+          pendingRerollPrompt: t,
           resyncFailed: false,
-          resyncing: false,
-          pendingRerollPrompt: null,
-          treeNotice: null,
+          resyncing: true,
+          treeNotice: "正在同步进度…",
         });
+        get().send(buildResumeCommand(pending.worldId));
+        return;
       }
       // 手选/自由输入即接管：倒计时作废（否则刚发出去的回合结束前倒计时会再补一条 409）
       ctx.clearAutoAdvanceTimer();
-      set({
-        options: null,
-        typingDone: false,
-        autoAdvanceDeadline: null,
-        status: "引擎演绎中…",
-        awaitCommand: t === "/new-game" || t === "/presets" ? t : null,
-      });
+      set({ options: null, typingDone: false, autoAdvanceDeadline: null, status: "引擎演绎中…" });
       postPrompt(t)
         .then((r) => {
           // 回合没发出去（409 等）就不会有 turn 事件，engineBusy 需复位供制作中屏推进
@@ -379,6 +433,48 @@ export function createGameplaySlice(
       if (get().typingDone !== done) set({ typingDone: done });
     },
 
+    markTypingDone(key) {
+      // 幂等：同一幕重复上报不制造无谓的状态更新（订阅者不该被同值的写入唤醒）
+      if (get().typingDoneKey !== key) set({ typingDoneKey: key });
+    },
+
+    resumePendingChapter() {
+      const s = get();
+      if (s.pendingChapter === null) return;
+      if (s.screen !== "game") return;
+      if (s.engineBusy) {
+        // 抢发必 409：不硬来，把原因说出来（提示条会在回合收尾后照常可用）
+        set({ status: "忙碌中，等这一幕结束就开始下一章" });
+        return;
+      }
+      ctx.consumePendingChapter();
+    },
+
+    async cancelTurn() {
+      const s = get();
+      if (!s.engineBusy && s.currentTurn === null) {
+        // 没有在跑的回合：不发请求（服务端也会回 cancelled:false），只把话说清
+        set({ status: "没有正在进行的回合" });
+        return;
+      }
+      try {
+        const r = await cancelEngine();
+        if (!r.ok) {
+          set({ status: `停止失败：${r.error ?? "未知错误"}` });
+          return;
+        }
+        if (!r.cancelled) {
+          // 服务端说没有可停的回合（它那边已经收尾）：只把忙态与服务端对齐，不置待重同步
+          set({ engineBusy: false, turnStartAt: null, currentTurn: null });
+          return;
+        }
+        // cancelled:true：与 SSE turn_cancelled 走同一条路（哪条先到都幂等）
+        applyTurnCancelled();
+      } catch (e) {
+        set({ status: `停止失败：${String(e)}` });
+      }
+    },
+
     armAutoAdvance() {
       ctx.armAutoAdvance();
     },
@@ -389,6 +485,42 @@ export function createGameplaySlice(
 
     cancelAutoAdvance() {
       ctx.cancelAutoAdvance();
+    },
+
+    /**
+     * SSE 重连对账（v1.14 受控例外，App 的 onConn("open") 调用；首连与重连一视同仁、幂等）：
+     * 断线期间错过的 `turn_start`/`turn_end` 会让客户端忙态与回合号与真值错开，只能靠服务端这一份准。
+     * 拉一次 `GET /api/engine/status` 对齐 `engineBusy`/`currentTurn`，并顺手补拉一次
+     * turnSnapshots（重演入口的可见性判据，走 ctx.refreshTurnSnapshots）。
+     * 取数失败静默保持现态——重连本身已经成功，不因为对账失败打扰玩家；**不伪造任何回合收尾**
+     * （错过的正文/选项由玩家后续指令自然推进，这里只把「在不在跑」这一格对齐）。
+     */
+    reconcileAfterReconnect() {
+      if (get().sseDown) set({ sseDown: false }); // 连上了：先撤掉断线提示（撤提示是「已连上」的直接语义）
+      fetchEngineStatus()
+        .then((st) => {
+          if (st.busy) {
+            // 服务端在跑：对齐忙态与当前回合（turn>0 才认，0 表示「没有正在跑的回合」）。turnStartAt 只在
+            // 客户端此前不是忙态时才落——重连前已在跑的回合不该被这次对账重置耗时。
+            set({
+              engineBusy: true,
+              currentTurn: st.turn > 0 ? st.turn : get().currentTurn,
+              turnStartAt: get().turnStartAt ?? Date.now(),
+            });
+          } else if (get().engineBusy || get().currentTurn !== null) {
+            // 服务端说没在跑而客户端还挂着忙态：错过收尾的最直接症状，复位为准（不伪造 turn_end）
+            set({ engineBusy: false, currentTurn: null, turnStartAt: null });
+          }
+        })
+        .catch(() => {
+          /* 取不到状态就保持现态：对账是尽力而为，失败不打扰玩家 */
+        });
+      ctx.refreshTurnSnapshots(); // 快照数一并补拉（断线期间的新回合会让它落后）
+    },
+
+    setSseDown(down) {
+      // 幂等：同值不制造无谓的状态更新（订阅者不该被同值写入唤醒）
+      if (get().sseDown !== down) set({ sseDown: down });
     },
 
     handleEvent(event) {

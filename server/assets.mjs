@@ -1,10 +1,11 @@
-// 美术资产路径契约纯函数（v1.7 拆模块）：文件名净化、剧本 id 白名单、落盘/直服路径的判定与拆分。
-// 零业务依赖（只 import shared/protocol.mjs 与 config 的 GAME_ROOT）——注意 assetTargetFile 不在这里而在 presets.mjs：
+// 美术资产路径契约纯函数（v1.7 拆模块）：文件名净化、剧本 id 白名单、落盘/直服路径的判定与拆分，
+// 外加删除进回收站的唯一入口 moveToTrash（v1.14 从 worlds.mjs 挪来——见下）。
+// 零业务依赖（只 import shared/protocol.mjs 与 config 的 DATA_ROOT）——注意 assetTargetFile 不在这里而在 presets.mjs：
 // 封面的「标题 → 剧本 id」反查要读剧本目录（scanPresets），放本模块会造成 assets↔presets 环形依赖。
 // 入口 server/acp-server.mjs 逐名 re-export 这些符号（tests/server.test.ts 与 scripts/doctor.mjs 都从入口 import）。
 import fs from "fs";
 import path from "path";
-import { GAME_ROOT } from "./config.mjs";
+import { DATA_ROOT } from "./config.mjs";
 
 // 资产类型的文件名正则的真源在 shared/protocol.mjs（由 ASSET_KINDS 构造）；这里 re-export 给 doctor 与入口，不抄第二份。
 // 注意是**纯 re-export**（v1.13 修正）：此前多写了一句 `import { ASSET_FILE_RE } from ...`，本模块自己并不用它——
@@ -27,12 +28,12 @@ export const PRESET_ID_RE = /^[A-Za-z0-9_-]+$/;
 export const LEGACY_ASSET_RE = /^assets\/([^/]+\.jpe?g)$/;
 
 /**
- * 某剧本的资产目录（绝对路径）：`presets/<presetId>/assets/`。
+ * 某剧本的资产目录（绝对路径）：`<数据根>/presets/<presetId>/assets/`（v1.14 起挂数据根，dev 下 = GAME_ROOT）。
  * @param {string} presetId 剧本 id（调用方先用 PRESET_ID_RE 校验）
  * @returns {string} 绝对路径
  */
 export function presetAssetsDir(presetId) {
-  return path.join(GAME_ROOT, "presets", presetId, "assets");
+  return path.join(DATA_ROOT, "presets", presetId, "assets");
 }
 
 // 素材删除的文件名白名单（CONTRACTS §3）：单层文件名、jpe?g；cover.jpg 由路由单独排除
@@ -135,5 +136,45 @@ export function mtimeOf(file) {
     return fs.statSync(file).mtimeMs;
   } catch {
     return 0;
+  }
+}
+
+// ---------- 删除进回收站（v1.7，ADR-0014）----------
+// 删除不直删——世界线目录与素材文件先整体挪进 `state/trash/`，误删可手工（v1.14 起可自动）找回。
+// trash 长在 `state/` 下，天然不在任何扫描面内：scanPresets/scanPresetAudio/listAssets 只看 presets/，
+// listWorlds/快照只看 worlds/ 与 index.json，migrateLegacyState 只读 state/ 本层的 *.md——挪进去即从游戏里消失。
+// 尽力而为：同卷 rename 原子、极端撞名靠随机后缀规避；跨设备（EXDEV）等 rename 失败时回退直删，
+// 因为回收站不能让「删除」这个操作本身失败（回退的 rmSync 若也失败则原样抛出，两个调用方
+// /api/assets（routes.mjs）与 deleteWorld（worlds.mjs）各自把异常收成 4xx/5xx，绝不冒泡成 uncaughtException——
+// server 在 Electron 主进程内运行，冒泡即应用闪退）。
+// 为什么住在本模块（v1.14 从 worlds.mjs 挪来）：世界线删除（worlds）、素材删除（routes）、剧本删除（presets）
+// 三处都要它，而 presets 不能反向 import worlds（worlds 已 import presets 的 scanPresets，再接回去就是环）——
+// 挪到两边都已依赖的本模块，环就没了；worlds.mjs 仍 `export { moveToTrash }`，对外的 import 面一字不变。
+/**
+ * 把 root 下相对路径 rel 指向的目录/文件整体挪进 `state/trash/`。
+ * 命名 `<ts>-<rand4>[-<label>]-<原名>`：label 是可选归属标注（素材删除传剧本 id，跨剧本同名文件靠它区分该挪回哪个剧本）。
+ * @param {string} root 游戏根目录（数据根）
+ * @param {string[]} rel 相对 root 的路径段
+ * @param {string} [label] 可选归属标注
+ * @returns {{trashed: boolean, fallback?: string}} trashed=false 且无 fallback = 源不存在；fallback:"purged" = 回收站没挪成、直删兜底
+ */
+export function moveToTrash(root, rel, label = "") {
+  const src = path.join(root, ...rel);
+  if (!fs.existsSync(src)) return { trashed: false }; // 本来就没有可挪的东西（如索引在、目录已被手删），不谎报也不占位
+  const trash = path.join(root, "state", "trash");
+  const tag = label ? `-${label}` : "";
+  try {
+    fs.mkdirSync(trash, { recursive: true });
+    fs.renameSync(
+      src,
+      path.join(
+        trash,
+        `${Date.now()}-${Math.random().toString(36).slice(2, 6).padEnd(4, "0")}${tag}-${path.basename(src)}`,
+      ),
+    );
+    return { trashed: true };
+  } catch {
+    fs.rmSync(src, { recursive: true, force: true });
+    return { trashed: false, fallback: "purged" };
   }
 }

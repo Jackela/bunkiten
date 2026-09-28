@@ -225,6 +225,7 @@ function baseline(): Partial<GameStore> {
     resyncFailed: false,
     resyncing: false,
     pendingRerollPrompt: null,
+    rerollDialog: null,
     turnSnapshots: null,
     settings: { ...DEFAULT_SETTINGS },
     autoAdvanceDeadline: null,
@@ -233,7 +234,18 @@ function baseline(): Partial<GameStore> {
     curSeg: 0,
     seenMarkerKeys: new Set<string>(),
     turnNo: 0,
-    awaitCommand: null,
+    // v1.14 新增字段（与 game.ts 的 create() 初始 state 对齐，免得上一条用例的值漏到下一条）：
+    // 打字机「已展示」键、服务端回合序号、数值差分基线/产物、章待办、两个本地面板、磁盘历史分页。
+    typingDoneKey: null,
+    currentTurn: null,
+    sseDown: false,
+    prevStateView: null,
+    lastTurnDeltas: null,
+    pendingChapter: null,
+    helpOpen: false,
+    recapOpen: false,
+    recapData: null,
+    diskHistory: { entries: [], nextBefore: null, loading: false, error: null, loadedOnce: false },
   };
 }
 

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
-// 回退与重演（拆自 tests/ui.test.tsx）：非破坏式分割线/待重同步与再同步、玩家继续走时不冒充重同步、
-// 重演这一幕（解析目标幕与回退点、重同步收尾后重发当时的玩家输入——输入取自快照，v1.13）。
+// 回退与重演（拆自 tests/ui.test.tsx）：非破坏性分割线/待重同步与再同步、玩家继续走时不冒充重同步、
+// 重演这一幕（解析目标幕与回退点、重同步收尾后重发当时的玩家输入——输入取自快照，v1.13；
+// v1.14 起点击先开「预填可编辑输入」的对话框，确认才走重演通路，另有取消/空文本回退两条路径）。
 // 单例 store 的基线复位由 ./helpers 的 setupUi() 统一负责。
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -9,7 +10,7 @@ import TopBar from "../../src/components/game/TopBar";
 import HistoryDrawer from "../../src/components/game/HistoryDrawer";
 import WorldsScreen from "../../src/components/WorldsScreen";
 import { useGameStore } from "../../src/store/game";
-import { type WorldEntry, type WorldSnapshotMeta } from "../../src/lib/acp";
+import { type LogEntry, type WorldEntry, type WorldSnapshotMeta } from "../../src/lib/acp";
 import { PRESET, jsonResponse, openRailGroup, focusProbe, pressTab, setupUi } from "./helpers";
 
 setupUi();
@@ -89,6 +90,7 @@ describe("回退后的客户端语义：非破坏式分割线、待重同步与�
           return jsonResponse({ ok: true });
         }
         if (url.pathname === "/api/worlds") return jsonResponse(WORLDS_BODY);
+        if (url.pathname === "/api/logs") return jsonResponse({ entries: [], nextBefore: null });
         return jsonResponse({}, 404);
       }),
     );
@@ -281,15 +283,16 @@ describe("回退后玩家继续走：普通指令不冒充重同步（v1.7）", 
           return jsonResponse({ ok: true });
         }
         if (url.pathname === "/api/worlds") return jsonResponse({ worlds: [] });
+        if (url.pathname === "/api/logs") return jsonResponse({ entries: [], nextBefore: null });
         return jsonResponse({}, 404);
       }),
     );
   });
 
-  it("resume 投递失败后玩家发普通指令并成功：徽章静默消失，不宣告「完成重同步」", async () => {
+  it("resume 投递失败后玩家发普通指令：先强推一次重同步，收尾后再补发这句话（v1.14 起不再静默作废）", async () => {
     promptResps = [
       { ok: false, error: "上一回合还在进行" }, // restore 后补发的 resume：投递失败
-      { ok: true }, // 玩家的普通指令：成功
+      { ok: true }, // 玩家指令触发的那次强推重同步：成功
     ];
     await act(async () => {
       await useGameStore.getState().restoreSnapshot(7);
@@ -300,28 +303,31 @@ describe("回退后玩家继续走：普通指令不冒充重同步（v1.7）", 
     render(<TopBar />);
     expect(screen.getByTestId("resync-badge").textContent).toBe("待重同步"); // 前置：徽章在
 
-    // 玩家不理会徽章，直接发普通指令且成功：send 入口静默清 pendingResync，回合照常收尾
+    // 玩家不理会徽章直接发普通指令：send 入口不再静默作废——先强推一次 `继续世界：`、把这句话排队跟进
     await act(async () => {
       useGameStore.getState().send("推门进去");
     });
-    useGameStore.setState({ segs: { 0: "门后的走廊空无一人。\n\n**行动**\n1. 往前走" }, curSeg: 0 });
+    expect(prompts).toEqual(["继续世界：campus-summer-1。", "继续世界：campus-summer-1。"]);
+    expect(useGameStore.getState().pendingRerollPrompt).toBe("推门进去");
+
+    // 重同步回合成功收尾：清徽章 + 立即补发玩家那句话（恰好一次）
+    useGameStore.setState({ segs: { 0: "门后的走廊空无一人。" }, curSeg: 0 });
     act(() => {
       useGameStore.getState().handleEvent({ type: "turn_end" });
     });
-
-    expect(prompts).toEqual(["继续世界：campus-summer-1。", "推门进去"]);
+    expect(prompts).toEqual(["继续世界：campus-summer-1。", "继续世界：campus-summer-1。", "推门进去"]);
     const s = useGameStore.getState();
-    expect(s.pendingResync).toBeNull(); // send 入口静默清，不是回合收尾认领的
+    expect(s.pendingResync).toBeNull(); // 重同步收尾认领并清除
     expect(s.resyncFailed).toBe(false);
-    expect(s.treeNotice).toBeNull(); // 失败文案的残影一并撤下（按钮已随徽章消失，留着会指向不存在的入口）
+    expect(s.pendingRerollPrompt).toBeNull(); // 已补发
+    expect(s.treeNotice).toBe("已回到第 7 幕，进度已同步"); // 这次真的重读了档
     expect(screen.queryByTestId("resync-badge")).toBeNull(); // 徽章消失
-    expect(s.status).toBe("就绪"); // 普通回合收尾一切照旧
   });
 
-  it("resume 投递失败后玩家自己的指令也失败：不再冒充「重同步失败」", async () => {
+  it("resume 投递失败后玩家改发普通指令、强推的重同步也失败：失败仍记在重同步头上（徽章与再同步入口还在）", async () => {
     promptResps = [
-      { ok: false, error: "上一回合还在进行" }, // resume 投递失败
-      { ok: false, error: "HTTP 500" }, // 玩家的普通指令：也失败
+      { ok: false, error: "上一回合还在进行" }, // restore 补发的 resume：失败
+      { ok: false, error: "HTTP 500" }, // 玩家指令触发的那次强推重同步：也失败
     ];
     await act(async () => {
       await useGameStore.getState().restoreSnapshot(7);
@@ -333,44 +339,46 @@ describe("回退后玩家继续走：普通指令不冒充重同步（v1.7）", 
     });
     await waitFor(() => expect(useGameStore.getState().status).toContain("HTTP 500"));
     const s = useGameStore.getState();
-    expect(prompts).toEqual(["继续世界：campus-summer-1。", "推门进去"]);
-    expect(s.pendingResync).toBeNull(); // send 入口已静默清
-    expect(s.resyncFailed).toBe(false); // 玩家指令的失败不再记账到重同步头上
-    expect(s.treeNotice).toBeNull(); // 残影一并撤（按钮已随徽章消失）；玩家指令的失败也不再被写成「重同步失败」
+    expect(prompts).toEqual(["继续世界：campus-summer-1。", "继续世界：campus-summer-1。"]);
+    expect(s.pendingResync).toEqual({ worldId: "campus-summer-1", seq: 7 }); // 徽章保留：还有救
+    expect(s.resyncFailed).toBe(true);
+    expect(s.treeNotice).toContain("重同步失败");
+    expect(s.pendingRerollPrompt).toBe("推门进去"); // 那句话还排着队，等再同步成功后补发
     expect(s.status).toBe("出错：HTTP 500"); // 普通出错文案照常
   });
 
-  it("重同步仍在途时玩家发普通指令：迟到的 resume 失败不写「重同步失败」残影", async () => {
-    promptResps = [{ ok: false, error: "上一回合还在进行" }]; // resume 的失败结果迟到一步
+  it("重同步仍在途时玩家发普通指令：强推的那次成功收尾、迟到的旧 resume 失败仍记到重同步头上", async () => {
+    promptResps = [{ ok: false, error: "上一回合还在进行" }]; // 只有第一次 resume 有脚本响应（且失败）
     let releaseResume!: () => void;
     promptGate = new Promise<void>((r) => {
       releaseResume = r;
-    }); // 挂起 resume 的响应
+    }); // 挂起第一次 resume 的响应
     await act(async () => {
       await useGameStore.getState().restoreSnapshot(7);
     });
-    expect(useGameStore.getState().resyncing).toBe(true); // 前置：resume 投递还没落定
+    expect(useGameStore.getState().resyncing).toBe(true); // 前置：第一次 resume 投递还没落定
 
     await act(async () => {
-      useGameStore.getState().send("推门进去"); // 不等结果，先放弃重同步
+      useGameStore.getState().send("推门进去"); // 强推第二次 resume（脚本已空 → 默认成功）
     });
     await act(async () => {
-      releaseResume(); // 放行迟到的 resume 失败
+      releaseResume(); // 放行迟到的第一次 resume 失败
       await new Promise((r) => setTimeout(r, 0));
     });
 
     const s = useGameStore.getState();
-    expect(prompts).toEqual(["继续世界：campus-summer-1。", "推门进去"]);
-    expect(s.pendingResync).toBeNull();
+    expect(prompts).toEqual(["继续世界：campus-summer-1。", "继续世界：campus-summer-1。"]);
+    // 现状：强推把 resyncing 重新置真，于是迟到的旧失败被 markResyncFailed 认领——徽章 +「再同步」入口亮起
+    expect(s.resyncFailed).toBe(true);
     expect(s.resyncing).toBe(false);
-    expect(s.resyncFailed).toBe(false); // 已放弃的重同步不许把这次失败记进来
-    expect(s.treeNotice).toBeNull(); // 也不许写「点再同步重试」的残影
+    expect(s.pendingResync).toEqual({ worldId: "campus-summer-1", seq: 7 });
+    expect(s.pendingRerollPrompt).toBe("推门进去"); // 排队的玩家输入仍在
   });
 });
 
-// ————————————————————— 重演（v1.7；v1.13 起输入随快照） —————————————————————
+// ————————————————————— 重演（v1.7；v1.13 起输入随快照；v1.14 起先开可编辑对话框） —————————————————————
 
-describe("重演这一幕：解析目标幕与回退点、重同步收尾后重发当时的玩家输入（v1.13，输入取自快照）", () => {
+describe("重演这一幕：先开预填可编辑输入的对话框（v1.14），确认后解析目标幕与回退点、重同步收尾后重发那句（v1.13，输入取自快照）", () => {
   /** POST /prompt 的返回开关（用例内切 false 制造 409 投递失败） */
   let promptOk: boolean;
   /** POST /prompt 收到的指令（按顺序） */
@@ -458,38 +466,63 @@ describe("重演这一幕：解析目标幕与回退点、重同步收尾后重�
           if (body.action === "restore") return jsonResponse({ ok: true, backupSeq: 12 });
           return jsonResponse({ ok: true });
         }
+        if (url.pathname === "/api/logs") return jsonResponse({ entries: [], nextBefore: null });
         return jsonResponse({}, 404);
       }),
     );
   });
 
-  it("重演全链：目标幕 = 最新 turn（输入取自单条）、回退点 = 它之前最近的 turn（backup 不算）、分割线标 reroll", async () => {
+  it("重演全链：点入口先开对话框（预填目标幕那句）→ 改一种说法确认 → 目标幕 = 最新带输入的 turn、回退点 = 它之前的 turn、分割线标 reroll", async () => {
     render(<TopBar />);
     // v1.12：入口搬进了「进度」菜单——先开菜单（可达路径变了，行为和 aria 一个字没改）
     openRailGroup("进度");
     const btn = screen.getByTestId("reroll");
     expect(btn.getAttribute("aria-label")).toBe("重演这一幕");
 
+    // v1.14 可编辑重演：点击只是**开框**——只解析目标幕（单条取回那条的输入当预填值），不落任何请求
     await act(async () => {
       fireEvent.click(btn);
     });
     expect(snapshotFetches).toEqual([5]); // 输入来自目标幕那条的单条查询（列表刻意不带 prompt）
-    // 目标幕 = 最新 turn 5（刚结束的本回合）；回退点 = 它之前最近的 turn 2（backup 3 不参与）
+    expect(worldPosts).toEqual([]);
+    const dialog = screen.getByTestId("reroll-dialog");
+    expect(dialog.getAttribute("role")).toBe("dialog"); // 照 overlay 范式：role=dialog + aria-modal + 焦点陷阱
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    const input = screen.getByTestId("reroll-input") as HTMLTextAreaElement;
+    expect(input.value).toBe("推门进去"); // 预填那一刻的输入
+    // 焦点陷阱：焦点在框里循环（输入框 → 取消 → 确认重演 → 回绕回输入框），不许跑到框外。
+    // 开框那一拍**不在这里**断言 activeElement：Radix 菜单关闭时「归还焦点给触发器」是一个 setTimeout(0)
+    // （FocusScope 的 onUnmountAutoFocus），打桩的 fetch 比那一拍还快；真实链路里网络往返早把它让过去了
+    // （真浏览器里开框后焦点就在多行输入上）。这里钉的是陷阱本身还在、且关得住。
+    input.focus();
+    pressTab();
+    expect(document.activeElement).toBe(screen.getByTestId("reroll-cancel"));
+    pressTab();
+    expect(document.activeElement).toBe(screen.getByTestId("reroll-confirm"));
+    pressTab();
+    expect(document.activeElement).toBe(input); // 回绕：不跑出框
+
+    // 改一种说法再确认：退到目标幕开演前（回退点 = 它之前最近的 turn 2；backup 3 不参与），重发改写的那句
+    fireEvent.change(input, { target: { value: " 换个说法：先敲门。 " } });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("reroll-confirm"));
+    });
+    expect(screen.queryByTestId("reroll-dialog")).toBeNull(); // 确认即关框
     expect(worldPosts).toStrictEqual([{ action: "restore", worldId: "campus-summer-1", seq: 2 }]);
     expect(prompts).toEqual(["继续世界：campus-summer-1。"]);
     const s1 = useGameStore.getState();
     expect(s1.pendingResync).toEqual({ worldId: "campus-summer-1", seq: 2 });
-    expect(s1.pendingRerollPrompt).toBe("推门进去");
+    expect(s1.pendingRerollPrompt).toBe("换个说法：先敲门。"); // 改写的输入两边 trim 后带过重同步窗口
     expect(s1.history[1]).toMatchObject({ kind: "rollback", seq: 2, reason: "reroll" });
     openRailGroup("进度");
     expect(screen.queryByTestId("reroll")).toBeNull(); // 待重同步期间不显示重演（重开菜单也不给）
 
-    // 重同步回合成功收尾 → 清徽章 + 排队跟进立即重发那次输入（走玩家回合路径）
+    // 重同步回合成功收尾 → 清徽章 + 排队跟进立即重发**改写的那句**（走玩家回合路径）
     act(() => {
       useGameStore.setState({ segs: { 0: "重读档完成" }, curSeg: 0 });
       useGameStore.getState().handleEvent({ type: "turn_end" });
     });
-    expect(prompts).toEqual(["继续世界：campus-summer-1。", "推门进去"]);
+    expect(prompts).toEqual(["继续世界：campus-summer-1。", "换个说法：先敲门。"]);
     expect(useGameStore.getState().pendingResync).toBeNull();
     expect(useGameStore.getState().pendingRerollPrompt).toBeNull();
 
@@ -511,7 +544,49 @@ describe("重演这一幕：解析目标幕与回退点、重同步收尾后重�
     expect(acts[acts.length - 1].className).toContain("opacity-50");
   });
 
-  it("最新条目是空的续玩回合（刷新/重启后的「继续世界线」）：回看到最近一条带输入的幕，重演它", async () => {
+  it("取消：写了一半又不想改——关框不落任何请求，重演入口照旧在；Esc 只关框、不穿透到别处", async () => {
+    render(<TopBar />);
+    openRailGroup("进度");
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("reroll"));
+    });
+    fireEvent.change(screen.getByTestId("reroll-input"), { target: { value: "写到一半又不想改了" } });
+    fireEvent.click(screen.getByTestId("reroll-cancel"));
+    expect(screen.queryByTestId("reroll-dialog")).toBeNull(); // 草稿随框一起丢
+    expect(worldPosts).toEqual([]); // 取消不落任何请求
+    expect(prompts).toEqual([]);
+    expect(useGameStore.getState().rerollDialog).toBeNull();
+    expect(useGameStore.getState().pendingResync).toBeNull(); // 没进重演，也就没有待重同步
+
+    // Esc 是同一条取消路径（就地吞掉：冒到 App 的关闭链会顺手关掉整屏）
+    openRailGroup("进度");
+    expect(screen.getByTestId("reroll")).toBeTruthy(); // 入口还在，可以再来一次
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("reroll"));
+    });
+    fireEvent.keyDown(screen.getByTestId("reroll-dialog"), { key: "Escape" });
+    expect(screen.queryByTestId("reroll-dialog")).toBeNull();
+    expect(worldPosts).toEqual([]);
+  });
+
+  it("空文本回退为原句：清空输入框再确认，重发的仍是快照里那句（与「没改写」同一口径）", async () => {
+    render(<TopBar />);
+    openRailGroup("进度");
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("reroll"));
+    });
+    const input = screen.getByTestId("reroll-input") as HTMLTextAreaElement;
+    expect(input.value).toBe("推门进去");
+    fireEvent.change(input, { target: { value: "   " } }); // 全空白 = 没改写
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("reroll-confirm"));
+    });
+    expect(worldPosts).toStrictEqual([{ action: "restore", worldId: "campus-summer-1", seq: 2 }]);
+    expect(prompts).toEqual(["继续世界：campus-summer-1。"]);
+    expect(useGameStore.getState().pendingRerollPrompt).toBe("推门进去"); // 回退为预填的那句
+  });
+
+  it("最新条目是空的续玩回合（刷新/重启后的「继续世界线」）：回看到最近一条带输入的幕、预填它，确认后重演的是那一幕", async () => {
     // 现实链：场景（#5，输入「推门进去」）→ 回退备份（#6）→ 读档续玩（#7，prompt 空）——刷新后正是这个样子
     historySnapshots = [snap(3, "turn"), snap(5, "turn"), snap(6, "backup"), snap(7, "turn")];
     promptsBySeq = { 3: "上一幕的输入", 5: "推门进去", 7: "" };
@@ -521,12 +596,19 @@ describe("重演这一幕：解析目标幕与回退点、重同步收尾后重�
       fireEvent.click(screen.getByTestId("reroll"));
     });
     expect(snapshotFetches).toEqual([7, 5]); // 先探最新（空）→ 再探最近带输入的那一幕
+    // 预填的是「最后玩过的那一幕」的输入，而不是那条空的续玩条目
+    expect((screen.getByTestId("reroll-input") as HTMLTextAreaElement).value).toBe("推门进去");
+
+    // 不改写法直接确认 = 原样重发那一句（与 v1.13 行为一致）：退到 #5 之前最近的 turn（#3）
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("reroll-confirm"));
+    });
     expect(worldPosts).toStrictEqual([{ action: "restore", worldId: "campus-summer-1", seq: 3 }]); // 回退点 = #5 之前最近的 turn
     expect(prompts).toEqual(["继续世界：campus-summer-1。"]);
     expect(useGameStore.getState().pendingRerollPrompt).toBe("推门进去");
   });
 
-  it("旧档（整档都没有输入）：回看取完 → status 给降级提示，不发 restore、不静默", async () => {
+  it("旧档（整档都没有输入）：回看取完 → status 给降级提示，不发 restore、不静默，也不开空对话框", async () => {
     historySnapshots = [snap(2, "turn"), snap(5, "turn")];
     promptsBySeq = { 2: "", 5: "" }; // v1.13 之前的档：字段缺省收敛为空串，客户端分辨不了也不为此再加字段
     render(<TopBar />);
@@ -535,13 +617,14 @@ describe("重演这一幕：解析目标幕与回退点、重同步收尾后重�
       fireEvent.click(screen.getByTestId("reroll"));
     });
     expect(snapshotFetches).toEqual([5, 2]); // 回看取完（本地单条查询）；REPLAY_PROBE_MAX 只兜极端链
+    expect(screen.queryByTestId("reroll-dialog")).toBeNull(); // 没有可预填的东西：不开空框
     expect(worldPosts).toEqual([]);
     expect(prompts).toEqual([]);
     expect(useGameStore.getState().status).toBe("无法重演：这一档没有留下当时的输入");
     expect(useGameStore.getState().pendingRerollPrompt).toBeNull();
   });
 
-  it("唯一带输入的幕就是第一条 turn：无处可退 → status 说清「这是第一幕」", async () => {
+  it("唯一带输入的幕就是第一条 turn：无处可退 → status 说清「这是第一幕」，不开框", async () => {
     historySnapshots = [snap(1, "turn"), snap(2, "backup")]; // 有输入但没有更早的 turn 可退
     promptsBySeq = { 1: "开场白。" };
     useGameStore.setState({ turnSnapshots: null }); // 未知：不藏功能，点击时再判定
@@ -550,6 +633,7 @@ describe("重演这一幕：解析目标幕与回退点、重同步收尾后重�
     await act(async () => {
       fireEvent.click(screen.getByTestId("reroll"));
     });
+    expect(screen.queryByTestId("reroll-dialog")).toBeNull();
     expect(worldPosts).toEqual([]);
     expect(prompts).toEqual([]);
     const s = useGameStore.getState();
@@ -598,11 +682,15 @@ describe("重演这一幕：解析目标幕与回退点、重同步收尾后重�
     expect(screen.getByTestId("reroll")).toBeTruthy(); // 菜单开着：条目随 store 变化就地长回来
   });
 
-  it("连掷：第一次重演走完后，再点按此刻盘上的最新一条重新解析（账本已删，输入仍在盘上）", async () => {
+  it("连掷：第一次重演走完后，再点按此刻盘上的最新一条重新解析并重开框（账本已删，输入仍在盘上）", async () => {
     render(<TopBar />);
     openRailGroup("进度");
     await act(async () => {
       fireEvent.click(screen.getByTestId("reroll"));
+    });
+    await act(async () => {
+      // 框里就是目标幕那句：不改写直接确认 = 原样重发
+      fireEvent.click(screen.getByTestId("reroll-confirm"));
     });
     act(() => {
       // 重同步回合收尾 → 自动重发
@@ -624,6 +712,10 @@ describe("重演这一幕：解析目标幕与回退点、重同步收尾后重�
     });
     // turn 序列 [2,5,14]：目标幕 = 14（回合乙）、回退点 = 5——第二次重演按新账本退到 5
     expect(snapshotFetches).toEqual([5, 14]);
+    expect((screen.getByTestId("reroll-input") as HTMLTextAreaElement).value).toBe("推门进去"); // 预填新目标幕那句
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("reroll-confirm"));
+    });
     expect(worldPosts).toStrictEqual([
       { action: "restore", worldId: "campus-summer-1", seq: 2 },
       { action: "restore", worldId: "campus-summer-1", seq: 5 },
@@ -632,12 +724,15 @@ describe("重演这一幕：解析目标幕与回退点、重同步收尾后重�
     expect(useGameStore.getState().pendingRerollPrompt).toBe("推门进去"); // 又排了一次重发
   });
 
-  it("重同步投递失败后玩家改发普通指令：排队重发作废，重发的玩家文本不出现第二次", async () => {
+  it("重同步投递失败后玩家改发普通指令：排队的那句被自己的输入顶掉，重发的玩家文本不出现第二次", async () => {
     promptOk = false; // restore 后补发的续档指令 409：进入「待重同步 + 已排队重发」态
     render(<TopBar />);
     openRailGroup("进度");
     await act(async () => {
       fireEvent.click(screen.getByTestId("reroll"));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("reroll-confirm")); // 预填原句照发
     });
     await waitFor(() => expect(useGameStore.getState().resyncFailed).toBe(true));
     expect(useGameStore.getState().pendingRerollPrompt).toBe("推门进去"); // 前置：排队重发还挂着
@@ -650,9 +745,9 @@ describe("重演这一幕：解析目标幕与回退点、重同步收尾后重�
       useGameStore.setState({ segs: { 0: "门在雨里纹丝不动。" }, curSeg: 0 });
       useGameStore.getState().handleEvent({ type: "turn_end" });
     });
-    // 普通指令回合的收尾不认领排队重发（认领条件是 resyncing 收尾）：玩家文本只出现一次，
-    // 排队的「推门进去」已随 pendingResync 在 send 入口静默作废
-    expect(prompts).toEqual(["继续世界：campus-summer-1。", "原地等待"]);
+    // send 入口先强推一次重同步（第二发 `继续世界：`）、把「原地等待」排进跟进位：旧的「推门进去」被顶掉，
+    // 重同步回合收尾后补发的是「原地等待」——玩家文本只出现一次、且从不是旧那句
+    expect(prompts).toEqual(["继续世界：campus-summer-1。", "继续世界：campus-summer-1。", "原地等待"]);
     expect(prompts.filter((p) => p === "推门进去")).toHaveLength(0);
     const s = useGameStore.getState();
     expect(s.pendingRerollPrompt).toBeNull();
@@ -664,6 +759,9 @@ describe("重演这一幕：解析目标幕与回退点、重同步收尾后重�
     openRailGroup("进度");
     await act(async () => {
       fireEvent.click(screen.getByTestId("reroll"));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("reroll-confirm")); // 预填原句照发
     });
     await waitFor(() => expect(useGameStore.getState().resyncFailed).toBe(true));
     expect(useGameStore.getState().pendingRerollPrompt).toBe("推门进去"); // 排队重发保留：还有救
@@ -708,5 +806,132 @@ describe("重演这一幕：解析目标幕与回退点、重同步收尾后重�
     expect(screen.getByTestId("reroll")).toBeTruthy(); // 未知不藏功能
     act(() => useGameStore.setState({ turnSnapshots: 1 }));
     expect(screen.queryByTestId("reroll")).toBeNull(); // 已知不足：收起（菜单开着也即时跟 store 走）
+  });
+});
+
+// ————————————————————— 回想接磁盘（v1.14）：抽屉首翻 / 加载更多 / 去重 / 空态 —————————————————————
+
+describe("回想接磁盘（v1.14）：抽屉打开首翻最近一页、底部「加载更多」往更早翻、按 seq 与内存幕去重", () => {
+  /** GET /api/logs 的分页返回（参数 = before，null 表示最新一页） */
+  let logsFor: (before: number | null) => { entries: LogEntry[]; nextBefore: number | null };
+  /** GET /api/logs 是否整体失败 */
+  let logsFail: boolean;
+  /** GET /api/logs 请求过的 before 参数（证明分页真的按 nextBefore 走） */
+  let logBefores: (number | null)[];
+
+  /** 一条磁盘回合记录（prompt 对抽屉内容无意义，只留 text） */
+  const log = (seq: number, text: string): LogEntry => ({
+    seq,
+    at: "2026-09-17T00:00:00.000Z",
+    prompt: `输入 ${seq}`,
+    text,
+  });
+
+  beforeEach(() => {
+    logsFail = false;
+    logBefores = [];
+    // 最新一页：4/3/2（下一页的 nextBefore = 2）；更早一页：1（到底）
+    logsFor = (before) =>
+      before === null
+        ? { entries: [log(4, "第 4 幕的正文。"), log(3, "第 3 幕的正文。"), log(2, "第 2 幕的正文。")], nextBefore: 2 }
+        : { entries: [log(1, "第 1 幕的正文。")], nextBefore: null };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/api/logs") {
+          if (logsFail) return jsonResponse({ error: "boom" }, 500);
+          const raw = url.searchParams.get("before");
+          const before = raw === null ? null : Number(raw);
+          logBefores.push(before);
+          return jsonResponse(logsFor(before));
+        }
+        return jsonResponse({}, 404);
+      }),
+    );
+    useGameStore.setState({
+      screen: "game",
+      worldId: "campus-summer-1",
+      chapterNo: 2,
+      // 本会话刚演完第 3、4 幕（内存）——磁盘日志里同序号的记录要按 seq 去重、别重复渲染
+      history: [
+        { kind: "act", n: "第 3 幕", t: "本会话第三幕。" },
+        { kind: "act", n: "第 4 幕", t: "本会话第四幕。" },
+      ],
+      drawerOpen: false,
+      diskHistory: { entries: [], nextBefore: null, loading: false, error: null, loadedOnce: false },
+    });
+  });
+
+  it("打开抽屉首翻最近一页：磁盘记录渲染在内存幕之下、与内存幕按 seq 去重后只剩更早的；「加载更多」往更早翻", async () => {
+    useGameStore.setState({ drawerOpen: true });
+    render(<HistoryDrawer />);
+
+    await waitFor(() => expect(useGameStore.getState().diskHistory.loadedOnce).toBe(true));
+    // 内存两幕照旧（倒序，最新在上、testid 与原契约一致）
+    const acts = screen.getAllByTestId("history-act");
+    expect(acts.map((a) => a.textContent)).toEqual(["第 4 幕本会话第四幕。", "第 3 幕本会话第三幕。"]);
+    // 磁盘第 4/3 幕与内存幕同 seq → 去重；只剩第 2 幕，且渲染在分界之下
+    const disk = screen.getAllByTestId("history-disk-act");
+    expect(disk).toHaveLength(1);
+    expect(disk[0].textContent).toContain("第 2 幕的正文。");
+    expect(screen.getByTestId("history-disk-divider").textContent).toContain("更早的回合");
+    expect(logBefores).toEqual([null]); // 首翻就是「最新一页」
+
+    const more = screen.getByTestId("history-load-more");
+    expect(more.textContent).toBe("加载更多");
+    await act(async () => {
+      fireEvent.click(more);
+    });
+    await waitFor(() => expect(useGameStore.getState().diskHistory.nextBefore).toBeNull());
+    expect(logBefores).toEqual([null, 2]); // 第二次按 nextBefore=2 往更早翻
+    expect(screen.getAllByTestId("history-disk-act").map((d) => d.textContent)).toEqual([
+      "第 2 幕 · 硬盘记录第 2 幕的正文。",
+      "第 1 幕 · 硬盘记录第 1 幕的正文。",
+    ]);
+    expect(screen.queryByTestId("history-load-more")).toBeNull(); // 翻到底：收起
+  });
+
+  it("空态区分：世界已知但本局与磁盘都空 → 「硬盘上也没有」；没有世界线 → 不白打请求，给「本局还没有内容」", async () => {
+    logsFor = () => ({ entries: [], nextBefore: null });
+    useGameStore.setState({ drawerOpen: true, history: [] });
+    render(<HistoryDrawer />);
+    await waitFor(() => expect(useGameStore.getState().diskHistory.loadedOnce).toBe(true));
+    expect(screen.getByTestId("history-empty-disk")).toBeTruthy();
+    expect(screen.queryByTestId("history-empty-memory")).toBeNull();
+    expect(screen.queryByTestId("history-load-more")).toBeNull(); // 没内容也没有下一页
+
+    // 没有世界线：不请求 /api/logs（也不卡在加载态），直接说本局还没有内容
+    cleanup();
+    logBefores = [];
+    useGameStore.setState({
+      drawerOpen: true,
+      worldId: null,
+      history: [],
+      diskHistory: { entries: [], nextBefore: null, loading: false, error: null, loadedOnce: false },
+    });
+    render(<HistoryDrawer />);
+    expect(screen.getByTestId("history-empty-memory")).toBeTruthy();
+    expect(screen.queryByTestId("history-disk-loading")).toBeNull();
+    expect(logBefores).toEqual([]);
+    expect(useGameStore.getState().diskHistory.loadedOnce).toBe(false);
+  });
+
+  it("磁盘读取失败：给错误行与「重试」，点重试成功后记录上屏、错误行消失", async () => {
+    logsFail = true;
+    useGameStore.setState({ drawerOpen: true, history: [] });
+    render(<HistoryDrawer />);
+
+    await waitFor(() => expect(screen.getByTestId("history-disk-error")).toBeTruthy());
+    expect(screen.queryByTestId("history-empty-disk")).toBeNull(); // 有错就不谎称「硬盘上没有」
+    const retry = screen.getByTestId("history-load-more");
+    expect(retry.textContent).toBe("重试");
+
+    logsFail = false;
+    await act(async () => {
+      fireEvent.click(retry);
+    });
+    await waitFor(() => expect(screen.getAllByTestId("history-disk-act")).toHaveLength(3));
+    expect(screen.queryByTestId("history-disk-error")).toBeNull();
   });
 });

@@ -409,7 +409,6 @@ export default function StoryTreeScreen() {
   const sendTreeEdit = useGameStore((s) => s.sendTreeEdit);
   const forkAt = useGameStore((s) => s.forkAt);
   const restoreSnapshot = useGameStore((s) => s.restoreSnapshot);
-  const rerollAt = useGameStore((s) => s.rerollAt);
   const switchToFork = useGameStore((s) => s.switchToFork);
 
   // 列表/图形：null=按图大小自动（>BIG_GRAPH_NODES 降级列表），点过切换就由玩家说了算（状态留在本屏）
@@ -784,7 +783,6 @@ export default function StoryTreeScreen() {
                   canReplay={focusCanReplay}
                   onFork={forkAt}
                   onRestore={(seq) => void restoreSnapshot(seq)}
-                  onReplay={(seq) => void rerollAt(seq)}
                   onEdit={(text) => sendTreeEdit(text, focusNode?.id)}
                   onLabel={labelSnapshotFor}
                   onClose={() => setTreeFocus(null)}

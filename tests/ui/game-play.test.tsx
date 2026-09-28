@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import CharactersDrawer from "../../src/components/game/CharactersDrawer";
 import DialogueBox from "../../src/components/game/DialogueBox";
 import FreeInput from "../../src/components/game/FreeInput";
-import GameStage from "../../src/components/game/GameStage";
+import GameStage, { TURN_DELTA_MS } from "../../src/components/game/GameStage";
 import OptionList from "../../src/components/game/OptionList";
 import { useGameStore } from "../../src/store/game";
 import { focusableElements } from "../../src/lib/focusTrap";
@@ -494,7 +494,7 @@ describe("DialogueBox：面板上的自动 / 快进控件（v1.8）", () => {
     expect(screen.queryByTestId("dialogue-hint")).toBeNull();
   });
 
-  it("点「快进」与空格/点面板同一条路：正文一次到全文，打字完成后按钮禁用（不谎称点了有用）", () => {
+  it("点「快进」与空格/点面板同一条路：正文一次到全文，打字完成后按钮禁用（不谎称点了有用）；正文根是可读语义 + 独立「补全」控件", () => {
     vi.useFakeTimers();
     const full = "雨声漫过教堂的尖顶，薇拉抱着账册站在门口，没有看你。";
     useGameStore.setState({
@@ -509,13 +509,35 @@ describe("DialogueBox：面板上的自动 / 快进控件（v1.8）", () => {
       settings: { ...DEFAULT_SETTINGS, textSpeed: "standard", autoAdvance: 0 },
     });
     render(<DialogueBox />);
+    // 正文根是 role=log（读屏能逐句读出故事），不再是吞掉整段正文的按钮；面板本体不再可聚焦
+    const box = screen.getByTestId("dialogue-box");
+    expect(box.getAttribute("role")).toBe("log");
+    expect(box.getAttribute("aria-live")).toBe("polite");
+    expect(box.getAttribute("aria-atomic")).toBe("false");
+    expect(box.hasAttribute("tabindex")).toBe(false);
     act(() => vi.advanceTimersByTime(TEXT_SPEED_MS.standard));
     expect(shownText()).toBe(full.slice(0, 1));
 
+    // 「补全」是拆出来的独立可聚焦控件（canComplete 与 completeNow 同源）：与快进、空格、点面板同一条路
+    const complete = screen.getByTestId("dialogue-complete") as HTMLButtonElement;
+    expect(complete.disabled).toBe(false);
+    expect(complete.getAttribute("aria-label")).toBe("补全正文");
+    fireEvent.click(complete);
+    expect(shownText()).toBe(full);
+    expect(useGameStore.getState().typingDone).toBe(true);
+    expect((screen.getByTestId("dialogue-complete") as HTMLButtonElement).disabled).toBe(true); // 打完了：没有可补的
+
     const skip = screen.getByTestId("dialogue-skip") as HTMLButtonElement;
-    expect(skip.disabled).toBe(false);
+    expect(skip.disabled).toBe(true);
     expect(skip.getAttribute("aria-label")).toBe("立即显示全文");
-    fireEvent.click(skip);
+
+    // 换一幕再来：快进按钮与「补全」一样，点了就一次到全文，随即禁用
+    act(() => useGameStore.setState({ received: full, finalText: full, turnKey: 620, typingDone: false }));
+    act(() => vi.advanceTimersByTime(TEXT_SPEED_MS.standard));
+    expect(shownText()).toBe(full.slice(0, 1));
+    const skip2 = screen.getByTestId("dialogue-skip") as HTMLButtonElement;
+    expect(skip2.disabled).toBe(false);
+    fireEvent.click(skip2);
     expect(shownText()).toBe(full); // 一次到全文
     expect(useGameStore.getState().typingDone).toBe(true);
     expect((screen.getByTestId("dialogue-skip") as HTMLButtonElement).disabled).toBe(true); // 打完了：没有可补的
@@ -527,7 +549,7 @@ describe("DialogueBox：面板上的自动 / 快进控件（v1.8）", () => {
     // 空格与「聚焦的按钮」的边界（v1.8 修复）：打字中焦点落在按钮上时空格是**按钮的激活键**，
     // 面板不许 preventDefault 把它按灭（那一下之后浏览器会派发 click，补全归按钮自己的 onClick）。
     // 旧行为：completeNow 成功即 preventDefault → 聚焦的自动/快进按空格毫无反应。
-    act(() => useGameStore.setState({ received: full, finalText: full, turnKey: 63, typingDone: false }));
+    act(() => useGameStore.setState({ received: full, finalText: full, turnKey: 621, typingDone: false }));
     act(() => vi.advanceTimersByTime(TEXT_SPEED_MS.standard));
     const skipAgain = screen.getByTestId("dialogue-skip") as HTMLButtonElement;
     expect(skipAgain.disabled).toBe(false);
@@ -540,6 +562,79 @@ describe("DialogueBox：面板上的自动 / 快进控件（v1.8）", () => {
     expect(fireEvent.keyDown(document.body, { key: " " })).toBe(false); // 被 preventDefault（不滚页）
     expect(shownText()).toBe(full);
     expect(useGameStore.getState().typingDone).toBe(true);
+  });
+
+  it("打字机播种：同一幕重挂（typingDoneKey 对得上）直接显示全文不重播；键失配（新回合）照常逐字重播", () => {
+    vi.useFakeTimers();
+    const full = "蝉鸣把旧教学楼叫成一锅白粥，她抱着书包站在教室后门。";
+    useGameStore.setState({
+      screen: "game",
+      engineBusy: false,
+      received: full,
+      finalText: full,
+      turnKey: 71,
+      options: null,
+      typingDone: false,
+      status: "引擎演绎中…",
+      settings: { ...DEFAULT_SETTINGS, textSpeed: "slow", autoAdvance: 0 },
+    });
+    const first = render(<DialogueBox />);
+    fireEvent.click(screen.getByTestId("dialogue-box")); // 补全即「已展示」：记账
+    expect(useGameStore.getState().typingDoneKey).toBe("71");
+    first.unmount();
+
+    // App 的 keyed 重挂（game → overlay → game）：键对得上 → 一次读取即全文，不重播
+    render(<DialogueBox />);
+    expect(screen.getByTestId("dialogue-text").textContent).toContain(full);
+    expect(useGameStore.getState().typingDone).toBe(true);
+
+    // 新回合（turnKey 变、typingDoneKey 由 resetTurnState 清空）：失配 → 照常从头打字
+    cleanup();
+    useGameStore.setState({ received: full, finalText: full, turnKey: 72, typingDone: false, typingDoneKey: null });
+    render(<DialogueBox />);
+    expect(screen.getByTestId("dialogue-text").textContent).not.toContain(full); // 才起了个头
+  });
+});
+
+// ————————————————————— 数值差分条（v1.14 因果反馈）：GameStage 对话区上方 —————————————————————
+
+describe("数值差分条：有值才现、换回合清除、数秒淡出（v1.14）", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    useGameStore.setState({ lastTurnDeltas: null, screen: "game" });
+  });
+
+  it("GameStage 对话区上方一行「排异指数 65 → 73 ↑」；store 置 null 立刻撤下；数秒后自己淡出", () => {
+    vi.useFakeTimers();
+    useGameStore.setState({ screen: "game" });
+    const { rerender } = render(<GameStage />);
+    expect(screen.queryByTestId("turn-deltas"), "没有差值时不渲染").toBeNull();
+
+    act(() =>
+      useGameStore.setState({
+        lastTurnDeltas: [
+          { name: "排异指数", from: "65", to: "73", dir: "up" },
+          { name: "薇拉", from: "62", to: "58", dir: "down" },
+        ],
+      }),
+    );
+    rerender(<GameStage />);
+    const row = screen.getByTestId("turn-deltas");
+    expect(row.textContent).toContain("排异指数 65 → 73 ↑");
+    expect(row.textContent).toContain("薇拉 62 → 58 ↓");
+    expect(row.getAttribute("role")).toBe("status"); // 读屏当一条状态读出
+
+    // 换回合清除（store 把差值置回 null）：立刻撤下，不残留上一回合的数
+    act(() => useGameStore.setState({ lastTurnDeltas: null }));
+    rerender(<GameStage />);
+    expect(screen.queryByTestId("turn-deltas")).toBeNull();
+
+    // 再来一次：数秒后自己淡出（不必等 store 清）
+    act(() => useGameStore.setState({ lastTurnDeltas: [{ name: "张力", from: "3", to: "5", dir: "up" }] }));
+    rerender(<GameStage />);
+    expect(screen.getByTestId("turn-deltas")).toBeTruthy();
+    act(() => vi.advanceTimersByTime(TURN_DELTA_MS));
+    expect(screen.queryByTestId("turn-deltas")).toBeNull();
   });
 });
 
@@ -618,7 +713,7 @@ describe("角色面板：渲染 / 秘密折叠 / turn_end 重拉 / 空态（v1.7
     );
   });
 
-  it("打开面板：拉一次 /api/state 并分块渲染（状态/主角/角色卡/导演手记/Flags·伏笔）", async () => {
+  it("打开面板：拉一次 /api/state 并分块渲染（状态/主角/角色卡/线索·伏笔；幕后手记不再渲染）", async () => {
     render(<CharactersDrawer />);
     expect(screen.queryByTestId("characters-panel")).toBeNull(); // 关着不渲染
 
@@ -637,9 +732,15 @@ describe("角色面板：渲染 / 秘密折叠 / turn_end 重拉 / 空态（v1.7
     expect(card.getByText("薇拉")).toBeTruthy();
     expect(card.getByText("62")).toBeTruthy(); // 好感度数字
     expect(card.getByTestId("character-expression-薇拉").textContent).toBe("微笑");
-    expect(screen.getByTestId("characters-director").textContent).toContain("旅店停电");
+    // v1.14 剧透收口：幕后手记整块不再渲染（state.md 仍照旧解析，只是不摊给玩家）
+    expect(screen.queryByTestId("characters-director")).toBeNull();
+    // 线索照旧；未了伏笔默认折叠 + 标注「含剧透」，点开才见原文
     expect(screen.getByTestId("characters-notes").textContent).toContain("已读旧信");
-    expect(screen.getByTestId("characters-notes").textContent).toContain("码头工人提到的白船");
+    expect(screen.queryByTestId("characters-foreshadow-list")).toBeNull();
+    const foreshadow = screen.getByTestId("characters-foreshadow");
+    expect(foreshadow.textContent).toContain("含剧透");
+    fireEvent.click(foreshadow);
+    expect(screen.getByTestId("characters-foreshadow-list").textContent).toContain("码头工人提到的白船");
 
     // —— v1.9 a11y：抽屉语义 + 焦点陷阱 + 关闭归还 ——
     const panel = screen.getByTestId("characters-panel");
@@ -648,14 +749,14 @@ describe("角色面板：渲染 / 秘密折叠 / turn_end 重拉 / 空态（v1.7
     expect(panel.getAttribute("aria-label")).toBe("角色面板");
     const close = within(panel).getByRole("button", { name: "关闭角色面板" });
     expect(document.activeElement).toBe(close); // 开面板把焦点送进抽屉（第一个可聚焦元素）
-    // 陷阱认到的那份清单：关闭按钮 + 薇拉那张卡的「秘密」折叠（沈屿的秘密是「无」，没有折叠位）
+    // 陷阱认到的那份清单：关闭按钮 + 薇拉那张卡的「秘密」折叠 + 「未了伏笔」折叠（沈屿的秘密是「无」，没有折叠位）
     const secret = screen.getByTestId("character-secret-薇拉");
-    expect(focusableElements(panel)).toEqual([close, secret]);
-    secret.focus();
+    expect(focusableElements(panel)).toEqual([close, secret, foreshadow]);
+    foreshadow.focus();
     pressTab(); // 末 → 首：不跑出抽屉去逛 TopBar / 命令轨
     expect(document.activeElement).toBe(close);
     pressTab(true); // 首 → 末（Shift+Tab 反向回绕到同一个末项）
-    expect(document.activeElement).toBe(secret);
+    expect(document.activeElement).toBe(foreshadow);
 
     // 关闭归还焦点：回到开面板前拿着焦点的那个元素
     act(() => {
@@ -682,7 +783,45 @@ describe("角色面板：渲染 / 秘密折叠 / turn_end 重拉 / 空态（v1.7
     expect(screen.queryByTestId("character-secret-沈屿")).toBeNull();
   });
 
-  it("刷新时机：turn_end 后面板开着自动重拉、关着不拉；世界切换清空", async () => {
+  it("好感度：0/50/100 刻度恒在；低（≤25）/高（≥75）换色并给临界小标，数字字面不变", async () => {
+    render(<CharactersDrawer />);
+    await act(async () => {
+      useGameStore.getState().toggleCharacters();
+    });
+    await waitFor(() => expect(useGameStore.getState().stateView).toEqual(VIEW));
+
+    // 薇拉 62（中档）：数字照旧、三条刻度都在、不加临界小标
+    const vera = within(screen.getByTestId("character-card-薇拉"));
+    expect(vera.getByText("62")).toBeTruthy();
+    expect(
+      screen.getByTestId("character-favor-track-薇拉").querySelectorAll("span[aria-hidden]"),
+      "0 / 50 / 100 三条刻度",
+    ).toHaveLength(3);
+    expect(vera.queryByText("高")).toBeNull();
+    expect(vera.queryByText("低")).toBeNull();
+
+    // 高（90）/低（10）两档：换色 + 临界小标；数字仍是纯数字（e2e 与既有断言都盯着这个字面）
+    act(() => {
+      useGameStore.setState({
+        stateView: {
+          ...VIEW,
+          characters: [
+            { ...VIEW.characters[0], favor: 90 },
+            { ...VIEW.characters[1], favor: 10 },
+          ],
+        },
+      });
+    });
+    const highCard = within(screen.getByTestId("character-card-薇拉"));
+    expect(highCard.getByText("90")).toBeTruthy();
+    expect(highCard.getByText("高")).toBeTruthy();
+    expect(highCard.queryByText("低")).toBeNull();
+    const lowCard = within(screen.getByTestId("character-card-沈屿"));
+    expect(lowCard.getByText("10")).toBeTruthy();
+    expect(lowCard.getByText("低")).toBeTruthy();
+  });
+
+  it("刷新时机：turn_end 恒重拉 state（数值差分，v1.14 起不再看面板开合）；秘密/伏笔各自的折叠默认收起；世界切换清空", async () => {
     await act(async () => {
       useGameStore.getState().toggleCharacters();
     });
@@ -691,13 +830,13 @@ describe("角色面板：渲染 / 秘密折叠 / turn_end 重拉 / 空态（v1.7
     act(() => {
       useGameStore.getState().handleEvent({ type: "turn_end" });
     });
-    expect(stateQueries).toHaveLength(2); // 面板开着：回合收尾重拉
+    expect(stateQueries).toHaveLength(2); // 回合收尾恒重拉（面板开着只是同一条路）
 
     act(() => {
       useGameStore.getState().toggleCharacters(); // 关掉
       useGameStore.getState().handleEvent({ type: "turn_end" });
     });
-    expect(stateQueries).toHaveLength(2); // 关着不拉
+    expect(stateQueries, "v1.14：差分是每回合都要看的因果反馈，关着面板也拉").toHaveLength(3);
 
     // 世界切换（resetRunState 路径）：面板收起、视图清空
     act(() => {

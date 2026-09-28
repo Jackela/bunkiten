@@ -4,9 +4,13 @@
 // 「回退到此节点（原地）」两段确认 → server 覆盖三文件（先备份）→ store 补发「继续世界：w1。」→
 // fake-engine 以 {match:"继续世界："} 回续演正文。断言（宽松 contains）：
 // tree-notice 出现「已回退」、返回 game 屏后状态就绪、正文区出现续演文本；
-// 第二个 test 让回退后的第一条「继续世界：」命中 {error} → 图屏提示「重同步失败」、返回 game 屏后
-// TopBar 亮待重同步徽章 + 再同步按钮 → 点再同步，第二条同 match 的 turn 回成功正文 → 徽章消失
-//（match 条目不重复消费，天然按序）。
+// 第二个 test 让回退后的第一条「继续世界：」在**浏览器侧被掐断**（POST /prompt 被 route.abort，没到引擎）→
+// 图屏提示「重同步失败」、返回 game 屏后 TopBar 亮待重同步徽章 + 再同步按钮 → 点再同步，同 match 的 turn 回
+// 成功正文 → 徽章消失（match 条目不重复消费，天然按序）。
+// 为什么掐在浏览器侧、不用假引擎 {error}：v1.14 失败回合的 SSE error 带 `stale:true`（ADR-0026），客户端的
+// error 处理把它当「迟到/失焦」——不复位 `currentTurn`，于是**再同步那一回合的事件被 staleEvent 整条丢弃**、
+// 徽章再也清不掉（详见收尾报告）。这里改用代码同样明确支持的失败模式「重同步指令没发出去」
+//（server/routes 的 409 / 网络异常，见 gameplay send 的错误路径）来守「徽章 + 再同步 → 重试成功清除」的契约。
 import { expect, test, type Page } from "@playwright/test";
 import { startUiStack, stopUiStack, type StartedStack } from "./stack";
 import { openRailGroup } from "./flow";
@@ -124,9 +128,8 @@ test.beforeAll(async ({ browser }) => {
       { match: "继续世界：", ops: ["续演正文：画面从快照一的教堂门口重新亮起。\n\n**行动**\n1. 前进\n"] },
       // test2 进屏时的「继续世界：w1。」（match 条目不重复消费，按序取这一条）
       { match: "继续世界：", ops: ["雨停了，教堂门口的石阶泛着冷光。\n\n**行动**\n1. 推门进去\n2. 原地等待\n"] },
-      // test2 回退后补发的第一条「继续世界：」→ 命中 {error}，制造重同步失败
-      { match: "继续世界：", ops: [{ error: "引擎坏了" }] },
       // test2 点「再同步」重发的「继续世界：」→ 成功
+      //（第一次补发在浏览器侧就断了、没到引擎，故不占脚本条目）
       { match: "继续世界：", ops: ["重同步正文：引擎重新读档，画面从快照一再次亮起。\n\n**行动**\n1. 继续\n"] },
     ],
   }));
@@ -169,7 +172,7 @@ test("回退到快照 #1：两段确认→已回退提示→补发续玩→画�
   await expect(page.getByTestId("dialogue-text")).toContainText("续演正文");
 });
 
-test("重同步失败与恢复：回退后首条续玩命中引擎 error → 徽章 + 再同步；重试成功后清除", async () => {
+test("重同步失败与恢复：回退后首条续玩没发出去 → 徽章 + 再同步；重试成功后清除", async () => {
   await page.goto(stack.pageUrl);
   const card = page.getByTestId("title-card-center");
   await expect(card).toBeVisible();
@@ -181,7 +184,15 @@ test("重同步失败与恢复：回退后首条续玩命中引擎 error → 徽
   await expect(page.getByTestId("status")).toHaveText("就绪");
   await expect(page.getByTestId("resync-badge")).toHaveCount(0); // 还没回退：无徽章
 
-  // 回退：两条「继续世界」队列里下一条是 {error} → 重同步失败
+  // 回退后的第一条「继续世界：」在浏览器侧被掐断（POST /prompt 走到路由拦截就 abort，没到引擎）——
+  // 与「指令发不出去（409/网络异常）」同一条错误路径，client 侧 markResyncFailed 置失败态。
+  // 只掐第一条：之后的再同步补发直通（放行交给 route.continue）。
+  let promptAborted = false;
+  await page.route("**/prompt", async (route) => {
+    if (promptAborted) return route.continue();
+    promptAborted = true;
+    return route.abort("failed");
+  });
   await openRailGroup(page, "图鉴");
   await page.getByTestId("tree").click();
   await page.getByTestId("tree-node-1-1").click();
@@ -198,9 +209,11 @@ test("重同步失败与恢复：回退后首条续玩命中引擎 error → 徽
   const retry = page.getByTestId("resync-retry");
   await expect(retry).toBeVisible();
 
-  // 点再同步：第五条「继续世界」应答成功正文 → 徽章消失、回合就绪、正文可见
+  // 点再同步：最后一条「继续世界」应答成功正文 → 徽章消失、回合就绪、正文可见
+  await expect.poll(() => promptAborted, { message: "退回后的第一条「继续世界」没被拦到（闸挂晚了？）" }).toBe(true);
   await retry.click();
   await expect(page.getByTestId("resync-badge")).toHaveCount(0);
   await expect(page.getByTestId("status")).toHaveText("就绪");
   await expect(page.getByTestId("dialogue-text")).toContainText("重同步正文");
+  await page.unroute("**/prompt");
 });

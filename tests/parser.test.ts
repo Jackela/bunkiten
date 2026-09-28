@@ -156,6 +156,51 @@ describe("stripOptionsBlock 截断「**行动**」选项段", () => {
   });
 });
 
+describe("选项段标记的容错面（v1.14：OPTIONS_MARK_RE 唯一真源，行首锚定）", () => {
+  it("必须独占一行的**行首**：正文里行中引用的同款字样不算选项段（不把正文从中间切掉）", () => {
+    const quoted = "她说：「**行动**才是答案。」\n他愣住了。";
+    expect(stripOptionsBlock(quoted)).toBe(quoted); // 原样返回：不再是「从中间切一刀」
+    expect(visibleTarget(quoted, "已定稿")).toBe(quoted);
+    // 行中命中同样不开选项段：没有选项可解析
+    expect(parseOptions("她解释了「**行动**」栏位的写法。\n1. 走")).toBeNull();
+  });
+
+  it("全角星号 ＊＊行动＊＊ 等价识别", () => {
+    expect(stripOptionsBlock("她合上书。\n＊＊行动＊＊\n1. 走")).toBe("她合上书。");
+    expect(parseOptions("＊＊行动＊＊\n1. 走\n2. 留")).toEqual([
+      { n: "1", t: "走" },
+      { n: "2", t: "留" },
+    ]);
+  });
+
+  it("「你的行动」前缀（引擎偶发措辞）同样识别", () => {
+    expect(stripOptionsBlock("她合上书。\n**你的行动**\n1. 走")).toBe("她合上书。");
+    expect(parseOptions("**你的行动**\n1. 走")).toEqual([{ n: "1", t: "走" }]);
+  });
+
+  it("冒号容忍：**行动：** 与 **行动**： 与裸 **行动** 等价", () => {
+    for (const mark of ["**行动：**", "**行动**：", "**行动**"]) {
+      expect(stripOptionsBlock(`她合上书。\n${mark}\n1. 走`), mark).toBe("她合上书。");
+      expect(parseOptions(`${mark}\n1. 走`), mark).toEqual([{ n: "1", t: "走" }]);
+    }
+  });
+
+  it("同行接选项（**行动** 1. …）：标记之后的整段照旧走逐行解析", () => {
+    expect(stripOptionsBlock("她合上书。\n**行动** 1. 推门看看\n2. 转身离开")).toBe("她合上书。");
+    expect(parseOptions("**行动** 1. 推门看看\n2. 转身离开")).toEqual([
+      { n: "1", t: "推门看看" },
+      { n: "2", t: "转身离开" },
+    ]);
+    // 行保持机制下同样收口：标记行之后的选项行都不进打字机正文
+    expect(visibleTarget("第一句。\n第二句。\n**行动** 1. 走", "已定稿")).toBe("第一句。\n第二句。");
+  });
+
+  it("半截标记（**行）依旧不算，正文不受误伤", () => {
+    expect(stripOptionsBlock("她开口了。\n**行")).toBe("她开口了。\n**行");
+    expect(parseOptions("她开口了。\n**行")).toBeNull();
+  });
+});
+
 describe("cleanForHistory 历史正文", () => {
   it("过滤【图】行并去除首尾空白", () => {
     expect(cleanForHistory("\n【图】背景|教室|images/1.jpg\n蝉鸣渐起。\n她合上书。\n")).toBe("蝉鸣渐起。\n她合上书。");

@@ -45,7 +45,10 @@ const CODEX_CLI_PACKAGE = ["@openai", "codex"];
  * @typedef {Object} SpawnContext
  * @property {Credentials} creds 当前凭据（引擎选择 + 各组配置）
  * @property {string} home 用户主目录（os.homedir()；单测/集成传临时 HOME）
- * @property {string} gameRoot 引擎 cwd（开发态仓根 / 打包态 resources/game）
+ * @property {string} gameRoot **只读内容根**（开发态仓根 / 打包态 resources/game）——描述符从它取 grok 的
+ *   `--plugin-dir` 与 codex 的 skill 源。⚠️ 它**不是**引擎的 cwd：v1.14 起引擎 cwd 是**可写数据根**
+ *   `config.DATA_ROOT`（ADR-0024），由入口在 `createAcpSession({gameRoot})` 处单独给出——
+ *   SKILL 里的相对路径（state/worlds/…、presets/…/assets）全都按 cwd 落盘。
  *
  * @typedef {Object} EngineDescriptor
  * @property {string} id 引擎 id（与 shared/engines.mjs 同键）
@@ -54,7 +57,9 @@ const CODEX_CLI_PACKAGE = ["@openai", "codex"];
  * @property {(ctx: {rules: string}) => Record<string, unknown> | null} sessionMeta 会话级扩展参数（grok 的 `_meta`；codex 为 null）
  * @property {(home: string) => string} loginFile 登录态探测文件（玩家侧的登录产物）
  * @property {(ctx: {home: string, gameRoot: string, rules: string}) => void} prepare spawn 前的幂等准备（codex：建 home/同步登录态/写配置/落 skill；失败静默）
- * @property {(ctx: {home: string, gameRoot: string}) => string | null} sessionImagesRoot 引擎自产图的会话根目录（codex 无 → null，出图主路径是 media-mcp）
+ * @property {(ctx: {home: string, gameRoot: string}) => string | null} sessionImagesRoot 引擎自产图的会话根目录（codex 无 → null，出图主路径是 media-mcp）。
+ *   注意这里的 `gameRoot` 是**引擎 cwd**（v1.14 起 = 可写数据根 DATA_ROOT：grok 按 cwd 记账会话目录，
+ *   由 server/acp.mjs 传入它自己的 cwd——与上面 SpawnContext 的「只读内容根」不是同一个值）
  * @property {(effort: string) => {configId: string, value: unknown} | null} effortOption 推理档位的下发形状（两引擎不同）
  * @property {(action: "login"|"logout", ctx: {home: string}) => {cmd: string, args: string[], env: Record<string, string>, shell?: boolean, unset?: string[]} | null} authCmd
  *   登录/登出命令（GUI 的按钮用；null = 该引擎没有可用入口）。**在玩家自己的 home 里跑 CLI 自己的登录流程**——
@@ -277,6 +282,8 @@ const GROK = {
         "agent",
         "--always-approve",
         "--plugin-dir",
+        // gameRoot 是**只读内容根**（bundle）：插件目录必须来自随包那份 .grok（ADR-0021），
+        // 引擎的 cwd/写盘根是可写数据根 DATA_ROOT，两者在打包态不同（见 SpawnContext 的说明）
         path.join(gameRoot, ".grok"),
         ...(model ? ["--model", model] : []),
         "stdio",
@@ -288,6 +295,8 @@ const GROK = {
   sessionMeta: ({ rules }) => ({ yoloMode: true, rules }),
   loginFile: (home) => path.join(home, ".grok", "auth.json"),
   prepare: () => {},
+  // 会话根按**引擎 cwd** 记账（grok CLI 就是这么分的）：v1.14 起 acp.mjs 传的是数据根，
+  // 所以会话图目录随之从 `<bundle>/…` 换到 `<数据根>/…`（dev 下同一个）
   sessionImagesRoot: ({ home, gameRoot }) => path.join(home, ".grok", "sessions", encodeURIComponent(gameRoot)),
   effortOption: (effort) => ({ configId: "reasoning_effort", value: { value: effort } }),
   // grok CLI 自带 login/logout（登出清 `~/.grok/auth.json`）。默认 OAuth 走浏览器；CLI 不在 PATH 时按钮禁用。
@@ -377,7 +386,8 @@ export const ENGINE_DESCRIPTORS = ENGINE_TABLE;
 /**
  * 一次 spawn 的完整准备：选描述符 → 幂等准备（codex 的 home/登录态/配置/skill）→ 给出 spawn 三件套
  * 与注入规则。acp-server 的 `buildAcp()` 只调它，不碰品牌字面量。
- * @param {{creds: Credentials, home: string, gameRoot: string, rules: string}} ctx 凭据、主目录、引擎 cwd 与规则原文
+ * @param {{creds: Credentials, home: string, gameRoot: string, rules: string}} ctx 凭据、主目录、
+ *   **只读内容根**（grok 的 `--plugin-dir` 与 codex 的 skill 源都从它取；引擎 cwd 另行给出）与规则原文
  * @returns {{engine: EngineDescriptor, rules: string, spawn: SpawnPlan}} 描述符 + 注入规则 + spawn 三件套
  */
 export function prepareSpawn({ creds, home, gameRoot, rules }) {

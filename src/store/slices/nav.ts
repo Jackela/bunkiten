@@ -2,42 +2,53 @@
 // 设置屏（settings 是无状态片，动作就近放这里）、剧本体检屏（check，v1.8：只切屏 + 记返回目标）、overlay 通用返回。
 // v1.7 加剧本导出包的导入（importPresetText：TitleScreen 的「导入剧本」入口；presets 的刷新也走这里，
 // 与 setPresets 同一片——轮播数据只有这一个写入方族）。各动作的接口文档见 ../types.ts 的 GameStore。
-import { fetchPresets, postPresetImport, type PresetBundle } from "../../lib/acp";
+import { fetchPresets, postPresetImport, PRESET_BUNDLE_VERSION, type PresetBundle } from "../../lib/acp";
 import { audioManager } from "../../lib/audio";
 import { saveSettings, type GameSettings } from "../../lib/settings";
 import type { SliceContext } from "../context";
 import type { GameStore } from "../types";
 
+/** 剧本包本地校验的结果：`too-new` = 版本高于本应用（提示要分开说，别让玩家以为包坏了） */
+export type PresetBundleParse = { ok: true; bundle: PresetBundle } | { ok: false; reason: "invalid" | "too-new" };
+
 /**
  * 解析导入的剧本包原文（纯函数，导入动作与单测共用）。
- * 只做「敢原样回传服务端」的最小校验：JSON 能解析、format/version 对得上、id 与 presetMd 有值；
+ * 只做「敢原样回传服务端」的最小校验：JSON 能解析、format 对得上、version 落在接受区间、id 与 presetMd 有值；
  * 文件名安全、base64 与重名改名一律由服务端裁决（前端不替服务端预判剧本 id 合法性）。
+ * 版本闸（v1.14）与 A2 的服务端口径对齐：**接受 `1..PRESET_BUNDLE_VERSION`**——
+ * 更低（0/负数/非整数）按「不是导出包」挡下，更高按「此导出包来自更新版本的应用」挡下
+ * （旧实现只认 `version === 1`，新版本的包会被说成「不是有效的剧本导出包」）。
  * @param {string} text 文件原文（.preset.json）
- * @returns {PresetBundle | null} 合法包；不是 JSON / 格式不符 / version 非 1 / 缺 id 或 presetMd 时 null
+ * @returns {PresetBundleParse} 合法包；否则给 reason（invalid / too-new）
  */
-export function parsePresetBundle(text: string): PresetBundle | null {
+export function parsePresetBundle(text: string): PresetBundleParse {
   let data: unknown;
   try {
     data = JSON.parse(text);
   } catch {
-    return null;
+    return { ok: false, reason: "invalid" };
   }
-  if (!data || typeof data !== "object") return null;
+  if (!data || typeof data !== "object") return { ok: false, reason: "invalid" };
   const b = data as Partial<PresetBundle>;
-  if (b.format !== "bunkiten-preset" || b.version !== 1) return null;
-  if (typeof b.id !== "string" || !b.id) return null;
-  if (typeof b.presetMd !== "string" || !b.presetMd) return null;
-  return b as PresetBundle;
+  if (b.format !== "bunkiten-preset") return { ok: false, reason: "invalid" };
+  const version = b.version;
+  if (typeof version !== "number" || !Number.isInteger(version) || version < 1) return { ok: false, reason: "invalid" };
+  // 上限由本应用持有的当前版本裁决（与 server/presets.mjs 的 PRESET_BUNDLE_VERSION 同批维护）
+  if (version > PRESET_BUNDLE_VERSION) return { ok: false, reason: "too-new" };
+  if (typeof b.id !== "string" || !b.id) return { ok: false, reason: "invalid" };
+  if (typeof b.presetMd !== "string" || !b.presetMd) return { ok: false, reason: "invalid" };
+  return { ok: true, bundle: b as PresetBundle };
 }
 
 export function createNavSlice(
-  ctx: SliceContext<"set" | "get" | "clearWatchdog" | "resetRunState">,
+  ctx: SliceContext<"set" | "get" | "clearWatchdog" | "resetRunState" | "consumePendingChapter">,
 ): Pick<
   GameStore,
   | "toTitle"
   | "toWorlds"
   | "selectPreset"
   | "setPresets"
+  | "setTitleIndex"
   | "importPresetText"
   | "clearTitleNotice"
   | "openSettings"
@@ -75,13 +86,20 @@ export function createNavSlice(
       set({ presets });
     },
 
+    setTitleIndex(n) {
+      // 标题屏轮播下标（v1.14 从屏内 state 提到 store）：屏重挂后停在原处；越界由 TitleScreen 的收敛 effect 夹回
+      set({ titleIndex: n });
+    },
+
     async importPresetText(text) {
       // 非法原文不进服务端：本地校验先挡（服务端也会挡，但没必要拿一次 400 当校验器）
-      const bundle = parsePresetBundle(text);
-      if (!bundle) {
-        set({ titleNotice: { kind: "error", text: "导入失败：不是有效的剧本导出包" } });
-        return { ok: false, error: "不是有效的剧本导出包" };
+      const parsed = parsePresetBundle(text);
+      if (!parsed.ok) {
+        const reason = parsed.reason === "too-new" ? "此导出包来自更新版本的应用" : "不是有效的剧本导出包";
+        set({ titleNotice: { kind: "error", text: `导入失败：${reason}` } });
+        return { ok: false, error: reason };
       }
+      const bundle = parsed.bundle;
       try {
         const r = await postPresetImport(bundle);
         if (!r.ok) {
@@ -131,6 +149,9 @@ export function createNavSlice(
     closeOverlay() {
       const back = get().screenReturn ?? "title";
       set({ screen: back, screenReturn: null, assetsPreview: null, creationExitPrompt: false });
+      // v1.14：回到 game 屏是「消费待规划章」的回屏点之一——在画廊/设置/剧情图 overlay 里收到【章】时
+      // 只记了待办，这一刻（且引擎空闲）才真正切制作中屏规划下一章
+      ctx.consumePendingChapter();
     },
   };
 }

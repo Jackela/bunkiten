@@ -1,7 +1,12 @@
-// ACP 子进程封装（v1.7 拆模块，v1.11 多后端；docs/adr/0022）：spawn 引擎、JSON-RPC request/响应分发、
+// ACP 子进程封装（v1.7 拆模块，v1.11 多后端；docs/adr/0022）：spawn 引擎、JSON-RPC request/通知分发、
 // sessionId 存取（断线续档）、boot 握手（session/load 降级 session/new + 推理档位）、权限请求兜底、会话图片定位。
 // 与 HTTP 层的接缝是两个回调：onChunk（agent_message_chunk 文本）与 onSeg（tool_call 进度 label）——
 // 流式【图】标记扫描、seg 计数与 SSE broadcast 住在 server/turn-pipeline.mjs（入口的装配把两个回调直通过去）。
+//
+// v1.14 的两条新增（「停止本回合」的传输面，docs/adr/0026）：
+//   · `notify(method, params)`：fire-and-forget 的 JSON-RPC **notification**（无 id、不等响应）——
+//     入口的 `cancelTurn` 用它发 `session/cancel`；
+//   · 引擎退场时把在途 request 就地回成 error（否则「停止/强制重启/引擎崩」之后那一轮会一直等到超时）。
 //
 // 多后端形态：本工厂**只认 server/engines.mjs 的描述符**（spawn 三件套、会话扩展、档位形状、图片根），
 // 不出现品牌字面量——grok 与 Codex（codex-acp）走同一条 ACP 传输。描述符里的每个字面量都有
@@ -42,7 +47,10 @@ function answerPermission(params) {
  * @param {boolean} [opts.shell] 是否经平台 shell 起（Windows 的 .cmd/.bat 必须；由描述符给出）
  * @param {Record<string, string>} [opts.env] 额外注入子进程的 env（**我们的值优先**——展开顺序是
  *   `{...process.env, ...env}`，同名键由这里覆盖；各引擎的 env 由描述符的 spawn() 给出）
- * @param {string} opts.gameRoot 引擎 cwd（grok 的 `<gameRoot>/.grok` 插件目录与 codex 的 skill 源都在这里）
+ * @param {string} opts.gameRoot 引擎 cwd（v1.14 起入口传的是**可写数据根** `config.DATA_ROOT`：SKILL 里
+ *   的 `state/worlds/…`、`presets/…/assets` 都是相对路径，引擎按 cwd 落盘，写错根就等于把玩家数据写回
+ *   只读 bundle。grok 的 `--plugin-dir` 与 codex 的 skill 源是**只读 bundle 根**，由 prepareSpawn 的
+ *   gameRoot 单独给出，与本参数不再同源；grok 的会话图目录按 cwd 记账，所以它一起跟着数据根走）
  * @param {string} opts.sessionFile 断线续档文件（config.SESSION_FILE；记 `{engine, sessionId}`）
  * @param {string} opts.rules 注入 agent 的规则原文（grok 进 `_meta`、codex 进 config.toml 的 developer_instructions）
  * @param {string} opts.effort 初始推理档位（entry.EFFORT；下发形状由描述符决定）
@@ -51,8 +59,9 @@ function answerPermission(params) {
  * @param {Array<object>} [opts.mcpServers] 挂到会话上的 MCP server 列表（ACP McpServerStdio 形态；
  *   配了图片自备 key 时才给，见 server/media-mcp.mjs 的 mediaMcpServers——两引擎都支持该字段）
  * @returns {{proc: import("child_process").ChildProcess, request: (method: string, params?: object|null, timeoutMs?: number) => Promise<any>,
- *   boot: () => Promise<void>, resolveImage: (name: string) => string|null, sessionId: string|null}} sessionId 是 getter——
- *   sendPrompt 与 /img 路由经它读当前会话；request 的 Promise resolve 整个响应 msg（result/error 都在）
+ *   notify: (method: string, params?: object) => void, boot: () => Promise<void>, resolveImage: (name: string) => string|null, sessionId: string|null}} sessionId 是 getter——
+ *   sendPrompt 与 /img 路由经它读当前会话；request 的 Promise resolve 整个响应 msg（result/error 都在）；
+ *   notify 是 fire-and-forget 的 notification 通道（「停止本回合」的 `session/cancel` 走它）
  */
 export function createAcpSession({
   engine,
@@ -94,6 +103,17 @@ export function createAcpSession({
   const pending = new Map();
   /** @type {string|null} */
   let sessionId = null;
+
+  // 引擎退场（崩溃 / 被 killEngine 收掉 / 退出收尾）时把在途请求就地失败（v1.14）：此前它们只能各自等到
+  // 超时（session/prompt 是 600s 预算）——引擎没了，玩家那一轮还会挂十分钟，`停止`/强制重启后尤其刺眼。
+  // 回一个 JSON-RPC 形态的 error（而不是 reject），与「引擎回了 error response」走同一条既有分支；
+  // 回合流水线按回合序号丢弃迟到结果（见 turn-pipeline 的 cancel），所以作废的回合不会因此变成失败回合。
+  proc.on("exit", () => {
+    for (const [id, resolve] of pending) {
+      pending.delete(id);
+      resolve({ error: { code: -32000, message: "引擎进程已退出" } });
+    }
+  });
 
   rl.on("line", (line) => {
     if (!line.trim()) return;
@@ -151,6 +171,23 @@ export function createAcpSession({
       });
       proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
     });
+  }
+
+  /**
+   * 发一条 JSON-RPC **notification**（无 id、不等响应）——「停止本回合」的 `session/cancel` 就是它
+   *（v1.14，docs/adr/0026）。规格上 notification 不带 id、agent 不回响应，所以这里 fire-and-forget：
+   * 写失败（进程已退/管道关了）静默——调用方（入口的 cancelTurn）已经把这一回合标成本地作废，
+   * 通知发不出去不该再抛一次。**注意别把它和 request 混用**：带 id 的 session/cancel 会被当请求等应答。
+   * @param {string} method JSON-RPC 方法名
+   * @param {object} [params]
+   */
+  function notify(method, params) {
+    if (spawnError) return;
+    try {
+      proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", method, params }) + "\n");
+    } catch {
+      /* 管道已关：通知发不出去，本地作废照常生效 */
+    }
   }
 
   // 引擎自产图的会话根（grok：`~/.grok/sessions/<encode(gameRoot)>`；codex：null = 没有这条通道，
@@ -311,6 +348,7 @@ export function createAcpSession({
   return {
     proc,
     request,
+    notify,
     boot,
     resolveImage,
     get sessionId() {

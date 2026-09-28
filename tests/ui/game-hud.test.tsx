@@ -13,7 +13,7 @@ import CraftingScreen from "../../src/components/CraftingScreen";
 import { useGameStore } from "../../src/store/game";
 import { focusableElements } from "../../src/lib/focusTrap";
 import { preloadEtaLabel } from "../../src/lib/preload";
-import { jsonResponse, openRailGroup, pressTab, setupUi } from "./helpers";
+import { PRESET, jsonResponse, openRailGroup, pressTab, setupUi } from "./helpers";
 
 setupUi();
 
@@ -74,9 +74,12 @@ describe("TopBar：章节指示与回合耗时", () => {
 describe("TopBar：命令轨的分组菜单（v1.12 菜单信息架构）", () => {
   /** POST /prompt 收到的指令（叶子的行为断言：直达项与菜单项发的是同一条指令） */
   let prompts: string[];
+  /** POST /api/engine/cancel 被调用的次数（「停止」按钮） */
+  let cancels: number;
 
   beforeEach(() => {
     prompts = [];
+    cancels = 0;
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -84,6 +87,36 @@ describe("TopBar：命令轨的分组菜单（v1.12 菜单信息架构）", () =
         if (url.pathname === "/prompt") {
           prompts.push((JSON.parse(String(init?.body)) as { text: string }).text);
           return jsonResponse({ ok: true });
+        }
+        // 「停止本回合」（v1.14）：POST /api/engine/cancel
+        if (url.pathname === "/api/engine/cancel") {
+          cancels += 1;
+          return jsonResponse({ ok: true, cancelled: true });
+        }
+        // 「素材 N 张」统计：打开进度菜单时按需拉的资产清单
+        if (url.pathname === "/api/assets") {
+          return jsonResponse([
+            {
+              type: "立绘",
+              name: "薇拉",
+              variant: "",
+              preset: "campus-summer",
+              file: "a.jpg",
+              ready: true,
+              inUse: true,
+              mtime: 1,
+            },
+            {
+              type: "背景",
+              name: "教堂",
+              variant: "",
+              preset: "campus-summer",
+              file: "b.jpg",
+              ready: true,
+              inUse: true,
+              mtime: 1,
+            },
+          ]);
         }
         return jsonResponse({}, 404);
       }),
@@ -112,13 +145,13 @@ describe("TopBar：命令轨的分组菜单（v1.12 菜单信息架构）", () =
     // 分组触发器用 aria-label 说清自己管什么（可见文案只有两个字，读屏要能独立读懂）
     expect(screen.getByTestId("rail-review").getAttribute("aria-label")).toBe("回顾（历史与前情）");
     expect(screen.getByTestId("rail-collection").getAttribute("aria-label")).toBe("图鉴（角色、画廊与剧情图）");
-    expect(screen.getByTestId("rail-progress").getAttribute("aria-label")).toBe("进度（重演、重开与换剧本）");
+    expect(screen.getByTestId("rail-progress").getAttribute("aria-label")).toBe("进度（重演、返回标题与重开）");
     // 「设置」排在第一位不是随手写的：它是 game 屏 DOM 里第一个可聚焦元素（Tab 首个落点，
     // tests/e2e-ui/focus.spec.ts 有一条用例盯着）。这条断言把它钉在 jsdom 这一侧，改顺序立刻红
     expect(focusableElements(document.body)[0]).toBe(screen.getByTestId("settings"));
   });
 
-  it("分组菜单：默认收起（叶子项不在 DOM）→ 开「回顾」出历史/前情（菜单语义 + 焦点进首项）→ 点前情发指令并收菜单", async () => {
+  it("分组菜单：默认收起（叶子项不在 DOM）→ 开「回顾」出历史/前情（菜单语义 + 焦点进首项）→ 点前情开本地面板并收菜单", async () => {
     render(<TopBar />);
     // 收起态：叶子项一个都不在 DOM（与行 ⋯ 菜单同款）——顺带钉住「没有把两个分组混进同一个弹层」
     for (const id of ["history", "recap", "characters", "assets", "tree", "reroll", "new-game", "presets"]) {
@@ -144,18 +177,20 @@ describe("TopBar：命令轨的分组菜单（v1.12 菜单信息架构）", () =
     // 键盘用户接着按 Tab/↓ 走项，走位由下一条用例钉住）
     await waitFor(() => expect(menu.contains(document.activeElement)).toBe(true));
 
-    // 叶子项沿用原 testid/aria（测试契约逐个保留）：前情发的是原样那条指令
+    // 叶子项沿用原 testid/aria（测试契约逐个保留）：v1.14「前情」不再发 /recap，改为打开本地面板（零引擎回合）
     await act(async () => {
       fireEvent.click(screen.getByTestId("recap"));
     });
-    expect(prompts).toEqual(["/recap"]);
+    expect(prompts).toEqual([]);
+    expect(useGameStore.getState().recapOpen).toBe(true);
+    act(() => useGameStore.setState({ recapOpen: false, recapData: null }));
     expect(screen.queryByTestId("rail-review-menu")).toBeNull(); // 选中即关
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
     // 关菜单把焦点送回触发器（Radix 的 onCloseAutoFocus）：焦点不该丢回 body
     await waitFor(() => expect(document.activeElement).toBe(trigger));
   });
 
-  it("「图鉴」菜单三项各按原契约打开对应 overlay；「帮助」「重开」「换剧本」发原样的指令", async () => {
+  it("「图鉴」菜单三项各按原契约打开对应 overlay；「帮助」打开本地面板（不再发 /help）；「重开」「换剧本」两段确认后才发", async () => {
     render(<TopBar />);
 
     openRailGroup("图鉴");
@@ -171,18 +206,101 @@ describe("TopBar：命令轨的分组菜单（v1.12 菜单信息架构）", () =
     fireEvent.click(screen.getByTestId("tree"));
     expect(useGameStore.getState().screen).toBe("tree");
 
-    // 直达项（设置/帮助）仍在轨上：帮助与菜单项走同一套 send
+    // 直达项（设置/帮助）仍在轨上：v1.14「帮助」改为打开本地面板（ADR-0027），一个引擎回合都不占
     useGameStore.setState({ screen: "game" });
     fireEvent.click(screen.getByTestId("help"));
-    expect(prompts).toEqual(["/help"]);
+    expect(useGameStore.getState().helpOpen).toBe(true);
+    expect(prompts).toEqual([]); // 一笔都没发
+    act(() => useGameStore.setState({ helpOpen: false, status: "就绪", engineBusy: false }));
 
+    // 两段确认（照 WorldRow 的菜单内确认范式）：首点只进确认态、菜单不关、不发指令
     openRailGroup("进度");
     fireEvent.click(screen.getByTestId("new-game"));
+    expect(prompts).toEqual([]); // 一笔都没发
+    expect(screen.getByTestId("progress-confirm").textContent).toContain("确认重开");
+    expect(screen.getByTestId("progress-cancel").textContent).toBe("取消");
+    fireEvent.click(screen.getByTestId("progress-cancel"));
+    expect(prompts).toEqual([]); // 取消：不发
+    expect(screen.queryByTestId("progress-confirm")).toBeNull(); // 回到「重开/换剧本」第一屏
+
+    // 取消不关菜单（keepOpen）：同一菜单里再进确认态 → 二点才发
+    fireEvent.click(screen.getByTestId("new-game"));
+    fireEvent.click(screen.getByTestId("progress-confirm"));
     expect(prompts.at(-1)).toBe("/new-game");
 
+    // 上面那一发把回合带起来了（busy）：等它收尾再发下一条菜单指令（忙碌时菜单项禁用）
+    act(() => useGameStore.setState({ status: "就绪", engineBusy: false }));
     openRailGroup("进度");
     fireEvent.click(screen.getByTestId("presets"));
+    fireEvent.click(screen.getByTestId("progress-confirm"));
     expect(prompts.at(-1)).toBe("/presets");
+  });
+
+  it("进度菜单（v1.14）：返回标题本地切屏（零回合）、导出这一局是下载锚点、统计行给本局幕数与素材数", async () => {
+    useGameStore.setState({ worldId: "campus-summer-1", selected: PRESET, turnSnapshots: 3, status: "就绪" });
+    render(<TopBar />);
+    const menu = openRailGroup("进度");
+    // 统计：本局幕数取已知快照数；素材数打开菜单时按需拉（mock 回 2 条），未回来先占位
+    expect(screen.getByTestId("progress-stats").textContent).toContain("本局 3 幕");
+    await waitFor(() => expect(screen.getByTestId("progress-stats").textContent).toContain("素材 2 张"));
+    // 导出这一局：<a download> 指向世界线导出端点（照 WorldRow 的接法）
+    const exp = menu.querySelector('[data-testid="export-world"]') as HTMLAnchorElement;
+    expect(exp.getAttribute("href")).toBe("/api/worlds/export?worldId=campus-summer-1");
+    expect(exp.getAttribute("download")).toBe("campus-summer-1.world.json");
+    // 返回标题：纯本地切屏，不占引擎回合
+    fireEvent.click(screen.getByTestId("to-title"));
+    expect(useGameStore.getState().screen).toBe("title");
+    expect(prompts).toEqual([]); // 一笔都没发
+  });
+
+  it("忙碌时「重开」「换剧本」禁用并给出原因（title）；「返回标题」不涉及；重演入口照旧不渲染", () => {
+    useGameStore.setState({ status: "引擎演绎中…", engineBusy: true, worldId: "campus-summer-1", turnSnapshots: 3 });
+    render(<TopBar />);
+    openRailGroup("进度");
+    const ng = screen.getByTestId("new-game") as HTMLButtonElement;
+    const pres = screen.getByTestId("presets") as HTMLButtonElement;
+    expect(ng.disabled).toBe(true);
+    expect(pres.disabled).toBe(true);
+    expect(ng.title).toContain("忙碌中");
+    expect(pres.title).toContain("忙碌中");
+    expect((screen.getByTestId("to-title") as HTMLButtonElement).disabled, "本地动作不受忙碌影响").toBe(false);
+    // 「重演这一幕」的既有硬约束：非就绪/待重同步时不渲染（比「禁用」更硬，tests/ui 与此处一起钉）
+    expect(screen.queryByTestId("reroll")).toBeNull();
+  });
+
+  it("停止本回合：busy 时状态簇长出「停止」，点击调 cancelTurn（POST /api/engine/cancel）→ 复位忙态、置待重同步", async () => {
+    useGameStore.setState({ status: "引擎演绎中…", engineBusy: true, turnStartAt: Date.now() });
+    render(<TopBar />);
+    const stop = screen.getByTestId("turn-cancel");
+    expect(stop.textContent).toBe("停止");
+    await act(async () => {
+      fireEvent.click(stop);
+    });
+    expect(cancels).toBe(1);
+    const s = useGameStore.getState();
+    expect(s.engineBusy).toBe(false);
+    expect(s.status).toBe("已停止");
+    expect(s.pendingResync).toEqual({ worldId: "campus-summer-1", seq: null }); // 下一句先重同步
+    expect(screen.queryByTestId("turn-cancel"), "非忙态就该撤下（没有可停的东西）").toBeNull();
+  });
+
+  it("错误态：status 带 role=alert 与警示色；409 的引擎口吻落成玩家话；非错态不带 live 语义", () => {
+    useGameStore.setState({ status: "出错：HTTP 500" });
+    const { rerender } = render(<TopBar />);
+    const st = screen.getByTestId("status");
+    expect(st.getAttribute("role")).toBe("alert");
+    expect(st.className).toContain("text-[#d98b8b]");
+    expect(st.textContent).toBe("出错了：HTTP 500");
+
+    // 409（忙时抢发）：引擎写「上一回合还在进行」，玩家侧读作「这一回合还在进行」
+    act(() => useGameStore.setState({ status: "出错：上一回合还在进行" }));
+    rerender(<TopBar />);
+    expect(screen.getByTestId("status").textContent).toBe("出错了：这一回合还在进行");
+
+    // 不是错态：一行灰字，不加任何会被读屏抢播的 live 语义
+    act(() => useGameStore.setState({ status: "就绪" }));
+    rerender(<TopBar />);
+    expect(screen.getByTestId("status").getAttribute("role")).toBeNull();
   });
 
   it("分组菜单键盘：Esc 就地收菜单（不冒到 Esc 关闭链）、Tab 在项间走位、走到末项交还页面", async () => {
@@ -326,10 +444,15 @@ describe("制作中屏与创作屏的可预期性读数（v1.13）", () => {
     protagonist_card: [],
   };
 
-  it("preloadEtaLabel：样本不足不给数、按已完成张数算平均、画完即收口", () => {
-    const base = { total: 10, startedAt: 1_000, now: 41_000 }; // 40s 内完成 2 张
-    expect(preloadEtaLabel({ ...base, done: 0 }), "一张都没完成时没有样本").toBeNull();
-    expect(preloadEtaLabel({ ...base, done: 1 }), "只有一张样本，估出来是噪声").toBeNull();
+  it("preloadEtaLabel：样本不足给保守「预计」、样本够用「平均」、画完即收口", () => {
+    const base = { total: 10, startedAt: 1_000, now: 41_000 }; // 40s；demo 每张 45s 的保守常量比实测大
+    // v1.14：样本不足（0/1 张）不再留白——用保守常量（45s/张）给「预计」，玩家进屏那一刻就有预期
+    expect(preloadEtaLabel({ ...base, done: 0 })).toBe("预计 ≈45s / 张 · 约还需 ~8 分钟");
+    expect(preloadEtaLabel({ ...base, done: 1 })).toBe("预计 ≈45s / 张 · 约还需 ~7 分钟");
+    // 一张画了很久（实测 > 保守常量）时按实测走：不许把慢档低估
+    expect(preloadEtaLabel({ done: 1, total: 10, startedAt: 0, now: 120_000 })).toBe(
+      "预计 ≈120s / 张 · 约还需 ~18 分钟",
+    );
     expect(preloadEtaLabel({ ...base, done: 2 })).toBe("平均 ≈20s / 张 · 约还需 ~3 分钟");
     expect(preloadEtaLabel({ ...base, done: 10 }), "全画完了就没有「还需」").toBeNull();
     expect(preloadEtaLabel({ ...base, done: 3, startedAt: null }), "没有在跑的批次").toBeNull();
@@ -337,7 +460,7 @@ describe("制作中屏与创作屏的可预期性读数（v1.13）", () => {
     expect(preloadEtaLabel({ done: 2, total: 4, startedAt: 0, now: 20_000 })).toBe("平均 ≈10s / 张 · 约还需 ~20 秒");
   });
 
-  it("制作中屏：进度行给「平均每张 · 约还需」，样本不足 2 张时不显示这半截", () => {
+  it("制作中屏：进度行给「平均每张 · 约还需」，样本不足 2 张时给保守「预计」半截", () => {
     const items = [1, 2, 3, 4, 5].map((i) => ({
       kind: "portrait" as const,
       name: `角色${i}`,
@@ -359,7 +482,8 @@ describe("制作中屏与创作屏的可预期性读数（v1.13）", () => {
     render(<CraftingScreen />);
     const line = screen.getByTestId("crafting-progress").textContent ?? "";
     expect(line).toContain("美术 1 / 5 就绪");
-    expect(line, "样本不足 2 张时不该给预估").not.toContain("约还需");
+    expect(line, "样本不足 2 张时给保守「预计」而不是「平均」").toContain("预计");
+    expect(line, "样本不足也给「约还需」——v1.14 起不再留白").toContain("约还需");
 
     // 再完成两张（共 3 张）：样本够了 → 读数出现。setState 在 act 里跑，读的是重渲染后的 DOM
     act(() => {

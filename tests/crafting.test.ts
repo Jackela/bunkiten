@@ -8,6 +8,7 @@ import {
   MAX_STAGE,
   applyExpression,
   castMember,
+  diffStateViews,
   fallbackPortraitUrl,
   isTypingTarget,
   nextPortraitOnExpression,
@@ -18,7 +19,15 @@ import {
   type HistoryItem,
 } from "../src/store/game";
 import { DEFAULT_SETTINGS } from "../src/lib/settings";
-import { assetPath, type AssetEntry, type Preset, type PresetsResponse } from "../src/lib/acp";
+import { preloadEtaLabel } from "../src/lib/preload";
+import {
+  assetPath,
+  type AssetEntry,
+  type LogEntry,
+  type Preset,
+  type PresetsResponse,
+  type StateView,
+} from "../src/lib/acp";
 
 /**
  * 历史里最近一条**正文幕**的文本：`history` 是判别联合（回退分割线没有 `t`），
@@ -322,23 +331,39 @@ describe("章节制作流水线（store 公共 API 驱动）", () => {
     expect(useGameStore.getState().status).toBe("撰写章节大纲…");
   });
 
-  it("批次起点：建队列时落时刻（屏上「平均每张 / 约还需」的数据源），换局清零", async () => {
+  it("批次起点：进入 crafting 那一刻落时刻（估算窗口覆盖待命/规划回合），建队列不重置，换局清零", async () => {
+    const before = Date.now();
     useGameStore.getState().startGame(true, true);
+    const startedAt = useGameStore.getState().preloadBatchStartedAt; // v1.14：进屏即落，不再等建队列
+    expect(typeof startedAt, "进 crafting 就应落批次起点").toBe("number");
+    expect(startedAt!).toBeGreaterThanOrEqual(before);
+
     engineTurn(); // 待命确认
     await vi.waitUntil(() => prompts.at(-1) === PLAN_CH1);
-    expect(useGameStore.getState().preloadBatchStartedAt).toBeNull(); // 规划回合还没建队列
+    expect(useGameStore.getState().preloadBatchStartedAt, "规划回合不重置起点（窗口覆盖规划）").toBe(startedAt);
 
-    const before = Date.now();
     engineTurn(MANIFEST_CH1); // 规划回合回清单 → 建队列
-    // 建队列是异步的（两段式要读剧情树挑开场子集，v1.13）：等它落地再断言
-    await vi.waitUntil(() => useGameStore.getState().preloadBatchStartedAt !== null);
-    const startedAt = useGameStore.getState().preloadBatchStartedAt;
-    expect(typeof startedAt, "建队列时应落批次起点").toBe("number");
-    expect(startedAt!).toBeGreaterThanOrEqual(before);
+    await vi.waitUntil(() => useGameStore.getState().preloadPhase === "queue");
+    expect(useGameStore.getState().preloadBatchStartedAt, "建队列也不再重置（v1.14 提前到进屏时刻）").toBe(startedAt);
 
     // 换一局（resetRunState 路径）：批次读数不该漂到新局上
     useGameStore.getState().startGame(true, false);
     expect(useGameStore.getState().preloadBatchStartedAt).toBeNull();
+  });
+
+  it("可预期性读数（v1.14）：样本不足也给保守粗估、样本够用实测平均、画完即收口", () => {
+    const base = { total: 10, startedAt: 1_000, now: 41_000 }; // 40s 内完成 2 张
+    // ① 实测样本够（≥2 张）：平均每张 = 已耗时/已完成
+    expect(preloadEtaLabel({ ...base, done: 2 })).toBe("平均 ≈20s / 张 · 约还需 ~3 分钟");
+    expect(preloadEtaLabel({ done: 2, total: 4, startedAt: 0, now: 20_000 })).toBe("平均 ≈10s / 张 · 约还需 ~20 秒");
+    // ② 样本不足不留白：用保守常量（45s/张）给「预计」——进屏那一刻就有预期
+    expect(preloadEtaLabel({ ...base, done: 0 })).toBe("预计 ≈45s / 张 · 约还需 ~8 分钟");
+    expect(preloadEtaLabel({ done: 1, total: 3, startedAt: 0, now: 5_000 })).toBe("预计 ≈45s / 张 · 约还需 ~2 分钟");
+    // 1 张就很慢（超过保守常量）时按实测走，不按常量低估
+    expect(preloadEtaLabel({ done: 1, total: 3, startedAt: 0, now: 120_000 })).toBe("预计 ≈120s / 张 · 约还需 ~4 分钟");
+    // ③ 没有在跑的批次 / 已画完：不给数
+    expect(preloadEtaLabel({ ...base, done: 3, startedAt: null })).toBeNull();
+    expect(preloadEtaLabel({ ...base, done: 10 })).toBeNull();
   });
 
   it("清单解析：按清单建队列、跳过已就绪项、顺序与指令逐字", async () => {
@@ -655,6 +680,79 @@ describe("章节制作流水线（store 公共 API 驱动）", () => {
     const st2 = useGameStore.getState();
     expect(st2.bgUrl).toContain("p=images%2F9.jpg");
     expect(new URL(st2.artReady["旧教学楼"] ?? "", "http://localhost").searchParams.get("n")).toBe("旧教学楼");
+  });
+});
+
+describe("章待办（v1.14）：不在 game 屏收到【章】只记待办，回 game 屏时消费", () => {
+  beforeEach(() => {
+    prompts = [];
+    assets = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/prompt") {
+          prompts.push(JSON.parse(String(init?.body)).text);
+          return jsonResponse({ ok: true });
+        }
+        if (url.pathname === "/api/assets") return jsonResponse(assets);
+        return jsonResponse({ error: `unexpected ${url.pathname}` }, 404);
+      }),
+    );
+    useGameStore.getState().selectPreset(PRESET);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    disposeStore();
+  });
+
+  it("画廊里收到【章】：只记待办（不切屏、不发规划指令）；关掉画廊回到 game 时消费", async () => {
+    useGameStore.getState().resumeWorld({ worldId: "campus-summer-1", chapterNo: 1, note: "" });
+    await vi.waitUntil(() => prompts.at(-1) === "继续世界：campus-summer-1。");
+    useGameStore.getState().openAssets(); // 画廊 overlay（screenReturn = game）
+    expect(useGameStore.getState().screen).toBe("assets");
+
+    const s = useGameStore.getState();
+    s.handleEvent({ type: "turn_start" });
+    s.handleEvent({ type: "chunk", seg: 0, text: "晚风把答案吹散在天台上。\n【章】第 1 章 完" });
+    s.handleEvent({ type: "turn_end" });
+
+    const pending = useGameStore.getState();
+    expect(pending.pendingChapter, "待办记下待规划的章号（章标记 + 1）").toBe(2);
+    expect(pending.screen, "还在画廊：不切屏").toBe("assets");
+    expect(prompts, "也不发规划指令（抢发必 409）").not.toContain(PLAN_CH2);
+
+    useGameStore.getState().closeOverlay(); // 回到 game → 消费待办
+    const after = useGameStore.getState();
+    expect(after.screen).toBe("crafting");
+    expect(after.chapterNo).toBe(2);
+    expect(after.pendingChapter, "消费后待办清空").toBeNull();
+    await vi.waitUntil(() => prompts.at(-1) === PLAN_CH2);
+  });
+
+  it("兜底按钮 resumePendingChapter：引擎忙时不抢发只给原因；空闲后照常切屏规划", () => {
+    useGameStore.setState({ screen: "game", worldId: "campus-summer-1", pendingChapter: 3, engineBusy: true });
+
+    useGameStore.getState().resumePendingChapter();
+    expect(useGameStore.getState().status).toContain("忙碌中");
+    expect(useGameStore.getState().screen).toBe("game"); // 未切屏
+    expect(useGameStore.getState().pendingChapter).toBe(3); // 待办留着，回合收尾后还能用
+    expect(prompts).not.toContain("规划：第 3 章。");
+
+    useGameStore.setState({ engineBusy: false });
+    useGameStore.getState().resumePendingChapter();
+    expect(useGameStore.getState().screen).toBe("crafting");
+    expect(useGameStore.getState().chapterNo).toBe(3);
+    expect(useGameStore.getState().pendingChapter).toBeNull();
+    expect(prompts.at(-1)).toBe("规划：第 3 章。");
+  });
+
+  it("没有待办时兜底按钮什么都不动（幂等）", () => {
+    useGameStore.setState({ screen: "game", pendingChapter: null, engineBusy: false });
+    useGameStore.getState().resumePendingChapter();
+    expect(useGameStore.getState().screen).toBe("game");
+    expect(prompts).toEqual([]);
   });
 });
 
@@ -1830,5 +1928,458 @@ describe("v1.6 精确回退与自动前进（store 公共 API 驱动）", () => 
     expect(isTypingTarget(el("BUTTON"))).toBe(false);
     expect(isTypingTarget(null)).toBe(false);
     expect(isTypingTarget({} as EventTarget)).toBe(false); // 没有 tagName 的目标（window 等）
+  });
+});
+
+// —— v1.14 客户端内核（Lane C）：数值差分 / 停止回合 / 回合语义 ——
+
+/** 造一份最小的 /api/state 视图（差分与刷新用例共用；只填判定用得上的字段） */
+function stateView(over: Partial<StateView> = {}): StateView {
+  return {
+    worldId: "w1",
+    status: { preset: "campus-summer", playthrough: 1, time: "夜里", scene: "天台" },
+    protagonist: {},
+    director: {},
+    characters: [],
+    flags: [],
+    foreshadowing: [],
+    ...over,
+  };
+}
+
+/** 造一张角色卡（差分只认 favor） */
+function charCard(name: string, favor: number | null) {
+  return {
+    name,
+    role: "",
+    traits: "",
+    catchphrase: "",
+    favor,
+    artFile: "",
+    expression: "",
+    secret: "",
+    recentInteraction: "",
+  };
+}
+
+describe("数值差分（v1.14）：diffStateViews 纯函数", () => {
+  it("没有可比基线（首次拿到视图）→ null", () => {
+    expect(diffStateViews(null, stateView())).toBeNull();
+  });
+
+  it("favor 变化进列（up/down），数值相同或新角色不进列", () => {
+    const before = stateView({ characters: [charCard("沈屿", 50), charCard("程野", 20)] });
+    const after = stateView({ characters: [charCard("沈屿", 65), charCard("程野", 20), charCard("林晚照", 10)] });
+    expect(diffStateViews(before, after)).toEqual([{ name: "沈屿", from: "50", to: "65", dir: "up" }]);
+    const down = stateView({ characters: [charCard("沈屿", 30), charCard("程野", 20)] });
+    expect(diffStateViews(before, down)).toEqual([{ name: "沈屿", from: "50", to: "30", dir: "down" }]);
+    expect(diffStateViews(before, before), "无变化 → null").toBeNull();
+  });
+
+  it("flags 走「值里首个整数」口径：抽不到数字或数字相同都跳过", () => {
+    const before = stateView({
+      flags: [
+        { name: "排异指数", value: "65" },
+        { name: "雨夜", value: "正在下" },
+        { name: "阶段", value: "第 2 夜" },
+      ],
+    });
+    const after = stateView({
+      flags: [
+        { name: "排异指数", value: "73" },
+        { name: "雨夜", value: "停了" }, // 抽不到整数：跳过
+        { name: "阶段", value: "第 2 夜" }, // 数字相同：跳过
+      ],
+    });
+    expect(diffStateViews(before, after)).toEqual([{ name: "排异指数", from: "65", to: "73", dir: "up" }]);
+    // 值里带别的字也算数（首个整数就是刻度）
+    const later = stateView({ flags: [{ name: "阶段", value: "第 3 夜" }] });
+    const earlier = stateView({ flags: [{ name: "阶段", value: "第 2 夜" }] });
+    expect(diffStateViews(earlier, later)).toEqual([{ name: "阶段", from: "2", to: "3", dir: "up" }]);
+  });
+});
+
+describe("数值差分接线（v1.14）：turn_end 恒刷新 state.md（不依赖 charactersOpen）", () => {
+  let stateResp: StateView;
+
+  beforeEach(() => {
+    stateResp = stateView({ characters: [charCard("沈屿", 50)], flags: [{ name: "排异指数", value: "65" }] });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/api/state") return jsonResponse(stateResp);
+        if (url.pathname === "/prompt") return jsonResponse({ ok: true });
+        return jsonResponse({}, 404);
+      }),
+    );
+    useGameStore.setState({
+      screen: "game",
+      worldId: "w1",
+      charactersOpen: false,
+      stateView: null,
+      prevStateView: null,
+      lastTurnDeltas: null,
+      engineBusy: false,
+      history: [],
+      turnNo: 0,
+      segs: { 0: "" },
+      curSeg: 0,
+      currentTurn: null,
+      turnSnapshots: 2, // 数够：不再触发 /api/history 补拉
+      pendingResync: null,
+      resyncing: false,
+      options: null,
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    disposeStore();
+  });
+
+  it("首个回合没有基线 → 无差分；下一回合 favor/flags 变化 → 产出差分条（面板关着照刷）", async () => {
+    useGameStore.getState().handleEvent({ type: "turn_end" });
+    await vi.waitUntil(() => useGameStore.getState().stateView !== null);
+    expect(useGameStore.getState().lastTurnDeltas, "首次拿到视图：没有可比基线").toBeNull();
+
+    stateResp = stateView({ characters: [charCard("沈屿", 65)], flags: [{ name: "排异指数", value: "73" }] });
+    useGameStore.getState().handleEvent({ type: "turn_end" });
+    await vi.waitUntil(() => useGameStore.getState().lastTurnDeltas !== null);
+    expect(useGameStore.getState().charactersOpen, "角色面板关着也刷新了（v1.14 恒刷）").toBe(false);
+    expect(useGameStore.getState().lastTurnDeltas).toEqual([
+      { name: "沈屿", from: "50", to: "65", dir: "up" },
+      { name: "排异指数", from: "65", to: "73", dir: "up" },
+    ]);
+  });
+
+  it("再下一回合无变化 → 差分回 null（不是留着上一次的结论）", async () => {
+    useGameStore.getState().handleEvent({ type: "turn_end" });
+    await vi.waitUntil(() => useGameStore.getState().stateView !== null);
+    stateResp = stateView({ characters: [charCard("沈屿", 65)], flags: [{ name: "排异指数", value: "73" }] });
+    useGameStore.getState().handleEvent({ type: "turn_end" });
+    await vi.waitUntil(() => useGameStore.getState().lastTurnDeltas !== null);
+
+    useGameStore.getState().handleEvent({ type: "turn_end" });
+    await vi.waitUntil(() => useGameStore.getState().lastTurnDeltas === null);
+    expect(useGameStore.getState().lastTurnDeltas).toBeNull();
+  });
+});
+
+describe("停止回合（v1.14）：cancelTurn 与 turn_cancelled 走同一条路（幂等）", () => {
+  let cancelResp: { ok: boolean; cancelled: boolean };
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    cancelResp = { ok: true, cancelled: true };
+    fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname === "/api/engine/cancel") return jsonResponse(cancelResp);
+      return jsonResponse({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    useGameStore.setState({
+      screen: "game",
+      worldId: "w1",
+      engineBusy: true,
+      currentTurn: 4,
+      status: "引擎演绎中…",
+      options: [{ n: "1", t: "走" }],
+      typingDone: true,
+      pendingResync: null,
+      resyncFailed: false,
+      resyncing: false,
+      artAsk: false,
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    disposeStore();
+  });
+
+  it("cancelTurn：cancelled:true → 忙态复位、状态「已停止」、置待重同步（seq:null）", async () => {
+    await useGameStore.getState().cancelTurn();
+    const s = useGameStore.getState();
+    expect(s.engineBusy).toBe(false);
+    expect(s.status).toBe("已停止");
+    expect(s.pendingResync, "下一句输入先重同步；停止没有「回到第 N 幕」可言 → seq:null").toEqual({
+      worldId: "w1",
+      seq: null,
+    });
+    expect(s.currentTurn).toBeNull();
+    expect(s.options, "打断了一个在跑的回合：它的选项不再可用").toBeNull();
+    expect(s.typingDone).toBe(false);
+  });
+
+  it("turn_cancelled 事件：同一条路；回合已收尾后再来一条不清选项（幂等）", () => {
+    useGameStore.getState().handleEvent({ type: "turn_cancelled", turn: 4 });
+    expect(useGameStore.getState().status).toBe("已停止");
+    expect(useGameStore.getState().pendingResync).toEqual({ worldId: "w1", seq: null });
+
+    // 已经空闲（回合正常收尾过）后又来一条：只复位状态，不把玩家手上的选项抹掉
+    useGameStore.setState({ engineBusy: false, options: [{ n: "1", t: "走" }] });
+    useGameStore.getState().handleEvent({ type: "turn_cancelled" });
+    expect(useGameStore.getState().options).toEqual([{ n: "1", t: "走" }]);
+  });
+
+  it("没有在跑的回合：不发请求，只说清", async () => {
+    useGameStore.setState({ engineBusy: false, currentTurn: null });
+    await useGameStore.getState().cancelTurn();
+    expect(useGameStore.getState().status).toBe("没有正在进行的回合");
+    expect(fetchMock.mock.calls).toEqual([]);
+  });
+
+  it("服务端说没有可停的回合（cancelled:false）：只把忙态与服务端对齐，不置待重同步", async () => {
+    cancelResp = { ok: true, cancelled: false };
+    await useGameStore.getState().cancelTurn();
+    expect(useGameStore.getState().engineBusy).toBe(false);
+    expect(useGameStore.getState().pendingResync).toBeNull();
+  });
+});
+
+describe("回合语义（v1.14）：main:false 不计幕号、带 turn 的迟到事件被丢弃", () => {
+  beforeEach(() => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse({ ok: true })),
+    );
+    useGameStore.setState({
+      screen: "game",
+      worldId: "w1",
+      engineBusy: false,
+      history: [],
+      turnNo: 0,
+      segs: { 0: "" },
+      curSeg: 0,
+      currentTurn: null,
+      options: null,
+      finalText: "",
+      received: "",
+      turnSnapshots: 2,
+      pendingResync: null,
+      pendingRerollPrompt: null,
+      resyncing: false,
+      artAsk: false,
+      pendingPlayerPrompt: null,
+      deferredArt: [],
+      treeAsk: false,
+      pendingCreationMessage: null,
+      pendingTreeMessage: null,
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    disposeStore();
+  });
+
+  it("turn_end main:false + seq:null：不进历史、不占幕号、不 bump turnNo（重同步这类内部回合）", () => {
+    const s = useGameStore.getState();
+    s.handleEvent({ type: "turn_start", turn: 7 });
+    s.handleEvent({ type: "chunk", seg: 0, text: "读到了档。", turn: 7 });
+    s.handleEvent({ type: "turn_end", turn: 7, main: false, seq: null });
+
+    const st = useGameStore.getState();
+    expect(st.history).toEqual([]);
+    expect(st.turnNo).toBe(0);
+    expect(st.finalText, "正文照旧上屏（玩家看得见引擎回了什么）").toBe("读到了档。");
+    expect(st.currentTurn).toBeNull();
+  });
+
+  it("带 turn 的迟到 chunk / turn_end：与当前回合不符即整条丢弃", () => {
+    const s = useGameStore.getState();
+    s.handleEvent({ type: "turn_start", turn: 9 });
+    s.handleEvent({ type: "chunk", seg: 0, text: "本回合的正文。", turn: 9 });
+    s.handleEvent({ type: "chunk", seg: 0, text: "上一回合的尾巴。", turn: 8 }); // 迟到
+    expect(useGameStore.getState().segs[0]).toBe("本回合的正文。");
+
+    s.handleEvent({ type: "turn_end", turn: 8 }); // 迟到的收尾同样丢弃
+    const st = useGameStore.getState();
+    expect(st.engineBusy, "当前回合照旧在跑").toBe(true);
+    expect(st.history).toEqual([]);
+  });
+});
+
+describe("本地面板与磁盘历史（v1.14）：帮助/前情本地化 + 回想接磁盘 + 打字机播种键", () => {
+  /** GET /api/logs 的分页返回（用例内改写；参数 = before，null 表示最新一页） */
+  let logsFor: (before: number | null) => { entries: LogEntry[]; nextBefore: number | null };
+  /** /api/logs 是否整体失败 */
+  let logsFail: boolean;
+  /** GET /api/state 的返回 */
+  let stateResp: StateView;
+  /** 最近一条 turn 快照的 summary（null = 取不到，走降级） */
+  let snapshotSummary: string | null;
+  let prompts: string[];
+
+  const log = (seq: number, prompt: string, text: string): LogEntry => ({
+    seq,
+    at: "2026-09-17T00:00:00.000Z",
+    prompt,
+    text,
+  });
+
+  const snapMeta = (seq: number, chapterNo: number | null) => ({
+    seq,
+    at: "2026-09-17T00:00:00.000Z",
+    kind: "turn" as const,
+    nodeId: null,
+    chapterNo,
+    label: "",
+  });
+
+  beforeEach(() => {
+    prompts = [];
+    logsFail = false;
+    logsFor = (before) =>
+      before === null
+        ? { entries: [log(9, "推门进去", "门后空无一人。")], nextBefore: 5 }
+        : { entries: [log(5, "", "风停了。")], nextBefore: null };
+    stateResp = stateView({ status: { preset: "campus-summer", playthrough: 1, time: "夜里", scene: "天台" } });
+    snapshotSummary = "这一段的前情摘要。";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/prompt") {
+          prompts.push((JSON.parse(String(init?.body)) as { text: string }).text);
+          return jsonResponse({ ok: true });
+        }
+        if (url.pathname === "/api/logs") {
+          if (logsFail) return jsonResponse({ error: "boom" }, 500);
+          const before = url.searchParams.get("before");
+          return jsonResponse(logsFor(before === null ? null : Number(before)));
+        }
+        if (url.pathname === "/api/state") return jsonResponse(stateResp);
+        if (url.pathname === "/api/history") {
+          const seq = url.searchParams.get("seq");
+          if (seq === null) return jsonResponse({ worldId: "w1", snapshots: [snapMeta(9, 2)] });
+          if (snapshotSummary === null) return jsonResponse({ error: "not found" }, 404);
+          return jsonResponse({
+            worldId: "w1",
+            snapshots: [
+              { ...snapMeta(Number(seq), 2), files: { state: null, summary: snapshotSummary, tree: null }, prompt: "" },
+            ],
+          });
+        }
+        return jsonResponse({}, 404);
+      }),
+    );
+    useGameStore.setState({
+      screen: "game",
+      worldId: "w1",
+      chapterNo: 1,
+      helpOpen: false,
+      recapOpen: false,
+      recapData: null,
+      diskHistory: { entries: [], nextBefore: null, loading: false, error: null, loadedOnce: false },
+      typingDoneKey: null,
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    disposeStore();
+  });
+
+  it("帮助面板：纯前端开关，一个引擎回合都不占", () => {
+    useGameStore.getState().openHelp();
+    expect(useGameStore.getState().helpOpen).toBe(true);
+    expect(prompts, "不再把 /help 发给引擎").toEqual([]);
+    useGameStore.getState().closeHelp();
+    expect(useGameStore.getState().helpOpen).toBe(false);
+  });
+
+  it("前情提要：本地合成（日志摘要 + 时间地点 + 最新快照 summary 当引言），零引擎回合", async () => {
+    await useGameStore.getState().openRecap();
+    const s = useGameStore.getState();
+    expect(s.recapOpen).toBe(true);
+    expect(s.recapData).toEqual({
+      loaded: true,
+      error: null,
+      chapterNo: 2, // 取自最新一条 turn 快照（不是客户端章号）
+      time: "夜里",
+      scene: "天台",
+      // summary 不单独占字段：作为首项（n:null）当引言，其后是最近的回合日志摘要
+      entries: [
+        { n: null, t: "这一段的前情摘要。" },
+        { n: 9, t: "推门进去 — 门后空无一人。" },
+      ],
+    });
+    expect(prompts, "不再把 /recap 发给引擎").toEqual([]);
+    useGameStore.getState().closeRecap();
+    expect(useGameStore.getState().recapOpen).toBe(false);
+  });
+
+  it("前情提要降级：日志取不到 → loaded + 报错（不留白）；summary 取不到 → 不带引言照给", async () => {
+    logsFail = true;
+    snapshotSummary = null;
+    await useGameStore.getState().openRecap();
+    const bad = useGameStore.getState().recapData;
+    expect(bad?.loaded).toBe(true);
+    expect(bad?.error).toContain("回顾失败");
+    expect(bad?.entries).toEqual([]);
+
+    logsFail = false;
+    await useGameStore.getState().openRecap();
+    const ok = useGameStore.getState().recapData;
+    expect(ok?.error).toBeNull();
+    expect(ok?.entries[0], "没有 summary 就直入日志摘要").toEqual({ n: 9, t: "推门进去 — 门后空无一人。" });
+  });
+
+  it("没有世界线时前情：不算错，给空提要", async () => {
+    useGameStore.setState({ worldId: null });
+    await useGameStore.getState().openRecap();
+    const s = useGameStore.getState().recapData;
+    expect(s?.loaded).toBe(true);
+    expect(s?.error).toBeNull();
+    expect(s?.entries).toEqual([]);
+  });
+
+  it("回想接磁盘：首翻最近一页 → 按 nextBefore 往更早翻 → 到底后再点是「重拉最新一页并按 seq 去重合并」", async () => {
+    await useGameStore.getState().loadHistoryPage();
+    expect(useGameStore.getState().diskHistory).toEqual({
+      entries: [log(9, "推门进去", "门后空无一人。")],
+      nextBefore: 5,
+      loading: false,
+      error: null,
+      loadedOnce: true,
+    });
+
+    await useGameStore.getState().loadHistoryPage();
+    expect(useGameStore.getState().diskHistory.entries.map((e) => e.seq)).toEqual([9, 5]);
+    expect(useGameStore.getState().diskHistory.nextBefore).toBeNull();
+
+    // 已到底：这一次调用转为重拉最新一页（append-only 的日志会冒出新回合），旧的按 seq 去重留住
+    logsFor = (before) =>
+      before === null
+        ? { entries: [log(10, "往里走", "走廊尽头有光。"), log(9, "推门进去", "门后空无一人。")], nextBefore: 5 }
+        : { entries: [log(5, "", "风停了。")], nextBefore: null };
+    await useGameStore.getState().loadHistoryPage();
+    expect(useGameStore.getState().diskHistory.entries.map((e) => e.seq)).toEqual([10, 9, 5]);
+    expect(useGameStore.getState().diskHistory.nextBefore).toBeNull();
+  });
+
+  it("回想接磁盘：失败落 error 且可重试（不静默、不卡 loading）", async () => {
+    logsFail = true;
+    await useGameStore.getState().loadHistoryPage();
+    const s1 = useGameStore.getState().diskHistory;
+    expect(s1.error).toContain("HTTP 500");
+    expect(s1.loading).toBe(false);
+
+    logsFail = false;
+    await useGameStore.getState().loadHistoryPage();
+    expect(useGameStore.getState().diskHistory.error).toBeNull();
+    expect(useGameStore.getState().diskHistory.entries).toHaveLength(1);
+  });
+
+  it("打字机播种键：markTypingDone 幂等；新回合（turn_start）即失配（同一幕重挂才播种）", () => {
+    useGameStore.getState().markTypingDone("7");
+    expect(useGameStore.getState().typingDoneKey).toBe("7");
+    useGameStore.getState().markTypingDone("7"); // 幂等
+    expect(useGameStore.getState().typingDoneKey).toBe("7");
+
+    useGameStore.getState().handleEvent({ type: "turn_start" });
+    expect(useGameStore.getState().typingDoneKey, "新回合：上一幕的「已展示」不再适用").toBeNull();
   });
 });

@@ -11,13 +11,14 @@ function hasSecret(secret: string): boolean {
   return t !== "" && t !== "无";
 }
 
-/** 面板是否完全没数据（state.md 还没写 / 解析全空）——此时只显示占位说明 */
+/** 面板是否完全没数据（state.md 还没写 / 解析全空）——此时只显示占位说明。
+ *  刻意**不**把 `director`（幕后手记）算进「有数据」：v1.14 起面板不再渲染它（剧透收口），
+ *  只有手记的 state.md 在玩家侧就等于空面板。 */
 function viewIsEmpty(v: StateView | null): boolean {
   if (!v) return true;
   return (
     v.characters.length === 0 &&
     Object.keys(v.protagonist).length === 0 &&
-    Object.keys(v.director).length === 0 &&
     v.flags.length === 0 &&
     v.foreshadowing.length === 0 &&
     v.status.time === null &&
@@ -31,7 +32,7 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   return <h3 className="mt-5 mb-2 text-meta tracking-[.25em] text-ink-hint first:mt-0">{children}</h3>;
 }
 
-/** 键值两列：键淡、值亮（主角卡与幕后手记共用；引擎可自由加字段，按出现顺序铺） */
+/** 键值两列：键淡、值亮（主角卡与剧情状态共用；引擎可自由加字段，按出现顺序铺） */
 function KeyValueRows({ entries }: { entries: [string, string][] }) {
   return (
     <dl className="space-y-1.5">
@@ -45,19 +46,31 @@ function KeyValueRows({ entries }: { entries: [string, string][] }) {
   );
 }
 
-/** 好感度：数字醒目（accent）+ 底部细进度条；解析不出（null）显示「—」不画条 */
-function FavorMeter({ favor }: { favor: number | null }) {
+/**
+ * 好感度：数字醒目 + 底部细进度条 + 0/50/100 刻度；低（≤25）/高（≥75）换色并盖临界小标，
+ * 让「快到底了/已经很亲」一眼可读。解析不出（null）显示「—」不画条（数字与「—」的字面是测试契约，别改）。
+ */
+function FavorMeter({ name, favor }: { name: string; favor: number | null }) {
+  const high = favor !== null && favor >= 75;
+  const low = favor !== null && favor <= 25;
+  const tone = high ? "text-gold" : low ? "text-[#d98b8b]" : "text-[color:var(--accent)]";
+  const bar = high ? "bg-gold" : low ? "bg-[#d98b8b]" : "bg-[color:var(--accent)]";
   return (
     <div className="flex items-center gap-2.5">
       <span className="text-meta tracking-[.15em] text-ink-hint">好感度</span>
-      <span className="text-body font-medium tabular-nums text-[color:var(--accent)]">
-        {favor === null ? "—" : favor}
-      </span>
-      <div className="h-[3px] min-w-0 flex-1 rounded-full bg-white/10">
-        {favor !== null && (
-          <div className="h-full rounded-full bg-[color:var(--accent)]" style={{ width: `${favor}%` }} />
-        )}
+      <span className={`text-body font-medium tabular-nums ${tone}`}>{favor === null ? "—" : favor}</span>
+      <div
+        className="relative h-[3px] min-w-0 flex-1 rounded-full bg-white/10"
+        data-testid={`character-favor-track-${name}`}
+      >
+        {favor !== null && <div className={`h-full rounded-full ${bar}`} style={{ width: `${favor}%` }} />}
+        {/* 0 / 50 / 100 刻度：两端实一点、中线淡一点（纯装饰，不参与可访问树） */}
+        <span aria-hidden className="absolute inset-y-0 left-0 w-px bg-white/30" />
+        <span aria-hidden className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-white/20" />
+        <span aria-hidden className="absolute inset-y-0 right-0 w-px bg-white/30" />
       </div>
+      {low && <span className="flex-none text-micro tracking-[.1em] text-[#d98b8b]">低</span>}
+      {high && <span className="flex-none text-micro tracking-[.1em] text-gold">高</span>}
     </div>
   );
 }
@@ -89,7 +102,7 @@ function CharacterCard({ c }: { c: StateCharacter }) {
           </span>
         )}
       </div>
-      <FavorMeter favor={c.favor} />
+      <FavorMeter name={c.name} favor={c.favor} />
       {rows.length > 0 && (
         <div className="mt-2.5">
           <KeyValueRows entries={rows} />
@@ -122,8 +135,43 @@ function CharacterCard({ c }: { c: StateCharacter }) {
 }
 
 /**
+ * 未了伏笔（剧透保护，v1.14）：默认折叠，照「秘密（剧透）」的既有折叠范式。
+ * 伏笔本就是「还没回收的悬念」，摊开等于提前把后面的走向告诉玩家——默认收起、标注「含剧透」，
+ * 想看的人自己点开。
+ */
+function ForeshadowSection({ items }: { items: StateView["foreshadowing"] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button
+        type="button"
+        data-testid="characters-foreshadow"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+        className="mt-5 mb-2 flex items-center gap-1 text-meta tracking-[.15em] text-ink-hint transition-colors hover:text-ink-body"
+      >
+        <ChevronDown size={12} className={`transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
+        未了伏笔 · {items.length}（含剧透）
+      </button>
+      {open && (
+        <ul data-testid="characters-foreshadow-list" className="space-y-1 text-meta leading-relaxed text-ink-body">
+          {items.map((f, i) => (
+            <li key={`${i}-${f.text}`} className="flex gap-2">
+              <span className="min-w-0 flex-1">{f.text}</span>
+              {f.turn !== null && <span className="flex-none text-meta text-ink-hint">第 {f.turn} 幕</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
+}
+
+/**
  * 角色面板抽屉（v1.7）：右滑入，展示引擎维护的世界状态（`GET /api/state` 读 state.md）。
- * 分块：剧情状态（时间/场景/周目）、主角、角色卡（好感度/表情徽章/秘密折叠/最近互动）、幕后手记、线索/伏笔。
+ * 分块：剧情状态（时间/场景/周目）、主角、角色卡（好感度/表情徽章/秘密折叠/最近互动）、线索/伏笔。
+ * v1.14 剧透收口：**不再渲染「幕后手记」小节**（导演层字段是幕后情报，不摊给玩家；state.md 仍照旧解析，
+ * 只是这里不画）；「未了伏笔」默认折叠 + 标注「含剧透」；「秘密」保持默认折叠。
  * 刷新时机在 store（打开拉一次 + turn_end 面板开着重拉）；换世界清空——这里只渲染 {@link stateView}。
  * stateView 为 null 或解析全空时显示占位说明（还没写过 state.md）。
  * 抽屉语义（v1.9）：role=dialog + aria-modal + 标题作名字，焦点进抽屉、Tab 在抽屉里循环、关时归还；
@@ -174,7 +222,7 @@ export default function CharactersDrawer() {
               <p data-testid="characters-empty" className="py-5 text-center text-meta leading-relaxed text-ink-hint">
                 还没有可展示的角色状态
                 <br />
-                故事推进后，这里会记下好感度、秘密与幕后手记
+                故事推进后，这里会记下好感度、秘密与线索
               </p>
             ) : (
               <>
@@ -203,13 +251,6 @@ export default function CharactersDrawer() {
                   </section>
                 )}
 
-                {view && Object.keys(view.director).length > 0 && (
-                  <section data-testid="characters-director">
-                    <SectionTitle>幕后手记</SectionTitle>
-                    <KeyValueRows entries={Object.entries(view.director)} />
-                  </section>
-                )}
-
                 {view && (view.flags.length > 0 || view.foreshadowing.length > 0) && (
                   <section data-testid="characters-notes">
                     {view.flags.length > 0 && (
@@ -225,21 +266,7 @@ export default function CharactersDrawer() {
                         </ul>
                       </>
                     )}
-                    {view.foreshadowing.length > 0 && (
-                      <>
-                        <SectionTitle>未了伏笔 · {view.foreshadowing.length}</SectionTitle>
-                        <ul className="space-y-1 text-meta leading-relaxed text-ink-body">
-                          {view.foreshadowing.map((f, i) => (
-                            <li key={`${i}-${f.text}`} className="flex gap-2">
-                              <span className="min-w-0 flex-1">{f.text}</span>
-                              {f.turn !== null && (
-                                <span className="flex-none text-meta text-ink-hint">第 {f.turn} 幕</span>
-                              )}
-                            </li>
-                          ))}
-                        </ul>
-                      </>
-                    )}
+                    {view.foreshadowing.length > 0 && <ForeshadowSection items={view.foreshadowing} />}
                   </section>
                 )}
               </>

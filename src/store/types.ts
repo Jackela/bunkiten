@@ -1,7 +1,7 @@
 // store 的类型层（v1.6 slice 拆分抽出）：只放类型，不带运行时值——
 // 这样 slices/* 与 context.ts 都能 `import type` 取用，不会与 game.ts 形成运行时循环依赖。
 // 对外 API 不变：game.ts 原样 `export type {...} from "./types"`，组件与测试的 import 路径不动。
-import type { AssetEntry, Preset, StateView, WorldEntry, WorldPostResult, AcpEvent } from "../lib/acp";
+import type { AssetEntry, LogEntry, Preset, StateView, WorldEntry, WorldPostResult, AcpEvent } from "../lib/acp";
 import type { ArtKind, GameOption } from "../lib/parser";
 import type { GameSettings } from "../lib/settings";
 
@@ -80,6 +80,53 @@ export interface HistoryRollbackMark {
 /** 历史条目：正文幕（HistoryEntry）或回退分割线（HistoryRollbackMark），按 kind 判别 */
 export type HistoryItem = HistoryEntry | HistoryRollbackMark;
 
+/**
+ * 一个回合引发的数值变化（v1.14，因果反馈）：`排异指数 65 → 73 ↑`。
+ * favor 走结构化数值；flags 走「值里首个整数」的口径（抽不到数值就跳过——那种变化说不清大小）。
+ * 只有**真的变了**的项才进列表；一项都没有（或首次拿到 stateView、无从比较）时整份是 null。
+ * `dir` 为契约保留的第三态「same」：数值相同的项不入列，当前只产 up/down。
+ */
+export interface TurnDelta {
+  name: string;
+  from: string;
+  to: string;
+  dir: "up" | "down" | "same";
+}
+
+/**
+ * 磁盘回合日志的分页态（v1.14 回想接磁盘）：`logs/NNNN.json` 只写不删，历史抽屉按页往下翻。
+ * `entries` 最新在前、逐页追加；`nextBefore` 为 null = 已到最早一页；`loadedOnce` 区分
+ * 「还没翻过」与「翻过且到底了」（前者首翻给最近一页）。
+ */
+export interface DiskHistory {
+  entries: LogEntry[];
+  nextBefore: number | null;
+  loading: boolean;
+  error: string | null;
+  loadedOnce: boolean;
+}
+
+/** 前情提要的一条：`n` = 该回合的 seq（summary 那一条为 null，渲染层当引言） */
+export interface RecapEntry {
+  n: number | null;
+  t: string;
+}
+
+/**
+ * 前情提要的数据（v1.14，本地合成、零引擎回合）：元命令 `/recap` 本地化后的产物。
+ * 数据源 = `fetchLogs` 最近 5 条 + `fetchState`（时间/地点）+ 最新一条快照的 summary——
+ * summary 形状上不单独占字段，作为 `entries` 的首项（`n: null`）呈现；取不到就不给这一项。
+ * `loaded:false` = 还在取；`error` 非空 = 取数失败（面板显示原因，不留白）。
+ */
+export interface RecapData {
+  loaded: boolean;
+  error: string | null;
+  chapterNo: number | null;
+  time: string | null;
+  scene: string | null;
+  entries: RecapEntry[];
+}
+
 /** 创作模式对话流的一条消息 */
 export interface CreationMessage {
   role: "engine" | "player";
@@ -111,6 +158,12 @@ export interface GameStore {
   selected: Preset | null;
   /** /api/presets 的轮播数据（TitleScreen 挂载、presetAdded 与剧本导入成功时刷新） */
   presets: Preset[];
+  /**
+   * 标题屏卡带轮播的当前下标（v1.14 从 TitleScreen 的屏内 state 提到 store）：
+   * 屏重挂（App 的 keyed 重挂 / 切屏回来）后轮播停在原处，不再每次回到第一张。
+   * 越界由 TitleScreen 的收敛 effect 夹回范围（删卡 / 轮播刷新后可能越界）。
+   */
+  titleIndex: number;
   /** 标题屏提示位：剧本导入的成功/失败（v1.7；失败 kind=error） */
   titleNotice: Notice | null;
   /** shortName -> 已选选项（多选按选择顺序） */
@@ -123,6 +176,13 @@ export interface GameStore {
   finalText: string;
   options: GameOption[] | null;
   typingDone: boolean;
+  /**
+   * 已经「完整展示过」的那一幕的打字机键（v1.14）：键 = {@link turnKey} 的字符串形态。
+   * 屏切换（App 的 keyed 重挂）会把 DialogueBox 整棵子树重建、shown 归零，于是同一幕再打字一遍；
+   * 记住这个键之后，重挂时由消费方直接播种全文（见 `markTypingDone`）。
+   * 新回合/换段（turnKey 变化）即与之不匹配，自然重播；换局随 resetRunState 清空。
+   */
+  typingDoneKey: string | null;
 
   bgUrl: string | null;
   /**
@@ -173,6 +233,50 @@ export interface GameStore {
   charactersOpen: boolean;
   /** 最近一次拉到的 state.md 解析视图；null = 还没拉到（404 或失败）——面板显示空态文案 */
   stateView: StateView | null;
+  /**
+   * 上一次拉到的 state.md 视图（v1.14 数值差分的比较基线）：与 {@link stateView} 同批写入，
+   * 回合收尾重拉时拿它与新的一份对比产出 {@link lastTurnDeltas}。换局随 resetRunState 清空
+   * （跨世界比较毫无意义）。
+   */
+  prevStateView: StateView | null;
+  /**
+   * 上一个回合引发的数值变化（v1.14）：`turn_end` 收尾重拉 state.md 时与上一份对比得出；
+   * 无变化、首次拿到视图（无从比较）或本轮不是正戏回合时为 null。只读——D 泳道据此画差分条。
+   */
+  lastTurnDeltas: TurnDelta[] | null;
+
+  // —— v1.14 章待办 & 本地面板（帮助/前情提要）——
+  /**
+   * 待规划的章号（v1.14）：收到【章】标记时**始终**记下（= 该标记的章号 + 1，沿用 beginPlanning 的口径），
+   * 在 game 屏即刻切制作中屏规划；在其它屏（画廊/设置/剧情图 overlay 等）只记待办，
+   * 等回到 game 屏（且引擎空闲）由 context.consumePendingChapter 消费。null = 没有待规划章。
+   */
+  pendingChapter: number | null;
+  /** 帮助面板（v1.14 本地化 /help）：纯前端开关，不占引擎回合 */
+  helpOpen: boolean;
+  /** 前情提要面板（v1.14 本地化 /recap）：纯前端开关，数据见 {@link recapData} */
+  recapOpen: boolean;
+  /** 前情提要的数据（打开时本地合成一次；null = 从未打开过） */
+  recapData: RecapData | null;
+
+  // —— v1.14 磁盘历史与回合对账 ——
+  /**
+   * 磁盘回合日志的分页态（回想接磁盘）：`/api/logs` 逐页往下翻，来源是 `logs/NNNN.json`
+   * （append-only，不进导出包）——内存 history 只活本会话，磁盘这份才跨刷新。换局清空。
+   */
+  diskHistory: DiskHistory;
+  /**
+   * 当前回合的服务端序号（v1.14）：`turn_start` 带 `turn` 时落它，`turn_end`/`error`/`turn_cancelled`
+   * 清除。带 `turn` 的 chunk 与之不符即丢弃——SSE 重连或取消后迟到的旧回合片段不许污染新回合。
+   * null = 未知（更老的 server 不发 turn，此时不做任何回合校验，行为与 v1.13 逐字一致）。
+   */
+  currentTurn: number | null;
+  /**
+   * SSE 事件流断开（v1.14，App 的 onConn("error") 回调置位）：顶栏据此亮一处「连接中断」提示，
+   * 重连成功（onConn("open") → {@link GameStore.reconcileAfterReconnect}）即复位。
+   * 刻意不带 aria-live —— 状态播报归 StatusAnnouncer（sr-status），这里只是一处可见提示，别抢读屏的播报。
+   */
+  sseDown: boolean;
 
   // —— 创作模式（creation 屏）——
   creationMessages: CreationMessage[];
@@ -250,12 +354,13 @@ export interface GameStore {
 
   // —— 回退后的重同步（会话内内存态，不持久化）——
   /**
-   * 回退成功后补发「继续世界：<worldId>。」的标记：重同步回合（{@link resyncing}）turn_end 成功即清除
-   * （见 gameplay slice），投递/回合失败则保留并置 {@link resyncFailed}；玩家改发普通指令时在 send 入口
-   * 静默清掉（选择继续走，不假称完成重同步）。刻意不持久化——App 重启后玩家走「继续世界线」
-   * 本来就会重发续玩指令重读档，语义自洽，无需跨会话记账。
+   * 需要重同步的标记：回退成功后补发「继续世界：<worldId>。」时置位（`seq` = 回退到的幕），
+   * 停止当前回合（{@link cancelTurn} / `turn_cancelled`）也会置位（`seq: null`——没有「回到第 N 幕」可言）。
+   * 重同步回合（{@link resyncing}）turn_end 成功即清除，投递/回合失败则保留并置 {@link resyncFailed}。
+   * v1.14 起玩家改发普通指令时**不再静默作废**：先强推一次重同步、把这句话排队跟进（见 send 入口）。
+   * 刻意不持久化——App 重启后玩家走「继续世界线」本来就会重发续玩指令重读档，语义自洽，无需跨会话记账。
    */
-  pendingResync: { worldId: string; seq: number } | null;
+  pendingResync: { worldId: string; seq: number | null } | null;
   /** 重同步回合失败（POST 失败或 SSE error 事件）：TopBar 亮「再同步」入口，重试成功后复位 */
   resyncFailed: boolean;
   /** 本轮发送的正是重同步指令「继续世界：<worldId>。」（由 restoreSnapshot/retryResync 在发送前置位）：
@@ -264,11 +369,20 @@ export interface GameStore {
   resyncing: boolean;
 
   // —— 重演（reroll，会话内内存态，不持久化）——
-  /** 重演的排队跟进：重同步回合成功收尾（pendingResync 清除）后要补发的玩家输入——点击时从目标幕
+  /** 重同步回合成功收尾（pendingResync 清除）后要补发的玩家输入——重演点击时从目标幕
    *  快照条目的 prompt 现取（v1.13 起输入在盘上，见 lib/replay 与 docs/adr/0023），这里只负责把它
-   *  带过 restore → 重同步 → turn_end 的窗口。重同步失败时保留，玩家点「再同步」成功后照常跟进；
-   *  玩家改发普通指令时随 pendingResync 一起静默作废（见 send 入口）。 */
+   *  带过 restore → 重同步 → turn_end 的窗口。重同步失败时保留，玩家点「再同步」成功后照常跟进。
+   *  v1.14 起这条路也承载「重同步还挂着时玩家直接发了普通指令」的那句话（send 入口先强推重同步、
+   *  把输入排到这里跟进）——同一个语义：重同步收尾后补发一句玩家输入。 */
   pendingRerollPrompt: string | null;
+  /**
+   * 重演对话框（v1.14 可编辑重演，会话内内存态）：由 {@link GameStore.openRerollDialog} 解析出的
+   * **目标幕快照序号**与那条快照记下的玩家输入（对话框的预填值）。两个入口共用一份对话框：
+   * 游戏屏「重演这一幕」（不传 seq = 最近一条带玩家输入的 turn 条目）与剧情图屏「回到这一幕并重演」
+   * （传该存档点的 seq）。null = 对话框没开；取消/确认后清空（确认走 {@link GameStore.submitReroll}，
+   * 空串回退为这里预填的那句）。玩家改写的输入最终经 pendingRerollPrompt 带过重同步窗口。
+   */
+  rerollDialog: { seq: number; prompt: string } | null;
   /** 当前世界已知的 `kind:"turn"` 快照数（游戏屏「重演这一幕」的可见性判据）：null = 未知。建新世界置 0；
    *  入场（resumeWorld）与「还不够两条」的回合收尾按需向 /api/history 补拉（见 context.refreshTurnSnapshots）。
    *  判定口径：重演要退到目标幕之前的那条 turn 快照 = 至少两条 turn 快照；未知（null）时不藏功能，
@@ -290,8 +404,6 @@ export interface GameStore {
   curSeg: number;
   seenMarkerKeys: Set<string>;
   turnNo: number;
-  /** /new-game、/presets 需要在回合结束后切屏 */
-  awaitCommand: string | null;
 
   toTitle(): void;
   /**
@@ -302,6 +414,11 @@ export interface GameStore {
   toWorlds(): void;
   selectPreset(preset: Preset): void;
   setPresets(presets: Preset[]): void;
+  /**
+   * 标题屏轮播下标（v1.14 从屏内 state 提到 store）：← → 切卡 / 拖拽 / 越界收敛共用。
+   * 不夹界——范围由调用方保证（TitleScreen 的收敛 effect 在轮播长度变化后夹回）。
+   */
+  setTitleIndex(n: number): void;
   /**
    * 导入剧本导出包（v1.7，TitleScreen「导入剧本」入口）：本地最小校验 → POST /api/presets import →
    * 成功重取 /api/presets 刷新轮播（新卡带立刻可见）并提示「已导入为 <id>」（服务端重名会改 -2/-3）。
@@ -373,14 +490,38 @@ export interface GameStore {
    *（server 先写 backup）→ history 追加 reason:"reroll" 的分割线、置待重同步并发续档指令 →
    * 重同步回合成功收尾后由 gameplay 的排队跟进自动重发该输入（可连掷）。
    * 三级降级（第一幕无处可退 / 旧档与续玩没有输入 / 找不到这一幕）与引擎忙都经 status 反馈，不静默。
+   * @param {string} [promptOverride] 可编辑重演（v1.14）：玩家在入口改写过的那句话；缺省 /
+   *   全空白 = 原样重发快照条目里的 prompt（行为与 v1.13 逐字一致）
    */
-  rerollTurn(): Promise<void>;
+  rerollTurn(promptOverride?: string): Promise<void>;
   /**
    * 重演指定的一幕（剧情图屏「回到这一幕并重演」）：与 {@link rerollTurn} 同一解析内核、同一时序，
    * 只是目标幕由参数给定（该存档点的快照序号），提示落 {@link treeNotice}（图屏没有顶栏状态位）。
    * @param {number} seq 目标幕的快照序号（屏上「存档点 · 第 N 幕」的 N）
+   * @param {string} [promptOverride] 可编辑重演（v1.14）：同 {@link rerollTurn}
    */
-  rerollAt(seq: number): Promise<void>;
+  rerollAt(seq: number, promptOverride?: string): Promise<void>;
+  /**
+   * 打开重演对话框（v1.14 可编辑重演）：把「重演这一幕」从「再说一遍同一句错话」变成
+   * 「回到这里，换一种说法」——目标幕与预填值都取自盘上（与 {@link rerollTurn}/{@link rerollAt}
+   * 同一套解析内核，不写第二份）。
+   * @param {number} [seq] 目标幕的快照序号（剧情图屏「回到这一幕并重演」传该存档点）；
+   *   缺省 = 游戏屏「重演这一幕」——目标幕 = 最近一条**带玩家输入**的 turn 条目（与 {@link rerollTurn}
+   *   缺省时的口径逐字一致：最新那条常是空的续玩条目，要往回找；回看上限 REPLAY_PROBE_MAX）。
+   * 解析失败（找不到这一幕 / 第一幕无处可退 / 这一档没有留下输入）与取数失败走既有错误提示口径
+   * （游戏屏 status、图屏 treeNotice），**不开空对话框**。图屏路径（给了 seq）同步开框、预填值随后单条取回。
+   */
+  openRerollDialog(seq?: number): Promise<void>;
+  /** 关掉重演对话框（取消 / 点背板 / Esc）：不落任何请求，草稿随框一起丢弃 */
+  closeRerollDialog(): void;
+  /**
+   * 提交重演（对话框「确认重演」）：`text` 空/全空白 = 没改写，回退为打开时预填的那句
+   * （与 `replayPrompt` 同一口径）；否则按玩家改写的输入重演。
+   * 目标幕 = 打开对话框时解析出的那一条（不是「此刻盘上最新一条」——续玩条目的边界上两者不同，
+   * 而对话框预填的正是这一条记下的输入）。走既有 reroll 通路与既有 `pendingResync` 时序：
+   * 重同步回合成功收尾后由 gameplay 的排队跟进补发这句话（图屏提示落 treeNotice，游戏屏落 status）。
+   */
+  submitReroll(text: string): Promise<void>;
   /**
    * 启动自动前进倒计时（选项上屏时由 OptionList 调；重复调用幂等）。
    * 拒绝启动：设置关闭（autoAdvance=0）、本回合已被交互取消、非游戏屏、引擎忙、
@@ -417,6 +558,48 @@ export interface GameStore {
   skipPreload(): void;
   toggleDrawer(): void;
   setTypingDone(done: boolean): void;
+  /**
+   * 记下「这一幕的打字机已完整展示过」（v1.14）：键 = {@link turnKey} 的字符串形态。
+   * 屏切换（App 的 keyed 重挂）会把 DialogueBox 的 shown 归零，重挂时消费方读本字段决定是否直接播种全文。
+   * @param {string} key 打字机键（与 DialogueBox 的 turnKey 同源）
+   */
+  markTypingDone(key: string): void;
+  /**
+   * 消费待规划章（v1.14 兜底入口，GameStage 的「第 N 章待规划 · 继续」提示条用）：
+   * 与回 game 屏时的自动消费同一条路（切 crafting 并发该章规划指令）；非 game 屏 / 引擎忙 / 无待办时不动。
+   */
+  resumePendingChapter(): void;
+  /**
+   * 停止当前回合（v1.14，TopBar「停止」按钮）：调 `POST /api/engine/cancel`；服务端确认停下后
+   * 复位引擎忙态、状态写「已停止」、置 {@link pendingResync}（下一句输入先重同步）。
+   * `turn_cancelled` 事件到达时走同一条路（幂等）。投递失败经 status 报错，不静默。
+   */
+  cancelTurn(): Promise<void>;
+  /**
+   * 回合收尾的 state.md 刷新（v1.14）：**不再只在角色面板开着时刷新**——数值差分（{@link lastTurnDeltas}）
+   * 是每一回合都要看的因果反馈。拉到的视图与 {@link prevStateView} 对比后写差分，并把新视图落成新基线。
+   */
+  refreshTurnState(): void;
+  /** 打开帮助面板（v1.14 本地化 /help；纯前端开关，不占引擎回合） */
+  openHelp(): void;
+  closeHelp(): void;
+  /** 打开前情提要（v1.14 本地化 /recap）：置开关并本地合成 {@link recapData}（零引擎回合） */
+  openRecap(): Promise<void>;
+  closeRecap(): void;
+  /**
+   * 翻一页磁盘历史（v1.14）：`limit` = 50，首翻拿最近一页，之后按 `nextBefore` 往更早翻，
+   * 结果逐页追加进 {@link diskHistory}。同世界 in-flight 去重；换世界时丢弃迟到的应答。
+   */
+  loadHistoryPage(): Promise<void>;
+  /**
+   * SSE 重连对账（v1.14，App 的 onConn("open") 调用；首连与重连一视同仁、幂等，受控例外新增）：
+   * 断线期间错过的 `turn_start`/`turn_end` 会让客户端忙态与回合号与真值错开，这里拉一次
+   * `GET /api/engine/status` 以服务端为准对齐 {@link GameStore.engineBusy} / {@link GameStore.currentTurn}，
+   * 并顺手补拉一次 turnSnapshots（重演入口的可见性判据）。取数失败静默保持现态，**不伪造任何回合收尾**。
+   */
+  reconcileAfterReconnect(): void;
+  /** 置 SSE 断开提示位（App 的 onConn 回调；成功对账会把 {@link GameStore.sseDown} 复位为 false，幂等） */
+  setSseDown(down: boolean): void;
   handleEvent(event: AcpEvent): void;
   /**
    * 打开画廊（overlay；只切屏，不动回合与画面状态）。

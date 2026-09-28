@@ -41,7 +41,16 @@ import http from "http";
 import path from "path";
 import { fileURLToPath } from "url";
 // 档位常量（EFFORT/EFFORT_PLANNING）与路径/端口同处 config.mjs：见下方 re-export 处的说明
-import { EFFORT, GAME_ROOT, BASE_PORT, PORT_MAX_RETRY, SESSION_FILE, WORLDS_ROOT, gameHome } from "./config.mjs";
+import {
+  EFFORT,
+  GAME_ROOT,
+  DATA_ROOT,
+  BASE_PORT,
+  PORT_MAX_RETRY,
+  SESSION_FILE,
+  WORLDS_ROOT,
+  gameHome,
+} from "./config.mjs";
 // 规则原文（注入 agent 的 RULES）；五种协议行的解析与质量守卫的 SUPPLEMENT_PROMPT 已随回合流水线
 // 一并住进 server/turn-pipeline.mjs——那边 import（本入口不再用它们，只 re-export 给外部）
 import { RULES } from "./protocol-lines.mjs";
@@ -87,6 +96,7 @@ export {
   assetTargetFile,
   buildPresetBundle,
   importPresetBundle,
+  deletePreset,
 } from "./presets.mjs";
 export {
   RULES_SENTENCES,
@@ -109,6 +119,8 @@ export {
   readSnapshot,
   writeSnapshot,
   writeTurnLog,
+  readTurnLogs,
+  readTurnLog,
   selectSnapshotForNode,
   forkTreeMarkdown,
   forkNote,
@@ -126,9 +138,12 @@ export {
   updateWorld,
   labelSnapshot,
   exportWorld,
+  exportAllWorlds,
   importWorld,
   deleteWorld,
   listWorlds,
+  listTrash,
+  restoreTrash,
   migrateLegacyState,
   migrateWorldsSchema,
 } from "./worlds.mjs";
@@ -278,6 +293,12 @@ export function startServer() {
   /** @returns {ReturnType<typeof createAcpSession>} */
   function buildAcp() {
     const creds = readCredentials();
+    // 两个「根」在这里分家（v1.14，ADR-0024）：
+    //   · prepareSpawn 的 gameRoot = **只读内容根** GAME_ROOT——grok 的 `--plugin-dir <GAME_ROOT>/.grok`
+    //     与 codex 的 skill 源都住在那儿（bundle 只读）；
+    //   · createAcpSession 的 gameRoot = **可写数据根** DATA_ROOT——它是引擎的 cwd，SKILL 里的
+    //     `state/worlds/…`、`presets/…/assets` 都是相对路径，引擎按 cwd 落盘，写错根就是「把玩家数据
+    //     写回只读 bundle」（打包态覆盖安装即丢档）。dev 下两者相同，行为一字不变。
     const plan = prepareSpawn({ creds, home: gameHome(), gameRoot: GAME_ROOT, rules: RULES });
     engine = plan.engine;
     return createAcpSession({
@@ -287,7 +308,7 @@ export function startServer() {
       env: plan.spawn.env,
       // Windows 的 .cmd 引擎（npm 装的 grok）要经 shell 起——由描述符的 windowsSafeSpawn 决定（见 engines.mjs）
       shell: plan.spawn.shell === true,
-      gameRoot: GAME_ROOT,
+      gameRoot: DATA_ROOT,
       sessionFile: SESSION_FILE,
       rules: plan.rules,
       effort: EFFORT,
@@ -301,32 +322,98 @@ export function startServer() {
   // ---------- 引擎凭据的闭包面（v1.10，docs/adr/0019）：路由链只做转手，判定都在 credentials*.mjs ----------
 
   /**
-   * 优雅重启引擎会话（POST /api/engine/restart 的落地）：杀旧引擎子进程 → 按**当前**凭据重建会话 → 重新握手。
-   * env 只在 spawn 时读一次，所以「保存 key / 切引擎立刻生效」必须走这里。回合进行中拒绝——杀进程等于把这一回合
-   * 的推演连同落盘一起截断（客户端会停在「待重同步」态），宁可让玩家等这一回合结束。
-   * 切引擎时旧会话的存档（.shell-session.json 里的 sessionId）会因 engine 标记不匹配被 boot 跳过（走 session/new）。
-   * @returns {Promise<{ok: boolean, error?: string}>}
+   * 等一个子进程退场（上限 ms；到点也 resolve，进程还活着时由调用方决定下一步）。
+   * 定时器**不 unref**：这个等待本身就是收尾的一步，它必须真的到点（unref 掉的话，一个卡死的子进程
+   * 会让收尾永远等不到那个回调）。
+   * @param {import("child_process").ChildProcess} proc 目标进程
+   * @param {number} ms 上限毫秒
+   * @returns {Promise<void>}
    */
-  async function restartAcp() {
-    if (turns.isBusy()) return { ok: false, error: "正在演绎中，等这一回合结束再重启" };
-    const old = acp;
-    try {
-      old.proc.kill();
-    } catch {}
-    // 等旧进程退出再拉新的：两个引擎进程同时持同一会话目录会互相踩 session 文件
-    await new Promise((resolve) => {
-      if (old.proc.exitCode !== null || old.proc.signalCode !== null) return resolve(undefined);
-      const t = setTimeout(() => {
-        try {
-          old.proc.kill("SIGKILL");
-        } catch {}
-        resolve(undefined);
-      }, 1500);
-      old.proc.once("exit", () => {
+  function waitExit(proc, ms) {
+    return new Promise((resolve) => {
+      if (proc.exitCode !== null || proc.signalCode !== null) return resolve(undefined);
+      const t = setTimeout(() => resolve(undefined), ms);
+      proc.once("exit", () => {
         clearTimeout(t);
         resolve(undefined);
       });
     });
+  }
+
+  /**
+   * 杀掉一个引擎子进程（SIGTERM → 等退出（上限 ~1.5s）→ SIGKILL → 再等）。**await 到位**：
+   * 返回时它要么已经退场、要么已经杀过一轮——「旧的还活着就 spawn 新的」会让两个引擎同时持同一会话目录，
+   * 互相踩 session 文件（v1.14 把重启与退出收尾共用这一份）。
+   * @param {import("child_process").ChildProcess} proc 目标进程
+   * @returns {Promise<void>}
+   */
+  async function killEngine(proc) {
+    if (proc.exitCode !== null || proc.signalCode !== null) return;
+    try {
+      proc.kill();
+    } catch {
+      return; // 已经没了
+    }
+    await waitExit(proc, 1500);
+    if (proc.exitCode !== null || proc.signalCode !== null) return;
+    try {
+      proc.kill("SIGKILL");
+    } catch {}
+    await waitExit(proc, 1500);
+  }
+
+  /**
+   * 请引擎别再产出这一回合了（`session/cancel` 是 ACP 的 **notification**：无 id、不等响应，见 acp.mjs 的
+   * notify）。它只是礼貌通知——真正的作废在 turns.cancel()（按回合序号丢弃迟到的一切）。
+   * 静的：引擎没起来 / 管道已关都无所谓。
+   */
+  function notifySessionCancel() {
+    try {
+      if (acp.sessionId) acp.notify("session/cancel", { sessionId: acp.sessionId });
+    } catch {
+      /* 发不出去就算了：本地作废照常 */
+    }
+  }
+
+  /**
+   * 停止当前回合（POST /api/engine/cancel 的落地，v1.14 P0）。
+   * 两步都做：① 通知引擎（它可能就此收尾，省掉我们这边的等待）；② 本地作废这一回合的记账
+   *（busy 复位 + 广播 turn_cancelled + 留 cancelled 日志；迟到的 chunk/响应按回合序号丢弃）。
+   * @returns {boolean} 是否真的停了一个在途回合（空闲时回 false）
+   */
+  function cancelTurn() {
+    if (!turns.isBusy()) return false;
+    notifySessionCancel();
+    return turns.cancel();
+  }
+
+  /** @returns {{busy: boolean, turn: number}} 引擎状态（GET /api/engine/status 的对账面） */
+  function engineStatus() {
+    return { busy: turns.isBusy(), turn: turns.turn };
+  }
+
+  /**
+   * 重启引擎会话（POST /api/engine/restart 的落地）：杀旧引擎子进程 → 按**当前**凭据重建会话 → 重新握手。
+   * env 只在 spawn 时读一次，所以「保存 key / 切引擎立刻生效」必须走这里。
+   *
+   * `force`（v1.14）：默认**回合进行中拒绝**——杀进程等于把这一回合的推演连同落盘一起截断（客户端会停在
+   * 「待重同步」态），宁可让玩家等这一回合结束。要强来就给 `{force:true}`：先请引擎 `session/cancel`
+   * 本地作废这一回合（留痕、不写快照），给 500ms 让它吐完尾巴，然后**无论如何**杀掉旧进程再拉新的。
+   * 切引擎时旧会话的存档（.shell-session.json 里的 sessionId）会因 engine 标记不匹配被 boot 跳过（走 session/new）。
+   * @param {{force?: boolean}} [opts] force=true：正在演绎中也重启（先停本回合再换会话）
+   * @returns {Promise<{ok: boolean, error?: string}>}
+   */
+  async function restartAcp(opts = {}) {
+    let cancelledTurn = false;
+    if (turns.isBusy()) {
+      if (opts.force !== true) return { ok: false, error: "正在演绎中，等这一回合结束再重启" };
+      notifySessionCancel();
+      cancelledTurn = turns.cancel(); // 本地立刻作废（busy 复位 + turn_cancelled + cancelled 日志）
+      await new Promise((r) => setTimeout(r, 500)); // 给引擎 500ms 自己收尾，收不掉下一行照样杀
+    }
+    const old = acp;
+    // 等旧进程真的退场再拉新的：两个引擎进程同时持同一会话目录会互相踩 session 文件
+    await killEngine(old.proc);
     acp = buildAcp();
     turns.resetEffort(); // 新会话的 boot() 会把档位设成 EFFORT，记账跟着复位（否则同档位不再下发）
     try {
@@ -335,7 +422,7 @@ export function startServer() {
       console.error("[acp] restart failed:", errText(e));
       return { ok: false, error: `重启后引擎握手失败：${errText(e)}` };
     }
-    console.log(`[acp] engine restarted: ${acp.sessionId}`);
+    console.log(`[acp] engine restarted: ${acp.sessionId}${cancelledTurn ? "（强制：已先停本回合）" : ""}`);
     return { ok: true };
   }
 
@@ -344,8 +431,10 @@ export function startServer() {
   // v1.13 起整体住在 server/turn-pipeline.mjs——本文件只在上面 createTurnPipeline 处注入能力、
   // 在下面路由链处转手 sendPrompt/currentPresetId，不再碰任何逐回合状态。
 
-  // 旧版扁平 state/*.md 一次性迁入 state/worlds/main/（幂等；已是多世界布局或无旧数据时不动）
-  if (migrateLegacyState(path.join(GAME_ROOT, "state"), WORLDS_ROOT)) {
+  // 旧版扁平 state/*.md 一次性迁入 state/worlds/main/（幂等；已是多世界布局或无旧数据时不动）。
+  // 源是**数据根**的 state/（v1.14）：打包态那份扁平老档由 main 进程的 prepareDataRoot 复制进数据根，
+  // 数据根才是玩家数据的所在地（bundle 里那份只是 README 种子，搬它等于搬目录说明）。
+  if (migrateLegacyState(path.join(DATA_ROOT, "state"), WORLDS_ROOT)) {
     console.log("[acp] legacy state/*.md → state/worlds/main/ 已迁移");
   }
   // 索引 schema 升级（ROADMAP §1 / ADR-0018）必须紧跟其后：上一步可能刚用新写形态（{schema:1, worlds}）
@@ -374,6 +463,8 @@ export function startServer() {
       updateCredentials: settings.updateCredentials,
       testCredentials: settings.testCredentials,
       restartEngine: restartAcp,
+      cancelTurn,
+      engineStatus,
       startEngineLogin: settings.startEngineLogin,
       logoutEngine: settings.logoutEngine,
       providersView: settings.providersView,
@@ -407,7 +498,9 @@ export function startServer() {
         // 进而骗过按首行解析端口的测试编排（tests/helpers/stack.mjs）。
         // TCP 监听的 address() 恒为 AddressInfo（string 分支是 IPC/pipe 才有的）——cast 表达这个分支不变式
         const actualPort = /** @type {import("net").AddressInfo|null} */ (server.address())?.port ?? port;
-        console.log(`[acp] http://localhost:${actualPort}  (game root: ${GAME_ROOT})`);
+        console.log(
+          `[acp] http://localhost:${actualPort}  (game root: ${GAME_ROOT}${DATA_ROOT === GAME_ROOT ? "" : `, data root: ${DATA_ROOT}`})`,
+        );
         resolve({ port: actualPort, server, proc: acp.proc });
       });
     });
@@ -432,17 +525,26 @@ export function startServer() {
     } catch {
       /* 启动失败也要清理子进程 */
     }
+    // 顺序（v1.14）：**先把引擎子进程收干净，再关 HTTP**。
+    // 旧写法（先 server.close 再 kill）有两处硬伤：① server.close 会等在途 SSE/HTTP 连接散尽，而引擎还在跑，
+    // 收尾时间不可控；② 它只发 SIGTERM、SIGKILL 是个 1.5s 后游离触发的定时器——await 返回时进程可能还活着，
+    // 于是 Electron 退出后留下一只孤儿引擎。现在共用 killEngine（SIGTERM → 等 ≤1.5s → SIGKILL → 再等）。
+    // 杀的是**当前**引擎：重启过就不是启动时那个 handle.proc 了。
+    await killEngine(acp.proc);
     sse.closeAll(); // SSE 长连接会拖住 server.close 回调（见 sse.mjs 的 closeAll）
-    if (handle) await /** @type {Promise<void>} */ (new Promise((resolve) => handle.server.close(() => resolve())));
-    // 杀**当前**的引擎进程：重启过就可能是新拉起的那个（旧 handle.proc 只是启动时的快照）
-    try {
-      acp.proc.kill();
-    } catch {}
-    setTimeout(() => {
-      try {
-        acp.proc.kill("SIGKILL");
-      } catch {}
-    }, 1500).unref(); // SIGTERM 不退则强杀
+    if (handle) {
+      const server = handle.server;
+      // closeAllConnections 让 keep-alive/慢连接当场散伙（Node ≥18.2）；再给 close 回调一个 3s 硬上限——
+      // 收到信号时玩家可能正挂着一个大响应，收尾不能无限等
+      server.closeAllConnections?.();
+      await new Promise((resolve) => {
+        const t = setTimeout(resolve, 3000);
+        server.close(() => {
+          clearTimeout(t);
+          resolve(undefined);
+        });
+      });
+    }
     // 在途的「登录」进程也一并收掉（登录是长事务：开浏览器等回调，可能挂着好几分钟）
     killPendingLogins();
   };

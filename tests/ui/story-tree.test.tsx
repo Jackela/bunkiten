@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 // 剧情图屏（拆自 tests/ui.test.tsx）：树图/详情/节点级与全树编辑、大图降级与缩放平移、节点 roving tabIndex、
-// 顶部章节切换器与归档药丸，附 treeLayout 视图纯函数。单例 store 的基线复位由 ./helpers 的 setupUi() 统一负责。
+// 顶部章节切换器与归档药丸，附 treeLayout 视图纯函数；v1.14 起「回到这一幕并重演」先开预填可编辑输入的对话框
+// （预填/改写/取消/旧档留空四条路径）。单例 store 的基线复位由 ./helpers 的 setupUi() 统一负责。
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,6 +10,7 @@ import { useGameStore } from "../../src/store/game";
 import { TREE_ZOOM_MAX, clampZoom, fitView, panView, viewBoxOf, zoomViewAt } from "../../src/lib/treeLayout";
 import { archiveKey, chapterItems, STATUS_SLUG } from "../../src/lib/tree-view";
 import { type TreeChapter, type TreeNode } from "../../src/lib/parser";
+import { type WorldSnapshotMeta } from "../../src/lib/acp";
 import { jsonResponse, box, readViewBox, setupUi } from "./helpers";
 
 setupUi();
@@ -737,5 +739,162 @@ describe("StoryTreeScreen：章节切换器与归档药丸（v1.8）", () => {
 
     fireEvent.click(screen.getByTestId("tree-archive-1"));
     expect(screen.queryByTestId("tree-archive-notice")).toBeNull(); // 再点收起
+  });
+});
+
+describe("StoryTreeScreen：回到这一幕并重演先开可编辑对话框（v1.14 可编辑重演）", () => {
+  /** 两节点小树：2-1 的存档点 #3、2-2 的存档点 #7（#7 之前还有 #3 → 2-2 有重演入口，2-1 没有） */
+  const TREE_MD = [
+    "# 剧情树",
+    "## 第 2 章：雨夜来客",
+    "- 当前进度: 节点 2-2（已走 2 轮）",
+    "",
+    "### 节点 2-1（来客敲门）",
+    "- 地点: 旅店",
+    "- 状态: 已走过",
+    "",
+    "### 节点 2-2（门外的雨声）",
+    "- 地点: 旅店",
+    "- 状态: 已走过",
+  ].join("\n");
+
+  const SNAPSHOTS: WorldSnapshotMeta[] = [
+    { seq: 3, at: "2026-01-01T00:00:00.000Z", kind: "turn", nodeId: "2-1", chapterNo: 2, label: "" },
+    { seq: 7, at: "2026-01-01T01:00:00.000Z", kind: "turn", nodeId: "2-2", chapterNo: 2, label: "" },
+  ];
+
+  /** seq → 单条查询带回的玩家输入（对话框的预填值；空 = 旧档/续玩条目） */
+  let promptsBySeq: Record<number, string>;
+  /** POST /api/worlds 收到的动作 */
+  let worldPosts: Record<string, unknown>[];
+  /** POST /prompt 收到的指令 */
+  let prompts: string[];
+
+  beforeEach(() => {
+    promptsBySeq = { 7: "接过信。" };
+    worldPosts = [];
+    prompts = [];
+    useGameStore.setState({
+      worldId: "campus-summer-1",
+      worldLabel: "campus-summer-1",
+      screen: "tree",
+      screenReturn: "game",
+      treeStamp: 0,
+      treeNotice: null,
+      treeFocus: null,
+      forkResult: null,
+      engineBusy: false,
+      pendingTreeMessage: null,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/api/tree") return jsonResponse({ worldId: "campus-summer-1", markdown: TREE_MD });
+        if (url.pathname === "/api/history") {
+          const seqParam = url.searchParams.get("seq");
+          if (seqParam === null) return jsonResponse({ worldId: "campus-summer-1", snapshots: SNAPSHOTS });
+          // 单条才带 files 与 prompt（对话框预填值 / 重演解析内核都从这里取）
+          const seq = Number(seqParam);
+          const meta = SNAPSHOTS.find((s) => s.seq === seq);
+          if (!meta) return jsonResponse({ worldId: "campus-summer-1", snapshots: [] });
+          return jsonResponse({
+            worldId: "campus-summer-1",
+            snapshots: [
+              { ...meta, files: { state: "# 状态\n", summary: null, tree: TREE_MD }, prompt: promptsBySeq[seq] ?? "" },
+            ],
+          });
+        }
+        if (url.pathname === "/api/worlds" && init?.method === "POST") {
+          worldPosts.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+          return jsonResponse({ ok: true, backupSeq: 12 });
+        }
+        if (url.pathname === "/prompt") {
+          prompts.push((JSON.parse(String(init?.body)) as { text: string }).text);
+          return jsonResponse({ ok: true });
+        }
+        return jsonResponse({}, 404);
+      }),
+    );
+  });
+
+  /** 打开 2-2 的重演对话框（入口不经 Radix 菜单：点一下框就同步开出来） */
+  const openDialog = () => {
+    fireEvent.click(screen.getByTestId("tree-node-2-2"));
+    fireEvent.click(screen.getByTestId("tree-replay-2-2"));
+    return screen.getByTestId("reroll-input") as HTMLTextAreaElement;
+  };
+
+  it("开框预填该存档点记下的输入 → 改一种说法确认 → restore 到它之前的 turn、重发的正是改写的句子", async () => {
+    render(<StoryTreeScreen />);
+    await waitFor(() => expect(screen.getByTestId("tree-canvas")).toBeTruthy());
+
+    const input = openDialog();
+    // 开框是同步的（点一下就要看到输入框）；预填值随后单条取回
+    expect(screen.getByTestId("reroll-dialog").getAttribute("role")).toBe("dialog");
+    await waitFor(() => expect(input.value).toBe("接过信。"));
+    expect(worldPosts).toEqual([]); // 只取数，不落任何请求
+
+    fireEvent.change(input, { target: { value: "把信还回去。" } });
+    await act(async () => {
+      // 两个按钮沿用旧的两段确认 testid（节点作用域），e2e 与旧用例的点击路径不变
+      fireEvent.click(screen.getByTestId("tree-replay-confirm-2-2"));
+    });
+    expect(screen.queryByTestId("reroll-dialog")).toBeNull(); // 确认即关框
+    await waitFor(() => expect(worldPosts[0]).toMatchObject({ action: "restore", worldId: "campus-summer-1", seq: 3 }));
+    expect(prompts).toEqual(["继续世界：campus-summer-1。"]); // 重同步指令已补发
+    const s = useGameStore.getState();
+    expect(s.pendingRerollPrompt).toBe("把信还回去。"); // 排队重发：改写的句子（与顶栏重演同一条时序）
+    expect(s.treeNotice).toContain("已回到第 3 幕");
+  });
+
+  it("取消：不落任何请求、入口照旧在（草稿随框丢弃）", async () => {
+    render(<StoryTreeScreen />);
+    await waitFor(() => expect(screen.getByTestId("tree-canvas")).toBeTruthy());
+
+    const input = openDialog();
+    await waitFor(() => expect(input.value).toBe("接过信。"));
+    fireEvent.change(input, { target: { value: "写了一半又不想改了" } });
+    fireEvent.click(screen.getByTestId("tree-replay-cancel-2-2"));
+
+    expect(screen.queryByTestId("reroll-dialog")).toBeNull();
+    expect(worldPosts).toEqual([]);
+    expect(prompts).toEqual([]);
+    expect(useGameStore.getState().rerollDialog).toBeNull();
+    expect(useGameStore.getState().treeNotice).toBeNull();
+    expect(screen.getByTestId("tree-replay-2-2")).toBeTruthy(); // 入口还在，可以再来一次
+  });
+
+  it("旧档（那条快照没留下输入）：框里留空，玩家自己写一句照样能重演", async () => {
+    promptsBySeq = {}; // v1.13 之前的档：条件缺省收敛成空串
+    render(<StoryTreeScreen />);
+    await waitFor(() => expect(screen.getByTestId("tree-canvas")).toBeTruthy());
+
+    const input = openDialog();
+    await waitFor(() => expect(input.value).toBe("")); // 没有可预填的东西：留空，不另给降级提示
+    fireEvent.change(input, { target: { value: " 换一种说法：先看信。 " } });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("tree-replay-confirm-2-2"));
+    });
+    await waitFor(() => expect(worldPosts[0]).toMatchObject({ action: "restore", seq: 3 }));
+    expect(useGameStore.getState().pendingRerollPrompt).toBe("换一种说法：先看信。");
+  });
+
+  it("旧档且玩家也没写新话：空文本回退为原句（也是空）→ 既有降级提示，不落请求", async () => {
+    promptsBySeq = {};
+    render(<StoryTreeScreen />);
+    await waitFor(() => expect(screen.getByTestId("tree-canvas")).toBeTruthy());
+
+    const input = openDialog();
+    await waitFor(() => expect(input.value).toBe(""));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("tree-replay-confirm-2-2")); // 空文本 = 没改写
+    });
+    expect(screen.queryByTestId("reroll-dialog")).toBeNull();
+    expect(worldPosts).toEqual([]);
+    expect(prompts).toEqual([]);
+    await waitFor(() =>
+      expect(screen.getByTestId("tree-notice").textContent).toContain("无法重演：这一档没有留下当时的输入"),
+    );
   });
 });

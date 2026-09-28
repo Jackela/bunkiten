@@ -18,6 +18,18 @@
 // 即 PATH 垫片原样透传过来的 grok CLI 参数，可断言 spawn 参数面），`session` 每条 session/load|new 一条。
 // 用来断言「凭据真的注进了引擎子进程」「图片自备 key 才会挂 MCP」，不必给假引擎加协议外的行为。
 //
+// 挂起闸（v1.14，「停止本回合」与迟到隔离的料；触发方式**冻结**，D 泳道/e2e-ui 照此消费）：
+//   · **prompt 文本含 `__HOLD__`** 的回合一律挂起——不发任何 session/update、也不回 session/prompt 的
+//     result（脚本队列里那条回合的 ops 不生效、条目也不被消费），直到收到 `session/cancel` **notification**；
+//   · 收到 `session/cancel` 时：若正挂着一条，就补发**一条迟到的** agent_message_chunk
+//     （正文固定 `（取消后迟到的正文。）`）再回 result——让「取消后到达的 chunk/响应必须被服务端按回合
+//     序号丢弃」有料可测；没有挂起的 prompt 时 session/cancel 是 no-op。
+//   服务端会把这两样都丢掉（不广播 chunk、不补 turn_end），所以客户端不会多看到任何东西。
+const HOLD_MARK = "__HOLD__";
+const HOLD_LATE_TEXT = "（取消后迟到的正文。）";
+/** 挂起中的 session/prompt 请求 id（null = 没有挂起） */
+let heldPromptId = null;
+
 // 另有一个可选行为（env FAKE_ENGINE_SPAWN_MCP=1）：收到 mcpServers 时**像真 agent 一样把它们拉起来**
 // 跑一遍 initialize → tools/list，把结果落成探针的 `mcp` 条目。这是打包态冒烟唯一能验「那条命令
 // （packaged 可执行文件 + ELECTRON_RUN_AS_NODE=1 + asar 外的脚本路径）真的跑得起来」的办法——
@@ -408,6 +420,18 @@ function handle(msg) {
       // 能力位与两个真后端一致（grok CLI 与 codex-acp 都宣告 loadSession=true；实测见 docs/adr/0022）——
       // 客户端据此才会走「先 session/load、被拒再降级 session/new」这条确定路径。
       return reply(msg.id, { protocolVersion: 1, agentCapabilities: { loadSession: true } });
+    case "session/cancel":
+      // 客户端→agent 的 notification（无 id、不回响应）。有挂起的 prompt 就释放它：先补一条**迟到的**
+      // 正文再回 result（见文件头的「挂起闸」）——真引擎收到 cancel 也是「中止并回一个最终结果」。
+      {
+        const id = heldPromptId;
+        heldPromptId = null;
+        if (id !== null) {
+          notify({ sessionUpdate: "agent_message_chunk", content: { text: `${HOLD_LATE_TEXT}\n` } });
+          reply(id, {});
+        }
+      }
+      return;
     case "session/new": {
       sessionCwd = msg.params?.cwd ?? sessionCwd; // 会话 cwd = 引擎 GAME_ROOT：推 outRelPath 时用它
       probe({
@@ -437,6 +461,12 @@ function handle(msg) {
       // 探针记一条 prompt 原文（v1.12）：e2e 用它验「玩家在屏上写的那句话真的原样到了引擎」——
       // 例如画廊里对单张素材写的自然语言要求（`美术：重绘 立绘 薇拉：头发改成短发`）。
       probe({ kind: "prompt", text: String(text) });
+      // 挂起闸（v1.14，见文件头）：含 __HOLD__ 的回合什么都不回（脚本条目不消费、ops 不生效），
+      // 等 session/cancel 来释放。放在最前面：CALL_MCP 与脚本回放都不该抢在它前面破功。
+      if (String(text).includes(HOLD_MARK)) {
+        heldPromptId = msg.id;
+        return;
+      }
       // mock 出图链路（FAKE_ENGINE_CALL_MCP=1）：含「美术：重绘」的回合走真实 tools/call（异步，独立收尾）。
       // .catch 是最后兜底：万一它异步抛（正常路径不会），也要保证 session/prompt 一定有应答，别把回合挂死。
       if (CALL_MCP && text.includes("美术：重绘")) {
@@ -451,6 +481,8 @@ function handle(msg) {
       return; // {error} op 已回过 JSON-RPC error，不再回 result
     }
     default:
+      // notification（无 id）不回响应——只有带 id 的请求才回空结果
+      if (msg.id === undefined) return;
       return reply(msg.id, {}); // 宽容：未知带 id 请求一律回空结果
   }
 }
@@ -464,7 +496,9 @@ rl.on("line", (line) => {
   } catch {
     return;
   }
-  if (msg.id === undefined || !msg.method) return; // 只应答 server 的请求，忽略其余
+  if (!msg.method) return; // 只认请求与通知（响应不往这里发）
+  // notification（无 id）：目前只有客户端→agent 的 `session/cancel`（挂起闸靠它释放，v1.14），别的忽略
+  if (msg.id === undefined && msg.method !== "session/cancel") return;
   try {
     handle(msg);
   } catch {

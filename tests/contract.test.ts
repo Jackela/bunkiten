@@ -747,6 +747,7 @@ const CASE_GROUPS = [
       "tests/ui/gallery.test.tsx",
       "tests/ui/game-hud.test.tsx",
       "tests/ui/game-play.test.tsx",
+      "tests/ui/panels.test.tsx",
       "tests/ui/replay-resync.test.tsx",
       "tests/ui/settings.test.tsx",
       "tests/ui/story-tree-snapshots.test.tsx",
@@ -785,6 +786,8 @@ const CASE_GROUPS = [
   { name: "engine-codex", files: ["tests/integration/engine-codex.test.ts"], floor: 4 },
   { name: "media-mock", files: ["tests/integration/media-mock.test.ts"], floor: 1 },
   { name: "replay", files: ["tests/replay.test.ts"], floor: 4 },
+  // v1.14 数据根（ADR-0024）：迁移 + seed-sync 纯函数面（tmp 目录直调）
+  { name: "data-root", files: ["tests/data-root.test.ts"], floor: 13 },
 ];
 
 /** integration 的子分组下限（文档不再单独声明；留着是为了「砍的是哪个文件」能直接指出来） */
@@ -798,7 +801,7 @@ const CASE_SUB_GROUPS = [
 const CONTRACT_FILE = "tests/contract.test.ts";
 
 /** 单测 + 集成的合计下限（抬高它要同批抬齐分组 floor——自洽断言会拦） */
-const CASE_TOTAL = 643;
+const CASE_TOTAL = 720;
 
 /** 三份带粗口径下限声明的文档 */
 const DOCS = ["README.md", "AGENTS.md", "docs/ARCHITECTURE.md"];

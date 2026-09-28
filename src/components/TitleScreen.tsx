@@ -11,7 +11,7 @@ import {
 } from "react";
 import { AnimatePresence, motion, type PanInfo } from "framer-motion";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { coverUrl, fetchPresets, fetchWorlds, presetExportUrl, type WorldEntry } from "../lib/acp";
+import { coverUrl, fetchPresets, fetchWorlds, postPresetDelete, presetExportUrl, type WorldEntry } from "../lib/acp";
 import { getTheme, themeVars } from "../theme";
 import { useAsync } from "../lib/useAsync";
 import { relativeTime, worldDisplayName } from "../lib/worlds";
@@ -91,7 +91,11 @@ function ringOffset(i: number, current: number, n: number): number {
  *  两处非显然的细节：
  *  ① 菜单弹层与菜单项都 stopPropagation 掉 keydown：本屏 window 上挂着「← → 切卡 / Enter 插卡」的全局键盘，
  *     菜单开着时方向键归 roving、Enter 归选项，不许冒上去顺手把卡也切了/插了；
- *  ② 导出锚点走 onSelect 拦关 + onClick 延后一拍收菜单（见 KEEP_MENU_OPEN），与 WorldsScreen 的导出一致。 */
+ *  ② 导出锚点走 onSelect 拦关 + onClick 延后一拍收菜单（见 KEEP_MENU_OPEN），与 WorldsScreen 的导出一致。
+ *  v1.14：轮播下标从屏内 state 提到 store（`titleIndex`/`setTitleIndex`，屏重挂后停在原处，越界由收敛 effect 夹回）；
+ *  离屏卡补 `tabIndex=-1` + `aria-hidden`（移出视野仍在 DOM 里做动画，但不进 Tab 序列、不被读屏念到）；
+ *  空态（一个剧本都没有）与**解析失败的目录**上屏（此前只 console.debug）；角落簇加「帮助」（openHelp）；
+ *  「更多 ▾」菜单加「删除当前卡」（两段确认收在菜单内，接 `postPresetDelete`，内置剧本被拒时把那句人话原样透出）。 */
 export default function TitleScreen() {
   const selectPreset = useGameStore((s) => s.selectPreset);
   const setPresets = useGameStore((s) => s.setPresets);
@@ -102,17 +106,25 @@ export default function TitleScreen() {
   const openSettings = useGameStore((s) => s.openSettings);
   const openCheck = useGameStore((s) => s.openCheck);
   const openCreation = useGameStore((s) => s.openCreation);
+  const openHelp = useGameStore((s) => s.openHelp);
   const resumeWorld = useGameStore((s) => s.resumeWorld);
   const engineBusy = useGameStore((s) => s.engineBusy);
   // 轮播数据读 store：挂载拉取写入，presetAdded（新剧本装配完成）也会刷新——新卡带封面即时出现
   const presets = useGameStore((s) => s.presets);
-  const [index, setIndex] = useState(0);
+  // 轮播下标也读 store（v1.14）：屏重挂（App 的 keyed 重挂 / 切屏回来）后停在原处，不再回到第一张
+  const index = useGameStore((s) => s.titleIndex);
+  const setIndex = useGameStore((s) => s.setTitleIndex);
   const [inserting, setInserting] = useState(false);
   /** 角落簇「更多」菜单（受控：导出要延后一拍才收菜单，见 KEEP_MENU_OPEN） */
   const [moreOpen, setMoreOpen] = useState(false);
+  /** 「删除当前卡」的两段确认（收在「更多」菜单内；首点变确认、二点才发）与在途标志 */
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   // 导入剧本（v1.7）：在途标志（按钮禁用）与文件读取失败的就近提示（POST 结果走 store 的 titleNotice）
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState("");
+  /** 卡带动作（删卡/导入读文件）的就近提示：失败原因直接上屏（内置剧本会被服务端拒绝，人话透出来） */
+  const [cardError, setCardError] = useState("");
   const importRef = useRef<HTMLInputElement>(null);
   // 拖拽位移记录：tap 判定用（拖动超过阈值后的 tap 不算点击）
   const dragged = useRef(0);
@@ -148,6 +160,17 @@ export default function TitleScreen() {
   const current = presets[index] ?? null;
   const theme = getTheme(current);
 
+  // 轮播下标越界收敛（v1.14）：轮播刷新（导入/删除卡带、presetAdded）后长度可能短于下标，
+  // 越界时不渲染任何中央卡（getTheme(null) 也退成兜底主题）——这里把下标夹回范围内。
+  useEffect(() => {
+    if (n === 0) {
+      if (index !== 0) setIndex(0);
+      return;
+    }
+    if (index >= n) setIndex(n - 1);
+    else if (index < 0) setIndex(0);
+  }, [n, index, setIndex]);
+
   const lastWorld = useMemo(
     () => worlds.reduce<WorldEntry | null>((best, w) => (!best || w.lastPlayed > best.lastPlayed ? w : best), null),
     [worlds],
@@ -161,9 +184,9 @@ export default function TitleScreen() {
 
   const step = useCallback(
     (dir: 1 | -1) => {
-      if (!inserting && n > 1) setIndex((i) => (i + dir + n) % n);
+      if (!inserting && n > 1) setIndex((index + dir + n) % n);
     },
-    [inserting, n],
+    [inserting, n, index, setIndex],
   );
 
   const insert = useCallback(() => {
@@ -213,6 +236,7 @@ export default function TitleScreen() {
     e.target.value = ""; // 允许连续导入同一个文件（不清值浏览器不会再触发 change）
     if (!file || importing) return;
     setImportError("");
+    setCardError("");
     clearTitleNotice();
     setImporting(true);
     try {
@@ -221,6 +245,49 @@ export default function TitleScreen() {
       setImportError(`导入失败：${String(err)}`);
     } finally {
       setImporting(false);
+    }
+  };
+
+  /**
+   * 「删除当前卡」（v1.14）：两段确认的第二段——发 `POST /api/presets {action:delete}`。
+   * 内置（随包）剧本服务端会**拒绝**并把原因写在 error 里，那句人话原样上屏（屏上不猜原因）。
+   * 成功重取轮播（新卡带消失），越界下标由上面的收敛 effect 夹回。
+   */
+  const deleteCurrent = async () => {
+    if (!current || deleting) return;
+    setDeleting(true);
+    setCardError("");
+    try {
+      const r = await postPresetDelete(current.id);
+      if (!r.ok) {
+        setConfirmDelete(false);
+        setCardError(`删除失败：${r.error ?? "未知原因"}`);
+        return;
+      }
+      // 成功：重取轮播（删掉的卡带立刻消失）
+      try {
+        const resp = await fetchPresets();
+        setPresets(resp.presets);
+      } catch {
+        // 刷新失败不影响删除结果：回标题屏会再拉一次
+      }
+      setConfirmDelete(false);
+    } catch (err) {
+      setCardError(`删除失败：${String(err)}`);
+      setConfirmDelete(false);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  /** 「更多」菜单开合：开时清掉上一轮的卡带提示，半截删除确认归零（重开回到第一屏） */
+  const onMoreOpenChange = (next: boolean) => {
+    setMoreOpen(next);
+    if (next) {
+      setCardError("");
+      setConfirmDelete(false);
+    } else {
+      setConfirmDelete(false);
     }
   };
 
@@ -254,6 +321,28 @@ export default function TitleScreen() {
           </p>
         )}
         {importError && <p className="mt-2 text-ui text-red-400">{importError}</p>}
+        {cardError && (
+          <p data-testid="title-card-error" role="status" className="mt-2 text-ui text-red-400">
+            {cardError}
+          </p>
+        )}
+        {/* 解析失败的剧本目录（v1.14 从只 console.debug 改为上屏）：坏目录会被跳过、不拖垮整屏，
+            但玩家有权知道「我放进去的那本为什么没出现」——给目录名与原因，别只留在控制台 */}
+        {presetsReq.data && presetsReq.data.errors.length > 0 && (
+          <div
+            data-testid="title-preset-errors"
+            className="mt-3 max-w-xl rounded-xl border border-amber-400/25 bg-panel px-4 py-2 text-left text-meta tracking-normal text-amber-200/90 backdrop-blur-md"
+          >
+            <p>有 {presetsReq.data.errors.length} 个剧本目录没能读懂，已跳过：</p>
+            <ul className="mt-1 space-y-0.5">
+              {presetsReq.data.errors.map((e) => (
+                <li key={e.dir} className="truncate">
+                  {e.dir} —— {e.error}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </header>
 
       {/* 「继续上次」：最近游玩的世界线直通入口（免去 title → worlds → 继续 的三跳）。
@@ -330,8 +419,19 @@ export default function TitleScreen() {
         >
           设置
         </button>
+        {/* 帮助（v1.14 本地化 /help）：命令轨说明 / 快捷键 / 数据位置都在帮助面板里，
+            还没开玩时也能看。走 swallowEnter：Enter 只开面板，不落到 window 上顺手插卡 */}
+        <button
+          type="button"
+          data-testid="title-help"
+          onClick={openHelp}
+          onKeyDown={swallowEnter}
+          className="transition-colors hover:text-[color:var(--accent)]"
+        >
+          帮助
+        </button>
 
-        <DropdownMenu.Root modal={false} open={moreOpen} onOpenChange={setMoreOpen}>
+        <DropdownMenu.Root modal={false} open={moreOpen} onOpenChange={onMoreOpenChange}>
           <DropdownMenu.Trigger
             data-testid="title-more"
             // 吞键要**分情况**（v1.12 修）：Radix 关菜单时会把焦点送回这枚触发器，无条件吞键等于
@@ -403,6 +503,48 @@ export default function TitleScreen() {
                 剧本体检
               </button>
             </DropdownMenu.Item>
+            {/* 删除当前卡（v1.14）：两段确认收在菜单内（首点变「确认删除 / 取消」，二点才发）。
+                内置剧本服务端会拒绝、把原因写在 error 里，那句人话原样上屏（见 deleteCurrent）。
+                没有卡可删时不画，不留一个点了没反应的死项 */}
+            {current && !inserting && confirmDelete ? (
+              <>
+                <DropdownMenu.Item asChild disabled={deleting} onSelect={KEEP_MENU_OPEN}>
+                  <button
+                    type="button"
+                    data-testid={`preset-delete-confirm-${current.id}`}
+                    disabled={deleting}
+                    onClick={() => void deleteCurrent()}
+                    className={`${MENU_ITEM_CLS} text-red-300 hover:bg-red-500/20 hover:text-red-200 disabled:cursor-not-allowed disabled:text-ink-faint`}
+                  >
+                    {deleting ? "删除中…" : "确认删除"}
+                  </button>
+                </DropdownMenu.Item>
+                <DropdownMenu.Item asChild disabled={deleting} onSelect={KEEP_MENU_OPEN}>
+                  <button
+                    type="button"
+                    data-testid={`preset-delete-cancel-${current.id}`}
+                    disabled={deleting}
+                    onClick={() => setConfirmDelete(false)}
+                    className={`${MENU_ITEM_CLS} disabled:cursor-not-allowed disabled:text-ink-faint`}
+                  >
+                    取消
+                  </button>
+                </DropdownMenu.Item>
+              </>
+            ) : null}
+            {current && !inserting && !confirmDelete && (
+              <DropdownMenu.Item asChild onSelect={KEEP_MENU_OPEN}>
+                <button
+                  type="button"
+                  data-testid={`preset-delete-${current.id}`}
+                  aria-label={`删除剧本 ${current.title}`}
+                  onClick={() => setConfirmDelete(true)}
+                  className={`${MENU_ITEM_CLS} hover:bg-red-500/15 hover:text-red-300`}
+                >
+                  删除当前卡
+                </button>
+              </DropdownMenu.Item>
+            )}
           </DropdownMenu.Content>
         </DropdownMenu.Root>
 
@@ -454,6 +596,20 @@ export default function TitleScreen() {
         </>
       )}
 
+      {/* 空态（v1.14）：一个剧本都没有时，卡带舞台是空的——给一句说明 + 导入指引，
+          别让玩家对着空白屏猜「是不是坏了」。保留「更多 ▾ → 导入剧本」这条正经入口 */}
+      {loaded && n === 0 && !error && (
+        <div
+          data-testid="title-empty"
+          className="absolute inset-x-0 top-1/2 z-10 flex -translate-y-1/2 flex-col items-center gap-3 px-6 text-center"
+        >
+          <p className="text-body tracking-[.12em] text-ink-hint">还没有可玩的剧本</p>
+          <p className="max-w-md text-meta leading-relaxed text-ink-hint">
+            把剧本文件夹放进数据目录的 presets/ 下，或用右下角「更多 ▾ → 导入剧本」导入一份 .preset.json。
+          </p>
+        </div>
+      )}
+
       {/* 卡带轮播舞台 */}
       <div className="absolute inset-0 flex items-center justify-center" style={{ perspective: 1400 }}>
         <div className="relative h-[min(430px,58vh)] w-[min(420px,84vw)]">
@@ -464,11 +620,16 @@ export default function TitleScreen() {
             // n=2 时左右邻是同一张卡：只保留右侧，避免镜像重复
             const hiddenMirror = n === 2 && off === -1;
             const show = visible && !hiddenMirror;
+            // 离屏卡（|off|>1 或镜像隐藏的那张）：移出视野后仍留在 DOM 里做动画，
+            // 但**不许**进 Tab 序列、也不该被读屏念到（v1.14：补 tabIndex=-1 + aria-hidden）
+            const offscreen = !show;
             const t = getTheme(p);
             return (
               <Fragment key={p.id}>
                 <motion.button
                   type="button"
+                  tabIndex={offscreen ? -1 : undefined}
+                  aria-hidden={offscreen || undefined}
                   onClick={() => {
                     if (Math.abs(dragged.current) > 12) return; // 拖拽后的 tap 不触发
                     if (inserting) return;

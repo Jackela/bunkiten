@@ -5,7 +5,7 @@
 import fs from "fs";
 import path from "path";
 import { AUDIO_FILE_RE } from "../shared/protocol.mjs";
-import { GAME_ROOT } from "./config.mjs";
+import { DATA_ROOT } from "./config.mjs";
 import { PRESET_ID_RE } from "./assets.mjs";
 
 export { AUDIO_KINDS, AUDIO_EXTS, AUDIO_FILE_RE } from "../shared/protocol.mjs";
@@ -14,10 +14,10 @@ export { AUDIO_KINDS, AUDIO_EXTS, AUDIO_FILE_RE } from "../shared/protocol.mjs";
  * 扫描 `presets/<id>/audio/`（导出纯读函数，root 可注入以便单测）。
  * 目录不存在 = 该剧本无音频，返回空数组（不报错、不进 assetRegistry——音频不属于美术资产）。
  * @param {string} presetId 剧本 id（非法时返回空数组，绝不拼出目录外路径）
- * @param {string} [root] 游戏根目录（缺省 GAME_ROOT）
+ * @param {string} [root] 游戏根目录（缺省 DATA_ROOT——音频随剧本走，dev 下 = GAME_ROOT）
  * @returns {Array<{kind: string, name: string, file: string, url: string}>} 音频项（url 供客户端直接播放）
  */
-export function scanPresetAudio(presetId, root = GAME_ROOT) {
+export function scanPresetAudio(presetId, root = DATA_ROOT) {
   const pid = String(presetId || "").trim();
   if (!PRESET_ID_RE.test(pid)) return [];
   let files = [];

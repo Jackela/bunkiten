@@ -1,7 +1,9 @@
 // 假引擎确定性 UI e2e：角色面板（CharactersDrawer，v1.7）。
 // harness 的 stateFiles 给 w1 预置一份带完整角色卡的 state.md → 继续世界线进 game →
-// 命令轨「角色」开面板 → 断言：面板可见、角色名/好感度数字/表情徽章/导演手记渲染、
+// 命令轨「角色」开面板 → 断言：面板可见、角色名/好感度数字/表情徽章渲染、
 // 秘密默认折叠（aria-expanded=false 且正文不可见）→ 点击展开可见原文。
+// v1.14 剧透收口（ADR-0027 邻接的 D4）：**「幕后手记」不再渲染**（导演层字段照解析、不上玩家的屏）；
+// 「未了伏笔」默认折叠 + 标「含剧透」，展开才见原文；秘密保持默认折叠。
 import { expect, test, type Page } from "@playwright/test";
 import { startUiStack, stopUiStack, type StartedStack } from "./stack";
 import { openRailGroup } from "./flow";
@@ -62,7 +64,7 @@ test.afterAll(async () => {
   await stopUiStack(page, stack);
 });
 
-test("角色面板：开抽屉渲染角色卡与好感度，秘密默认折叠、点击展开", async () => {
+test("角色面板：开抽屉渲染角色卡与好感度，秘密与未了伏笔默认折叠、点击展开", async () => {
   await page.goto(stack.pageUrl);
   const card = page.getByTestId("title-card-center");
   await expect(card).toBeVisible();
@@ -77,9 +79,9 @@ test("角色面板：开抽屉渲染角色卡与好感度，秘密默认折叠�
   const panel = page.getByTestId("characters-panel");
   await expect(panel).toBeVisible();
 
-  // 剧情状态 / 导演手记分块可见
+  // 剧情状态分块可见；「幕后手记」自 v1.14 起不在玩家面渲染（state.md 仍照解析，只是这里不画）
   await expect(page.getByTestId("characters-status")).toContainText("第三夜 · 雨停后");
-  await expect(page.getByTestId("characters-director")).toContainText("旅店停电");
+  await expect(page.getByTestId("characters-director")).toHaveCount(0);
 
   // 角色卡：名字 + 好感度数字 + 表情徽章；好感度解析不出的角色（「很高」）显示 —
   const vera = page.getByTestId("character-card-薇拉");
@@ -97,6 +99,15 @@ test("角色面板：开抽屉渲染角色卡与好感度，秘密默认折叠�
   await secretBtn.click();
   await expect(secretBtn).toHaveAttribute("aria-expanded", "true");
   await expect(page.getByTestId("character-secret-text-薇拉")).toContainText("缺页是她自己撕的");
+
+  // 未了伏笔（v1.14 剧透保护）：默认折叠 + 标「含剧透」，展开才见原文
+  const foreshadow = page.getByTestId("characters-foreshadow");
+  await expect(foreshadow).toHaveAttribute("aria-expanded", "false");
+  await expect(foreshadow).toContainText("含剧透");
+  await expect(page.getByTestId("characters-foreshadow-list")).toHaveCount(0);
+  await foreshadow.click();
+  await expect(foreshadow).toHaveAttribute("aria-expanded", "true");
+  await expect(page.getByTestId("characters-foreshadow-list")).toContainText("教堂地窖的旧信还没打开");
 
   // Esc 关闭抽屉（App 的 Esc 关闭链）
   await page.keyboard.press("Escape");

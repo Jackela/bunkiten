@@ -73,3 +73,14 @@ export const DIRECTIVE_PREFIX_RE = /^(规划：|美术：|剧情：|装配。|�
  * 刻意不带 `g` 标记：`.test()` 无 lastIndex 隐态，双侧（parser 的 match / server 的 test）消费都安全。
  */
 export const CHAPTER_MARK_RE = /^【章】第 (\d+) 章 完\s*$/m;
+
+/**
+ * 「**行动**」选项段标记（**单一真源**，v1.14）：parseOptions / stripOptionsBlock / visibleTarget 与
+ * server 质量守卫 supplementMissingOptions 共用一份判定，三处口径不再各写各的。容忍面：
+ *   ① 半角/全角星号；②「你的」前缀（**你的行动**）；③ 星号内/外的冒号（**行动：** / **行动**：）；
+ *   ④ 标记独占一行，或行尾直接接选项（`**行动** 1. 推门看看`）。
+ * **必须锚定行首**：行中出现的同款字样（正文引用/引擎幻觉）不算选项段——此前 stripOptionsBlock 用
+ * `search` 在行中命中会把正文从中间切掉（v1.14 修）。刻意不带 `g` 标记（`.test()` 无 lastIndex 隐态）；
+ * 需要定位时用 `exec` 取 `index`（行首即可安全截断）。
+ */
+export const OPTIONS_MARK_RE = /^[^\S\n]*[*＊]{2}[^\S\n]*(?:你的)?行动[^\S\n]*[:：]?[^\S\n]*[*＊]{2}[^\S\n]*[:：]?/m;
