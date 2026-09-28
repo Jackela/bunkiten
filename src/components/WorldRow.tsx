@@ -84,6 +84,8 @@ export interface WorldRowProps {
   /** 当前清单：把分叉来源的父线 id 还原成显示名 */
   worlds: WorldEntry[];
   engineBusy: boolean;
+  /** 该世界所属剧本的目录已不在数据目录里（`entry.presetExists === false`）：行上标「剧本不在」，「继续」不可用 */
+  presetMissing: boolean;
   /** 该世界档已回退、引擎等一次续玩指令重读档（行内亮「待重同步」） */
   resyncing: boolean;
   confirming: boolean;
@@ -133,6 +135,7 @@ export function WorldRow({
   presetTitle,
   worlds,
   engineBusy,
+  presetMissing,
   resyncing,
   confirming,
   deleting,
@@ -165,6 +168,9 @@ export function WorldRow({
   onExport,
 }: WorldRowProps) {
   const missing = !entry.exists;
+  // 目录缺失与剧本不在都拦住「继续」：前者缺档、后者缺剧本（续演时引擎读不到 preset.md）。
+  // 两种原因分开说（title/徽章），玩家才知道该去补什么
+  const blocked = missing || presetMissing;
   const name = worldDisplayName(entry, presetTitle);
   return (
     <motion.div
@@ -209,10 +215,19 @@ export function WorldRow({
                   待重同步
                 </span>
               )}
+              {presetMissing && (
+                <span
+                  data-testid={`world-preset-missing-${entry.worldId}`}
+                  className="flex-none rounded-sm border border-red-400/30 px-1.5 py-0.5 text-meta tracking-[.12em] text-red-300/90"
+                >
+                  剧本不在
+                </span>
+              )}
             </div>
             <p className="mt-1 text-meta tracking-[.12em] text-ink-hint">
               第 {entry.chapterNo} 章 · {relativeTime(entry.lastPlayed)}
               {missing && <span className="ml-2 text-red-400/90">目录缺失</span>}
+              {!missing && presetMissing && <span className="ml-2 text-red-400/90">剧本已移除</span>}
             </p>
             {/* 显示名与备注都有时，备注降为次行（分叉说明这类信息不该被显示名吃掉）。
                 旧版 server 自动写的分叉备注是裸 id 串，不算备注——次行不铺（分叉关系看徽标） */}
@@ -229,11 +244,13 @@ export function WorldRow({
             type="button"
             data-testid={`world-continue-${entry.worldId}`}
             aria-label={`继续世界线 ${name}`}
-            disabled={missing || engineBusy}
-            title={missing ? "目录缺失" : engineBusy ? "忙碌中，稍后再试" : undefined}
+            disabled={blocked || engineBusy}
+            title={
+              missing ? "目录缺失" : presetMissing ? "剧本不在数据目录里" : engineBusy ? "忙碌中，稍后再试" : undefined
+            }
             onClick={onContinue}
             className={`rounded-lg border px-3.5 py-1.5 text-ui tracking-[.1em] transition-colors ${
-              missing || engineBusy
+              blocked || engineBusy
                 ? "cursor-not-allowed border-white/10 text-ink-hint"
                 : "border-gold/35 bg-gold/15 text-gold hover:bg-gold/30"
             }`}

@@ -10,7 +10,8 @@
 // （`resolveImage`：那是 ACP 会话的事，见 server/acp.mjs）。
 import fs from "fs";
 import path from "path";
-import { GAME_ROOT, WORLDS_ROOT } from "./config.mjs";
+import { DATA_ROOT, WORLDS_ROOT } from "./config.mjs";
+import { writeFileAtomic } from "./atomic-fs.mjs";
 import {
   ASSET_FILE_RE,
   mtimeOf,
@@ -117,7 +118,7 @@ export function createAssetPipeline({ resolveImage }) {
     }
     const finalPid = presetIdFromPath(file) || pid || ""; // 封面按标题反查到的剧本也算数
     const key = `${finalPid}|${type}|${name}`;
-    const abs = path.join(GAME_ROOT, file);
+    const abs = path.join(DATA_ROOT, file);
     const entry = assetRegistry.get(key) || { type, name, rawName, presetId: finalPid, file, srcRel, ready: false };
     entry.presetId = finalPid;
     entry.rawName = rawName;
@@ -133,7 +134,7 @@ export function createAssetPipeline({ resolveImage }) {
         return false;
       }
       fs.mkdirSync(path.dirname(abs), { recursive: true });
-      fs.copyFileSync(src, abs);
+      writeFileAtomic(abs, fs.readFileSync(src)); // 原子写：写到一半被杀不会留半截图
     }
     entry.ready = true;
     assetRegistry.set(key, entry);
@@ -164,10 +165,10 @@ export function createAssetPipeline({ resolveImage }) {
       warnPresetlessOnce(type, name, rawName);
       return false;
     }
-    const abs = path.join(GAME_ROOT, file);
+    const abs = path.join(DATA_ROOT, file);
     if (fs.existsSync(abs)) return false;
     fs.mkdirSync(path.dirname(abs), { recursive: true });
-    fs.copyFileSync(src, abs);
+    writeFileAtomic(abs, fs.readFileSync(src)); // 原子写（同上）
     const finalPid = presetIdFromPath(file) || pid || "";
     assetRegistry.set(`${finalPid}|${type}|${name}`, {
       type,
@@ -243,7 +244,7 @@ export function createAssetPipeline({ resolveImage }) {
         ready,
         preset: presetId,
         inUse: inUse(name),
-        mtime: mtimeOf(path.join(GAME_ROOT, file)),
+        mtime: mtimeOf(path.join(DATA_ROOT, file)),
       });
     };
     try {
@@ -260,7 +261,7 @@ export function createAssetPipeline({ resolveImage }) {
       // 封面随 preset 目录分发：presets/<id>/cover.jpg，name 用剧本标题
       const file = `presets/${presetId}/cover.jpg`;
       const preset = scanPresets().presets.find((p) => p.id === presetId);
-      if (preset && fs.existsSync(path.join(GAME_ROOT, file)))
+      if (preset && fs.existsSync(path.join(DATA_ROOT, file)))
         push(`封面|${preset.title}`, "封面", preset.title, file, true);
     } catch {}
     for (const [, e] of assetRegistry) {

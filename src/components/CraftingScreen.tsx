@@ -221,14 +221,21 @@ export default function CraftingScreen() {
           {playerStatus(status)}
           {busy && elapsed !== null && <span className="tabular-nums">{elapsed}s</span>}
         </p>
-        <p data-testid="crafting-progress" className="mt-1.5 text-meta tracking-[.2em] text-ink-hint">
+        {/* 进度行（v1.14）：role="status" 让读屏播报进度，但**不许每秒念**——预估值（eta）随秒数跳，
+            所以它整段标 aria-hidden：它不进无障碍树，播报只落在稳定的「美术 N / M 就绪」上
+            （完成张数变化才播一次；正在跑/排队中的项不改变这半截） */}
+        <p data-testid="crafting-progress" role="status" className="mt-1.5 text-meta tracking-[.2em] text-ink-hint">
           {planning
             ? `正在为《${selected.title}》筹备第 ${chapterNo} 章`
             : deferredTotal > 0
               ? `开场准备 ${doneCount} / ${preload.length} 就绪 · 其余 ${deferredTotal} 项开演后补画`
               : `美术 ${doneCount} / ${preload.length} 就绪`}
           {/* 可预期性（v1.13）：还有多少张、大概还要多久——粗估，带「约」；样本不足时这半截不显示 */}
-          {!planning && eta && <span className="ml-2 text-ink-hint">· {eta}</span>}
+          {!planning && eta && (
+            <span aria-hidden className="ml-2 text-ink-hint">
+              · {eta}
+            </span>
+          )}
           {showWorldLabel && <span className="ml-2 text-ink-hint">· {label}</span>}
         </p>
 

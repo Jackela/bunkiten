@@ -39,9 +39,15 @@ export default function FreeInput() {
   // 语音 onresult → onend 之间 React 状态未必已刷新，最新转写存 ref
   const transcriptRef = useRef("");
 
-  // 回合就绪后聚焦输入框（对齐旧版 turn_end 行为）
+  // 回合就绪后聚焦输入框（对齐旧版 turn_end 行为）——但只在**焦点无主**时抢：
+  // 玩家可能正停在命令轨/菜单/别的输入控件上（键盘操作中），这时把焦点抢到输入框会打断他们。
+  // 判定「无主」= activeElement 是 body 或 null（回合结束时选项按钮随 options 清空会自然把焦点还给 body，
+  // 所以「回合结束顺手指回输入框」的体验保留）。
   useEffect(() => {
-    if (status === "就绪") inputRef.current?.focus();
+    if (status !== "就绪") return;
+    const active = document.activeElement;
+    if (active && active !== document.body) return; // 有人正拿着焦点：不抢
+    inputRef.current?.focus();
   }, [status]);
 
   useEffect(() => () => recRef.current?.stop(), []);

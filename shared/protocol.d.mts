@@ -37,3 +37,6 @@ export const DIRECTIVE_PREFIX_RE: RegExp;
 
 /** 终章回合章标记行（【章】第 N 章 完，多行锚定）：parseChapterMark 取捕获组，server 质量守卫据此豁免章末回合 */
 export const CHAPTER_MARK_RE: RegExp;
+
+/** 「**行动**」选项段标记（行首锚定，半/全角星号与「你的」前缀容忍）：parseOptions/stripOptionsBlock 与 server 质量守卫共用 */
+export const OPTIONS_MARK_RE: RegExp;

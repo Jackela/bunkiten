@@ -1,7 +1,7 @@
 // 假引擎确定性 UI e2e（v1.7）：剧本分享闭环——标题屏当前卡「导出」下载 .preset.json
 // （Content-Disposition attachment，包含封面/立绘/音频）、角落「导入剧本」把包导回来（改 id 避免撞名），
 // 成功提示带实际落地 id，轮播刷新出新卡带、切到它可再导出（id 联动闭环）。导出文件落在 test-results-ui/。
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
@@ -85,4 +85,53 @@ test("剧本分享：导出下载 .preset.json → 导入成新卡带（demo-cop
   await openTitleMore(page);
   await expect(page.getByTestId("preset-export-demo-copy")).toBeVisible(); // 导出换成新 id
   await expect(page.getByTestId("title-card-center")).toHaveAttribute("aria-label", /示例剧本/);
+});
+
+// 删除当前卡（v1.14）：两段确认收在「更多 ▾」菜单内，删的是**中心卡**（服务端整目录挪进回收站）。
+// 自给自足：先导出 demo、把包里 id 改成 demo-del 再导回来 → 切到新卡 → 两段确认删它 →
+// 卡带与目录一并消失、demo 本体不动（反向的「随包种子不可删」由服务端单测钉住，这里不重复）。
+test("删除当前卡：导入副本卡 → 切到它 → 两段确认删除 → 卡带与目录一并消失、本体不动", async () => {
+  await page.goto(stack.pageUrl);
+  await expect(page.getByTestId("title-card-center")).toBeVisible();
+
+  const outDir = path.join(ROOT, "test-results-ui");
+  mkdirSync(outDir, { recursive: true });
+  const bundlePath = path.join(outDir, "demo-del.preset.json");
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    (async () => {
+      await openTitleMore(page);
+      await page.getByTestId("preset-export-demo").click();
+    })(),
+  ]);
+  await download.saveAs(bundlePath);
+  const bundle = JSON.parse(readFileSync(bundlePath, "utf8")) as { id: string };
+  bundle.id = "demo-del";
+  writeFileSync(bundlePath, JSON.stringify(bundle));
+
+  await page.getByTestId("preset-import-input").setInputFiles(bundlePath);
+  await expect(page.getByTestId("title-notice")).toContainText("已导入为 demo-del");
+
+  // 把新卡转到中央：不数「按几次 ArrowRight」（同文件其它用例可能留下别的卡带），以菜单里出现
+  // 本卡的删除项为准切卡；openTitleMore 是幂等的，菜单开着就原样返回
+  for (let i = 0; i < 6; i += 1) {
+    await openTitleMore(page);
+    if (await page.getByTestId("preset-delete-demo-del").count()) break;
+    await page.getByTestId("title-more").click(); // 收菜单 → 焦点回触发器，← → 才切得动
+    await page.keyboard.press("ArrowRight");
+  }
+  await expect(page.getByTestId("preset-delete-demo-del")).toBeVisible();
+
+  // 两段确认：首点变「确认删除 / 取消」，二点才发
+  await page.getByTestId("preset-delete-demo-del").click();
+  await expect(page.getByTestId("preset-delete-confirm-demo-del")).toBeVisible();
+  await page.getByTestId("preset-delete-confirm-demo-del").click();
+
+  // 服务端目录真的没了、demo 本体还在；轮播重取后菜单里不再有 demo-del 的动作项
+  await expect
+    .poll(() => existsSync(path.join(stack.stack.root, "presets", "demo-del")), { message: "demo-del 目录未被删除" })
+    .toBe(false);
+  expect(existsSync(path.join(stack.stack.root, "presets", "demo"))).toBe(true);
+  await openTitleMore(page);
+  await expect(page.getByTestId("preset-delete-demo-del")).toHaveCount(0);
 });

@@ -1,6 +1,13 @@
 // 文本协议解析纯函数：交互事实源就是本文件（v1.0 的网页原型早已删除，别再去它的路径找参照），不依赖 React/DOM。
 // 可被 node 直接 import 做冒烟测试，勿引入副作用。
-import { ART_KINDS, ASSET_KINDS, AUDIO_KINDS, CHAPTER_MARK_RE, PROTOCOL_HEADS } from "../../shared/protocol.mjs";
+import {
+  ART_KINDS,
+  ASSET_KINDS,
+  AUDIO_KINDS,
+  CHAPTER_MARK_RE,
+  OPTIONS_MARK_RE,
+  PROTOCOL_HEADS,
+} from "../../shared/protocol.mjs";
 
 // 协议常量唯一真源（v1.7，docs/adr/0012）：PROTOCOL_HEADS / AUDIO_KINDS / ART_KINDS / ASSET_KINDS 的值住在
 // shared/protocol.mjs（server 也 import 同一份）。这里 re-export 维持公共 API 逐字不变——store 与测试仍从
@@ -261,14 +268,19 @@ export function parseStoryTree(md: string): StoryTree | null {
 }
 
 /**
- * 截断「**行动**」选项段：从 `**行动**` 行（含）起连同其后的全部选项行一并去掉，
- * 只留正文。用于对话窗与历史（选项由按钮呈现，不重复打进字机）；半截的 `**行` 不算。
+ * 截断「**行动**」选项段：从选项段标记**行**（含）起连同其后的全部选项行一并去掉，只留正文。
+ * 用于对话窗与历史（选项由按钮呈现，不重复打进字机）；半截的 `**行` 不算。
+ *
+ * v1.14 起判定改走唯一真源 {@link OPTIONS_MARK_RE}（行首锚定）：此前用 `String.search` 找标记，
+ * 在**行中**命中会把正文从中间切掉（正文里引用这个词就断句），且不认全角星号 /「你的行动」前缀。
+ * 未命中一律原样返回（含尾部空白）——调用方按既有语义处理，签名与可见行为面不变。
  * @param {string} text 当前文本
  * @returns {string} 去掉选项段（含尾部空白行）的正文
  */
 export function stripOptionsBlock(text: string): string {
-  const i = text.search(/\*\*行动\*\*/);
-  return i === -1 ? text : text.slice(0, i).replace(/\s+$/, "");
+  const m = OPTIONS_MARK_RE.exec(text);
+  // 标记独占一行或行尾直连选项都算数：取匹配起点截断（`exec` 的 index 即安全截断点）
+  return m === null ? text : text.slice(0, m.index).replace(/\s+$/, "");
 }
 
 /**
@@ -288,13 +300,19 @@ export function visibleTarget(received: string, finalText: string): string {
 
 /**
  * 解析正文末尾的「**行动**」选项段。
+ *
+ * v1.14 起标记判定改走唯一真源 {@link OPTIONS_MARK_RE}（行首锚定 + 半/全角星号 +「你的」前缀 +
+ * 冒号容忍），标记之后的内容走既有逐行解析——于是「**行动**：」「**行动** 1. …」这类变体也能识别，
+ * 而正文里行中引用的同款字样不再误开选项段（旧实现要求标记后必须换行、且认不出前后缀）。
+ * 行为面不变：编号支持「1.」/「1、」，无编号行保留为选项，协议行过滤。
  * @param {string} text 定稿的当前段全文
  * @returns {GameOption[] | null} 选项列表；没有选项段返回 null
  */
 export function parseOptions(text: string): GameOption[] | null {
-  const m = text.match(/\*\*行动\*\*\s*\n([\s\S]+)$/);
+  const m = OPTIONS_MARK_RE.exec(text);
   if (!m) return null;
-  return m[1]
+  return text
+    .slice(m.index + m[0].length)
     .split("\n")
     .map((l) => l.trim())
     .filter(Boolean)

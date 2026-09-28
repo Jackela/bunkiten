@@ -553,3 +553,165 @@ describe("PresetCheckScreen：剧本体检（v1.9）", () => {
     expect(screen.queryByTestId("preset-check-summary")).toBeNull();
   });
 });
+
+// ————————————————————— 本地面板（帮助/前情）的 Esc 关闭链、App 接线与 SSE 对账（v1.14） —————————————————————
+
+describe("App：本地面板的 Esc 关闭链与接线（v1.14，ADR-0027）", () => {
+  beforeEach(() => {
+    // App 挂载订阅 SSE：jsdom 没有 EventSource，垫一个空壳（本组只关心 Esc 链与渲染接线）
+    vi.stubGlobal(
+      "EventSource",
+      class {
+        onmessage: ((e: MessageEvent) => void) | null = null;
+        close() {}
+      },
+    );
+  });
+
+  it("Esc 优先关最上层的本地面板：面板开着时先关面板，不透传到下面的抽屉/设置屏", () => {
+    useGameStore.setState({
+      screen: "game",
+      screenReturn: null,
+      helpOpen: true,
+      recapOpen: false,
+      drawerOpen: true,
+      status: "就绪",
+      engineBusy: false,
+    });
+    render(<App />);
+    expect(screen.getByTestId("help-panel")).toBeTruthy();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(useGameStore.getState().helpOpen).toBe(false);
+    expect(useGameStore.getState().drawerOpen, "这一下不该顺手关抽屉：面板是独立的一环").toBe(true);
+
+    // 前情面板同理：屏幕在设置屏时，先关前情、设置屏原样留着（不是一次 Esc 关两层）
+    act(() =>
+      useGameStore.setState({
+        helpOpen: false,
+        drawerOpen: false,
+        recapOpen: true,
+        screen: "settings",
+        screenReturn: "game",
+      }),
+    );
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(useGameStore.getState().recapOpen).toBe(false);
+    expect(useGameStore.getState().screen).toBe("settings");
+  });
+
+  it("App 把本地面板渲染在当前屏之上：命令轨「帮助」打开帮助面板、盖在游戏屏上", () => {
+    useGameStore.setState({ screen: "game", screenReturn: null, worldId: "w1", status: "就绪", engineBusy: false });
+    render(<App />);
+    expect(screen.queryByTestId("help-panel")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("help"));
+    const panel = screen.getByTestId("help-panel");
+    expect(panel.getAttribute("role")).toBe("dialog");
+    expect(within(panel).getByText("帮 助")).toBeTruthy();
+  });
+
+  it("RecapPanel 打开后展示本地合成的前情（mock /api/logs 与 /api/state），全程零引擎回合", async () => {
+    const prompts: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/prompt") {
+          prompts.push((JSON.parse(String(init?.body)) as { text: string }).text);
+          return jsonResponse({ ok: true });
+        }
+        if (url.pathname === "/api/logs") {
+          return jsonResponse({
+            entries: [{ seq: 9, at: "2026-09-17T00:00:00.000Z", prompt: "推门进去", text: "门后空无一人。" }],
+            nextBefore: null,
+          });
+        }
+        if (url.pathname === "/api/state") {
+          return jsonResponse({
+            status: { preset: "campus-summer", playthrough: 1, time: "夜里", scene: "天台" },
+            characters: [],
+            protagonist: {},
+            flags: [],
+            foreshadowing: [],
+          });
+        }
+        if (url.pathname === "/api/history") return jsonResponse({ worldId: "w1", snapshots: [] });
+        return jsonResponse({}, 404);
+      }),
+    );
+    useGameStore.setState({
+      screen: "game",
+      screenReturn: null,
+      worldId: "w1",
+      chapterNo: 1,
+      status: "就绪",
+      engineBusy: false,
+    });
+    render(<App />);
+
+    await act(async () => {
+      await useGameStore.getState().openRecap();
+    });
+    const panel = screen.getByTestId("recap-panel");
+    expect(within(panel).getByTestId("recap-meta").textContent).toBe("第 1 章 · 夜里 · 天台");
+    expect(within(panel).getAllByTestId("recap-entry")).toHaveLength(1);
+    expect(within(panel).getByTestId("recap-entry").textContent).toContain("门后空无一人。");
+    expect(prompts).toEqual([]); // 本地合成：一个引擎回合都不占
+  });
+
+  it("SSE 重连对账与断线提示：onConn('open') 拉 /api/engine/status 对账忙态、onConn('error') 亮顶栏提示", async () => {
+    // 捕获 App 建的那条 EventSource，手动派发 onopen/onerror（jsdom 不会自己连）
+    const es: { onopen?: () => void; onerror?: () => void } = {};
+    vi.stubGlobal(
+      "EventSource",
+      class {
+        onmessage: ((e: MessageEvent) => void) | null = null;
+        close() {}
+        set onopen(fn: () => void) {
+          es.onopen = fn;
+        }
+        set onerror(fn: () => void) {
+          es.onerror = fn;
+        }
+      },
+    );
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const u = new URL(String(input), "http://localhost");
+        urls.push(u.pathname);
+        if (u.pathname === "/api/engine/status") return jsonResponse({ busy: true, turn: 7 });
+        if (u.pathname === "/api/history") return jsonResponse({ worldId: "w1", snapshots: [] });
+        return jsonResponse({}, 404);
+      }),
+    );
+    useGameStore.setState({
+      screen: "game",
+      screenReturn: null,
+      worldId: "w1",
+      engineBusy: false,
+      currentTurn: null,
+      status: "就绪",
+    });
+    render(<App />);
+
+    // 断线：亮一处可见提示（顶栏），不带 live 语义
+    await act(async () => {
+      es.onerror?.();
+    });
+    expect(useGameStore.getState().sseDown).toBe(true);
+    expect(screen.getByTestId("sse-down").textContent).toContain("连接中断");
+
+    // 重连成功：以服务端为准对账忙态/回合号，并撤掉断线提示
+    await act(async () => {
+      es.onopen?.();
+    });
+    await waitFor(() => expect(urls).toContain("/api/engine/status"));
+    await waitFor(() => expect(useGameStore.getState().engineBusy).toBe(true));
+    expect(useGameStore.getState().currentTurn).toBe(7);
+    expect(useGameStore.getState().sseDown).toBe(false);
+    expect(screen.queryByTestId("sse-down")).toBeNull();
+  });
+});

@@ -18,11 +18,24 @@ const PLAYER_STATUS: Record<string, string> = {
 const ERROR_PREFIX = "出错：";
 
 /**
+ * 少数引擎侧错误尾巴的玩家化：键 = store 里 `出错：<尾巴>` 的尾巴原文。
+ * 只放「引擎口吻会让玩家误解」的那几条——服务端忙时的 409 是「上一回合还在进行」，
+ * 玩家读着像是在说别人那回合；改成「这一回合还在进行」才对得上他刚点的那一下。
+ * 表外尾巴原样透传（不做翻译，见文件头）。
+ */
+const ERROR_TAIL: Record<string, string> = {
+  上一回合还在进行: "这一回合还在进行",
+};
+
+/**
  * 状态行显示文案（导出供单测直接打表，不必渲染组件）。
  * @param {string} status store.status 原值
  * @returns {string} 玩家侧文案
  */
 export function playerStatus(status: string): string {
-  if (status.startsWith(ERROR_PREFIX)) return `出错了：${status.slice(ERROR_PREFIX.length)}`;
+  if (status.startsWith(ERROR_PREFIX)) {
+    const tail = status.slice(ERROR_PREFIX.length);
+    return `出错了：${ERROR_TAIL[tail] ?? tail}`;
+  }
   return PLAYER_STATUS[status] ?? status;
 }

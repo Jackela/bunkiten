@@ -6,10 +6,14 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const GAME_ROOT = process.env.GROK_GAME_ROOT || path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// 可写数据根（v1.14，ADR-0024）：打包态 = main 进程注入的 userData/game（BUNKITEN_DATA_ROOT 可覆盖），
+// dev = GAME_ROOT（一字不变）。state/、玩家侧 presets/（生成素材、导入与创作剧本）、.shell-session.json
+// 全在数据根下；GAME_ROOT 退化为只读内容根（.grok/、app-dist、随包 presets 种子）。
+const DATA_ROOT = process.env.BUNKITEN_DATA_ROOT || GAME_ROOT;
 const BASE_PORT = Number(process.env.PORT) || 7800;
 const PORT_MAX_RETRY = 10;
-const SESSION_FILE = path.join(GAME_ROOT, ".shell-session.json"); // 断线续档：记录 ACP sessionId
-const WORLDS_ROOT = path.join(GAME_ROOT, "state", "worlds"); // 世界线：每世界一目录，另有 index.json 索引
+const SESSION_FILE = path.join(DATA_ROOT, ".shell-session.json"); // 断线续档：记录 ACP sessionId
+const WORLDS_ROOT = path.join(DATA_ROOT, "state", "worlds"); // 世界线：每世界一目录，另有 index.json 索引
 // 推理档位（v1.6 分档，v1.13 从入口搬来这里）：正戏回合低推理换节奏、建档/规划类回合再低一档更省更快。
 // 为什么真源在 config：回合流水线（turn-pipeline.mjs）要用它们，但**不能 import 入口**（成环），
 // 而它们本来就是「进程全局配置」的一类——与端口/根目录同处零依赖叶子正好。入口 re-export 保外部 import 面不变。
@@ -28,4 +32,4 @@ export function gameHome() {
   return process.env.BUNKITEN_HOME || os.homedir();
 }
 
-export { GAME_ROOT, BASE_PORT, PORT_MAX_RETRY, SESSION_FILE, WORLDS_ROOT, EFFORT, EFFORT_PLANNING };
+export { GAME_ROOT, DATA_ROOT, BASE_PORT, PORT_MAX_RETRY, SESSION_FILE, WORLDS_ROOT, EFFORT, EFFORT_PLANNING };

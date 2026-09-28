@@ -94,6 +94,10 @@ export interface StoreContext {
   runNextPending(): void;
   /** 发某一章的规划指令并进入 planning（章标记切屏后由 handleEvent 调） */
   beginPlanning(n: number): void;
+  /** 切进第 n 章的制作中屏并发规划指令（章标记即时切屏与待办消费共用同一处，行为逐字一致） */
+  startChapter(n: number): void;
+  /** 消费待规划章（v1.14）：pendingChapter 非空、正在 game 屏且引擎空闲时切 crafting 并发规划指令 */
+  consumePendingChapter(): void;
   advancePreload(): Promise<void>;
   onEngineError(message: string): void;
   armAutoAdvance(): void;
@@ -261,6 +265,8 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
       finalText: "",
       options: null,
       typingDone: false,
+      // v1.14：新回合/新段的打字机键与「已展示」键不再匹配（旧实现任由它留着=同一效果，这里显式对齐）
+      typingDoneKey: null,
       turnKey,
       autoAdvanceDeadline: null,
       autoAdvanceMuted: false,
@@ -399,6 +405,41 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
   }
 
   /**
+   * 切进第 n 章的制作中屏并开始规划（v1.14 从 gameplay 的章末分支抽出）：章标记在 game 屏到达时
+   * **即时**走这里，待规划章在回到 game 屏时也走这里——两条路只此一处实现，切屏字段与顺序逐字照搬
+   * v1.13 的即时切屏（preload/槽位/选项清空，beginPlanning 紧随其后）。
+   * 批次起点也在这里落（v1.14：估算窗口覆盖规划回合，见 lib/preload 的 preloadEtaLabel）。
+   */
+  function startChapter(n: number) {
+    set({
+      screen: "crafting",
+      chapterNo: n,
+      pendingChapter: null,
+      preload: [],
+      skipRequested: false,
+      artReady: {},
+      seenMarkerKeys: new Set(),
+      options: null,
+      typingDone: false,
+      // 批次的第一个工作回合就是即将发出的规划指令：屏上「平均每张 / 约还需」从这一刻起算
+      preloadBatchStartedAt: Date.now(),
+    });
+    beginPlanning(n);
+  }
+
+  /**
+   * 消费待规划章（v1.14）：收到【章】时若不在 game 屏（画廊/设置/剧情图 overlay 等）只记待办，
+   * 回到 game 屏且引擎空闲时由这里消费——切制作中屏并发该章规划指令。
+   * 引擎忙时**不消费**（抢发必 409）：留待办给 GameStage 的「第 N 章待规划 · 继续」提示条兜底。
+   */
+  function consumePendingChapter() {
+    const s = get();
+    if (s.pendingChapter === null) return;
+    if (s.screen !== "game" || s.engineBusy) return;
+    startChapter(s.pendingChapter);
+  }
+
+  /**
    * 回合结束（turn_end）后的流水线推进。init=待命已确认，发规划指令；
    * planning=规划回合已回，解析制作清单→过滤已就绪→进入逐项队列；
    * queue=当前项完成取下一项；starting=开场正文已回，切 game。
@@ -445,8 +486,7 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
       set({
         preloadPhase: "queue",
         status: "清点既有美术…",
-        // 批次起点：屏上的「平均每张 / 约还需」都从这一刻算（纯展示，进不了任何判定）
-        preloadBatchStartedAt: Date.now(),
+        // 批次起点不在这里落（v1.14）：它提前到 startChapter / startGame 那一刻，规划回合也进估算窗口
         preload: opening,
         deferredArt: allItems.filter((i) => !openingSet.has(i)),
         artReady: Object.fromEntries(manifest.map((m) => [m.name, ""])),
@@ -486,6 +526,8 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
     } else if (s.preloadPhase === "starting") {
       clearWatchdog();
       set({ preloadPhase: "finished", screen: "game" });
+      // v1.14：回到 game 屏是「消费待规划章」的回屏点之一（收到【章】时不在 game 屏的那条路）
+      consumePendingChapter();
     }
   }
 
@@ -548,9 +590,20 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
       typingDone: false,
       seenMarkerKeys: new Set<string>(),
       turnNo: 0,
-      awaitCommand: null,
       engineBusy: false,
       turnStartAt: null,
+      // v1.14：服务端回合序号、打字机「已展示」键与待规划章都是本局语境，一并清空
+      currentTurn: null,
+      typingDoneKey: null,
+      pendingChapter: null,
+      // 数值差分的基线/产物同理不跨玩法（跨世界比较毫无意义）
+      prevStateView: null,
+      lastTurnDeltas: null,
+      // 磁盘历史与两个本地面板（帮助/前情）不跨玩法：换本/换世界后它们讲的是上一局的事
+      diskHistory: { entries: [], nextBefore: null, loading: false, error: null, loadedOnce: false },
+      helpOpen: false,
+      recapOpen: false,
+      recapData: null,
       treeAsk: false,
       pendingTreeMessage: null,
       // 两段式（v1.13）：延迟队列与「补画回合」标记不跨玩法；排队的玩家输入同理（那是上一局的语境）
@@ -661,6 +714,8 @@ export function createStoreContext(set: StoreSet, get: StoreGet): StoreContext {
     sendStart,
     runNextPending,
     beginPlanning,
+    startChapter,
+    consumePendingChapter,
     advancePreload,
     onEngineError,
     armAutoAdvance,

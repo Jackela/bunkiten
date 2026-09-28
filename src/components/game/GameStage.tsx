@@ -1,4 +1,5 @@
-import { useGameStore } from "../../store/game";
+import { useEffect, useState } from "react";
+import { useGameStore, type TurnDelta } from "../../store/game";
 import { ScreenShell } from "../ScreenShell";
 import CharactersDrawer from "./CharactersDrawer";
 import DialogueBox from "./DialogueBox";
@@ -7,6 +8,50 @@ import HistoryDrawer from "./HistoryDrawer";
 import OptionList from "./OptionList";
 import PortraitLayer from "./PortraitLayer";
 import TopBar from "./TopBar";
+
+/** 差分条在屏时长（ms）：数秒淡出，够读一眼又不常驻压画面（导出给用例当时间真源） */
+export const TURN_DELTA_MS = 6000;
+
+/**
+ * 数值差分条（v1.14 因果反馈）：`store.lastTurnDeltas` 有值才现，数秒后淡出、换回合清零。
+ * 行文案如「排异指数 65 → 73 ↑」——把「这一回合世界变在哪」摆在对话区正上方。
+ *
+ * 为什么用本地定时器而不是清 store：lastTurnDeltas 由 store 在回合收尾写、下一回合覆盖，组件只读；
+ * 这里保留「最近一次非空的差值」并起一个 6s 定时器（新差值到达即重置计时），到点自己撤下。
+ * store 把差值置回 null（本回合无变化/换了局）时立刻撤下——不闪、不残留上一局的数。
+ * role="status"：读屏把它当一条状态读出，与 StatusAnnouncer 的 polite 语气一致。
+ */
+function TurnDeltas() {
+  const deltas = useGameStore((s) => s.lastTurnDeltas);
+  const [shown, setShown] = useState<TurnDelta[] | null>(null);
+  useEffect(() => {
+    if (!deltas || deltas.length === 0) {
+      setShown(null);
+      return;
+    }
+    setShown(deltas);
+    const t = setTimeout(() => setShown(null), TURN_DELTA_MS);
+    return () => clearTimeout(t);
+  }, [deltas]);
+  if (!shown) return null;
+  return (
+    <div
+      data-testid="turn-deltas"
+      role="status"
+      aria-live="polite"
+      className="mx-auto mb-2 flex w-fit max-w-full flex-wrap items-center justify-center gap-x-3 gap-y-0.5 rounded-lg border border-white/[.08] bg-panel-soft px-3 py-1.5 text-meta tracking-[.08em] text-ink-body backdrop-blur-md"
+    >
+      {shown.map((d) => (
+        <span key={d.name} data-testid={`turn-delta-${d.name}`} className="tabular-nums text-ink-hint">
+          {d.name} <span className="text-ink-body">{d.from}</span>
+          {" → "}
+          <span className="text-ink-body">{d.to}</span>{" "}
+          <span className={d.dir === "down" ? "text-[#d98b8b]" : "text-gold"}>{d.dir === "down" ? "↓" : "↑"}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
 
 /**
  * 游戏屏：背景层常驻在 App（crafting→game 转场不重载），这里只有立绘、HUD 与对话区。
@@ -45,6 +90,7 @@ export default function GameStage() {
             用 max-w 而不是固定宽，预留吃掉可用宽度时面板跟着收缩，不会从预留区里溢出滑到立绘下面 */}
         <div data-testid="dialogue-dock" className={`fixed inset-x-0 bottom-0 z-20 ${reserve}`}>
           <div className="mx-auto w-full max-w-[800px] px-3.5 pb-3.5">
+            <TurnDeltas />
             <OptionList />
             <DialogueBox />
             <FreeInput />

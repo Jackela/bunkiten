@@ -41,10 +41,11 @@ describe("WorldsScreen：改名 / 导出 / 导入（v1.6）", () => {
         label: "雨夜的岔口",
         note: "分叉自 campus-summer-1 @ 2-2",
         chapterNo: 2,
-        lastPlayed: NOW - 5 * 60_000,
+        // cs-2 放最前：客户端 v1.14 起按「最近游玩」重排（默认档），fixture 的 lastPlayed 要让
+        // 重排后的顺序与这里一致（cs-2 比 cs-1 新），否则依赖行序的断言会漂
         forkedFrom: { worldId: "campus-summer-1", nodeId: "2-2" },
       }),
-      world({ worldId: "campus-summer-1" }),
+      world({ worldId: "campus-summer-1", lastPlayed: NOW - 5 * 60_000 }),
     ];
     worldPosts = [];
     importResp = { ok: true, worldId: "campus-summer-9" };
@@ -352,8 +353,9 @@ describe("WorldsScreen：改名 / 导出 / 导入（v1.6）", () => {
     fireEvent.click(screen.getByTestId("world-delete-campus-summer-1"));
     expect(screen.getByTestId("world-confirm-campus-summer-1")).toBeTruthy();
     expect(screen.getByTestId("world-cancel-campus-summer-1")).toBeTruthy();
-    // 「删除」被换掉这一拍，焦点跟着挪到确认按钮上（否则掉回 body，键盘用户断线）
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId("world-confirm-campus-summer-1")));
+    // 「删除」被换掉这一拍，焦点跟着挪走——v1.14 起默认落到**「取消」**上（破坏性操作默认安全：
+    // 「确认删除」不再吃掉焦点，免得回车连按两下就删线），而不是原先的确认按钮
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId("world-cancel-campus-summer-1")));
     // 点外面关：Radix 听的是 pointerdown（在事件派发一拍之后才挂上监听，先让那一拍跑完）
     await act(async () => {
       await new Promise((r) => setTimeout(r, 0));

@@ -241,20 +241,79 @@ export interface WorldPostResult {
 
 /** /events 推送的回合事件（与 server broadcast 结构对齐） */
 export type AcpEvent =
-  | { type: "turn_start" }
-  | { type: "seg"; seg: number; label: string }
-  | { type: "chunk"; seg: number; text: string }
+  | { type: "turn_start"; /** 服务端回合序号（v1.14）：带它时客户端据此丢弃迟到/串台的旧回合事件 */ turn?: number }
+  | { type: "seg"; seg: number; label: string; turn?: number }
+  | { type: "chunk"; seg: number; text: string; turn?: number }
   | {
       type: "turn_end";
       /** 本回合对应的**快照序号**（幕号真源；v1.13 起服务端广播时带上）。缺省 = 更老的 server */
       seq?: number | null;
+      turn?: number;
+      /**
+       * 是否正戏回合（v1.14）：`false` = 客户端指令触发的内部回合（`继续世界：` 重同步等），
+       * 服务端同时给 `seq:null`——这类回合不进 history、不占幕号、不 bump 回合计数。
+       * 缺省（更老的 server）= 按正戏回合处理，行为与 v1.13 逐字一致。
+       */
+      main?: boolean;
     }
-  | { type: "error"; message: string }
-  | { type: "expression"; character: string; variant: string }
-  | { type: "presetAdded"; id: string }
-  | { type: "treeEdited"; note: string }
+  | {
+      type: "error";
+      message: string;
+      turn?: number;
+      /** 迟到/失焦的失败（v1.14）：客户端只提示、不改回合态 */ stale?: boolean;
+    }
+  /** v1.14 停止本回合：服务端置「忽略在途响应」并广播；客户端复位忙态并置待重同步（幂等） */
+  | { type: "turn_cancelled"; turn?: number }
+  | { type: "expression"; character: string; variant: string; turn?: number }
+  | { type: "presetAdded"; id: string; turn?: number }
+  | { type: "treeEdited"; note: string; turn?: number }
   /** v1.6 【曲】/【环境】/【音效】协议行（单独成段、不进正文；文件缺失由客户端静默 no-op） */
-  | { type: "audio"; kind: AudioKind; name: string };
+  | { type: "audio"; kind: AudioKind; name: string; turn?: number };
+
+/**
+ * 回合原文日志的一条（v1.14 GET /api/logs）：`logs/NNNN.json` 的条目形状。
+ * `prompt` = 本轮发出去的字（含客户端指令，与快照条目只记玩家输入的 `prompt` 口径不同，见 docs/adr/0023）；
+ * `text` = 引擎整轮回复原文。`cancelled`/`error` 是 Lane B 写侧新增的可选标记。
+ */
+export interface LogEntry {
+  seq: number;
+  /** 写入时刻（ISO 字符串） */
+  at: string;
+  prompt: string;
+  text: string;
+  /** 本回合被玩家停止（服务端 logs 记 cancelled:true） */
+  cancelled?: boolean;
+  /** 本回合在引擎侧失败（服务端 logs 记错误原文） */
+  error?: string;
+}
+
+/** GET /api/logs?worldId=&before=&limit= 的响应（entries 最新在前；nextBefore=null 表示已到最早） */
+export interface LogsResponse {
+  entries: LogEntry[];
+  nextBefore: number | null;
+}
+
+/** 回收站的一条（v1.14 GET /api/trash）：世界线目录或素材文件；`presetId` 仅素材条带 */
+export interface TrashEntry {
+  id: string;
+  kind: "world" | "asset";
+  name: string;
+  presetId?: string;
+  /** 落入回收站的时刻（ISO 字符串） */
+  at: string;
+}
+
+/** GET /api/trash 的响应 */
+export interface TrashResponse {
+  entries: TrashEntry[];
+}
+
+/** GET /api/engine/status 的响应（v1.14）：SSE 重连后据此对账客户端忙态 */
+export interface EngineStatus {
+  busy: boolean;
+  /** 当前在跑/最近一个回合序号（无回合时为 0） */
+  turn: number;
+}
 
 /**
  * 启动链三条读接口（/api/auth、/api/presets、/api/worlds）的等待上限（ms）。
@@ -557,6 +616,132 @@ export async function restartEngine(): Promise<{ ok: boolean; error?: string }> 
 }
 
 /**
+ * 停止当前回合（v1.14）：服务端置「忽略在途响应」标记、清 pending、复位忙态并广播 `turn_cancelled`，
+ * 本回合的日志记 `cancelled:true`、**不写快照**。
+ * @param {boolean} [force] true = 忙碌期强杀重启（先 cancel 再 spawn；`POST /api/engine/restart {force}`）
+ * @returns {Promise<{ok: boolean; cancelled: boolean; error?: string}>} `cancelled` = 服务端确实停了在跑的回合
+ */
+export async function cancelEngine(): Promise<{ ok: boolean; cancelled: boolean; error?: string }> {
+  const r = await fetch("/api/engine/cancel", { method: "POST" });
+  const data = (await r.json().catch(() => ({}))) as { ok?: boolean; cancelled?: boolean; error?: string };
+  return { ok: r.ok && data.ok !== false, cancelled: data.cancelled === true, error: data.error };
+}
+
+/**
+ * 强制重启引擎会话（v1.14）：忙碌时先 cancel / 强杀旧会话再 spawn——用于「引擎卡死」的出口，
+ * 与 {@link restartEngine} 的区别只有 `force` 一项（空闲时两者等价）。
+ * @returns {Promise<{ok: boolean; error?: string}>} 失败原因（含仍在跑被拒）在 error 里
+ */
+export async function forceRestartEngine(): Promise<{ ok: boolean; error?: string }> {
+  const r = await fetch("/api/engine/restart", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ force: true }),
+  });
+  const data = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+  return { ok: r.ok && data.ok !== false, error: data.error };
+}
+
+/**
+ * 引擎状态（v1.14）：`{busy, turn}`。SSE 断线重连后由消费方拉一次对账——重连期间错过的
+ * turn_start/turn_end 会让客户端忙态与真值错开，这里以服务端为准复位。
+ * @param {AbortSignal} [signal] 取消
+ * @returns {Promise<EngineStatus>} busy=是否在跑；turn=当前/最近回合序号（无回合为 0）
+ * @throws HTTP 非 200 时抛错（调用方捕获后保持现态，不打扰玩家）
+ */
+export async function fetchEngineStatus(signal?: AbortSignal): Promise<EngineStatus> {
+  const r = await fetch("/api/engine/status", { signal });
+  if (!r.ok) throw new Error(`GET /api/engine/status -> HTTP ${r.status}`);
+  const data = (await r.json()) as Partial<EngineStatus>;
+  return { busy: data.busy === true, turn: typeof data.turn === "number" ? data.turn : 0 };
+}
+
+/**
+ * 回合原文日志（v1.14）：最新在前，`before` 翻页（传上一页的 `nextBefore`）。
+ * 数据源是 `state/worlds/<worldId>/logs/NNNN.json`（不进导出包），「前情提要」与磁盘历史都读它。
+ * @param {string} worldId 世界 id
+ * @param {{before?: number, limit?: number}} [opts] before=只取该 seq 之前的条目；limit=本页条数（服务端夹上限）
+ * @param {AbortSignal} [signal] 取消
+ * @returns {Promise<LogsResponse>} entries（最新在前）+ nextBefore（null = 已到最早）
+ * @throws HTTP 非 200 时带上下文抛错
+ */
+export async function fetchLogs(
+  worldId: string,
+  opts: { before?: number; limit?: number } = {},
+  signal?: AbortSignal,
+): Promise<LogsResponse> {
+  const q = new URLSearchParams({ worldId });
+  if (typeof opts.before === "number") q.set("before", String(opts.before));
+  if (typeof opts.limit === "number") q.set("limit", String(opts.limit));
+  const r = await fetch(`/api/logs?${q.toString()}`, { signal });
+  if (!r.ok) throw new Error(`GET /api/logs -> HTTP ${r.status}`);
+  const data = (await r.json()) as Partial<LogsResponse>;
+  return { entries: data.entries ?? [], nextBefore: typeof data.nextBefore === "number" ? data.nextBefore : null };
+}
+
+/**
+ * 回收站清单（v1.14）：世界线删除与素材删除都先整体挪进 `state/trash/`，这里列出来供恢复。
+ * @param {AbortSignal} [signal] 取消
+ * @returns {Promise<TrashEntry[]>} 条目（新近优先）
+ * @throws HTTP 非 200 时带上下文抛错
+ */
+export async function fetchTrash(signal?: AbortSignal): Promise<TrashEntry[]> {
+  const r = await fetch("/api/trash", { signal });
+  if (!r.ok) throw new Error(`GET /api/trash -> HTTP ${r.status}`);
+  return ((await r.json()) as TrashResponse).entries ?? [];
+}
+
+/**
+ * 从回收站恢复一条（v1.14）：世界线会回补索引条目，素材回原剧本目录。
+ * @param {string} id 回收站条目 id（fetchTrash 给的）
+ * @returns {Promise<{ok: boolean; error?: string}>} 失败在 error 里返回，不抛错
+ */
+export async function postTrashRestore(id: string): Promise<{ ok: boolean; error?: string }> {
+  const r = await fetch("/api/trash", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action: "restore", id }),
+  });
+  const data = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+  return { ok: r.ok && data.ok !== false, error: data.error };
+}
+
+/**
+ * 删除一个剧本（v1.14）：与其它删除同款先进回收站；随包内置的剧本服务端会拒绝并给出人话原因。
+ * @param {string} id 剧本 id
+ * @returns {Promise<{ok: boolean; trashed?: boolean; error?: string}>} `trashed:false` = 回收站 rename 失败已回退直删
+ */
+export async function postPresetDelete(id: string): Promise<{ ok: boolean; trashed?: boolean; error?: string }> {
+  const r = await fetch("/api/presets", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action: "delete", id }),
+  });
+  const data = (await r.json().catch(() => ({}))) as { ok?: boolean; trashed?: boolean; error?: string };
+  return {
+    ok: r.ok && data.ok !== false,
+    trashed: data.trashed,
+    error: data.error || (r.ok ? undefined : `HTTP ${r.status}`),
+  };
+}
+
+/**
+ * 在系统文件管理器里打开数据目录（v1.14 帮助面板的「打开日志目录」等）：
+ * 服务端按平台走 `open` / `explorer` / `xdg-open`。
+ * @param {"data" | "logs"} which 打开数据根还是其下的 logs/
+ * @returns {Promise<{ok: boolean; error?: string}>} 失败在 error 里返回，不抛错
+ */
+export async function postOpenDir(which: "data" | "logs"): Promise<{ ok: boolean; error?: string }> {
+  const r = await fetch("/api/open-dir", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ which }),
+  });
+  const data = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+  return { ok: r.ok && data.ok !== false, error: data.error };
+}
+
+/**
  * @param {AbortSignal} [signal] 组件卸载时取消
  * @returns {Promise<PresetsResponse>} presets + 解析失败的目录
  * @throws HTTP 非 200 时带上下文抛错；响应头**或 body** 挂住超过 {@link BOOT_FETCH_TIMEOUT_MS} 抛 TimeoutError（标题屏走错误态）
@@ -656,12 +841,20 @@ export async function postWorldImport(bundle: WorldBundle): Promise<WorldPostRes
 }
 
 /**
+ * 剧本导出包的当前版本（v1.14）：与服务端 `server/presets.mjs` 的 `PRESET_BUNDLE_VERSION` 同口径。
+ * 导入侧按「1..当前版本」接受区间裁决（见 store/slices/nav.ts 的 parsePresetBundle）——
+ * 与 `WORLD_BUNDLE_VERSION` 的「客户端只管格式、上限由服务端定」不同，剧本包在**本地**就要给出
+ * 「来自更新版本的应用」这句人话，所以客户端也持有一份当前值；**升版本时两处同批改**。
+ */
+export const PRESET_BUNDLE_VERSION = 1;
+
+/**
  * 剧本导出包（v1.7，GET /api/presets/export 体；POST /api/presets import 原样回传）。
  * preset.md 全文 + 资产（含 cover.jpg 键）与音频的 base64 内容；文件名安全与 base64 校验都在服务端。
  */
 export interface PresetBundle {
   format: "bunkiten-preset";
-  version: 1;
+  version: number;
   id: string;
   title: string;
   exportedAt: string;
@@ -950,16 +1143,27 @@ export function audioFileUrl(presetId: string, file: string): string {
 
 /**
  * 订阅 SSE 回合事件流（EventSource 断线自动重连）。
+ *
+ * v1.14 起可选地报告连接状态：`onConn("open")` 在（重）连成功时回调、`onConn("error")` 在断线时回调。
+ * 消费方（App）在重连成功后拉一次 {@link fetchEngineStatus} 与历史对账——断线期间错过的
+ * `turn_start/turn_end` 会让客户端忙态与真值错开，只能靠服务端这一份准。既有单参调用零改动。
+ * SSE 的 `id:` 与 `: ping` 心跳帧没有 `data`/不是 JSON，走同一个 onmessage 时被下面的 try/catch 静默忽略。
  * @param {(e: AcpEvent) => void} onEvent 事件回调
+ * @param {(s: "open" | "error") => void} [onConn] 连接状态回调（可选）
  * @returns {() => void} 取消订阅（关闭连接）
  */
-export function subscribeEvents(onEvent: (e: AcpEvent) => void): () => void {
+export function subscribeEvents(onEvent: (e: AcpEvent) => void, onConn?: (s: "open" | "error") => void): () => void {
   const es = new EventSource("/events");
+  if (onConn) {
+    // 首次连接也走 onopen：消费方据此把「首连」与「重连」当同一件事处理（对账是幂等的）
+    es.onopen = () => onConn("open");
+    es.onerror = () => onConn("error");
+  }
   es.onmessage = (ev) => {
     try {
       onEvent(JSON.parse(ev.data) as AcpEvent);
     } catch {
-      // 非 JSON 帧只可能是连接建立初期的 retry 注释之类，忽略
+      // 非 JSON 帧只可能是连接建立初期的 retry 注释、`: ping` 心跳或 `id:` 帧，忽略
     }
   };
   return () => es.close();

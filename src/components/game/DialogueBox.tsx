@@ -61,6 +61,9 @@ export default function DialogueBox() {
   const typingDone = useGameStore((s) => s.typingDone);
   const status = useGameStore((s) => s.status);
   const setTypingDone = useGameStore((s) => s.setTypingDone);
+  // 打字机「已读播种」的两个消费点（v1.14）：key 对得上就不重播、打完（含补全）就记键
+  const typingDoneKey = useGameStore((s) => s.typingDoneKey);
+  const markTypingDone = useGameStore((s) => s.markTypingDone);
   // v1.6 设置：打字间隔按档位（instant=0 → 直接整段显示）；
   // v1.7 动效降级：系统开了「减少动态效果」时按瞬间档**呈现**（不改用户设置——OS 级偏好不重复发明开关）
   const textSpeed = useGameStore((s) => s.settings.textSpeed);
@@ -74,11 +77,25 @@ export default function DialogueBox() {
   const texture = useGameStore((s) => dialogClass(getTheme(s.selected).dialog));
 
   const target = visibleTarget(received, finalText);
-  const [shown, setShown] = useState("");
+  // 打字机「已读播种」（v1.14）：store 记着「这一幕已完整展示过」的键（typingDoneKey = String(turnKey)）。
+  // App 按屏 key 重挂 GameStage（game → overlay → game）时本组件整棵重建、shown 归零——同一幕会再打字一遍。
+  // 播种判据就在这一行：键对得上直接置 shown 为全文（不重播）。新回合/换段由 resetTurnState 把键清空，
+  // 自然失配、照常重播。reduced-motion 路径不受影响（那里 interval=0，本来一次到位）。
+  const [shown, setShown] = useState(() => (typingDoneKey === String(turnKey) ? target : ""));
   const textRef = useRef<HTMLDivElement>(null);
+  // 当前 turnKey 的 ref：置键（markTypingDone）要用**这一帧的** turnKey，但不能把 turnKey 放进
+  // 「打字完成」effect 的依赖——turnKey 变的那一帧 shown 还是上一幕的旧值，effect 会误判「已展示完」
+  // 而把 typingDone 永久置真（键盘补全与「快进」从此全禁用）。放在下面的重置 effect 里更新。
+  const turnKeyRef = useRef(turnKey);
 
   useEffect(() => {
-    setShown("");
+    // 只有 turnKey 变（新回合 / 换段）才重置：同一幕重挂走播种、不重播。
+    // 目标文本从 getState() 现读而不是用闭包里的 target——这一拍 store 已把 received/finalText 清成
+    // 新回合的值（resetTurnState 与 turnKey 同批写入），闭包里的旧 target 会把上一幕的字留在屏上。
+    turnKeyRef.current = turnKey;
+    const s = useGameStore.getState();
+    const t = visibleTarget(s.received, s.finalText);
+    setShown(s.typingDoneKey === String(turnKey) ? t : "");
   }, [turnKey]);
 
   useEffect(() => {
@@ -94,8 +111,12 @@ export default function DialogueBox() {
   }, [shown, target, interval]);
 
   useEffect(() => {
-    if (finalText && shown.length >= target.length) setTypingDone(true);
-  }, [finalText, shown, target, setTypingDone]);
+    if (!finalText || shown.length < target.length) return;
+    setTypingDone(true);
+    // 记下「这一幕已完整展示过」：屏切换重挂时据它播种、不重播（见上面 useState 的注释）。
+    // 键取 ref（本帧的 turnKey）而不是把 turnKey 放进依赖，理由见 turnKeyRef 的注释。
+    markTypingDone(String(turnKeyRef.current));
+  }, [finalText, shown, target, setTypingDone, markTypingDone]);
 
   useEffect(() => {
     const el = textRef.current;
@@ -108,6 +129,8 @@ export default function DialogueBox() {
   const completeNow = (): boolean => {
     if (typingDone || shown.length >= target.length) return false;
     setShown(target);
+    // 补全即「玩家已看到全文」：一并记键，重挂不再重播（流式期补全也记账——播种到当时的目标即可）
+    markTypingDone(String(turnKey));
     return true;
   };
 
@@ -148,9 +171,11 @@ export default function DialogueBox() {
       // 中文输入法组字里的空格是空格；焦点在输入框里时空格是玩家的正文（让路）
       if (e.key !== " " || e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return;
       if (isTypingTarget(e.target)) return;
-      // 焦点在按钮上（面板的自动/快进）时空格是**按钮的激活键**：打字中的补全不许把它吞掉——
+      // 焦点在按钮上（面板的自动/补全/快进）时空格是**按钮的激活键**：打字中的补全不许把它吞掉——
       // completeNow 会返回 true，不提前让路的话 preventDefault() 会把这次激活按灭（按钮点了没反应）。
-      // e.target 可能是 document/window（没有 closest），先卡一道 instanceof
+      // e.target 可能是 document/window（没有 closest），先卡一道 instanceof。
+      // 这一条对面板里任何位置（正文区、面板本体、body）都成立——v1.14 撤掉面板根的 tabIndex 后，
+      // 玻璃面板内只剩按钮可聚焦，其余情况一律走这里，空格补全在「焦点在面板内/正文上」时照旧生效。
       if (e.target instanceof HTMLElement && e.target.closest("button")) return;
       // 没在打字就不吞按键：空格照旧走它自己的语义（滚动/激活），而不是被这里吃掉
       if (!completeRef.current()) return;
@@ -163,22 +188,18 @@ export default function DialogueBox() {
   const showReadyHint = status === "就绪" && !options;
 
   return (
-    // 面板根是「点击/空格补全」的可交互区：给 role=button + tabIndex + aria-label 让键盘与读屏也能用。
-    // 刻意**不**换成 <button>：面板里还有「自动/快进」两个按钮（嵌套 button 非法），
-    // 所以留 div + role="button" 语义；内层控件的按键由它们自己吃（onKeyDown 只在事件源是根时处理）。
+    // 正文根是**可读语义**（v1.14 读屏修复）：role="log" + aria-live="polite" + aria-atomic="false"，
+    // 读屏能逐句读出故事；此前 role="button" + aria-label 把整段正文吞成一个按钮的标签，故事读不出来。
+    // 「点击面板本体补全」保留（VN 肌肉记忆，e2e keyboard 契约）：onClick 仍是 completeNow。
+    // 面板根**不再可聚焦**、也不再有 onKeyDown——键盘与读屏补全走右上角那个显式的「补全」控件
+    // （dialogue-complete），空格补全仍由上面挂在 window 上的监听兜住（焦点在面板内/正文上时生效）。
     <div
       data-testid="dialogue-box"
-      role="button"
-      tabIndex={0}
-      aria-label="对话内容（点击或按空格补全）"
+      role="log"
+      aria-live="polite"
+      aria-atomic="false"
+      aria-label="对话正文"
       onClick={completeNow}
-      onKeyDown={(e) => {
-        if (e.target !== e.currentTarget) return; // 焦点在内层「自动/快进」按钮上：按键归它们
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          completeNow();
-        }
-      }}
       className={`relative min-h-32 cursor-pointer rounded-xl border border-white/10 border-t-gold/35 bg-panel p-5 pb-4 shadow-[0_20px_60px_rgba(0,0,0,.5)] backdrop-blur-xl ${texture}`}
     >
       {/* 顶部主题色发丝线 */}
@@ -189,12 +210,29 @@ export default function DialogueBox() {
             "linear-gradient(90deg, transparent, color-mix(in oklab, var(--accent) 70%, transparent), transparent)",
         }}
       />
-      {/* 自动 / 快进：VN 肌肉记忆的两个控件，落位面板右上角。
+      {/* 补全 / 自动 / 快进：VN 肌肉记忆的控件，落位面板右上角。
           刻意**不**放进下面的提示行——提示行只在「打字中 / 等玩家输入」时渲染，
-          而这两个控件最需要的时候（选项已上屏、提示行已收起）正好会被一起藏掉。
-          两者都 stopPropagation：这里点的是 HUD 上的控件，不是「补全正文」那一击（面板的 onClick 才是）。
-          负上边距把那点高度收进面板 padding 里，正文位置几乎不动。 */}
+          而它们最需要的时候（选项已上屏、提示行已收起）正好会被一起藏掉。
+          三者都 stopPropagation：这里点的是 HUD 上的控件，不是「补全正文」那一击（面板的 onClick 才是）。
+          负上边距把那点高度收进面板 padding 里，正文位置几乎不动。
+          「补全」(dialogue-complete) 是 v1.14 读屏修复拆出来的显式控件：面板根撤掉 role=button 后，
+          键盘/读屏需要一个真控件才能发现并触发补全。它与「快进」(dialogue-skip) 走同一个 completeNow——
+          「快进」保留原样只为 e2e/契约不破（tests/e2e-ui/keyboard.spec.ts 用它的 testid）。 */}
       <div className="mb-1 -mt-2 flex items-center justify-end gap-2">
+        <button
+          type="button"
+          data-testid="dialogue-complete"
+          aria-label="补全正文"
+          title="补全正文（也可点面板或按空格）"
+          disabled={!canComplete}
+          onClick={(e) => {
+            e.stopPropagation();
+            completeNow();
+          }}
+          className={`${CONTROL_BASE} ${canComplete ? CONTROL_IDLE : CONTROL_DEAD}`}
+        >
+          补全
+        </button>
         <button
           type="button"
           data-testid="dialogue-auto"

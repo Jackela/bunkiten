@@ -29,6 +29,7 @@ import { createCraftingSlice } from "./slices/crafting";
 import { createCreationSlice } from "./slices/creation";
 import { createGameplaySlice } from "./slices/gameplay";
 import { createNavSlice } from "./slices/nav";
+import { createPanelsSlice } from "./slices/panels";
 import { createTreeSlice } from "./slices/tree";
 import { createWorldSlice } from "./slices/world";
 import type { GameStore } from "./types";
@@ -45,11 +46,16 @@ export type {
   CreationMessage,
   Notice,
   RegenJob,
+  TurnDelta,
+  DiskHistory,
+  RecapEntry,
+  RecapData,
 } from "./types";
 export { fallbackPortraitUrl, nextPortraitOnExpression } from "./portrait";
 export { MAX_STAGE, applyExpression, castMember, speakerOf } from "./portrait";
 export { parseWorldBundle } from "./slices/world";
 export { parsePresetBundle } from "./slices/nav";
+export { diffStateViews } from "./slices/characters";
 
 /**
  * 键盘快捷键的准入条件之一：事件目标是否落在「正在打字」的输入控件里（数字键选选项 / 空格补全用）。
@@ -91,6 +97,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
     screenReturn: null,
     selected: null,
     presets: [],
+    titleIndex: 0,
     titleNotice: null,
     cardAnswers: {},
     status: "连接引擎…",
@@ -99,6 +106,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
     finalText: "",
     options: null,
     typingDone: false,
+    typingDoneKey: null,
     bgUrl: null,
     portraits: [],
     artReady: {},
@@ -113,8 +121,18 @@ export const useGameStore = create<GameStore>()((set, get) => {
     engineBusy: false,
     history: [],
     drawerOpen: false,
+    // —— 以下为 v1.14 新增字段（与 slices 的写点一一对应；顺序仍按分组）——
+    helpOpen: false,
+    recapOpen: false,
+    recapData: null,
+    diskHistory: { entries: [], nextBefore: null, loading: false, error: null, loadedOnce: false },
+    currentTurn: null,
+    sseDown: false,
     charactersOpen: false,
     stateView: null,
+    prevStateView: null,
+    lastTurnDeltas: null,
+    pendingChapter: null,
     creationMessages: [],
     assembling: false,
     assemblyStalled: false,
@@ -148,6 +166,8 @@ export const useGameStore = create<GameStore>()((set, get) => {
     resyncFailed: false,
     resyncing: false,
     pendingRerollPrompt: null,
+    // 重演对话框（v1.14 可编辑重演）：null = 没开；由 slices/tree.ts 的 openRerollDialog 落目标幕与预填值
+    rerollDialog: null,
     turnSnapshots: null,
     settings: loadSettings(),
     autoAdvanceDeadline: null,
@@ -156,7 +176,6 @@ export const useGameStore = create<GameStore>()((set, get) => {
     curSeg: 0,
     seenMarkerKeys: new Set<string>(),
     turnNo: 0,
-    awaitCommand: null,
 
     // —— 动作：按功能块分片（每片一个文件，接口文档见 types.ts 的 GameStore）——
     ...createNavSlice(ctx),
@@ -165,6 +184,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
     ...createAssetsSlice(ctx),
     ...createCharactersSlice(ctx),
     ...createCreationSlice(ctx),
+    ...createPanelsSlice(ctx),
     ...createCraftingSlice(ctx),
     ...createGameplaySlice(ctx),
   };

@@ -51,6 +51,7 @@ import {
   presetFromStateFile,
   presetIdFromPath,
   readSnapshots,
+  readSnapshot,
   readWorldFiles,
   readWorldsIndex,
   resolvePersistPreset,
@@ -998,7 +999,9 @@ describe("server 快照子系统纯函数（CONTRACTS §2）", () => {
       expect(snaps.map((s) => s.seq)).toEqual([1, 2, 3]);
       expect(snaps.map((s) => s.prompt)).toEqual(["推门。", "坐下。", ""]); // backup 没有输入
       expect(snaps[2].kind).toBe("backup");
-      expect(snaps[0].files.state).toBe("s");
+      // v1.14 轻量化：列表形态只回元字段，不再背负 files 三文件全文——要全文的调用方走 readSnapshot 单条现读
+      expect(snaps.every((s) => s.files === undefined)).toBe(true);
+      expect((readSnapshot("w1", 1, root) as any).files.state).toBe("s");
       expect(existsSync(path.join(root, "w1", "history", "0001.json"))).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -1192,7 +1195,7 @@ describe("server readSnapshots 列表缓存（v1.7 读路径索引化：逐文�
       const snaps = readSnapshots("w1", root) as any[];
       const after = __snapshotCacheStats();
       expect(snaps.map((s) => s.seq)).toEqual([1, 2]);
-      expect(snaps[1].files.state).toBe("s2");
+      expect((readSnapshot("w1", 2, root) as any).files.state).toBe("s2"); // 全文走单条现读（列表只回元字段）
       // 逐文件解析计数：parses 只 +1——若走了全量重解析会是 +2（旧条目也重新读盘）
       expect(after.parses).toBe(before.parses + 1);
       expect(after.hits).toBe(before.hits);
@@ -1217,7 +1220,8 @@ describe("server readSnapshots 列表缓存（v1.7 读路径索引化：逐文�
     const root = mkdtempSync(path.join(os.tmpdir(), "snapcache-mtime-"));
     try {
       seedSnap(root, 1, "s1");
-      expect((readSnapshots("w1", root) as any[])[0].files.state).toBe("s1"); // 先填缓存
+      readSnapshots("w1", root); // 先填列表缓存（只格式元字段）
+      expect((readSnapshot("w1", 1, root) as any).files.state).toBe("s1"); // 全文走单条现读
       const before = __snapshotCacheStats();
       // 外部覆盖同一文件名、内容不同，并显式回拨 mtime 保证跨平台确定性（否则同秒覆盖可能漏判）
       const file = path.join(root, "w1", "history", "0001.json");
@@ -1234,9 +1238,10 @@ describe("server readSnapshots 列表缓存（v1.7 读路径索引化：逐文�
       );
       const t = new Date(Date.now() - 60_000);
       utimesSync(file, t, t);
-      const snaps = readSnapshots("w1", root) as any[];
+      readSnapshots("w1", root);
       const after = __snapshotCacheStats();
-      expect(snaps[0].files.state).toBe("s1-改"); // 逐文件 mtime 比对兜住了「只看文件名」抓不到的覆盖写
+      // 逐文件 mtime 比对兜住了「只看文件名」抓不到的覆盖写；全文走单条现读（列表只回元字段）
+      expect((readSnapshot("w1", 1, root) as any).files.state).toBe("s1-改");
       expect(after.parses).toBe(before.parses + 1);
       expect(after.hits).toBe(before.hits);
     } finally {
@@ -1361,13 +1366,24 @@ describe("server updateWorld：label/note 参数校验（CONTRACTS §2，临时 
 
 describe("server importWorld：bundle 校验 / 重名后缀 / 快照与文件落盘（CONTRACTS §2）", () => {
   let root: string;
+  let gameRoot: string;
 
   beforeEach(() => {
-    root = mkdtempSync(path.join(os.tmpdir(), "import-"));
+    // root = 世界根（<游戏根>/state/worlds）；importWorld（v1.14）校验剧本在场，剧本根从世界根**上溯两级**取
+    // （gameRootOf(root) = 游戏根）——所以单测里把根铺成 <游戏根>/state/worlds，剧本种在 <游戏根>/presets/demo/。
+    gameRoot = mkdtempSync(path.join(os.tmpdir(), "import-"));
+    root = path.join(gameRoot, "state", "worlds");
+    mkdirSync(root, { recursive: true });
+    // 最小剧本（照 tests/integration/harness.mjs 的 seed 写法）：frontmatter id/title + `# 主要角色`
+    mkdirSync(path.join(gameRoot, "presets", "demo"), { recursive: true });
+    writeFileSync(
+      path.join(gameRoot, "presets", "demo", "preset.md"),
+      "---\nid: demo\ntitle: 示例剧本\n---\n\n# 主要角色\n",
+    );
   });
 
   afterEach(() => {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(gameRoot, { recursive: true, force: true });
   });
 
   const bundleFor = (over: Record<string, unknown> = {}) => ({
@@ -1442,7 +1458,13 @@ describe("server importWorld：bundle 校验 / 重名后缀 / 快照与文件落
     expect(out.worldId).toBe("w1-2"); // 不顶替磁盘上的 w1
     expect(readFileSync(path.join(root, "w1", "state.md"), "utf8")).toBe("# 原世界状态\n"); // 原目录内容原样
     expect(readFileSync(path.join(root, "w1-2", "state.md"), "utf8")).toBe("# 状态\n"); // 导入落到 -2
-    expect(readWorldsIndex(root).map((e: any) => e.worldId)).toEqual(["w1-2"]);
+    // 索引里除了新导入的 w1-2，还有自愈重建出来的 w1（v1.14：readWorldsIndex 读不到索引时按磁盘重建，
+    // 孤儿目录就此被收进索引——自愈本来就是这条读路径的行为，importWorld 读一次索引即顺带写回）
+    expect(
+      readWorldsIndex(root)
+        .map((e: any) => e.worldId)
+        .sort(),
+    ).toEqual(["w1", "w1-2"]);
   });
 
   it("import：files.state 缺失/null/空串 → 400（不写半个世界）", () => {
@@ -1454,6 +1476,18 @@ describe("server importWorld：bundle 校验 / 重名后缀 / 快照与文件落
     });
     expect(bad({ state: "   " })).toMatchObject({ error: expect.stringContaining("files.state") });
     expect(readWorldsIndex(root)).toEqual([]);
+    expect(existsSync(path.join(root, "w1"))).toBe(false);
+  });
+
+  it("import：世界线引用的剧本不在场 → 400 人话（先导入剧本，别造一条打不开的世界线）", () => {
+    // v1.14：剧本必须已存在（<游戏根>/presets/<id>/preset.md）——导进来一条缺剧本的世界线，玩家点「继续」只会撞墙
+    const missing = importWorld(root, bundleFor({ preset: "nope" })) as any;
+    expect(missing.error).toContain("缺少剧本");
+    expect(missing.worldId).toBeUndefined();
+    // 剧本 id 非法/未标注同样拒绝（同一条闸）
+    expect((importWorld(root, bundleFor({ preset: "" })) as any).error).toContain("缺少剧本");
+    expect((importWorld(root, bundleFor({ preset: "../etc" })) as any).error).toContain("缺少剧本");
+    expect(readWorldsIndex(root)).toEqual([]); // 拒绝后不产生半个世界
     expect(existsSync(path.join(root, "w1"))).toBe(false);
   });
 
@@ -1859,7 +1893,8 @@ describe("server restoreWorld：先备份再覆盖（CONTRACTS §2，临时 root
     expect(r.backupSeq).toBe(2);
     const snaps = readSnapshots(w.worldId, root) as any[];
     expect(snaps.map((s) => s.kind)).toEqual(["turn", "backup"]);
-    expect(snaps[1].files.state).toBe("# 状态 v2\n"); // backup 存的是恢复前的当前状态
+    // backup 存的是恢复前的当前状态；全文走单条现读（列表形态只回元字段，v1.14）
+    expect((readSnapshot(w.worldId, 2, root) as any).files.state).toBe("# 状态 v2\n");
     expect(readFileSync(path.join(dir, "state.md"), "utf8")).toBe("# 状态 v1\n"); // 已覆盖成快照
     expect(readFileSync(path.join(dir, "story-tree.md"), "utf8")).toContain("节点 1-1（已走 0 轮）");
 

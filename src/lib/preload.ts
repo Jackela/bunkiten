@@ -76,11 +76,18 @@ export function warmPortraitVariants(presetId: string, characterName: string): v
   });
 }
 
+/** 样本不足（完成 < 2 张）时的保守每张耗时（ms）：说长不说短——留白比说保守更难用（v1.14） */
+export const ETA_FALLBACK_PER_ITEM_MS = 45_000;
+
 /**
  * 本批美术的剩余预估文案（纯函数，单测直引；v1.13 从 CraftingScreen 收编到「预载」这一主题下）。口径：
- * - 平均每张 = （现在 − 批次起点）/ 已完成张数——**已有 2 张以上才给**（样本太少时估出来是噪声）；
- * - 剩余 = 平均 × 还没完成的张数；
- * - 一律带「约」：这是粗估不是承诺（出图快慢取决于服务商与画幅）。没在跑的批次或样本不足时返回 null。
+ * - 平均每张 = （现在 − 批次起点）/ 已完成张数——**已有 2 张以上才给「平均」**（样本太少时估出来是噪声）；
+ * - 样本不足（0 或 1 张）时**不再留白**（v1.14）：用保守常量 {@link ETA_FALLBACK_PER_ITEM_MS} 与
+ *   已耗时里更大的那个当每张耗时，前缀改「预计」——玩家进屏那一刻就有预期，不必等到画完两张；
+ * - 剩余 = 每张耗时 × 还没完成的张数；
+ * - 一律带「约」：这是粗估不是承诺（出图快慢取决于服务商与画幅）。
+ * 批次起点自 v1.14 起取「crafting 进入时刻」（含规划回合），所以规划那几十秒也算进平均。
+ * 没在跑的批次、或已画完（done ≥ total）时返回 null。
  * @param {{done: number, total: number, startedAt: number|null, now: number}} o 已完成张数 / 总数 / 批次起点 / 现在
  * @returns {string|null} 形如「平均 ≈38s / 张 · 约还需 ~6 分钟」，或 null（不显示）
  */
@@ -90,10 +97,13 @@ export function preloadEtaLabel(o: {
   startedAt: number | null;
   now: number;
 }): string | null {
-  if (o.startedAt === null || o.done < 2 || o.done >= o.total) return null;
-  const perItemMs = Math.max(0, (o.now - o.startedAt) / o.done);
+  if (o.startedAt === null || o.done >= o.total) return null;
+  const elapsed = Math.max(0, o.now - o.startedAt);
+  const measured = o.done >= 2;
+  // 实测样本够用实测；不够就取「保守常量 vs 已耗时/已完成」的较大者（1 张很慢时不该按常量低估）
+  const perItemMs = measured ? elapsed / o.done : Math.max(ETA_FALLBACK_PER_ITEM_MS, o.done > 0 ? elapsed / o.done : 0);
   const remainMs = perItemMs * (o.total - o.done);
-  const per = `平均 ≈${Math.max(1, Math.round(perItemMs / 1000))}s / 张`;
+  const per = `${measured ? "平均" : "预计"} ≈${Math.max(1, Math.round(perItemMs / 1000))}s / 张`;
   const remain =
     remainMs < 90_000
       ? `约还需 ~${Math.max(1, Math.round(remainMs / 1000))} 秒`

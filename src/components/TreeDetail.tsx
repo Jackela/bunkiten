@@ -1,16 +1,22 @@
 // 剧情图屏的「节点详情」面板（v1.13 从 StoryTreeScreen 抽出）：地点/在场/梗概/出边/状态 + 存档点标注
-// + 在此分叉 / 回退到此节点 / 回到这一幕并重演（两段确认）。它自带两件事的状态：快照对比的取数
-// （当前 + 基线两条快照 → 三 tab diff）与存档点命名（草稿 + 保存中 + 错误位）。
+// + 在此分叉 / 回退到此节点 / 回到这一幕并重演（v1.14 起是一个预填可编辑输入的对话框）。它自带两件事的
+// 状态：快照对比的取数（当前 + 基线两条快照 → 三 tab diff）与存档点命名（草稿 + 保存中 + 错误位）。
 //
-// 为什么单独成文件：StoryTreeScreen 已 1400+ 行，详情面板的 ~12 个 prop、两套两段确认与一条 diff
+// 为什么单独成文件：StoryTreeScreen 已 1400+ 行，详情面板的 ~12 个 prop、一套两段确认与一条 diff
 // 取数链自成一块；抽出来后画布/列表与详情各管各的，读起来不必在两种心智之间来回切。
 // 详情是**详情区内嵌展开**（不是浮层）：剧情图 overlay 本身已是一层浮层、App 的 Esc 链只管关 overlay——
 // 再叠一层浮层要另接 Esc 与遮罩层级；内嵌面板换节点自动收起，链路更短。
+//
+// v1.14（C7）：重演入口从「两段确认直接重演」改成对话框（openRerollDialog(seq) → RerollDialog）——
+// 把「再说一遍同一句错话」变成「回到这里，换一种说法」。对话框本体住在 game/TopBar 的 RerollDialog
+// （与游戏屏共用一份；这里只传节点作用域的按钮 testid，旧的两段确认契约不破）。
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { fetchSnapshot } from "../lib/acp";
 import { diffLines, diffStats, type DiffRow } from "../lib/diff";
 import type { TreeNode } from "../lib/parser";
 import type { SnapshotRef } from "../lib/tree-view";
+import { useGameStore } from "../store/game";
+import { RerollDialog } from "./game/TopBar";
 
 /** 详情冒号行：地点/在场 */
 function DetailRow({ label, value }: { label: string; value: string }) {
@@ -121,7 +127,6 @@ export function TreeDetail({
   canReplay,
   onFork,
   onRestore,
-  onReplay,
   onEdit,
   onLabel,
   onClose,
@@ -137,8 +142,6 @@ export function TreeDetail({
   canReplay: boolean;
   onFork: (id: string, seq?: number) => void;
   onRestore: (seq: number) => void;
-  /** 回到这一条快照开演前、重发当时的输入（store 的 rerollAt；缺输入/无处可退会给降级提示） */
-  onReplay: (seq: number) => void;
   /** 只改这个节点：把一句话（带节点作用域）发给引擎（v1.12） */
   onEdit: (text: string) => void;
   /** 给这个存档点起名（v1.12）：返回错误文案，成功返回 null（父层负责落库与刷新） */
@@ -147,8 +150,8 @@ export function TreeDetail({
 }) {
   const canFork = node.status === "已走过";
   const [confirming, setConfirming] = useState(false);
-  // 重演的两段确认（与回退的 confirming 互斥：一条动作行上不给两组确认同时开着）
-  const [confirmingReplay, setConfirmingReplay] = useState(false);
+  /** 重演对话框的开框入口（store）：目标幕 = 本节点的存档点，预填值由 store 现取那一条的 prompt */
+  const openRerollDialog = useGameStore((s) => s.openRerollDialog);
   /** 节点级就地编辑的那句话（换节点时清空——写了一半的话是针对上一个节点说的） */
   const [nodeNote, setNodeNote] = useState("");
   useEffect(() => {
@@ -537,10 +540,7 @@ export function TreeDetail({
               type="button"
               data-testid={`tree-restore-${node.id}`}
               disabled={engineBusy}
-              onClick={() => {
-                setConfirmingReplay(false);
-                setConfirming(true);
-              }}
+              onClick={() => setConfirming(true)}
               className={`rounded-lg border px-4 py-2 text-ui tracking-[.1em] transition-colors ${
                 engineBusy
                   ? "cursor-not-allowed border-white/10 text-ink-hint"
@@ -551,64 +551,38 @@ export function TreeDetail({
             </button>
           ))}
 
-        {/* 回到这一幕并重演（v1.13）：与回退同一纪律（两段确认、忙碌禁用）；输入在盘上，
-            旧档那几幕点击后由 store 给降级提示，不静默（见 docs/adr/0023） */}
-        {snapshot &&
-          canReplay &&
-          (confirmingReplay ? (
-            <>
-              <button
-                type="button"
-                data-testid={`tree-replay-confirm-${node.id}`}
-                disabled={engineBusy}
-                onClick={() => {
-                  setConfirmingReplay(false);
-                  onReplay(snapshot.seq);
-                }}
-                className={`rounded-lg border px-4 py-2 text-ui tracking-[.1em] transition-colors ${
-                  engineBusy
-                    ? "cursor-not-allowed border-white/10 text-ink-hint"
-                    : "border-red-400/50 bg-red-400/15 text-red-300 hover:bg-red-400/25"
-                }`}
-              >
-                确认重演（退到这一幕开演前）
-              </button>
-              <button
-                type="button"
-                data-testid={`tree-replay-cancel-${node.id}`}
-                onClick={() => setConfirmingReplay(false)}
-                className="rounded-lg border border-white/10 px-3 py-2 text-ui tracking-[.1em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
-              >
-                取消
-              </button>
-            </>
-          ) : (
-            <button
-              type="button"
-              data-testid={`tree-replay-${node.id}`}
-              disabled={engineBusy}
-              onClick={() => {
-                setConfirming(false);
-                setConfirmingReplay(true);
-              }}
-              className={`rounded-lg border px-4 py-2 text-ui tracking-[.1em] transition-colors ${
-                engineBusy
-                  ? "cursor-not-allowed border-white/10 text-ink-hint"
-                  : "border-white/15 text-ink-body hover:border-gold/40 hover:text-ink"
-              }`}
-            >
-              回到这一幕并重演
-            </button>
-          ))}
+        {/* 回到这一幕并重演（v1.13；v1.14 起先开对话框）：与回退同一纪律（忙碌禁用）；输入在盘上，
+            框里预填那一刻记下的输入，玩家可以改写成另一种说法。旧档那几幕取不到输入时框里留空，
+            由玩家自己写一句——这才是可编辑重演对旧档的意义（见 docs/adr/0023 与 store 的 openRerollDialog） */}
+        {snapshot && canReplay && (
+          <button
+            type="button"
+            data-testid={`tree-replay-${node.id}`}
+            disabled={engineBusy}
+            onClick={() => void openRerollDialog(snapshot.seq)}
+            className={`rounded-lg border px-4 py-2 text-ui tracking-[.1em] transition-colors ${
+              engineBusy
+                ? "cursor-not-allowed border-white/10 text-ink-hint"
+                : "border-white/15 text-ink-body hover:border-gold/40 hover:text-ink"
+            }`}
+          >
+            回到这一幕并重演
+          </button>
+        )}
 
         <span className="text-meta tracking-[.05em] text-ink-hint">
           {!snapshot
             ? "分叉会新建一条世界线，从这一幕继续"
             : canReplay
-              ? "回退会先备份当前进度，再从这一刻重新开演；重演会退到这一幕开演前并重发当时的输入"
+              ? "回退会先备份当前进度，再从这一刻重新开演；重演会退到这一幕开演前，让你改一种说法重发"
               : "回退会先备份当前进度，再从这一刻重新开演"}
         </span>
       </div>
+
+      {/* 重演对话框（v1.14）：与游戏屏共用同一份（game/TopBar 的 RerollDialog），受 store 的
+          rerollDialog 控制；这里只把确认/取消的 testid 落到本节点（旧的两段确认契约不破）。
+          挂在详情面板里而不是屏根：详情是内嵌面板，框自己用 fixed 铺满视口，位置与挂点无关 */}
+      <RerollDialog confirmTestId={`tree-replay-confirm-${node.id}`} cancelTestId={`tree-replay-cancel-${node.id}`} />
     </div>
   );
 }

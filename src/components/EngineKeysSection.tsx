@@ -254,7 +254,7 @@ export default function EngineKeysSection({ showTitle = true }: { showTitle?: bo
           {restart.state === "error" ? `没能重启：${restart.error ?? "未知原因"}` : notice}
         </span>
       </div>
-      <p className="mt-2 text-meta leading-relaxed text-ink-faint">
+      <p className="mt-2 text-meta leading-relaxed text-ink-hint">
         重启只影响正在运行的这一局：进度都在存档里，不会因为重启丢东西。
       </p>
     </section>

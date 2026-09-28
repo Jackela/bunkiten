@@ -7,7 +7,7 @@ import {
   type ChangeEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
-import { fetchWorlds, postWorld, type WorldEntry } from "../lib/acp";
+import { fetchTrash, fetchWorlds, postTrashRestore, postWorld, type TrashEntry, type WorldEntry } from "../lib/acp";
 import { layoutGenealogy } from "../lib/genealogy";
 import { tabThroughMenu } from "../lib/menuTab";
 import { useAsync } from "../lib/useAsync";
@@ -18,6 +18,23 @@ import { ScreenShell } from "./ScreenShell";
 import { ShellPage } from "./ShellPage";
 import { GEN_NODE_H, GEN_NODE_W, GenealogyCanvas } from "./GenealogyCanvas";
 import { WorldRow } from "./WorldRow";
+
+/**
+ * 「建议定期导出备份」一次性提示的 localStorage 标记（v1.14）：关掉即记，之后不再打扰。
+ * 提示只进屏时判一次，不占 store 字段——它是本机偏好类的一次性提醒。
+ */
+const BACKUP_TIP_KEY = "bunkiten.backup-tip.v1";
+
+/**
+ * 世界线条目里服务端 v1.14 新加的字段（`presetExists`：所属剧本目录是否还在）。
+ * 类型面由 `lib/acp.ts` 的 `WorldEntry` 收录前先按可选读——消费点集中在这一处，别处别各写一份。
+ */
+type WorldEntryEx = WorldEntry & { presetExists?: boolean };
+
+/** 该世界所属剧本的目录是否已不在数据目录里（缺字段=老服务端，按「在」处理） */
+function presetMissingOf(w: WorldEntry): boolean {
+  return (w as WorldEntryEx).presetExists === false;
+}
 
 /**
  * 世界线屏：选卡之后的第二环——继续某条世界线（读档续演）或开一条全新的（去捏人）。
@@ -46,6 +63,10 @@ import { WorldRow } from "./WorldRow";
  * 破图与行高抖动都不允许；`alt=""` + `pointer-events-none`（装饰性、不抢行的点击与键盘）。
  * v1.13：取数收进 `lib/useAsync`（统一 AbortController 与 `signal.aborted` 复查）；行与家谱画布拆到
  * `WorldRow`/`GenealogyCanvas` 两个文件；行内交互控件搬出 listbox 的 option 节点（见 `WorldRow` 文件头）。
+ * v1.14：列表加**搜索（名字/备注）+ 范围（本剧本 / 全部）+ 排序（最近游玩 / 章号）**（呈现层筛选，不改服务端返回）；
+ * 工具条加「导出全部」（`/api/worlds/export?all=1` 的 `<a download>`）与**回收站视图**（`/api/trash` 列表 +
+ * 一键 `postTrashRestore`，成功后同刷新两边）；进屏一次性「建议定期导出备份」提示（localStorage 记标记）；
+ * 删除确认默认焦点落「取消」（破坏性操作默认安全）；缺剧本（`presetExists===false`）行上标「剧本不在」且「继续」不可用。
  */
 export default function WorldsScreen() {
   const selected = useGameStore((s) => s.selected);
@@ -81,14 +102,28 @@ export default function WorldsScreen() {
   const [editNote, setEditNote] = useState("");
   const [saving, setSaving] = useState(false);
   const [importing, setImporting] = useState(false);
-  /** 视图（v1.7 家谱）：平铺列表 / forkedFrom 血缘森林；屏内状态，不持久化 */
-  const [view, setView] = useState<"list" | "genealogy">("list");
+  /** 视图（v1.7 家谱；v1.14 加回收站）：平铺列表 / forkedFrom 血缘森林 / 回收站；屏内状态，不持久化 */
+  const [view, setView] = useState<"list" | "genealogy" | "trash">("list");
   /** 家谱里选中的世界 id（选中 = 高亮 + 下方快捷信息条；null=未选中） */
   const [genFocus, setGenFocus] = useState<string | null>(null);
   /** 「查看」跳回列表后要聚焦的行（世界 id；effect 里消费一次即清） */
   const [listJumpId, setListJumpId] = useState<string | null>(null);
   /** 打开着 ⋯ 菜单的世界 id（同屏只开一个；null=全关） */
   const [menuId, setMenuId] = useState<string | null>(null);
+  /** 列表筛选与排序（v1.14）：名字/备注搜索、范围（本剧本 / 全部）、排序（最近游玩 / 章号） */
+  const [search, setSearch] = useState("");
+  const [scope, setScope] = useState<"preset" | "all">("preset");
+  const [sort, setSort] = useState<"recent" | "chapter">("recent");
+  /** 正在恢复的回收站条目 id（按钮禁用/改口） */
+  const [restoring, setRestoring] = useState<string | null>(null);
+  /** 一次性备份提示的显隐（进屏读 localStorage：没标记过就提示；关掉即记标记，不再打扰） */
+  const [showBackupTip, setShowBackupTip] = useState(() => {
+    try {
+      return localStorage.getItem(BACKUP_TIP_KEY) === null;
+    } catch {
+      return false; // 隐私模式/禁用存储：不打扰
+    }
+  });
 
   /** 行元素引用：↑↓ 把 DOM 焦点一起搬到光标行（roving tabIndex 的完整语义，不是只换个描边） */
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
@@ -117,14 +152,33 @@ export default function WorldsScreen() {
     setConfirmId(null);
   }, []);
 
-  // 挂载与换卡（selected.id 变）时拉清单；删除/改名/导入成功后 reload 重取。
-  // key 只含 presetId——动作后重取走 reload（同一 key 下重跑），不占 key
-  const worldsReq = useAsync((signal) => fetchWorlds(presetId, signal), `worlds:${presetId ?? ""}`);
-  const list = useMemo(() => worldsReq.data ?? [], [worldsReq.data]);
+  // 挂载与换卡（selected.id 变）/ 切「全部」时拉清单；删除/改名/导入成功后 reload 重取。
+  // scope=all 时传 undefined（不带 preset 过滤）——「全部」是玩家显式挑选的范围
+  const worldsReq = useAsync(
+    (signal) => fetchWorlds(scope === "all" ? undefined : presetId, signal),
+    `worlds:${scope === "all" ? "all" : (presetId ?? "")}`,
+  );
   const worlds = worldsReq.data;
   const loading = worldsReq.loading;
   const error = worldsReq.error;
   const reload = worldsReq.reload;
+
+  /** 列表视图的可见清单：搜索（名字/备注）+ 排序（最近游玩 / 章号），不改服务端返回的原清单 */
+  const list = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const arr = (worlds ?? []).filter((w) => {
+      if (!q) return true;
+      const name = worldDisplayName(w, presetTitle).toLowerCase();
+      return name.includes(q) || (w.note ?? "").toLowerCase().includes(q);
+    });
+    return [...arr].sort((a, b) =>
+      sort === "chapter" ? b.chapterNo - a.chapterNo || b.lastPlayed - a.lastPlayed : b.lastPlayed - a.lastPlayed,
+    );
+  }, [worlds, search, sort, presetTitle]);
+
+  // 回收站清单（v1.14）：切到回收站视图才取数（key=null 即不取数）；恢复成功后重取
+  const trashReq = useAsync((signal) => fetchTrash(signal), view === "trash" ? "trash" : null);
+  const trash: TrashEntry[] = trashReq.data ?? [];
 
   // 家谱布局（纯函数）：worlds 变化（删除/导入/改名重取）时重算
   const genealogy = useMemo(
@@ -133,10 +187,12 @@ export default function WorldsScreen() {
     [list],
   );
 
-  /** aside「继续上次」的世界：清单里最近游玩的那条（不依赖 fetch 的排序，自己取最大 lastPlayed） */
+  /** aside「继续上次」的世界：清单里最近游玩的那条（不依赖 fetch 的排序，自己取最大 lastPlayed）。
+   *  走**未筛选**的 worlds：搜索/排序是列表视图的呈现层筛选，不该让右栏的快捷入口跟着消失 */
   const lastWorld = useMemo(
-    () => list.reduce<WorldEntry | null>((best, w) => (!best || w.lastPlayed > best.lastPlayed ? w : best), null),
-    [list],
+    () =>
+      (worlds ?? []).reduce<WorldEntry | null>((best, w) => (!best || w.lastPlayed > best.lastPlayed ? w : best), null),
+    [worlds],
   );
 
   // 「查看」收尾：切回列表后把 DOM 焦点送到对应行（键盘用户从那里继续 ↑↓/Enter）
@@ -163,11 +219,13 @@ export default function WorldsScreen() {
 
   // 菜单开着时把焦点送进第一项（键盘路径：⋯ 上 Enter → 菜单第一项已聚焦 → ↓ 走位/Tab 前进；
   // 鼠标路径 Radix 默认只把焦点落在弹层上，这里一并收齐，两种打开方式结果一致）。
-  // confirmId 也进依赖：删除→确认这一拍里「第一项」变成了确认按钮，焦点要跟着换过去
-  // （否则被替换掉的「删除」按钮会把焦点丢回 body）。
+  // 删除进确认态这一拍例外（v1.14）：确认删除是**破坏性**动作，默认焦点落到「取消」上——
+  // 「确认删除」原先是第一个 menuitem，回车连按两下就会直接删掉一条世界线；
+  // 焦点先落在取消，玩家要真删得再挪一步（WCAG 3.3.4 / 破坏性操作默认安全）。
   useEffect(() => {
     if (!menuId || !menuPopup) return;
-    menuPopup.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+    const sel = confirmId ? '[data-testid^="world-cancel-"]' : '[role="menuitem"]';
+    menuPopup.querySelector<HTMLElement>(sel)?.focus();
   }, [menuId, confirmId, menuPopup]);
 
   /** 键盘：↑↓ 移动高亮，Enter 继续高亮的世界线；确认态/编辑态/菜单开着时全部让位。
@@ -199,10 +257,46 @@ export default function WorldsScreen() {
     return () => window.removeEventListener("keydown", onKey);
   }, [confirmId, editId, menuId, engineBusy, focus, list, resumeWorld, view]);
 
-  /** 继续：目录缺失或引擎忙时不可用（resumeWorld 会立刻发续演指令） */
+  /** 继续：目录缺失/剧本不在或引擎忙时不可用（resumeWorld 会立刻发续演指令） */
   const continueWorld = (entry: WorldEntry) => {
-    if (!entry.exists || engineBusy) return;
+    if (!entry.exists || presetMissingOf(entry) || engineBusy) return;
     resumeWorld(entry);
+  };
+
+  /**
+   * 恢复一条回收站条目（v1.14 回收站视图）：发 `POST /api/trash {action:restore}`；
+   * 成功后**同时**重取回收站清单与左边世界清单（恢复回来的世界线要立刻出现在列表里）。
+   */
+  const restoreFromTrash = (entry: TrashEntry) => {
+    if (restoring) return;
+    setRestoring(entry.id);
+    setActionError("");
+    setActionNotice("");
+    postTrashRestore(entry.id)
+      .then((r) => {
+        setRestoring(null);
+        if (!r.ok) {
+          setActionError(`恢复失败：${r.error ?? "未知错误"}`);
+          return;
+        }
+        setActionNotice(`已恢复「${entry.name}」`);
+        trashReq.reload();
+        reload();
+      })
+      .catch((e: unknown) => {
+        setRestoring(null);
+        setActionError(`恢复失败：${String(e)}`);
+      });
+  };
+
+  /** 关掉一次性备份提示：记标记（下次进屏不再出现）。存储不可用也要能关掉这一次 */
+  const dismissBackupTip = () => {
+    try {
+      localStorage.setItem(BACKUP_TIP_KEY, "1");
+    } catch {
+      /* 存储不可用：只关这一次 */
+    }
+    setShowBackupTip(false);
   };
 
   /**
@@ -350,13 +444,18 @@ export default function WorldsScreen() {
           ["Tab", "行内按钮与 ⋯ 菜单"],
           ["Esc", "关菜单 / 返回标题"],
         ]
-      : [
-          ["方向键", "走血缘节点"],
-          ["Enter", "选中节点"],
-          ["+ − 0", "缩放 / 适应"],
-          ["Tab", "快捷条按钮"],
-          ["Esc", "返回标题"],
-        ];
+      : view === "trash"
+        ? [
+            ["Tab", "走恢复按钮"],
+            ["Esc", "返回标题"],
+          ]
+        : [
+            ["方向键", "走血缘节点"],
+            ["Enter", "选中节点"],
+            ["+ − 0", "缩放 / 适应"],
+            ["Tab", "快捷条按钮"],
+            ["Esc", "返回标题"],
+          ];
 
   return (
     <ScreenShell className="overflow-y-auto shell-backdrop" style={themeVars(getTheme(selected))}>
@@ -381,30 +480,45 @@ export default function WorldsScreen() {
               <section data-testid="worlds-resume-card" className="shell-panel rounded-2xl p-4">
                 <h2 className="text-ui tracking-[.25em] text-gold/80">继 续 上 次</h2>
                 {lastWorld ? (
-                  <>
-                    <p className={`mt-3 truncate text-body ${lastWorld.exists ? "text-ink" : "text-ink-hint"}`}>
-                      {worldDisplayName(lastWorld, presetTitle)}
-                    </p>
-                    <p className="mt-1 text-meta text-ink-hint">
-                      第 {lastWorld.chapterNo} 章 · {relativeTime(lastWorld.lastPlayed)}
-                      {!lastWorld.exists && <span className="ml-2 text-red-400/90">目录缺失</span>}
-                    </p>
-                    <button
-                      type="button"
-                      data-testid="worlds-resume-continue"
-                      aria-label={`继续上次的世界线 ${worldDisplayName(lastWorld, presetTitle)}`}
-                      disabled={!lastWorld.exists || engineBusy}
-                      title={!lastWorld.exists ? "目录缺失" : engineBusy ? "忙碌中，稍后再试" : undefined}
-                      onClick={() => continueWorld(lastWorld)}
-                      className={`mt-3 w-full rounded-lg border px-4 py-2 text-ui tracking-[.1em] transition-colors ${
-                        !lastWorld.exists || engineBusy
-                          ? "cursor-not-allowed border-white/10 text-ink-hint"
-                          : "border-gold/35 bg-gold/15 text-gold hover:bg-gold/30"
-                      }`}
-                    >
-                      {engineBusy ? "忙碌中" : "继续"}
-                    </button>
-                  </>
+                  (() => {
+                    const presetGone = presetMissingOf(lastWorld);
+                    const blocked = !lastWorld.exists || presetGone;
+                    return (
+                      <>
+                        <p className={`mt-3 truncate text-body ${blocked ? "text-ink-hint" : "text-ink"}`}>
+                          {worldDisplayName(lastWorld, presetTitle)}
+                        </p>
+                        <p className="mt-1 text-meta text-ink-hint">
+                          第 {lastWorld.chapterNo} 章 · {relativeTime(lastWorld.lastPlayed)}
+                          {!lastWorld.exists && <span className="ml-2 text-red-400/90">目录缺失</span>}
+                          {lastWorld.exists && presetGone && <span className="ml-2 text-red-400/90">剧本已移除</span>}
+                        </p>
+                        <button
+                          type="button"
+                          data-testid="worlds-resume-continue"
+                          aria-label={`继续上次的世界线 ${worldDisplayName(lastWorld, presetTitle)}`}
+                          disabled={blocked || engineBusy}
+                          title={
+                            !lastWorld.exists
+                              ? "目录缺失"
+                              : presetGone
+                                ? "剧本不在数据目录里"
+                                : engineBusy
+                                  ? "忙碌中，稍后再试"
+                                  : undefined
+                          }
+                          onClick={() => continueWorld(lastWorld)}
+                          className={`mt-3 w-full rounded-lg border px-4 py-2 text-ui tracking-[.1em] transition-colors ${
+                            blocked || engineBusy
+                              ? "cursor-not-allowed border-white/10 text-ink-hint"
+                              : "border-gold/35 bg-gold/15 text-gold hover:bg-gold/30"
+                          }`}
+                        >
+                          {engineBusy ? "忙碌中" : "继续"}
+                        </button>
+                      </>
+                    );
+                  })()
                 ) : (
                   <p className="mt-3 text-meta leading-relaxed text-ink-hint">
                     开一条新世界线后，最近游玩的那条会出现在这里。
@@ -428,7 +542,7 @@ export default function WorldsScreen() {
           }
           actions={
             <>
-              {/* 视图切换（v1.7）：平铺列表 ↔ forkedFrom 家谱森林（分段按钮） */}
+              {/* 视图切换（v1.7 列表/家谱；v1.14 加回收站）：分段按钮 */}
               <div
                 role="group"
                 aria-label="世界线视图"
@@ -456,7 +570,28 @@ export default function WorldsScreen() {
                 >
                   家谱
                 </button>
+                <button
+                  type="button"
+                  data-testid="worlds-view-trash"
+                  aria-pressed={view === "trash"}
+                  onClick={() => setView("trash")}
+                  className={`rounded-md px-3 py-1 text-ui tracking-[.15em] transition-colors ${
+                    view === "trash" ? "bg-gold/15 text-gold" : "text-ink-hint hover:text-ink"
+                  }`}
+                >
+                  回收站
+                </button>
               </div>
+              {/* 导出全部（v1.14）：一个 attachment 下载（服务端打一个 {format:"bunkiten-worlds",…} 容器包），
+                  直接给浏览器 `<a download>`——不经 fetch，浏览器自己弹保存框 */}
+              <a
+                data-testid="worlds-export-all"
+                href="/api/worlds/export?all=1"
+                download="bunkiten-worlds.json"
+                className="rounded-lg border border-white/10 px-4 py-2 text-ui tracking-[.1em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
+              >
+                导出全部
+              </a>
               <button
                 type="button"
                 data-testid="worlds-import"
@@ -542,14 +677,157 @@ export default function WorldsScreen() {
             </div>
           )}
 
-          {/* 空态 */}
-          {!error && worlds !== null && list.length === 0 && (
+          {/* 空态（真的一条都没有）：给开新线的入口 */}
+          {!error && worlds !== null && worlds.length === 0 && (
             <div
               data-testid="worlds-empty"
               className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-white/15 bg-panel px-6 py-10 backdrop-blur-md"
             >
               <p className="text-body tracking-[.12em] text-ink-hint">还没有世界线——开始新的吧</p>
               <p className="text-meta tracking-[.2em] text-ink-hint">新世界线从捏人开始</p>
+            </div>
+          )}
+
+          {/* 筛选后为空（有世界线，只是被搜索/范围筛掉）：说清是筛选的结果，别冒充「还没有世界线」 */}
+          {!error && worlds !== null && worlds.length > 0 && list.length === 0 && (
+            <p
+              data-testid="worlds-filter-empty"
+              className="rounded-2xl border border-dashed border-white/15 bg-panel px-4 py-3 text-ui text-ink-hint backdrop-blur-md"
+            >
+              没有匹配的世界线——换个词，或把范围切回「本剧本」。
+            </p>
+          )}
+
+          {/* 一次性备份提示（v1.14）：进屏时 localStorage 没标记过就提示一次，关掉即记标记。
+              数据都在本机，导出是最直接的备份手段——提醒一次，不反复打扰 */}
+          {showBackupTip && (
+            <div
+              data-testid="worlds-backup-tip"
+              className="mb-3 flex items-start gap-3 rounded-xl border border-gold/25 bg-gold/10 px-4 py-2.5 text-ui leading-relaxed text-gold/90 backdrop-blur-md"
+            >
+              <p className="min-w-0 flex-1">建议定期用「导出全部」备份一次——世界线与进度都只存在这台机器上。</p>
+              <button
+                type="button"
+                data-testid="worlds-backup-tip-close"
+                aria-label="知道了，不再提示"
+                onClick={dismissBackupTip}
+                className="flex-none rounded-md border border-white/10 px-2.5 py-1 text-meta tracking-[.15em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
+              >
+                知道了
+              </button>
+            </div>
+          )}
+
+          {/* 筛选与排序条（列表视图）：搜索（名字/备注）、范围（本剧本 / 全部）、排序（最近游玩 / 章号） */}
+          {view === "list" && (
+            <div
+              data-testid="worlds-filters"
+              className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-white/10 bg-panel px-3 py-2 backdrop-blur-md"
+            >
+              <input
+                type="search"
+                data-testid="worlds-search"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="搜索世界名或备注"
+                aria-label="搜索世界线"
+                className="min-w-[12rem] flex-1 rounded-lg border border-white/10 bg-black/30 px-3 py-1.5 text-ui text-ink placeholder:text-ink-hint focus:border-gold/40 focus:outline-none"
+              />
+              <div
+                role="group"
+                aria-label="筛选范围"
+                className="flex items-center rounded-lg border border-white/10 p-0.5"
+              >
+                <button
+                  type="button"
+                  data-testid="worlds-scope-preset"
+                  aria-pressed={scope === "preset"}
+                  onClick={() => setScope("preset")}
+                  className={`rounded-md px-3 py-1 text-ui tracking-[.12em] transition-colors ${
+                    scope === "preset" ? "bg-gold/15 text-gold" : "text-ink-hint hover:text-ink"
+                  }`}
+                >
+                  本剧本
+                </button>
+                <button
+                  type="button"
+                  data-testid="worlds-scope-all"
+                  aria-pressed={scope === "all"}
+                  onClick={() => setScope("all")}
+                  className={`rounded-md px-3 py-1 text-ui tracking-[.12em] transition-colors ${
+                    scope === "all" ? "bg-gold/15 text-gold" : "text-ink-hint hover:text-ink"
+                  }`}
+                >
+                  全部
+                </button>
+              </div>
+              <div role="group" aria-label="排序" className="flex items-center rounded-lg border border-white/10 p-0.5">
+                <button
+                  type="button"
+                  data-testid="worlds-sort-recent"
+                  aria-pressed={sort === "recent"}
+                  onClick={() => setSort("recent")}
+                  className={`rounded-md px-3 py-1 text-ui tracking-[.12em] transition-colors ${
+                    sort === "recent" ? "bg-gold/15 text-gold" : "text-ink-hint hover:text-ink"
+                  }`}
+                >
+                  最近游玩
+                </button>
+                <button
+                  type="button"
+                  data-testid="worlds-sort-chapter"
+                  aria-pressed={sort === "chapter"}
+                  onClick={() => setSort("chapter")}
+                  className={`rounded-md px-3 py-1 text-ui tracking-[.12em] transition-colors ${
+                    sort === "chapter" ? "bg-gold/15 text-gold" : "text-ink-hint hover:text-ink"
+                  }`}
+                >
+                  章号
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* 回收站视图（v1.14）：列出 state/trash/ 下的条目（世界线目录 / 素材文件），一键恢复 */}
+          {view === "trash" && (
+            <div data-testid="worlds-trash" className="space-y-2.5">
+              {trashReq.loading && trash.length === 0 && (
+                <p className="animate-pulse text-ui text-ink-hint">清点回收站…</p>
+              )}
+              {trashReq.error && (
+                <p data-testid="worlds-trash-error" role="status" className="text-ui text-red-400">
+                  回收站读取失败：{trashReq.error}
+                </p>
+              )}
+              {!trashReq.error && trash.length === 0 && !trashReq.loading && (
+                <p className="rounded-2xl border border-dashed border-white/15 bg-panel px-6 py-10 text-center text-ui text-ink-hint backdrop-blur-md">
+                  回收站是空的——删除的世界线与素材会先放到这里
+                </p>
+              )}
+              {trash.map((t) => (
+                <div
+                  key={t.id}
+                  data-testid={`worlds-trash-${t.id}`}
+                  className="flex flex-wrap items-center gap-3 rounded-xl border border-white/10 bg-panel px-4 py-3 backdrop-blur-md"
+                >
+                  <span className="flex-none rounded-sm border border-white/10 bg-white/[.03] px-1.5 py-0.5 text-meta tracking-[.12em] text-ink-hint">
+                    {t.kind === "world" ? "世界线" : "素材"}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-body text-ink">{t.name}</span>
+                  {t.presetId && <span className="text-meta text-ink-hint">来自 {t.presetId}</span>}
+                  <span className="text-meta text-ink-hint">{relativeTime(Date.parse(t.at))}</span>
+                  <button
+                    type="button"
+                    data-testid={`worlds-trash-restore-${t.id}`}
+                    aria-label={`恢复 ${t.name}`}
+                    disabled={restoring !== null}
+                    onClick={() => restoreFromTrash(t)}
+                    className="flex-none rounded-lg border border-gold/35 bg-gold/15 px-3.5 py-1.5 text-ui tracking-[.1em] text-gold transition-colors hover:bg-gold/30 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink-hint"
+                  >
+                    {restoring === t.id ? "恢复中…" : "恢复"}
+                  </button>
+                </div>
+              ))}
             </div>
           )}
 
@@ -569,6 +847,7 @@ export default function WorldsScreen() {
                     presetTitle={presetTitle}
                     worlds={list}
                     engineBusy={engineBusy}
+                    presetMissing={presetMissingOf(entry)}
                     resyncing={pendingResync?.worldId === entry.worldId}
                     confirming={confirmId === entry.worldId}
                     deleting={deleting === entry.worldId}
@@ -637,6 +916,8 @@ export default function WorldsScreen() {
                 if (!entry) return null;
                 const name = worldDisplayName(entry, presetTitle);
                 const missing = !entry.exists;
+                const presetGone = presetMissingOf(entry);
+                const blocked = missing || presetGone;
                 const node = genealogy.nodes.find((n) => n.worldId === entry.worldId);
                 return (
                   <div
@@ -645,10 +926,11 @@ export default function WorldsScreen() {
                     className="sticky bottom-0 z-10 mt-3 rounded-xl border border-white/10 bg-panel-strong px-4 py-3 backdrop-blur-md"
                   >
                     <div className="flex flex-wrap items-center gap-3">
-                      <span className={`text-body ${missing ? "text-ink-hint" : "text-ink"}`}>{name}</span>
+                      <span className={`text-body ${blocked ? "text-ink-hint" : "text-ink"}`}>{name}</span>
                       <span className="text-meta tracking-[.12em] text-ink-hint">
                         第 {entry.chapterNo} 章 · {relativeTime(entry.lastPlayed)}
                         {missing && <span className="ml-2 text-red-400/90">目录缺失</span>}
+                        {!missing && presetGone && <span className="ml-2 text-red-400/90">剧本已移除</span>}
                       </span>
                       {entry.forkedFrom && !node?.missingParent && (
                         <span className="rounded-sm border border-white/10 bg-white/[.03] px-1.5 py-0.5 text-meta tracking-[.12em] text-ink-hint">
@@ -665,10 +947,10 @@ export default function WorldsScreen() {
                           type="button"
                           data-testid={`genealogy-continue-${entry.worldId}`}
                           aria-label={`继续世界线 ${name}`}
-                          disabled={missing || engineBusy}
+                          disabled={blocked || engineBusy}
                           onClick={() => continueWorld(entry)}
                           className={`rounded-lg border px-3.5 py-1.5 text-ui tracking-[.1em] transition-colors ${
-                            missing || engineBusy
+                            blocked || engineBusy
                               ? "cursor-not-allowed border-white/10 text-ink-hint"
                               : "border-gold/35 bg-gold/15 text-gold hover:bg-gold/30"
                           }`}

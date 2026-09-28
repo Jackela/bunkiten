@@ -38,3 +38,17 @@ export function canReplaySnapshot(snapshots: WorldSnapshotMeta[], seq: number): 
   const act = snapshots.find((s) => s.seq === seq);
   return act?.kind === "turn" && prevTurnSnapshotSeq(snapshots, seq) !== null;
 }
+
+/**
+ * 重演要重发的那句话（纯函数，v1.14 可编辑重演）：玩家给了覆盖输入就用它（trim 后非空），
+ * 否则沿用快照条目记下的 prompt——**缺省行为与 v1.13 逐字一致**（只从盘上取，没有内存账本）。
+ * 刻意只回答「哪一句」，不判「能不能演」：两者都空（旧档、续玩条目或 backup）时返回空串，
+ * 由调用方给 no-input 降级提示——那句降级话术属于入口（游戏屏写 status、图屏写 treeNotice），不在这里分叉。
+ * @param recorded 快照条目记下的玩家输入（可能是空串）
+ * @param override 玩家在入口改写的那句话（可选；空/全空白视同没给）
+ * @returns 实际要重发的输入；两者都空时是空串
+ */
+export function replayPrompt(recorded: string, override?: string): string {
+  const o = (override ?? "").trim();
+  return o || recorded;
+}

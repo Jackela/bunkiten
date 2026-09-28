@@ -3,8 +3,8 @@
 // （grok → `grok login`、codex → 随包 codex 的 `login`，都在浏览器里完成），之后轮询 /api/auth 自动继续；
 // 登录态始终是玩家的（我们不存凭据），所以「也可以自己在终端登录」这条老路一直保留着。
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { KeyRound, LogIn, RefreshCw } from "lucide-react";
-import { fetchAuth, startEngineLogin } from "../lib/acp";
+import { FolderOpen, KeyRound, LogIn, RefreshCw, Settings } from "lucide-react";
+import { fetchAuth, postOpenDir, startEngineLogin } from "../lib/acp";
 import { watchLogin } from "../lib/engine-login";
 import { useAsync } from "../lib/useAsync";
 import { ENGINES, engineById } from "../../shared/engines.mjs";
@@ -17,19 +17,35 @@ type BootState = "checking" | "login" | "error";
 type LoginState =
   { phase: "idle" } | { phase: "starting" } | { phase: "waiting"; hint?: string } | { phase: "error"; error: string };
 
-/** 登录/连不上两种失败态共用的提示卡：一句主因 + 一句怎么办 + 重试（同一张卡，两态只有文案差） */
-function RetryCard({ title, hint, onRetry }: { title: string; hint: ReactNode; onRetry: () => void }) {
+/**
+ * 登录/连不上两种失败态共用的提示卡：一句主因 + 一句怎么办 + 重试（可带额外出口按钮）。
+ * @param {ReactNode} [extra] 「重试」之外的出口（连不上态用：打开设置 / 查看日志）
+ */
+function RetryCard({
+  title,
+  hint,
+  onRetry,
+  extra,
+}: {
+  title: string;
+  hint: ReactNode;
+  onRetry: () => void;
+  extra?: ReactNode;
+}) {
   return (
     <div className="shell-panel w-full max-w-md rounded-2xl p-6 text-center">
       <p className="text-body leading-relaxed text-ink-body">{title}</p>
       <p className="mt-2 text-meta leading-relaxed text-ink-hint">{hint}</p>
-      <button
-        type="button"
-        onClick={onRetry}
-        className="mt-5 inline-flex items-center gap-2 rounded-lg border border-gold/50 bg-gold/15 px-5 py-2 text-ui text-gold transition-colors hover:bg-gold/25"
-      >
-        <RefreshCw size={14} /> 重试
-      </button>
+      <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
+        <button
+          type="button"
+          onClick={onRetry}
+          className="inline-flex items-center gap-2 rounded-lg border border-gold/50 bg-gold/15 px-5 py-2 text-ui text-gold transition-colors hover:bg-gold/25"
+        >
+          <RefreshCw size={14} /> 重试
+        </button>
+        {extra}
+      </div>
     </div>
   );
 }
@@ -109,10 +125,20 @@ export default function BootScreen() {
 
   return (
     <ScreenShell className="flex flex-col items-center justify-center gap-5 shell-backdrop p-6">
-      <h1 className="text-display font-normal tracking-[.55em] [text-indent:.55em]">剧 本</h1>
+      {/* 品牌字标（v1.14）：对齐标题屏 title-wordmark 的「bunkiten / 分岐点」口径——
+          从前的「剧 本」与标题屏的字标不是同一个东西，首启第一眼应认出这是同一个游戏 */}
+      <h1
+        data-testid="boot-wordmark"
+        className="text-display font-normal tracking-[.34em] text-ink [text-indent:.34em]"
+      >
+        bunkiten
+      </h1>
+      <p className="text-meta tracking-[.4em] text-gold/85 [text-indent:.4em]">分 岐 点</p>
 
       {state === "checking" && (
-        <p className="animate-pulse text-meta tracking-[.3em] text-ink-hint">正在确认登录状态…</p>
+        <p role="status" className="animate-pulse text-meta tracking-[.3em] text-ink-hint">
+          正在确认登录状态…
+        </p>
       )}
 
       {state === "login" && (
@@ -158,7 +184,7 @@ export default function BootScreen() {
           {login.phase === "waiting" ? (
             <p data-testid="boot-login-waiting" role="status" className="mt-3 text-meta leading-relaxed text-ink-hint">
               已打开浏览器，完成登录后这里会自动继续…
-              {login.hint ? <span className="mt-1 block break-all text-ink-faint">{login.hint}</span> : null}
+              {login.hint ? <span className="mt-1 block break-all text-ink-hint">{login.hint}</span> : null}
             </p>
           ) : null}
           {login.phase === "error" ? (
@@ -169,8 +195,34 @@ export default function BootScreen() {
         </div>
       )}
 
+      {/* 连不上叙事服务（v1.14）：三个出口——重试 / 打开设置 / 查看日志。
+          文案说玩家**能做的事**（「请确认本地服务已启动」这类开发者话留给日志），不指使玩家去开终端 */}
       {state === "error" && (
-        <RetryCard title="连不上叙事服务。" hint="请确认本地服务已启动，然后重试。" onRetry={retryCheck} />
+        <RetryCard
+          title="连不上叙事服务。"
+          hint="引擎没有回应。可以重试；也可以到设置里看看引擎与密钥配好没有；或打开日志目录看看发生了什么。"
+          onRetry={retryCheck}
+          extra={
+            <>
+              <button
+                type="button"
+                data-testid="boot-error-settings"
+                onClick={openSettings}
+                className="inline-flex items-center gap-2 rounded-lg border border-white/10 px-5 py-2 text-ui text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
+              >
+                <Settings size={14} /> 打开设置
+              </button>
+              <button
+                type="button"
+                data-testid="boot-error-logs"
+                onClick={() => void postOpenDir("logs")}
+                className="inline-flex items-center gap-2 rounded-lg border border-white/10 px-5 py-2 text-ui text-ink-hint transition-colors hover:border-gold/40 hover:text-ink"
+              >
+                <FolderOpen size={14} /> 查看日志
+              </button>
+            </>
+          }
+        />
       )}
     </ScreenShell>
   );

@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { findPackagedApp, packagedSkipHint, writeCliShim } from "./helpers/packaged-app.mjs";
+import { dataRootEnv, findPackagedApp, packagedSkipHint, writeCliShim } from "./helpers/packaged-app.mjs";
 
 /** 临时仓库根 @returns {string} */
 function tmpRoot(): string {
@@ -96,6 +96,12 @@ describe("writeCliShim：垫片按平台给对形态", () => {
       expect(body.startsWith("#!/bin/sh")).toBe(true);
       expect(fs.statSync(shim).mode & 0o111).toBeGreaterThan(0); // 可执行位：少了它 spawn 直接 EACCES
     }
+  });
+});
+
+describe("dataRootEnv：把打包态数据根指到给定的临时目录", () => {
+  it("只产出 BUNKITEN_DATA_ROOT（不夹带 HOME 之类，调用方自己与 homeEnv 组合）", () => {
+    expect(dataRootEnv("/tmp/bunkiten-data")).toEqual({ BUNKITEN_DATA_ROOT: "/tmp/bunkiten-data" });
   });
 });
 

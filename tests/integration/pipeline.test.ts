@@ -39,6 +39,8 @@ describe("集成：假 ACP 引擎 + 真 acp-server（CONTRACTS §8 1–5、7–8
         // ⑧ 的进场回合（继续世界）正文缺 **行动** → 质量守卫会自动追问一次；不给这条应答的话，
         // 追问会按顺次消费把「引擎坏」条目吃掉，⑧ 的 error 传播用例就测不到了
         { match: "补充：", ops: ["**行动**\n1. 跟上\n"] },
+        // ⑧ 的前置正戏回合（重同步回合不写快照，得先有一条真快照才能验「失败回合不落快照」）
+        { match: "看看四周", ops: ["四周空无一人。\n\n**行动**\n1. 往前走\n"] },
         { match: "引擎坏", ops: [{ error: "引擎坏了" }] },
       ],
     });
@@ -208,18 +210,29 @@ describe("集成：假 ACP 引擎 + 真 acp-server（CONTRACTS §8 1–5、7–8
     expect(existsSync(path.join(stack.root, "state", "worlds", created.body.worldId))).toBe(false);
   }, 15000);
 
-  it("⑧ 引擎回 JSON-RPC error response：POST /prompt 409、SSE 广播 error、不写逐轮快照", async () => {
-    // 先把当前世界定下来（否则 sendPrompt 本就不会写快照，负向断言没有意义）
+  it("⑧ 引擎回 JSON-RPC error response：POST /prompt 409、SSE 广播 error（带 stale）、不写逐轮快照", async () => {
+    // 先把当前世界定下来（否则 sendPrompt 本就不会写快照，负向断言没有意义）。
+    // v1.14：重同步回合（继续世界：）**不写快照**——它只重读档，不推进状态。
     const fromEnter = stack.events.length;
     const enter = await stack.prompt("继续世界：w1。");
     expect(enter.status).toBe(200);
     await stack.waitFor((ev: any[]) => ev.slice(fromEnter).some((e) => e.type === "turn_end"), {
       label: "turn_end(⑧-enter)",
     });
+    const enterEnd = stack.events.slice(fromEnter).find((e: any) => e.type === "turn_end");
+    expect(enterEnd).toMatchObject({ main: false, seq: null }); // 重同步回合：不占幕号、不进 history
     const histDir = path.join(stack.root, "state", "worlds", "w1", "history");
     const countSnapshots = () => (existsSync(histDir) ? readdirSync(histDir).length : 0);
+    expect(countSnapshots()).toBe(0);
+
+    // 再跑一个真·正戏回合落一条快照：下面「失败回合不落快照」才有真前置（0 == 0 是空断言）
+    const fromMain = stack.events.length;
+    expect((await stack.prompt("看看四周。")).status).toBe(200);
+    await stack.waitFor((ev: any[]) => ev.slice(fromMain).some((e) => e.type === "turn_end"), {
+      label: "turn_end(⑧-main)",
+    });
     const before = countSnapshots();
-    expect(before).toBeGreaterThan(0); // 入场是正戏回合：已落一条快照
+    expect(before).toBe(1);
 
     const from = stack.events.length;
     const r = await stack.prompt("让引擎坏掉的一轮。");
@@ -227,10 +240,14 @@ describe("集成：假 ACP 引擎 + 真 acp-server（CONTRACTS §8 1–5、7–8
     expect(r.status).toBe(409);
     expect(String(r.body?.error)).toContain("引擎坏了");
     await stack.waitFor(
-      (ev: any[]) => ev.slice(from).some((e: any) => e.type === "error" && String(e.message).includes("引擎坏了")),
+      (ev: any[]) => ev.slice(from).some((e: any) => e.type === "error" && String(e.error).includes("引擎坏了")),
       { label: "error(⑧)" },
     );
     const got = stack.events.slice(from);
+    // v1.14：失败事件带 stale（引擎可能写了一半盘，客户端该先重同步）+ 本回合序号
+    const errEv = got.find((e: any) => e.type === "error");
+    expect(errEv.stale).toBe(true);
+    expect(typeof errEv.turn).toBe("number");
     expect(got.some((e: any) => e.type === "turn_end")).toBe(false); // 失败回合不许走成功收尾
     expect(countSnapshots()).toBe(before); // 也不落快照：失败回合不产生「这一轮」的档
   }, 15000);
@@ -352,7 +369,7 @@ describe("集成：回合原文日志 + 质量守卫（v1.7）", () => {
     await stack?.stop();
   });
 
-  it("⑪ 正戏回合落 logs/0001.json：prompt/text 原文可回溯、seq 与同回合快照对齐；不触发追问", async () => {
+  it("⑪ 重同步回合（继续世界：）落 logs/0001.json 但**不写快照**，turn_end 带 main:false / seq:null", async () => {
     const from = stack.events.length;
     const r = await stack.prompt("继续世界：w1。");
     expect(r.status).toBe(200);
@@ -360,6 +377,7 @@ describe("集成：回合原文日志 + 质量守卫（v1.7）", () => {
       label: "turn_end(logs-⑪)",
     });
 
+    // 日志照写（v1.14 的判定：正戏 + 重同步都写）——重读档的正文是玩家真看到的当前场景，回溯面不该缺它
     const logsDir = path.join(stack.root, "state", "worlds", "w1", "logs");
     expect(readdirSync(logsDir)).toEqual(["0001.json"]);
     const entry = JSON.parse(readFileSync(path.join(logsDir, "0001.json"), "utf8"));
@@ -368,12 +386,13 @@ describe("集成：回合原文日志 + 质量守卫（v1.7）", () => {
     expect(entry.text).toContain("雨停了，石阶泛着冷光。");
     expect(entry.text).toContain("**行动**");
     expect(typeof entry.at).toBe("string");
+    expect(entry.cancelled).toBeUndefined(); // 正常回合不带留痕字段（cancelled/error 只出现在取消/失败回合）
 
-    // seq 与同回合快照对齐：history/0001.json 就是这一轮的三文件档
-    const snap = JSON.parse(
-      readFileSync(path.join(stack.root, "state", "worlds", "w1", "history", "0001.json"), "utf8"),
-    );
-    expect(snap.seq).toBe(entry.seq);
+    // **不写快照**：重同步回合不推进状态 → history/ 目录压根不建（也不占幕号）
+    const histDir = path.join(stack.root, "state", "worlds", "w1", "history");
+    expect(existsSync(histDir)).toBe(false);
+    const end = stack.events.slice(from).find((e: any) => e.type === "turn_end");
+    expect(end).toMatchObject({ turn: 1, main: false, seq: null });
 
     // 回合自带 **行动** → 守卫不触发：先等日志行刷出（它写在守卫点之后、stdout 有序），
     // 此时仍未出现追问日志，才能证明这一轮没有补发
@@ -415,11 +434,12 @@ describe("集成：回合原文日志 + 质量守卫（v1.7）", () => {
     expect(entry.text).toContain("**行动**");
     expect(entry.text).toContain("递伞");
 
-    // 快照侧：三文件没变、但输入是新的 → 仍落一条（v1.13 去重是 files+prompt 全等，files 相同 ≠ 同一幕）；
-    // 与 log 各自独立递增（log 0002 记原文、快照 0002 记输入 + 三文件）
+    // 快照侧：这是本栈的**第一条真快照**（⑪ 的重同步回合没占号），输入是这一轮的自由输入。
+    // 日志与快照的序号从这里开始错位（logs 0002 ↔ history 0001）——append-only 视角下这是对的：
+    // 重同步回合有日志没快照，两边各按自己的进度递增，谁都不许回头覆盖。
     const histDir = path.join(stack.root, "state", "worlds", "w1", "history");
-    expect(readdirSync(histDir)).toEqual(["0001.json", "0002.json"]);
-    expect(JSON.parse(readFileSync(path.join(histDir, "0002.json"), "utf8")).prompt).toBe("自由回合：凑近看她。");
+    expect(readdirSync(histDir)).toEqual(["0001.json"]);
+    expect(JSON.parse(readFileSync(path.join(histDir, "0001.json"), "utf8")).prompt).toBe("自由回合：凑近看她。");
   }, 15000);
 
   it("⑬ 指令回合（美术：…待命）不写 log；追问守卫也不触发", async () => {
@@ -541,9 +561,184 @@ describe("集成：剧本导出包导出/导入（bunkiten-preset v1.7）", () =
     // 拒绝后不落盘
     expect(existsSync(path.join(stack.root, "presets", "x"))).toBe(false);
 
-    // 首页导览把两个新端点列上（curl 排查入口与文档同源）
+    // 首页导览把新端点列上（curl 排查入口与文档同源）；串以 routes.mjs 的导览行为准，逐条钉住契约
     const home = await stack.getText("/");
-    expect(home.body).toContain("/api/presets(GET,POST:import)");
-    expect(home.body).toContain("/api/presets/export?id=");
+    for (const token of [
+      "/api/presets(GET,POST:import|delete)", // v1.14：剧本删除也上了同一条
+      "/api/presets/export?id=",
+      "/api/presets/check?id=",
+      "/api/worlds/export?worldId=|?all=1", // v1.14：全量导出
+      // v1.14 的一批（取消/状态/日志/回收站/打开目录）
+      "/api/engine/cancel",
+      "/api/engine/status",
+      "/api/logs?worldId=",
+      "/api/trash(GET,POST:restore)",
+      "/api/open-dir",
+    ]) {
+      expect(home.body, `导览串缺 ${token}`).toContain(token);
+    }
   }, 15000);
+});
+
+// 「停止本回合」与迟到隔离（v1.14，P0；docs/adr/0026）：回合序号把取消之后到达的一切挡在门外——
+// 迟到的 chunk 不累加也不上屏、迟到的响应不给一个作废的回合补 turn_end。
+// 挂起闸的触发方式见 fake-engine.mjs 顶部（prompt 含 `__HOLD__` → 什么都不回、脚本条目不消费；
+// 收到 session/cancel 才补一条迟到的正文再回 result，让「迟到要丢弃」有料可测）。
+describe("集成：停止本回合 + 迟到隔离 + 失败留痕 + 强制重启（v1.14）", () => {
+  let stack: any;
+
+  beforeAll(async () => {
+    stack = await startStack({
+      turns: [
+        { match: "继续世界：w1", ops: ["雨停了，石阶泛着冷光。\n\n**行动**\n1. 推门进去\n"] },
+        { match: "取消前正常", ops: ["取消前的正文。\n\n**行动**\n1. 继续\n"] },
+        { match: "取消后正常", ops: ["取消后的正文。\n\n**行动**\n1. 继续\n"] },
+        { match: "引擎坏", ops: [{ error: "引擎坏了" }] },
+        { match: "重启后正常", ops: ["重启后的正文。\n\n**行动**\n1. 继续\n"] },
+      ],
+    });
+  }, 30000);
+
+  afterAll(async () => {
+    await stack?.stop();
+  });
+
+  /** 等自 from 起出现 turn_end（回合收尾的唯一判据） */
+  const turnEndAfter = (from: number) =>
+    stack.waitFor((ev: any[]) => ev.slice(from).some((e: any) => e.type === "turn_end"), { label: "turn_end" });
+  /** 某世界 logs 目录里序号最大的一条（append-only，文件名的 4 位数字排序即序号排序） */
+  const lastLog = (worldId: string) => {
+    const dir = path.join(stack.root, "state", "worlds", worldId, "logs");
+    const names = readdirSync(dir).sort();
+    return JSON.parse(readFileSync(path.join(dir, names[names.length - 1]), "utf8"));
+  };
+
+  it("停止本回合：cancel → turn_cancelled + busy 复位 + 不写快照；迟到正文丢弃；空闲时 cancelled:false", async () => {
+    // 前置：定世界（重同步回合，不落快照）+ 一条真快照，让「取消不落新快照」有真前置
+    let from = stack.events.length;
+    expect((await stack.prompt("继续世界：w1。")).status).toBe(200);
+    await turnEndAfter(from);
+    from = stack.events.length;
+    expect((await stack.prompt("取消前正常：看看四周。")).status).toBe(200);
+    await turnEndAfter(from);
+
+    const histDir = path.join(stack.root, "state", "worlds", "w1", "history");
+    const logsDir = path.join(stack.root, "state", "worlds", "w1", "logs");
+    const histBefore = readdirSync(histDir).length;
+    const logsBefore = readdirSync(logsDir).length;
+    expect(histBefore).toBe(1);
+
+    // 挂起回合：引擎收到含 __HOLD__ 的 prompt 后什么都不回 → 这条 /prompt 不会立刻 resolve，
+    // 所以**不能 await**（它由下面的取消释放）
+    from = stack.events.length;
+    const held = stack.prompt("__HOLD__ 这一轮永远回不来。");
+    await stack.waitFor((ev: any[]) => ev.slice(from).some((e: any) => e.type === "turn_start"), {
+      label: "turn_start(hold)",
+    });
+    // 忙碌中：「停止」按钮的判据（busy）与对账面（turn）都看得见
+    expect((await stack.getJSON("/api/engine/status")).body).toEqual({ busy: true, turn: 3 });
+
+    const cancelled = await stack.postJSON("/api/engine/cancel", {});
+    expect(cancelled.status).toBe(200);
+    expect(cancelled.body).toEqual({ ok: true, cancelled: true });
+    await stack.waitFor((ev: any[]) => ev.slice(from).some((e: any) => e.type === "turn_cancelled"), {
+      label: "turn_cancelled",
+    });
+    expect(stack.events.slice(from).find((e: any) => e.type === "turn_cancelled").turn).toBe(3);
+
+    // 挂起的那条 /prompt 由取消释放（假引擎补迟到正文 + 回 result）→ 被取消的回合回 ok、HTTP 200
+    //（玩家自己要停的，不是失败回合）
+    const heldRes = await held;
+    expect(heldRes.status).toBe(200);
+    expect(heldRes.body.ok).toBe(true);
+
+    // busy 复位：状态面直接可见
+    expect((await stack.getJSON("/api/engine/status")).body.busy).toBe(false);
+
+    // 迟到的一切都被回合序号丢弃：没有 turn_end、没有那条「迟到的正文」
+    const after = stack.events.slice(from);
+    expect(after.some((e: any) => e.type === "turn_end")).toBe(false);
+    expect(after.some((e: any) => e.type === "chunk" && String(e.text).includes("迟到的正文"))).toBe(false);
+
+    // 不写快照；日志留痕（cancelled:true、prompt = 这一轮的输入、text = 已产出片段（空））
+    expect(readdirSync(histDir).length).toBe(histBefore);
+    expect(readdirSync(logsDir).length).toBe(logsBefore + 1);
+    const log = lastLog("w1");
+    expect(log.cancelled).toBe(true);
+    expect(log.prompt).toBe("__HOLD__ 这一轮永远回不来。");
+    expect(log.text).toBe("");
+
+    // 空闲时再取消：cancelled:false（幂等，不是错误——客户端可能比服务端先知道回合收尾了）
+    expect((await stack.postJSON("/api/engine/cancel", {})).body).toEqual({ ok: true, cancelled: false });
+
+    // 取消之后一切照旧：下一回合照常跑完并落快照（迟到隔离没有把流水线卡住）
+    from = stack.events.length;
+    expect((await stack.prompt("取消后正常：再看看四周。")).status).toBe(200);
+    await turnEndAfter(from);
+    expect(readdirSync(histDir).length).toBe(histBefore + 1);
+  }, 20000);
+
+  it("失败回合（引擎 error）：error 事件带 stale + turn，logs 留 error 字段，busy 复位", async () => {
+    const from = stack.events.length;
+    const r = await stack.prompt("引擎坏：这一轮必失败。");
+    expect(r.status).toBe(409);
+    expect(String(r.body.error)).toContain("引擎坏了");
+
+    // SSE 与 HTTP 走两条连接：409 已经回来不代表事件帧也到了测试端的 events 数组——显式等一次
+    //（与 ⑧ 同款；直接读 slice 会偶发撞上「响应先到、事件帧还在路上」的时序）
+    await stack.waitFor(
+      (ev: any[]) => ev.slice(from).some((e: any) => e.type === "error" && String(e.error).includes("引擎坏了")),
+      { label: "error(失败回合)" },
+    );
+    const got = stack.events.slice(from);
+    const err = got.find((e: any) => e.type === "error");
+    expect(String(err.error)).toContain("引擎坏了"); // 冻结事件面里的字段名
+    expect(err.message).toBe(err.error); // 既有客户端字段暂时并存（AcpEvent 还在读 message）
+    expect(err.stale).toBe(true); // 引擎可能写了一半盘 → 客户端该先重同步
+    expect(typeof err.turn).toBe("number");
+    expect(got.some((e: any) => e.type === "turn_end")).toBe(false); // 失败回合不走成功收尾
+
+    // 失败留痕：log 条目带 error 字段（prompt 原文 + 已产出的 text 都在）
+    const log = lastLog("w1");
+    expect(String(log.error)).toContain("引擎坏了");
+    expect(log.prompt).toBe("引擎坏：这一轮必失败。");
+    expect(log.cancelled).toBeUndefined();
+
+    expect((await stack.getJSON("/api/engine/status")).body).toEqual({ busy: false, turn: 5 });
+  }, 15000);
+
+  it("忙碌中强制重启：不带 force 仍 409；force:true 先停本回合再换会话（探针多一条 start，新会话可用）", async () => {
+    const from = stack.events.length;
+    const held = stack.prompt("__HOLD__ 挂住等重启。");
+    await stack.waitFor((ev: any[]) => ev.slice(from).some((e: any) => e.type === "turn_start"), {
+      label: "turn_start(restart-hold)",
+    });
+    expect((await stack.getJSON("/api/engine/status")).body).toEqual({ busy: true, turn: 6 });
+
+    // 老语义：忙碌中重启被拒（宁可让玩家等这一回合结束）
+    const denied = await stack.postJSON("/api/engine/restart", {});
+    expect(denied.status).toBe(409);
+    expect(String(denied.body.error)).toContain("正在演绎");
+
+    // force：停本回合（turn_cancelled）→ 杀旧进程 → 拉新会话并握手 → 真重 spawn
+    const startsBefore = stack.engineProbeEntries().filter((e: any) => e.kind === "start").length;
+    const forced = await stack.postJSON("/api/engine/restart", { force: true });
+    expect(forced.status).toBe(200);
+    expect(forced.body.ok).toBe(true);
+    await stack.waitFor((ev: any[]) => ev.slice(from).some((e: any) => e.type === "turn_cancelled"), {
+      label: "turn_cancelled(force)",
+    });
+    expect(stack.engineProbeEntries().filter((e: any) => e.kind === "start").length).toBe(startsBefore + 1);
+
+    // 挂住的那条 /prompt 由「旧进程被杀」收尾（acp.mjs 在 exit 时把在途请求就地失败）→ 已取消的回合回 ok
+    const heldRes = await held;
+    expect(heldRes.status).toBe(200);
+    expect(heldRes.body.ok).toBe(true);
+    expect((await stack.getJSON("/api/engine/status")).body.busy).toBe(false);
+
+    // 新会话可用：下一个正戏回合照常跑完
+    const from2 = stack.events.length;
+    expect((await stack.prompt("重启后正常：继续演。")).status).toBe(200);
+    await turnEndAfter(from2);
+  }, 30000);
 });

@@ -18,6 +18,8 @@ import PresetCheckScreen from "./components/PresetCheckScreen";
 import GameStage from "./components/game/GameStage";
 import BgLayer from "./components/game/BgLayer";
 import ChapterCard from "./components/game/ChapterCard";
+import HelpPanel from "./components/HelpPanel";
+import RecapPanel from "./components/RecapPanel";
 import { Veil } from "./components/game/Veil";
 import { Atmosphere } from "./components/Atmosphere";
 import { MotifLayer } from "./components/motifs";
@@ -47,10 +49,22 @@ export function StatusAnnouncer() {
 export default function App() {
   const screen = useGameStore((s) => s.screen);
   const handleEvent = useGameStore((s) => s.handleEvent);
+  const reconcileAfterReconnect = useGameStore((s) => s.reconcileAfterReconnect);
+  const setSseDown = useGameStore((s) => s.setSseDown);
   const selected = useGameStore((s) => s.selected);
   const theme = getTheme(selected);
 
-  useEffect(() => subscribeEvents(handleEvent), [handleEvent]);
+  // SSE 接入：断线自动重连由 EventSource 兜着，这里只在（重）连成功时对账——断线期间错过的
+  // turn_start/turn_end 会让客户端忙态与回合号与真值错开，靠服务端那一份准（首连与重连一视同仁，幂等）。
+  // 连接断开则亮一处可见提示（顶栏），重连成功由 reconcileAfterReconnect 复位。
+  useEffect(
+    () =>
+      subscribeEvents(handleEvent, (state) => {
+        if (state === "open") reconcileAfterReconnect();
+        else setSseDown(true);
+      }),
+    [handleEvent, reconcileAfterReconnect, setSseDown],
+  );
 
   // 启动时把持久化设置同步给音频管理器（音量/静音；文本速度由 DialogueBox 直接读 store，不经这里）
   useEffect(() => {
@@ -81,6 +95,15 @@ export default function App() {
           (el.tagName === "INPUT" && (el as HTMLInputElement).type !== "range"));
       if (typing) return;
       const s = useGameStore.getState();
+      // 本地面板（帮助/前情）是浮在最上层的一环：面板开着时 Esc 先关它，别穿透到下面的屏
+      if (s.helpOpen) {
+        s.closeHelp();
+        return;
+      }
+      if (s.recapOpen) {
+        s.closeRecap();
+        return;
+      }
       if (s.assetsPreview) {
         s.setAssetsPreview(null);
         return;
@@ -146,6 +169,11 @@ export default function App() {
           {screen === "check" && <PresetCheckScreen key="check" />}
           {screen === "game" && <GameStage key="game" />}
         </AnimatePresence>
+        {/* 本地面板（v1.14，ADR-0027）：帮助/前情是覆盖**当前屏之上**的浮层，与 screen 无关——
+            入口在游戏屏命令轨，但入口一变它们不必跟着换实现。挂在 AnimatePresence 之后 = DOM 里在屏之后，
+            z-50 与抽屉同层、靠 DOM 顺序压在抽屉之上；Esc 关闭链的第一环在下面处理 */}
+        <HelpPanel />
+        <RecapPanel />
         <Atmosphere />
       </div>
     </MotionConfig>

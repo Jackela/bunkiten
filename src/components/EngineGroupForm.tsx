@@ -118,7 +118,7 @@ function Field({ label, children, hint }: { label: string; children: ReactNode; 
 
 /** 文本框的统一样式（设置屏其余输入格同款观感） */
 const inputClass =
-  "w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-ui text-ink placeholder:text-ink-faint focus:border-gold/40 focus:outline-none";
+  "w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-ui text-ink placeholder:text-ink-hint focus:border-gold/40 focus:outline-none";
 
 /**
  * 一组凭据的表单（对话或出图）。
@@ -450,7 +450,7 @@ export function EngineGroupForm({
           </div>
           {missing.length > 0 ? <p className="text-meta text-ink-hint">还差：{missing.join("、")}</p> : null}
           {group === "image" && probe.state === "idle" ? (
-            <p className="text-meta leading-relaxed text-ink-faint">
+            <p className="text-meta leading-relaxed text-ink-hint">
               「测试连接」会真的生成一张小图来验证服务能用（可能产生一点点费用）。
             </p>
           ) : null}

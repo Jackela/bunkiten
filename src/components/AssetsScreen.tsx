@@ -1,13 +1,31 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { RefreshCw, X } from "lucide-react";
-import { assetFileUrl, fetchAssets, type AssetEntry } from "../lib/acp";
-import { variantLabel, REGEN_NOTE_MAX } from "../lib/parser";
+import {
+  assetFileUrl,
+  audioFileUrl,
+  fetchAssets,
+  fetchAudio,
+  fetchTree,
+  type AssetEntry,
+  type AudioItem,
+} from "../lib/acp";
+import { assetNameMatches, buildArtCommand, parseStoryTree, REGEN_NOTE_MAX, variantLabel } from "../lib/parser";
 import { useAsync } from "../lib/useAsync";
 import { useFocusTrap } from "../lib/useFocusTrap";
 import { useGameStore, type RegenJob } from "../store/game";
 import { ScreenShell } from "./ScreenShell";
 import { ShellPage } from "./ShellPage";
+
+/** 素材类型筛选档（`all` = 不限；其余为 AssetEntry.type 的字面） */
+type TypeFilter = "all" | "立绘" | "背景" | "封面";
+
+/** 「本章待补」的一条：树里需要、磁盘上还没有的立绘/背景 */
+interface MissingArt {
+  kind: "portrait" | "background";
+  /** 发给引擎的清单名（立绘=角色名、背景=地点名） */
+  name: string;
+}
 
 /** 卡片显示名：差分拆开为「薇拉 · 微笑」（格式见 lib/parser 的 variantLabel），基础/背景/封面原样 */
 function assetLabel(a: AssetEntry): string {
@@ -47,6 +65,35 @@ function HeadingBand({ variant, children }: { variant: "group" | "sub"; children
   return (
     <div className="shell-panel rounded-xl px-3 py-2">
       {variant === "group" ? <h3 className={text}>{children}</h3> : <p className={text}>{children}</p>}
+    </div>
+  );
+}
+
+/**
+ * 一张音频卡（v1.14）：**刻意不复用**图片 `AssetCard`——那个组件整卡是「图」的语义（`<img>` + alt +
+ * object-cover），音频没有图，硬套会把「这是张图」套到声音上。这里给类型/名/文件名 + 一个试听控件。
+ * `preload="none"`：一屏可能几十条，别在进屏时把每一条都拉一遍。
+ * @param {AudioItem} item /api/audio 的一条（类型 ∈ 曲/环境/音效）
+ * @param {string} preset 当前剧本 id（item.url 缺失时按 preset+file 拼直服 URL 兜底）
+ */
+function AudioCard({ item, preset }: { item: AudioItem; preset: string }) {
+  const src = item.url || audioFileUrl(preset, item.file);
+  return (
+    <div data-testid={`audio-card-${item.kind}-${item.name}`} className="shell-panel rounded-xl p-3">
+      <div className="flex items-baseline gap-2">
+        <span className="flex-none rounded-sm border border-white/10 bg-white/[.03] px-1.5 py-0.5 text-micro tracking-[.15em] text-gold/85">
+          {item.kind}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-body text-ink">{item.name}</span>
+      </div>
+      <p className="mt-1 truncate text-meta text-ink-hint">{item.file}</p>
+      <audio
+        data-testid={`audio-play-${item.kind}-${item.name}`}
+        controls
+        preload="none"
+        src={src}
+        className="mt-2 w-full"
+      />
     </div>
   );
 }
@@ -132,6 +179,9 @@ function AssetCard({
  * v1.8 版式：外框换成 ShellPage 的 84rem 满幅框架（眉标=当前剧本、标题=画 廊、页脚=操作提示），
  * 栅格按屏宽铺开（立绘 6 / 背景 3 / 封面 4 列）而不是挤在中间一条窄栏；
  * 组标题与角色名包进标题带；角标只标异常（未使用）；重绘是作者工具，在预览模态里退为次级按钮。
+ * v1.14：加**音频分区**（`fetchAudio`，音频卡不套图片语义）、**筛选**（类型 / 仅未使用 / 名字搜索）、
+ * 「**本章待补**」分区 + 一键补画（重算自剧情树 present/location 与磁盘素材之差，逐项发 `buildArtCommand`）；
+ * 批量删除进确认态时焦点收口到确认按钮；高成本动作（重绘选中/重新生成/开始装配）补量级说明。
  */
 export default function AssetsScreen() {
   const closeOverlay = useGameStore((s) => s.closeOverlay);
@@ -148,6 +198,8 @@ export default function AssetsScreen() {
   const assetsNotice = useGameStore((s) => s.assetsNotice);
   const assetsBusy = useGameStore((s) => s.assetsBusy);
   const engineBusy = useGameStore((s) => s.engineBusy);
+  /** 玩家输入的发送动作（「一键补画」逐项发 `美术：立绘/背景 <名>`；引擎单回合，逐条按空闲派发） */
+  const send = useGameStore((s) => s.send);
   // 预览态放 store：Esc 关闭链（App 层）与 X/点遮罩三条路都关它
   const selected = useGameStore((s) => s.assetsPreview);
   const setAssetsPreview = useGameStore((s) => s.setAssetsPreview);
@@ -155,6 +207,8 @@ export default function AssetsScreen() {
   const preset = useGameStore((s) => s.selected?.id ?? "");
   /** 眉标用的剧本标题（未选剧本时给一句状态，别留空行） */
   const presetTitle = useGameStore((s) => s.selected?.title);
+  /** 当前世界 id：「本章待补」要读剧情树（没有世界就不出这一区） */
+  const worldId = useGameStore((s) => s.worldId);
 
   /** 管理素材模式开关（批量操作的入口；浏览模式只有预览） */
   const [selectMode, setSelectMode] = useState(false);
@@ -164,8 +218,19 @@ export default function AssetsScreen() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   /** 预览模态里的「想怎么改？」（v1.12）：一句人话只作用于这一张图；换一张图就清空（见下方 effect） */
   const [regenNote, setRegenNote] = useState("");
+  /** 筛选（v1.14）：类型 / 仅未使用 / 名字搜索——只作用于**呈现**，不动勾选与批量动作的账 */
+  const [filterType, setFilterType] = useState<TypeFilter>("all");
+  const [onlyUnused, setOnlyUnused] = useState(false);
+  const [search, setSearch] = useState("");
+  /** 「一键补画」的待发队列（顺序发：引擎是单回合的，挤着发必 409——按空闲逐条派） */
+  const [artQueue, setArtQueue] = useState<string[]>([]);
+  const [artTotal, setArtTotal] = useState(0);
   /** 预览面板的关闭按钮（打开时聚焦它，键盘用户第一站就是「关掉」） */
   const closeRef = useRef<HTMLButtonElement | null>(null);
+  /** 批量删除确认按钮（进确认态时聚焦它：被替换掉的「删除选中」会把焦点丢回 body） */
+  const deleteConfirmRef = useRef<HTMLButtonElement | null>(null);
+  /** 「一键补画」的派发锁（见下方泵：`send` 不同步置 engineBusy，靠这把锁避免同一拍连发整队） */
+  const dispatchLock = useRef(false);
   /** 预览面板本体（焦点陷阱的容器：Tab 在面板里循环、关面板时把焦点还给开启前那张卡片） */
   const previewRef = useRef<HTMLDivElement | null>(null);
   useFocusTrap(!!selected, previewRef);
@@ -194,6 +259,18 @@ export default function AssetsScreen() {
   const assets = assetsReq.data;
   const error = assetsReq.error;
 
+  // 音频索引（v1.14）：与图片同一条管线之外（`presets/<id>/audio/`），单独拉一次；换本重取。
+  // 剧本没 audio 目录时是空数组（不报错、不画这一区）
+  const audioReq = useAsync((signal) => fetchAudio(preset, signal), preset ? `audio:${preset}` : null);
+  const audio = audioReq.data ?? [];
+
+  // 「本章待补」（v1.14）要读剧情树：present（在场立绘）与 location（地点背景）减去磁盘素材。
+  // 没世界就不取；读不到树（404/无树文件）静默——这一区不出现，不当错误态打扰（mapError 归空串）
+  const treeReq = useAsync((signal) => fetchTree(worldId ?? "", signal), worldId ? `assets-tree:${worldId}` : null, {
+    mapError: () => "",
+  });
+  const treeMarkdown = treeReq.data?.markdown ?? "";
+
   // 进屏/换本清掉上一轮的提示条（批次结果属于上一次会话，不该复读）
   useEffect(() => {
     clearAssetsNotice();
@@ -211,10 +288,45 @@ export default function AssetsScreen() {
     setRegenNote("");
   }, [selected?.file]);
 
+  // 批量删除进确认态：焦点收口到「确认删除」（v1.14）——被替换掉的「删除选中」会把焦点丢回 body，
+  // 键盘用户因此断线；这里显式把焦点送进确认按钮
+  useEffect(() => {
+    if (confirmDelete) deleteConfirmRef.current?.focus();
+  }, [confirmDelete]);
+
+  // 「一键补画」泵（v1.14）：队列里还有待发的、且引擎空闲时取队首发一条。
+  // 引擎是单回合的——连发必 409，所以必须逐条派。**注意 `send` 并不同步置 `engineBusy`**
+  //（它只置 status + POST，忙态由 SSE 的 turn_start 落下），所以不能只看 engineBusy，
+  // 否则同一渲染周期里会把整队连着发出去。用一把锁：派出一条即上锁；看到引擎忙（回合真起来了）
+  // 就解锁——下一张要等这个回合收尾（engineBusy 落回 false）才发。
+  useEffect(() => {
+    if (engineBusy) {
+      dispatchLock.current = false; // 回合在跑：解锁，下一张等它收尾
+      return;
+    }
+    if (dispatchLock.current) return; // 刚派出一条、回合还没起来：别连发
+    if (artQueue.length === 0) return;
+    dispatchLock.current = true;
+    const [next, ...rest] = artQueue;
+    setArtQueue(rest);
+    send(next);
+  }, [artQueue, engineBusy, send]);
+
+  /** 筛选后的可见清单（类型 / 仅未使用 / 名字）——只作用于呈现层 */
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return (assets ?? []).filter((a) => {
+      if (filterType !== "all" && a.type !== filterType) return false;
+      if (onlyUnused && a.inUse) return false;
+      if (q && !assetLabel(a).toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [assets, filterType, onlyUnused, search]);
+
   // 立绘按角色分组：组内基础在前、差分随后；背景与封面各自一组
   const portraitGroups = useMemo(() => {
     const groups = new Map<string, AssetEntry[]>();
-    for (const a of assets ?? []) {
+    for (const a of filtered) {
       if (a.type !== "立绘") continue;
       const list = groups.get(a.name) ?? [];
       list.push(a);
@@ -224,9 +336,49 @@ export default function AssetsScreen() {
       list.sort((x, y) => (x.variant ? 1 : 0) - (y.variant ? 1 : 0));
     }
     return [...groups.entries()];
-  }, [assets]);
-  const backgrounds = useMemo(() => (assets ?? []).filter((a) => a.type === "背景"), [assets]);
-  const covers = useMemo(() => (assets ?? []).filter((a) => a.type === "封面"), [assets]);
+  }, [filtered]);
+  const backgrounds = useMemo(() => filtered.filter((a) => a.type === "背景"), [filtered]);
+  const covers = useMemo(() => filtered.filter((a) => a.type === "封面"), [filtered]);
+
+  /**
+   * 「本章待补」的清单（v1.14，纯派生）：取**当前章**（带进度指针的那章，没有就用最后一章）里每个节点的
+   * `location`（背景）与 `present`（在场立绘），减去磁盘上已有素材（`assetNameMatches` 同款判定）。
+   * 差分不进这一区（本章待补的是「还没画的基础项」，差分由引擎按表情需要自己出）。
+   */
+  const missingArt = useMemo<MissingArt[]>(() => {
+    const tree = treeMarkdown ? parseStoryTree(treeMarkdown) : null;
+    if (!tree || tree.chapters.length === 0) return [];
+    const chapter = [...tree.chapters].reverse().find((c) => c.current) ?? tree.chapters[tree.chapters.length - 1];
+    const out: MissingArt[] = [];
+    const seen = new Set<string>();
+    const has = (kind: MissingArt["kind"], name: string): boolean => {
+      const typeCn = kind === "portrait" ? "立绘" : "背景";
+      return (assets ?? []).some(
+        (a) => a.type === typeCn && assetNameMatches({ name: a.name, variant: a.variant }, { name, variant: "" }),
+      );
+    };
+    const push = (kind: MissingArt["kind"], raw: string) => {
+      const name = raw.trim();
+      if (!name) return;
+      const key = `${kind}|${name}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      if (!has(kind, name)) out.push({ kind, name });
+    };
+    for (const n of chapter.nodes) {
+      push("background", n.location);
+      for (const who of n.present.split(/[、,，]/)) push("portrait", who);
+    }
+    return out;
+  }, [treeMarkdown, assets]);
+
+  /** 一键补画：把缺失项逐条转成美术指令入队（泵按引擎空闲派发） */
+  const fillMissing = () => {
+    if (missingArt.length === 0 || artQueue.length > 0) return;
+    const cmds = missingArt.map((m) => buildArtCommand(m.kind === "background" ? "背景" : "立绘", m.name));
+    setArtTotal(cmds.length);
+    setArtQueue(cmds);
+  };
 
   /** 落盘路径 → 条目（勾选记的是路径：清单刷新后仍能对回条目） */
   const byFile = useMemo(() => new Map((assets ?? []).map((a) => [a.file, a])), [assets]);
@@ -340,8 +492,8 @@ export default function AssetsScreen() {
             <button
               type="button"
               data-testid="assets-select-all"
-              disabled={(assets ?? []).length === 0}
-              onClick={() => setPicked((assets ?? []).map((a) => a.file))}
+              disabled={filtered.length === 0}
+              onClick={() => setPicked(filtered.map((a) => a.file))}
               className="rounded-md border border-white/10 px-3 py-1.5 text-ui tracking-[.1em] text-ink-hint transition-colors hover:border-gold/40 hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint"
             >
               全选
@@ -368,6 +520,7 @@ export default function AssetsScreen() {
             {confirmDelete ? (
               <>
                 <button
+                  ref={deleteConfirmRef}
                   type="button"
                   data-testid="assets-delete-confirm"
                   disabled={assetsBusy || deletable.length === 0}
@@ -408,6 +561,61 @@ export default function AssetsScreen() {
             >
               退出选择
             </button>
+          </div>
+        )}
+
+        {/* 成本标注（v1.14）：重绘是「真出图/真花额度」的动作，在批量入口处把量级说清楚 */}
+        {selectMode && (
+          <p data-testid="assets-regen-cost" className="mt-2 text-meta leading-relaxed text-ink-hint">
+            重绘会逐张真的重新生成图片（可能消耗出图额度）；一批按顺序来，中途可退出、已在跑的会跑完。
+          </p>
+        )}
+
+        {/* 筛选（v1.14）：类型（立绘/背景/封面）/ 仅未使用 / 名字——只作用于呈现，不动勾选与批量动作的账 */}
+        {preset && (
+          <div
+            data-testid="assets-filters"
+            className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-white/10 bg-panel px-3 py-2 backdrop-blur-md"
+          >
+            <input
+              type="search"
+              data-testid="assets-filter-search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="搜索素材名"
+              aria-label="搜索素材"
+              className="min-w-[12rem] flex-1 rounded-lg border border-white/10 bg-black/30 px-3 py-1.5 text-ui text-ink placeholder:text-ink-hint focus:border-gold/40 focus:outline-none"
+            />
+            <div
+              role="group"
+              aria-label="素材类型"
+              className="flex items-center rounded-lg border border-white/10 p-0.5"
+            >
+              {(["all", "立绘", "背景", "封面"] as const).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  data-testid={`assets-filter-type-${t}`}
+                  aria-pressed={filterType === t}
+                  onClick={() => setFilterType(t)}
+                  className={`rounded-md px-3 py-1 text-ui tracking-[.12em] transition-colors ${
+                    filterType === t ? "bg-gold/15 text-gold" : "text-ink-hint hover:text-ink"
+                  }`}
+                >
+                  {t === "all" ? "全部" : t}
+                </button>
+              ))}
+            </div>
+            <label className="flex items-center gap-1.5 text-ui text-ink-hint">
+              <input
+                type="checkbox"
+                data-testid="assets-filter-unused"
+                checked={onlyUnused}
+                onChange={(e) => setOnlyUnused(e.target.checked)}
+                className="h-4 w-4 accent-[color:var(--accent)]"
+              />
+              仅未使用
+            </label>
           </div>
         )}
 
@@ -476,8 +684,15 @@ export default function AssetsScreen() {
           <p className="shell-panel mt-6 animate-pulse rounded-xl px-4 py-2 text-ui text-ink-hint">清点素材…</p>
         )}
 
-        {assets && assets.length === 0 && (
+        {assets && assets.length === 0 && audio.length === 0 && (
           <p className="shell-panel mt-6 rounded-xl px-4 py-2 text-ui text-ink-hint">这个剧本还没有已生成的素材</p>
+        )}
+
+        {/* 筛选后为空（有素材，只是被筛掉）：说清是筛选的结果，别冒充「还没有素材」 */}
+        {assets && assets.length > 0 && filtered.length === 0 && (
+          <p data-testid="assets-filter-empty" className="shell-panel mt-6 rounded-xl px-4 py-2 text-ui text-ink-hint">
+            没有匹配的素材——换个筛选条件或清掉搜索词。
+          </p>
         )}
 
         {portraitGroups.length > 0 && (
@@ -515,6 +730,62 @@ export default function AssetsScreen() {
                 <AssetCard key={a.file} {...cardProps(a)} />
               ))}
             </div>
+          </section>
+        )}
+
+        {/* 音频分区（v1.14）：剧本音频是另一条管线（presets/<id>/audio/），不走图片分组。
+            音频卡刻意不复用图片 AssetCard（那是 <img> 语义）——类型/名/文件名 + 试听控件 */}
+        {audio.length > 0 && (
+          <section data-testid="assets-audio" className="mt-8">
+            <HeadingBand variant="group">音 频</HeadingBand>
+            <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {audio.map((item) => (
+                <AudioCard key={item.file} item={item} preset={preset} />
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/* 「本章待补」+ 一键补画（v1.14）：重算来源 = 剧情树（当前章各节点的 location/present）与
+            磁盘素材之差；补画逐项发 `美术：立绘/背景 <名>`（泵按引擎空闲派发，见上方 effect）。
+            只在有当前世界且树读到了的时候出这一区（没世界/没树就静默不画） */}
+        {worldId && treeReq.data && (
+          <section data-testid="assets-missing" className="mt-8">
+            <HeadingBand variant="group">本 章 待 补</HeadingBand>
+            {missingArt.length === 0 ? (
+              <p className="mt-4 text-ui text-ink-hint">本章剧情需要的立绘与背景都已经画好了。</p>
+            ) : (
+              <>
+                <p className="mt-4 text-meta leading-relaxed text-ink-hint">
+                  本章剧情用到、但磁盘上还没有的素材（重算自剧情树与已有素材）：
+                </p>
+                <ul className="mt-2 flex flex-wrap gap-2">
+                  {missingArt.map((m) => (
+                    <li
+                      key={`${m.kind}-${m.name}`}
+                      data-testid={`assets-missing-item-${m.kind}-${m.name}`}
+                      className="rounded-sm border border-white/10 bg-white/[.03] px-2 py-0.5 text-meta text-ink-body"
+                    >
+                      {m.kind === "background" ? "背景" : "立绘"} · {m.name}
+                    </li>
+                  ))}
+                </ul>
+                <button
+                  type="button"
+                  data-testid="assets-fill-missing"
+                  disabled={artQueue.length > 0 || engineBusy}
+                  onClick={fillMissing}
+                  className="mt-3 rounded-lg border border-gold/35 bg-gold/15 px-4 py-2 text-ui tracking-[.1em] text-gold transition-colors hover:bg-gold/30 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-ink-hint"
+                >
+                  {artQueue.length > 0 ? "补画中…" : `一键补画（${missingArt.length}）`}
+                </button>
+                {artQueue.length > 0 && (
+                  <p data-testid="assets-fill-progress" role="status" className="mt-2 text-meta text-ink-hint">
+                    补画中 {artTotal - artQueue.length} / {artTotal}（逐张来，引擎跑完一张发下一张）
+                  </p>
+                )}
+              </>
+            )}
           </section>
         )}
       </ShellPage>
@@ -588,10 +859,14 @@ export default function AssetsScreen() {
                     }
                   }}
                   placeholder="例：头发改成短发、换成夜景、正面特写"
-                  className="mt-1.5 w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-ui text-ink placeholder:text-ink-faint focus:border-gold/40 focus:outline-none"
+                  className="mt-1.5 w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-ui text-ink placeholder:text-ink-hint focus:border-gold/40 focus:outline-none"
                 />
               </div>
-              <div className="flex justify-end px-1">
+              <div className="flex flex-wrap items-center justify-end gap-3 px-1">
+                {/* 成本标注（v1.14）：重新生成是「真出图/真花额度」，按钮旁说清量级 */}
+                <p className="mr-auto text-meta leading-relaxed text-ink-hint">
+                  重新生成会真的再出一张图，可能消耗出图额度
+                </p>
                 <button
                   type="button"
                   data-testid="assets-preview-regen"

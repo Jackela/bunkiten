@@ -33,7 +33,9 @@ export function parseWorldBundle(text: string): WorldBundle | null {
 }
 
 export function createWorldSlice(
-  ctx: SliceContext<"set" | "get" | "clearWatchdog" | "resetRunState" | "refreshTurnSnapshots">,
+  ctx: SliceContext<
+    "set" | "get" | "clearWatchdog" | "resetRunState" | "refreshTurnSnapshots" | "consumePendingChapter"
+  >,
 ): Pick<GameStore, "beginNewWorld" | "resumeWorld" | "updateWorld" | "importWorldText" | "clearWorldNotice"> {
   const { set, get } = ctx;
 
@@ -57,6 +59,9 @@ export function createWorldSlice(
       get().send(buildResumeCommand(entry.worldId));
       // 续玩的旧世界磁盘上可能已有快照：补拉一次快照数，重演按钮据此决定是否出现（失败=未知，照常展示）
       ctx.refreshTurnSnapshots();
+      // 回到 game 屏的回屏点之一（v1.14）：有待规划章就消费掉。resetRunState 已清待办，
+      // 这里是与其他三个回屏点同形的护栏（路径一致，将来有人改动此处语义时不会漏掉这一处）
+      ctx.consumePendingChapter();
     },
 
     async updateWorld(p) {

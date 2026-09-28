@@ -5,7 +5,8 @@
 //   【曲】/【环境】/【音效】→ SSE audio 事件
 //   /api/audio 列表（preset 必填/非法 400）
 //   /audio?p= 直服（各扩展名 MIME）+ 目录穿越 404
-//   正戏回合落盘 history/NNNN.json 且 nodeId 正确、规划回合不落盘、内容相同去重
+//   真实玩家输入回合落盘 history/NNNN.json 且 nodeId 正确、规划回合不落盘、files+prompt 全等才去重
+//   （v1.14：重同步回合「继续世界：」不写快照、不占幕号——turn_end 带 main:false/seq:null；用例 ④ 是这条语义的守门）
 //   fork 带 seq → 新世界三文件与快照逐字一致
 //   restore → 生成 backup 条目
 //   export → import 往返一致（含重名后缀；v2 包带 forkedFrom/fork.md、v1 包照收）
@@ -60,11 +61,14 @@ describe("集成：音频协议（CONTRACTS §1）", () => {
     expect(r.status).toBe(200);
     await stack.waitFor((ev: any[]) => ev.slice(from).some((e) => e.type === "turn_end"), { label: "turn_end(audio)" });
     const got = stack.events.slice(from).filter((e: any) => e.type === "audio");
-    expect(got).toEqual([
+    // 事件面 v1.14 起所有事件带 `turn`（回合序号）：契约仍是 kind/name 原样 + 三条行的顺序，
+    // 只投影这两个字段做深等，别把新增的 turn 字段当成契约破口（它另有断言）。
+    expect(got.map((e: any) => ({ type: e.type, kind: e.kind, name: e.name }))).toEqual([
       { type: "audio", kind: "曲", name: "雨夜" },
       { type: "audio", kind: "环境", name: "旅店大堂" },
       { type: "audio", kind: "音效", name: "门响" },
     ]);
+    expect(got.every((e: any) => typeof e.turn === "number")).toBe(true); // 三条都带本回合序号
   }, 15000);
 
   it("② /api/audio：preset 必填且过白名单；列出 <类型>-<名>.<ext>（url 指向 /audio?p=）", async () => {
@@ -145,33 +149,45 @@ describe("集成：逐轮快照 + 世界线精确回退/导出导入（CONTRACTS
     await stack?.stop();
   });
 
-  it("④ 正戏回合落盘 history/0001.json（nodeId 正确、续玩指令的 prompt 为空）；规划回合不落盘；files+prompt 全等才去重", async () => {
+  it("④ 真实玩家输入回合落盘 history/0001.json（nodeId/prompt 正确）；重同步回合不落盘；规划回合不落盘；files+prompt 全等才去重", async () => {
     const histDir = path.join(w1Dir(stack), "history");
     expect(existsSync(histDir)).toBe(false); // 开局前没有快照
 
-    // 续玩指令 → sniffPreset 记下 currentWorldId=w1（该指令本身是正戏回合）
+    // 重同步回合（「继续世界：」，v1.14 语义守门）：sniffPreset 记下 currentWorldId=w1，产出正文并写回合日志，
+    // 但**不推进状态** → 不写快照、不占幕号（turn_end 带 main:false / seq:null，客户端据此不把它算成一幕）。
+    // 此前版本把它当正戏回合写进 history——那正是这条用例要钉住的反面。
     let from = stack.events.length;
     expect((await stack.prompt("继续世界：w1。")).status).toBe(200);
-    await stack.waitFor((ev: any[]) => ev.slice(from).some((e) => e.type === "turn_end"), {
+    await stack.waitFor((ev: any[]) => ev.slice(from).some((e: any) => e.type === "turn_end"), {
+      label: "turn_end(resync)",
+    });
+    const resyncEnd = stack.events.slice(from).find((e: any) => e.type === "turn_end");
+    expect(resyncEnd).toMatchObject({ main: false, seq: null });
+    expect(existsSync(histDir)).toBe(false); // 重同步回合不落快照 → history/ 压根不建
+
+    // 第一条真快照来自一次**真实玩家输入**回合（fake engine 空回放即可；世界段缺失 → 保持 currentWorldId=w1）
+    from = stack.events.length;
+    expect((await stack.prompt("看看四周。")).status).toBe(200);
+    await stack.waitFor((ev: any[]) => ev.slice(from).some((e: any) => e.type === "turn_end"), {
       label: "turn_end(history-1)",
     });
     expect(readdirSync(histDir)).toEqual(["0001.json"]);
     const snap = JSON.parse(readFileSync(path.join(histDir, "0001.json"), "utf8"));
     expect(snap).toMatchObject({ seq: 1, kind: "turn", nodeId: "1-1", chapterNo: 1 });
-    // 续玩/开局是客户端生成的指令、不是玩家的话：prompt 回填空串（重演入口据此给降级提示，docs/adr/0023）
-    expect(snap.prompt).toBe("");
+    // 快照 prompt = 可重演的**玩家输入**（docs/adr/0023）；续玩/开局这类客户端指令不写快照，也就无从记它的空 prompt
+    expect(snap.prompt).toBe("看看四周。");
     expect(snap.files.tree).toContain("节点 1-1"); // 与世界磁盘一致
     expect(snap.files.state).toBe(readWorldFile(w1Dir(stack), "state.md"));
 
-    // 自由输入：世界段缺失 → 保持 currentWorldId=w1；三文件没变、但输入是新的 → 仍落一条
+    // 再一个玩家输入：三文件没变、但输入是新的 → 仍落一条
     //（v1.13 去重是 files + prompt 全等：files 相同 ≠ 同一幕——这条不变量是重演的地基）
     from = stack.events.length;
-    expect((await stack.prompt("看看四周。")).status).toBe(200);
-    await stack.waitFor((ev: any[]) => ev.slice(from).some((e) => e.type === "turn_end"), {
+    expect((await stack.prompt("推开吱呀的门。")).status).toBe(200);
+    await stack.waitFor((ev: any[]) => ev.slice(from).some((e: any) => e.type === "turn_end"), {
       label: "turn_end(history-2)",
     });
     expect(readdirSync(histDir)).toEqual(["0001.json", "0002.json"]);
-    expect(JSON.parse(readFileSync(path.join(histDir, "0002.json"), "utf8")).prompt).toBe("看看四周。");
+    expect(JSON.parse(readFileSync(path.join(histDir, "0002.json"), "utf8")).prompt).toBe("推开吱呀的门。");
 
     // /api/history：升序元信息；带 seq 附 files 与 prompt，列表形态两样都不带
     const meta = await stack.getJSON("/api/history?worldId=w1");
@@ -181,7 +197,7 @@ describe("集成：逐轮快照 + 世界线精确回退/导出导入（CONTRACTS
     expect(meta.body.snapshots[0].prompt).toBeUndefined();
     const one = await stack.getJSON("/api/history?worldId=w1&seq=2");
     expect(one.body.snapshots[0].files.state).toBe(readWorldFile(w1Dir(stack), "state.md"));
-    expect(one.body.snapshots[0].prompt).toBe("看看四周。");
+    expect(one.body.snapshots[0].prompt).toBe("推开吱呀的门。");
 
     // 存档点命名（v1.12）：名字写进世界索引（snapshotLabels），**不碰快照文件**；/api/history 两条路都带出来
     const before = readFileSync(path.join(histDir, "0001.json"), "utf8");
@@ -272,8 +288,8 @@ describe("集成：逐轮快照 + 世界线精确回退/导出导入（CONTRACTS
     expect(bundle.world.forkedFrom).toBe(null);
     expect(bundle.world.forkMd).toBe(null);
     expect(bundle.world.snapshots.map((s: any) => s.seq)).toEqual([1, 2, 3]); // 含 ⑥ 的 backup
-    // 输入随包走（存档自洽：换台机器也能重演）；续玩条目与 backup 为空串
-    expect(bundle.world.snapshots.map((s: any) => s.prompt)).toEqual(["", "看看四周。", ""]);
+    // 输入随包走（存档自洽：换台机器也能重演）；backup 条目没有输入（空串）
+    expect(bundle.world.snapshots.map((s: any) => s.prompt)).toEqual(["看看四周。", "推开吱呀的门。", ""]);
 
     const imp = await stack.postJSON("/api/worlds", { action: "import", bundle });
     expect(imp.status).toBe(200);
@@ -282,7 +298,7 @@ describe("集成：逐轮快照 + 世界线精确回退/导出导入（CONTRACTS
     expect(readWorldFile(idir, "state.md")).toBe(bundle.world.files.state);
     expect(readWorldFile(idir, "story-tree.md")).toBe(bundle.world.files.tree);
     expect(readdirSync(path.join(idir, "history")).sort()).toEqual(["0001.json", "0002.json", "0003.json"]);
-    expect(JSON.parse(readFileSync(path.join(idir, "history", "0002.json"), "utf8")).prompt).toBe("看看四周。"); // prompt 活过导入
+    expect(JSON.parse(readFileSync(path.join(idir, "history", "0002.json"), "utf8")).prompt).toBe("推开吱呀的门。"); // prompt 活过导入
     expect(existsSync(path.join(idir, "fork.md"))).toBe(false); // 根世界没有分叉说明
     // 索引：note 追加「（导入）」
     const worlds = await stack.getJSON("/api/worlds");

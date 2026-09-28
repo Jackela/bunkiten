@@ -17,7 +17,9 @@ function cardAnswersOf(preset: Preset, answers: Record<string, string[]>): CardA
 }
 
 export function createCraftingSlice(
-  ctx: SliceContext<"set" | "get" | "armWatchdog" | "resetRunState" | "runNextPending" | "sendStart">,
+  ctx: SliceContext<
+    "set" | "get" | "armWatchdog" | "resetRunState" | "runNextPending" | "sendStart" | "consumePendingChapter"
+  >,
 ): Pick<GameStore, "toggleCardAnswer" | "startGame" | "skipPreload"> {
   const { set, get } = ctx;
 
@@ -52,9 +54,15 @@ export function createCraftingSlice(
         // 开局 = 新世界的第一个回合：快照数确定为 0（beginNewWorld 置的 0 会被这里的 resetRunState 清掉）。
         // 重演入口因此在首回合不出现；首个回合收尾后由 turn_end 的按需补拉把真实数（0/1）写回来。
         turnSnapshots: 0,
+        // v1.14：批次起点 = 进入 crafting 那一刻（不再是建队列那一刻）——待命与规划回合也进估算窗口，
+        // 玩家进屏就有「平均每张 / 约还需」（口径见 lib/preload 的 preloadEtaLabel）
+        preloadBatchStartedAt: preload ? Date.now() : null,
       });
       if (preload) ctx.armWatchdog();
       get().send(prompt);
+      // 直进 game 屏（跳过美术预载）也是「回到 game」的回屏点之一：有待规划章就消费掉
+      //（resetRunState 已清待办，这里是幂等的护栏——路径与前几处一致，免得将来漏掉）
+      if (!preload) ctx.consumePendingChapter();
     },
 
     /** 制作中屏：跳过剩余项立即开演；引擎正忙时等本回合结束自动接上 */

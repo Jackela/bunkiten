@@ -2,7 +2,7 @@
 // 唯一一条把「打包布局 + asar + 主进程 + **真 grok CLI** + **真图片服务（bunkiten-media MCP）**」
 // 串起来端到端验一遍的 spec——它**真花一次引擎对话、真出并落盘一张 jpg**（用你自己的 grok 登录态与
 // 自备图片服务 key）。dev / 假栈 / 集成层都验不到这条路：那三层要么走 vite、要么用假引擎垫片，
-// 要么不碰打包态 resources/game 下的资产落盘契约。
+// 要么不碰打包态数据根下的资产落盘契约。
 //
 // 前置（缺一即干净跳过，见下方 test.skip）：
 //   ① 打包产物（macOS：`npm run dist:mac:dir` 的 .app；Windows：`npm run dist:win:dir` 的 win-unpacked）；
@@ -24,15 +24,15 @@
 //     所以额外把 `GROK_HOME` 指向**真实** grok 家目录（`~/.grok`；可用 env GROK_HOME 覆盖），真 CLI 才能拿到
 //     本机登录态（`GROK_HOME` = grok 的配置目录，见 `grok --help`/README 的 env 表）。项目级 skill
 //     仍从 cwd（= 打包态 resources/game）的 `.grok/skills` 发现，不受 GROK_HOME 影响。
-//   · **一次性确定触发**：引擎的「生成前缓存检查（硬规则）」会在资产已存在时跳过出图，而打包产物的
-//     `presets/<id>/assets/` 本就带立绘——所以不走「制作美术」路径（那条只会命中缓存、零出图）。
-//     改走【素材重绘】= SKILL 里**唯一允许绕过缓存**的路径：画廊里对一张已有立绘点「重新生成」，
-//     引擎必重出并覆盖同名文件。断言对象因此钉死在「该剧本 assets 目录里某个 jpg 的 mtime 变了」。
+//   · **一次性确定触发**：引擎的「生成前缓存检查（硬规则）」会在资产已存在时跳过出图，而数据根里的
+//     `presets/<id>/assets/`（首启由 seed-sync 从 bundle 补种）本就带立绘——所以不走「制作美术」路径
+//     （那条只会命中缓存、零出图）。改走【素材重绘】= SKILL 里**唯一允许绕过缓存**的路径：画廊里对一张
+//     已有立绘点「重新生成」，引擎必重出并覆盖同名文件。断言对象钉在「该剧本 assets 目录里某个 jpg 的 mtime 变了」。
 //
 // 已知副作用（都写在最终报告里，别在这里偷偷改产品行为）：
-//   · 打包态 GAME_ROOT 是 .app 内的 resources/game（main.js 写死），重绘会**覆盖**里面的一张 jpg——
-//     本 spec 在收尾把原字节恢复回去（内容与运行前逐字一致，只多一次 mtime 变化）。
-//   · 真 grok 会在真实 `~/.grok/sessions/` 下为这个 gameRoot 落一份会话目录（不在本 spec 清理范围内）。
+//   · 打包态可写数据根 = `BUNKITEN_DATA_ROOT` 指的临时目录（本 spec 注入），重绘**覆盖**的是数据根里那张 jpg
+//     （bundle 的 resources/game 只是只读种子源、不再被写）；数据根随临时目录一起删，收尾恢复保留为兜底。
+//   · 真 grok 会在真实 `~/.grok/sessions/` 下为这个数据根落一份会话目录（不在本 spec 清理范围内）。
 import {
   chmodSync,
   existsSync,
@@ -48,7 +48,14 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
-import { findPackagedApp, killTree, packagedAppRequired, packagedSkipHint, rmTemp } from "../helpers/packaged-app.mjs";
+import {
+  dataRootEnv,
+  findPackagedApp,
+  killTree,
+  packagedAppRequired,
+  packagedSkipHint,
+  rmTemp,
+} from "../helpers/packaged-app.mjs";
 import { maskKey, normalizeCredentials, writeCredentials } from "../../server/credentials.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -56,8 +63,8 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 /** release/ 里的打包产物定位（跨平台，与 packaged.spec 同款：见 tests/helpers/packaged-app.mjs） */
 const APP = findPackagedApp(ROOT);
 const APP_BIN = APP?.exe ?? null;
-/** 打包态 GAME_ROOT（main.js 写死）：macOS 在 .app/Contents/Resources/game，Windows 在 win-unpacked/resources/game */
-const APP_GAME_ROOT = APP ? path.join(APP.resources, "game") : null;
+// v1.14：打包态可写数据根由本 spec 注入（dataRootEnv）到临时目录——产物内 resources/game 只是只读内容根，
+// 重绘落盘不再覆盖 .app 里的资产（那正是本 spec 过去要「收尾恢复原字节」的原因，现在归临时目录兜底）。
 
 // ---- 真凭据：env 优先，其次真实 ~/.bunkiten/credentials.json（形状与 server/credentials.mjs 同口径） ----
 const REAL_HOME = os.homedir();
@@ -202,6 +209,7 @@ test("打包态真出图：真 grok CLI + 真图片服务，画廊重绘落一�
   const home = path.join(tmp, "home");
   const shimDir = path.join(home, ".grok", "bin"); // main.js 的第一个 PATH 前缀；临时 HOME 下归我们管
   mkdirSync(shimDir, { recursive: true });
+  const dataRoot = path.join(tmp, "data"); // 本次运行的可写数据根（presets 由首启 seed-sync 补种、重绘落盘也在这）
 
   // 凭据写进临时 HOME（0600，复用产品自己的 writeCredentials）：出图 MCP 读 os.homedir() = 这个 HOME。
   // 全程不打印 key 明文——上面只打掩码。
@@ -213,7 +221,7 @@ test("打包态真出图：真 grok CLI + 真图片服务，画廊重绘落一�
   writeFileSync(shim, `#!/bin/sh\nexec '${REAL_GROK}' "$@"\n`);
   chmodSync(shim, 0o755);
 
-  /** 目标资产目录（打包态 GAME_ROOT 内）——运行后收尾只动这里 */
+  /** 目标资产目录（数据根内 presets/<id>/assets）——运行后收尾只动这里 */
   let assetsDir = "";
   /** 出图前快照 + 目标文件原字节（收尾恢复用） */
   let before: Record<string, { size: number; mtimeMs: number }> | null = null;
@@ -231,6 +239,7 @@ test("打包态真出图：真 grok CLI + 真图片服务，画廊重绘落一�
         ...process.env,
         HOME: home, // 临时 HOME：凭据 / 会话目录隔离，都在里面
         PATH: `${shimDir}${path.delimiter}${process.env.PATH ?? ""}`, // 垫片目录前置（main.js 也会再前置一次）
+        ...dataRootEnv(dataRoot), // 可写数据根 → 临时目录（重绘落盘 / /img 直服都针对它，不再写进 .app）
         BUNKITEN_DISABLE_UPDATE: "1", // 打包态会查更新：出图测试不该联网查更新
         GROK_HOME: REAL_GROK_HOME, // 真 CLI 的配置目录 → 真实登录态（HOME 被改写后，默认会指向空临时目录）
       },
@@ -240,7 +249,7 @@ test("打包态真出图：真 grok CLI + 真图片服务，画廊重绘落一�
 
     const win: Page = await app.firstWindow();
 
-    // 标题屏渲染（剧本来自打包态 resources/game/presets）
+    // 标题屏渲染（剧本来自数据根的 presets——首启由 seed-sync 从 bundle 补种）
     await expect(win.getByTestId("title-wordmark")).toBeVisible({ timeout: 60_000 });
     await expect(win.getByTestId("title-card-center")).toBeVisible({ timeout: 60_000 });
 
@@ -272,7 +281,7 @@ test("打包态真出图：真 grok CLI + 真图片服务，画廊重绘落一�
 
     // 目标：该剧本 assets 里的一张**基础立绘**（文件名 `立绘-<名>.jpg`，无差分后缀）。
     // 重绘它 → 引擎必按 SKILL 覆盖同名文件，名字完全可确定。
-    assetsDir = path.join(APP_GAME_ROOT as string, "presets", presetId, "assets");
+    assetsDir = path.join(dataRoot, "presets", presetId, "assets");
     const basePortraits = existsSync(assetsDir)
       ? readdirSync(assetsDir).filter((f) => /^立绘-[^-]+\.jpg$/.test(f))
       : [];
@@ -350,7 +359,8 @@ test("打包态真出图：真 grok CLI + 真图片服务，画廊重绘落一�
     expect(bytes.length, `/img 直服 ${targetRel} 应回非空字节`).toBeGreaterThan(0);
   } finally {
     if (app) await closeApp(app);
-    // 收尾：① 恢复被重绘覆盖的那张 jpg（内容与运行前逐字一致）；② 只删本次新增的 jpg（绝不动包里自带的）
+    // 收尾：数据根在临时目录里，rmTemp 会连它（含被覆盖的 jpg 与新增的 jpg）一起删——下面两步只是兜底
+    //（若数据根日后改回非临时目录，语义仍然对）；bundle 里的资产自 v1.14 起只读，不再被写、也不在这里恢复。
     if (assetsDir && existsSync(assetsDir)) {
       if (targetAbs && targetBackup) {
         try {

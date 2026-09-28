@@ -221,6 +221,10 @@ export default function CreationScreen() {
           >
             {result ? "装配已完成" : assembling ? "装配中…" : "开始装配"}
           </button>
+          {/* 成本标注（v1.14）：装配是真出图（封面 + 角色立绘）并落盘一份新剧本，按钮旁说清量级 */}
+          <p data-testid="creation-assemble-cost" className="mt-2 text-meta leading-relaxed text-ink-hint">
+            装配会真的生成封面与角色立绘、并写入一份新剧本——可能消耗出图额度。
+          </p>
         </div>
       </div>
 

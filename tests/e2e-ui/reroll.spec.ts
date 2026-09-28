@@ -1,15 +1,20 @@
 // 假引擎确定性 UI e2e ⑩：重演这一幕（reroll）全链。
-// seed w1 两条 kind:"turn" 快照（seq 1/2，带 prompt 字段；files 与磁盘三文件不同——继续世界的回合因此会落一条
-// 实时快照 seq 3，见 docs/adr/0023 的条目形状）。流程：世界线屏继续 w1 → game 就绪（开局回合选项含「推门进去」）
-// → 点选项消费回合甲（v1.13 起玩家输入永远落条目，files 没变也落 seq 4）→ 点「重演」→ store 解析目标幕
-// （= 最近一条带输入的 turn 条目）与回退点（= 它之前最近的 turn 条目）POST restore → 补发「继续世界：w1。」
-// （fake-engine 第二条同 match 应答回短正文）→ 重同步回合收尾后自动重发「推门进去」（脚本第三条同 match
-// 应笔回合乙，match 条目按序不重复消费）。断言：分割线文案是「—— 第 3 幕已重演 ——」（回退点 seq=3，
-// 即重演回合开演前的那一份）、正文区出现回合乙、抽屉里回合甲在分割线之前已置灰（回合乙正常）。
-// v1.13 追加收尾段：整页刷新（内存态全灭）+ 继续世界线后**仍可重演**——目标幕是刷新前最后演过的那一幕。
+// seed w1 两条 kind:"turn" 快照（seq 1/2，带 prompt 字段）；v1.14 起「继续世界：」这类重同步回合不进快照
+// （turn_end main:false、seq:null），所以开局续玩那一跳**不再**写快照——本文件里的 seq 编号因此与 v1.13 差一位。
+// 流程：世界线屏继续 w1 → game 就绪（开局回合选项含「推门进去」）→ 点选项消费回合甲（玩家输入永远落条目 → seq 3）
+// →「进度 ▾ → 重演这一幕」开**可编辑对话框**（预填该幕记下的「推门进去」）→ 改写这句再确认 → store 解析目标幕
+// （= 最近一条带输入的 turn 条目）与回退点（= 它之前最近的 turn 条目 seq 2）POST restore → 补发「继续世界：w1。」
+// → 重同步回合收尾后自动重发**改写后的那句**（含「推门进去」子串，假引擎按子串命中 → 应笔回合乙）。
+// 断言：对话框可见且预填原句、取消即时收框；改写后的句子原样到引擎（假引擎探针 kind:"prompt"）；分割线文案是
+// 「—— 第 2 幕已重演 ——」（回退点 seq=2）、正文区出现回合乙、抽屉里回合甲在分割线之前已置灰（回合乙正常）。
+// v1.13 追加收尾段：整页刷新（内存态全灭）+ 继续世界线后**仍可重演**——目标幕是刷新前最后演过的那一幕；
+// v1.14 起这条路也先开对话框（预填盘上那句），确认（不改写）后照旧重演。
 import { expect, test, type Page } from "@playwright/test";
 import { startUiStack, stopUiStack, type StartedStack } from "./stack";
 import { openRailGroup } from "./flow";
+
+/** 玩家在重演对话框里改写的句子：仍含「推门进去」子串，假引擎按子串命中 → 应笔回合乙 */
+const REROLL_LINE = "推门进去，先侧耳听一听。";
 
 let stack: StartedStack;
 let page: Page;
@@ -69,7 +74,7 @@ test.afterAll(async () => {
   await stopUiStack(page, stack);
 });
 
-test("重演这一幕：退回目标幕开演前 → 重同步 → 自动重发同一输入；刷新后仍可重演", async () => {
+test("重演这一幕：可编辑对话框预填原句、改写后重演；刷新后仍可重演", async () => {
   await page.goto(stack.pageUrl);
   const card = page.getByTestId("title-card-center");
   await expect(card).toBeVisible();
@@ -82,33 +87,55 @@ test("重演这一幕：退回目标幕开演前 → 重同步 → 自动重发�
   await page.getByRole("button", { name: /推门进去/ }).click();
   await expect(page.getByTestId("dialogue-text")).toContainText("回合甲");
 
-  // 就绪且快照数够 → 重演入口出现；点击后按盘上条目解析（目标幕 = 回合甲、回退点 = 它前面那条续玩条目）
+  // 就绪且快照数够 → 重演入口出现；点击**只开对话框**（v1.14 可编辑重演），不直接重演
   await openRailGroup(page, "进度");
   const reroll = page.getByTestId("reroll");
   await expect(reroll).toBeVisible();
   await reroll.click();
+  const dialog = page.getByTestId("reroll-dialog");
+  await expect(dialog).toBeVisible();
 
-  // 重同步短回合收尾后自动重发「推门进去」→ 回合乙上屏（整条链自动推进，等终态即可）
+  // 取消：即时收框、什么都不演（入口仍在）
+  await page.getByTestId("reroll-cancel").click();
+  await expect(dialog).toHaveCount(0);
+  await openRailGroup(page, "进度");
+  await page.getByTestId("reroll").click();
+  await expect(dialog).toBeVisible();
+
+  // 重开：预填该幕（回合甲）记下的玩家输入
+  const input = page.getByTestId("reroll-input");
+  await expect(input).toHaveValue("推门进去");
+
+  // 改写这句再确认：发给引擎的是**改写后的句子**（新句仍含「推门进去」，假引擎按子串命中）
+  await input.fill(REROLL_LINE);
+  await page.getByTestId("reroll-confirm").click();
+  await expect(dialog).toHaveCount(0); // 确认后即时收框（刻意不做退场动画）
+
+  // 重同步短回合收尾后自动重发改写句 → 回合乙上屏（整条链自动推进，等终态即可）
   await expect(page.getByTestId("status")).toHaveText("就绪");
   await expect(page.getByTestId("dialogue-text")).toContainText("回合乙");
+  // 探针：改写后的句子原样到了引擎（不是「再说一遍同一句错话」）
+  await expect
+    .poll(() => stack.stack.engineProbeEntries().some((e) => e.kind === "prompt" && e.text === REROLL_LINE))
+    .toBe(true);
   await openRailGroup(page, "进度");
   expect(await page.getByTestId("reroll").isVisible()).toBe(true); // 连掷入口还在
 
-  // 抽屉：分割线是 reroll 措辞；回退点是重演那一幕开演前的那一份（seq 3 = 进屏时的续玩条目），
-  // 文案不带快照 # 序号——reroll 走「第 N 幕已重演」，restore 走「已回溯到第 N 幕」
+  // 抽屉：分割线是 reroll 措辞；回退点是重演那一幕开演前的那一份。
+  // v1.14：续玩/重同步回合不进快照，故下限是 seed 的 seq 2（v1.13 里那条「续玩条目 seq 3」已不存在）
   await openRailGroup(page, "回顾");
   await page.getByTestId("history").click();
   const rollback = page.getByTestId("history-rollback");
   await expect(rollback).toBeVisible();
-  await expect(rollback).toHaveText("—— 第 3 幕已重演 ——");
+  await expect(rollback).toHaveText("—— 第 2 幕已重演 ——");
   await expect(rollback).not.toContainText("#");
   const acts = page.getByTestId("history-act");
   await expect(acts.filter({ hasText: "回合甲" })).toHaveClass(/opacity-50/);
   await expect(acts.filter({ hasText: "回合乙" })).not.toHaveClass(/opacity-50/);
 
   // —— 刷新后仍可重演（v1.13：输入在盘上，不再依赖内存账本）——
-  // 整页重载 = 内存全灭；「继续世界线」本身会跑一个续玩回合（prompt 空、三文件没变 → 不落条目），
-  // 重演入口照旧在，点它重演的是刷新前最后演过的那一幕（回合乙）——脚本最后一条「推门进去」→ 回合丙
+  // 整页重载 = 内存全灭；「继续世界线」本身会跑一个续玩回合（重同步回合、不落条目），
+  // 重演入口照旧在，点它开框（预填刷新前最后演过那一幕的输入）→ 确认 → 重演的是刷新前最后那一幕
   await page.reload();
   const card2 = page.getByTestId("title-card-center");
   await expect(card2).toBeVisible();
@@ -120,5 +147,8 @@ test("重演这一幕：退回目标幕开演前 → 重同步 → 自动重发�
   const reroll2 = page.getByTestId("reroll");
   await expect(reroll2).toBeVisible(); // 刷新前没做的事：以前刷新后这个入口直接消失
   await reroll2.click();
+  await expect(page.getByTestId("reroll-dialog")).toBeVisible();
+  await expect(page.getByTestId("reroll-input")).toHaveValue(REROLL_LINE); // 预填 = 刷新前最后演过那一幕的输入
+  await page.getByTestId("reroll-confirm").click();
   await expect(page.getByTestId("dialogue-text")).toContainText("回合丙");
 });

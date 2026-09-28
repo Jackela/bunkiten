@@ -6,8 +6,17 @@
 import fs from "fs";
 import path from "path";
 import { AUDIO_EXTS } from "../shared/protocol.mjs";
-import { GAME_ROOT } from "./config.mjs";
-import { PRESET_ID_RE, sanitizeAssetName, assetRelPath, ASSET_DELETE_FILE_RE, uniqueSuffixedName } from "./assets.mjs";
+import { DATA_ROOT, GAME_ROOT } from "./config.mjs";
+import {
+  PRESET_ID_RE,
+  sanitizeAssetName,
+  assetRelPath,
+  ASSET_DELETE_FILE_RE,
+  moveToTrash,
+  uniqueSuffixedName,
+} from "./assets.mjs";
+// 随包种子判定（data-root.mjs）：deletePreset 用它拒掉「删了下次启动 seed-sync 还会补回来」的官方剧本
+import { isSeededPreset } from "./data-root.mjs";
 // 主题取值真源在 shared/theme.mjs（v1.13 从这里改过）：此前 import 的是**入口** acp-server.mjs，
 // 于是 acp-server ↔ presets 成环、全靠「跨环引用都在函数体内」这条约定活着（谁在模块顶层用一次就静默 undefined）。
 import { FONT_PRESETS, DIALOG_TEXTURES, FALLBACK_THEME } from "../shared/theme.mjs";
@@ -175,10 +184,10 @@ export function parseSectionLines(lines, headingPrefix) {
  * 扫描 `presets/<目录>/preset.md`（导出纯读函数，root 可注入以便单测）。
  * I2：id 直接参与路径拼接（presets/<id>/assets/…、presets/<id>/cover.jpg），
  * 所以 id 非法（含 `/`、`..`、中文等）的 preset 一律**丢弃**——进 errors 并告警，不进轮播。
- * @param {string} [root] 游戏根目录（缺省 GAME_ROOT）
+ * @param {string} [root] 游戏根目录（缺省 DATA_ROOT——剧本随数据根走，dev 下 = GAME_ROOT）
  * @returns {{presets: PresetInfo[], errors: Array<{dir: string, error: string}>}}
  */
-export function scanPresets(root = GAME_ROOT) {
+export function scanPresets(root = DATA_ROOT) {
   /** @type {PresetInfo[]} */
   const presets = [];
   const errors = [];
@@ -402,8 +411,15 @@ export function buildPresetBundle(root, id) {
  */
 export function importPresetBundle(root, bundle) {
   if (!bundle || typeof bundle !== "object") return { error: "bundle 校验失败" };
-  if (bundle.format !== PRESET_BUNDLE_FORMAT || bundle.version !== PRESET_BUNDLE_VERSION) {
+  const version = bundle.version;
+  if (bundle.format !== PRESET_BUNDLE_FORMAT) return { error: "bundle 校验失败" };
+  // 版本闸是**区间**不是等值（v1.14）：接受 1..当前版本（老包照收、按当前形状补齐）；
+  // 超版（来自更新版本的应用）单独给一句人话——不是包坏了，是这份导出比本机新，该去升级应用。
+  if (typeof version !== "number" || !Number.isInteger(version) || version < 1) {
     return { error: "bundle 校验失败" };
+  }
+  if (version > PRESET_BUNDLE_VERSION) {
+    return { error: "此导出包来自更新版本的应用，请先升级后再导入" };
   }
   const id = String(bundle.id ?? "");
   if (!PRESET_ID_RE.test(id)) return { error: "bundle 校验失败：id 非法" };
@@ -472,4 +488,28 @@ export function importPresetBundle(root, bundle) {
   }
   console.log(`[acp] preset imported: ${id} → ${finalId}`);
   return { ok: true, id: finalId };
+}
+
+/**
+ * 删一个剧本（`POST /api/presets {action:"delete"}` 的落地，v1.14）：整目录挪进回收站，不直删（ADR-0014）。
+ * 三条判定：
+ *   ① id 过白名单、目录存在——否则「参数不合法 / 剧本不存在」；
+ *   ② **随包种子不可删**：`isSeededPreset(数据根, id)` 且 bundle（GAME_ROOT）里仍有它——删了下次启动 seed-sync
+ *      还会原样补回来，与其骗玩家「删掉了」不如直接拒（人话说明）；
+ *   ③ 其余走 `moveToTrash(root, ["presets", id], id)`（label=id，回收站条目带上归属），返回 {ok, trashed}。
+ * 注：②用的是 config 的数据根（不是函数参数 root——那是本轮剧本所在根，二者在测试里可以不同）。
+ * @param {string} root 游戏根目录（数据根）
+ * @param {string} id 剧本 id
+ * @returns {{ok: true, trashed: boolean, fallback?: string, error?: undefined}|{error: string, ok?: undefined, trashed?: undefined}}
+ */
+export function deletePreset(root, id) {
+  const pid = String(id || "").trim();
+  if (!PRESET_ID_RE.test(pid)) return { error: "参数不合法" };
+  if (!fs.existsSync(path.join(root, "presets", pid))) return { error: "剧本不存在" };
+  if (isSeededPreset(DATA_ROOT, pid) && fs.existsSync(path.join(GAME_ROOT, "presets", pid, "preset.md"))) {
+    return { error: "内置剧本不可删除" };
+  }
+  const t = moveToTrash(root, ["presets", pid], pid);
+  console.log(`[acp] preset deleted: ${pid}${t.trashed ? " → state/trash" : ""}`);
+  return { ok: true, ...t };
 }

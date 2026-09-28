@@ -8,8 +8,9 @@
 // 前置（按平台）：macOS `npm run dist:mac:dir`（release/mac-<arch>/Bunkiten.app）；Windows
 // `npm run dist:win:dir`（release/win-unpacked/Bunkiten.exe）。缺失时整组 skip——它是 opt-in 冒烟，
 // 不该让没打包的人「跑测试先失败」（CI 的 packaged-win job 会先打包再跑，见 .github/workflows/ci.yml）。
-// 已知副作用：打包态的 GAME_ROOT 是产物内的 resources/game（main.js 里写死，env 改不了），
-// 应用启动会往里写 state/worlds/（本 spec 只停在标题屏，不做世界线操作，写入量最小）。
+// 已知副作用（v1.14 起大幅收敛）：打包态可写数据根 = `BUNKITEN_DATA_ROOT` 指的临时目录（本 spec 用
+// dataRootEnv 注入），产物内的 resources/game 只是只读内容根——启动不再往 .app 里写世界线，
+// 唯一仍写 bundle 的用例是「legacy 迁移」（故意先往 bundle 的 state/ 预置一条世界线，收尾删掉）。
 import {
   existsSync,
   mkdirSync,
@@ -27,6 +28,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { _electron as electron, expect, test, type ElectronApplication } from "@playwright/test";
 import {
+  dataRootEnv,
   findPackagedApp,
   homeEnv,
   killTree,
@@ -168,6 +170,7 @@ test("打包态：窗口能开、标题屏渲染、/app 与 resources/game 资�
   const home = path.join(tmp, "home");
   const binDir = path.join(tmp, "bin");
   const probeFile = path.join(tmp, "probe.jsonl");
+  const dataRoot = path.join(tmp, "data"); // 本次运行的可写数据根（不再写进产物 resources/game）
   mkdirSync(path.join(home, ".grok"), { recursive: true });
   mkdirSync(binDir, { recursive: true });
   writeFileSync(path.join(home, ".grok", "auth.json"), "{}\n");
@@ -205,6 +208,7 @@ test("打包态：窗口能开、标题屏渲染、/app 与 resources/game 资�
     env: {
       ...process.env,
       ...homeEnv(home),
+      ...dataRootEnv(dataRoot),
       PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
       FAKE_ENGINE_TURNS: "[]",
       FAKE_ENGINE_PROBE: probeFile,
@@ -252,7 +256,7 @@ test("打包态：窗口能开、标题屏渲染、/app 与 resources/game 资�
       }
     });
 
-    // 标题屏渲染（boot 自检通过 → title；剧本来自 resources/game/presets）。
+    // 标题屏渲染（boot 自检通过 → title；剧本来自**数据根**的 presets——首启由 seed-sync 从 bundle 补种）。
     // 失败时把「页面现在停在哪一屏」与主进程日志一并打出来——窗口开了、URL 也对，却停在启动屏这类问题
     // 只有这些线索能定位（packaged-win 首次真跑就是这么找出来的：临时 HOME 没被 os.homedir() 读到）。
     try {
@@ -267,12 +271,16 @@ test("打包态：窗口能开、标题屏渲染、/app 与 resources/game 资�
     await expect(win.getByTestId("title-card-center")).toBeVisible();
     expect(bad, "打包前端有关键资源 404（页面会是空白）：先查 /app 的尾斜杠与 resources/app-dist 布局").toEqual([]);
 
-    // resources/game 布局可读：server 能列出 extraResources 里的 presets
+    // 数据根布局可读：seed-sync 把 bundle 的随包 presets 补种进数据根，server 从那里列出来
     const res = await fetch(`http://127.0.0.1:${port}/api/presets`);
     expect(res.ok).toBe(true);
     const body = (await res.json()) as { presets: { id: string }[] };
     expect(Array.isArray(body.presets)).toBe(true);
     expect(body.presets.length).toBeGreaterThan(0);
+    expect(
+      existsSync(path.join(dataRoot, "presets")),
+      `seed-sync 应把 bundle 的 presets 补种进数据根：${path.join(dataRoot, "presets")}`,
+    ).toBe(true);
 
     // asarUnpack 的产物真的在（v1.10 出图 MCP 的前提）：MCP server 是引擎拉起的**子进程**，
     // 子进程读不了 asar，所以 electron-builder.yml 把 server/** 与 shared/** 两整棵树解到
@@ -390,14 +398,14 @@ function snapshotPackagedAssets(presetsRoot: string): Record<string, { size: num
 
 // 打包态 · mock 出图（opt-in，**不需要任何真凭据/真网络**；见 playwright.electron.config.ts 文件头）：
 // 打包 .app + 假引擎（FAKE_ENGINE_SPAWN_MCP=1 + FAKE_ENGINE_CALL_MCP=1）+ 本 spec 进程内起的假图片服务，
-// 把「打包布局 → 引擎子进程 → 拉起 MCP → tools/call → 打自备图片服务 → 落盘 resources/game/presets」
+// 把「打包布局 → 引擎子进程 → 拉起 MCP → tools/call → 打自备图片服务 → 落盘数据根的 presets」
 // 这条 v1.10 出图链路**在打包态**串起来验一遍——real-image.spec 是同一条链路的真跑版（要真凭据、真出网），
 // 本条是它的离线替身：只花本地端口与一个假服务。
 //
-// 与 real-image.spec 的差异（更轻量）：不点 UI（直接 POST /prompt 发重绘指令）、不碰包里自带的资产——
+// 与 real-image.spec 的差异（更轻量）：不点 UI（直接 POST /prompt 发重绘指令）、不碰数据根里自带的种子资产——
 // 用一个包里没有的唯一立绘名，让假引擎兜底落「排序第一个剧本目录」，于是断言面就是「跑前后快照里多出的那张 jpg」。
-// 已知副作用：同第一条冒烟，应用启动会往 resources/game 写 state/worlds/；收尾只删本次新增的 jpg。
-test("打包态 mock 出图：假引擎真发 tools/call + 本地假图片服务，resources/game 落一张新 jpg 且 /img 直服 200", async () => {
+// v1.14 起落盘与 /img 直服都针对数据根（BUNKITEN_DATA_ROOT）：产物内 resources/game 只是只读内容根。
+test("打包态 mock 出图：假引擎真发 tools/call + 本地假图片服务，数据根落一张新 jpg 且 /img 直服 200", async () => {
   const pkg = requireApp();
   test.setTimeout(180_000);
 
@@ -431,11 +439,13 @@ test("打包态 mock 出图：假引擎真发 tools/call + 本地假图片服务
   mkdirSync(path.join(home, ".grok", "bin"), { recursive: true });
   writeCliShim(path.join(home, ".grok", "bin"), "grok", process.execPath, FAKE_ENGINE);
 
-  // 打包态 GAME_ROOT = .app 内 resources/game（main.js 写死；extraResources 把仓库 presets/ 铺到这）
-  const gameRoot = path.join(pkg.resources, "game");
-  const presetsRoot = path.join(gameRoot, "presets");
-  const before = snapshotPackagedAssets(presetsRoot);
-  // 包里没有的唯一立绘名：重绘后必然是一个「新文件」（与包里自带的资产区分开）
+  // 可写数据根（v1.14）：出图落盘与 /img 直服都针对它；产物内 resources/game 只是只读内容根
+  const dataRoot = path.join(tmp, "data");
+  const presetsRoot = path.join(dataRoot, "presets");
+  // 跑前后快照：**等应用 boot 完再抓**——数据根是空的，presets 由首启 seed-sync 从 bundle 补种进来，
+  // boot 前抓会拿到空快照，于是「多出的新文件」会把所有种子资产一起算进去（断言面从 1 变 N）。
+  let before: Record<string, { size: number; mtimeMs: number }> = {};
+  // 包里没有的唯一立绘名：重绘后必然是一个「新文件」（与补种进来的种子资产区分开）
   const name = `MockProbe${Date.now().toString(36)}`;
   let created: string[] = [];
 
@@ -447,6 +457,7 @@ test("打包态 mock 出图：假引擎真发 tools/call + 本地假图片服务
       env: {
         ...process.env,
         ...homeEnv(home),
+        ...dataRootEnv(dataRoot),
         PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
         FAKE_ENGINE_TURNS: "[]",
         FAKE_ENGINE_PROBE: probeFile,
@@ -467,6 +478,8 @@ test("打包态 mock 出图：假引擎真发 tools/call + 本地假图片服务
       console.log("[packaged-mock] app logs:", appLogs.join("").slice(-3000));
       throw e;
     }
+    // boot 完 = seed-sync 已把随包 presets 补种进数据根——此刻抓「跑前」快照，重绘只多出我们那一张
+    before = snapshotPackagedAssets(presetsRoot);
     const port = new URL(win.url()).port;
     const probeEntries = (): any[] =>
       existsSync(probeFile)
@@ -510,11 +523,11 @@ test("打包态 mock 出图：假引擎真发 tools/call + 本地假图片服务
       throw e;
     }
 
-    // 断言：resources/game/presets/**/assets/ 里多出一张 jpg（跑前后快照对比）
+    // 断言：数据根 presets/**/assets/ 里多出一张 jpg（跑前后快照对比）
     await expect
       .poll(() => Object.keys(snapshotPackagedAssets(presetsRoot)).filter((k) => !(k in before)).length, {
         timeout: 30_000,
-        message: "重绘后 resources/game/presets 下没有出现新 jpg",
+        message: "重绘后数据根 presets 下没有出现新 jpg",
       })
       .toBe(1);
     created = Object.keys(snapshotPackagedAssets(presetsRoot)).filter((k) => !(k in before));
@@ -522,7 +535,7 @@ test("打包态 mock 出图：假引擎真发 tools/call + 本地假图片服务
     expect(newRel, "新 jpg 的文件名应就是本次重绘的目标").toMatch(
       new RegExp(`^presets/[^/]+/assets/立绘-${name}\\.jpg$`),
     );
-    const bytes = readFileSync(path.join(gameRoot, newRel));
+    const bytes = readFileSync(path.join(dataRoot, newRel));
     expect(bytes.length, "新 jpg 应非空").toBeGreaterThan(0);
     expect(bytes.equals(mock.imageBytes), "落盘字节应等于假服务返回的图").toBe(true);
     expect(mock.calls, "假图片服务应恰好收到 1 次生成请求").toHaveLength(1);
@@ -536,15 +549,130 @@ test("打包态 mock 出图：假引擎真发 tools/call + 本地假图片服务
     console.log(`[packaged-mock] 新增 ${newRel}（${bytes.length}B），mock 收到 ${mock.calls.length} 次请求`);
   } finally {
     if (app) await closeApp(app);
-    // 收尾：只删本次新增的 jpg（绝不动包里自带的）
-    for (const rel of created) {
-      try {
-        rmSync(path.join(gameRoot, rel));
-      } catch {
-        /* 删不掉就留着，已在报告里说明 */
-      }
-    }
+    // 收尾：数据根在临时目录里，rmTemp 连它（含本次新增的 jpg）一起删——不必再逐个删，
+    // 更不会碰到产物 resources/game 里只读的种子资产（v1.14 起落盘不再进 bundle）。
     rmTemp(tmp);
     await mock.close();
+  }
+});
+
+// 打包态 · legacy 迁移（v1.14，ADR-0024）：升级路径的核心证据——老安装的世界线原先躺在产物内
+// resources/game/state/，新版本首启把它**复制**进数据根。这里先往 bundle 的 state/ 预置一条最小世界线
+// （三文件 + index.json，格式照 tests/integration/harness.mjs 的 seed 写法），再以**全新临时数据根**启动，断言：
+//   ① /api/worlds（读的是数据根）看得到它；② 数据根下出现了复制副本；③ bundle 里的原文件仍在（只复制不删源）。
+// 单实例锁下**不能**并行起两个产物实例：本用例独立 launch 一份，跑完关掉再进下一个。
+test("打包态 legacy 迁移：预置在 bundle 里的世界线，首启被复制进数据根且源文件保留", async () => {
+  const pkg = requireApp();
+  const tmp = mkdtempSync(path.join(os.tmpdir(), "bunkiten-packaged-legacy-"));
+  const home = path.join(tmp, "home");
+  const binDir = path.join(tmp, "bin");
+  const probeFile = path.join(tmp, "probe.jsonl");
+  const dataRoot = path.join(tmp, "data");
+  mkdirSync(path.join(home, ".grok", "bin"), { recursive: true });
+  mkdirSync(binDir, { recursive: true });
+  writeFileSync(path.join(home, ".grok", "auth.json"), "{}\n");
+  writeCliShim(path.join(home, ".grok", "bin"), "grok", process.execPath, FAKE_ENGINE);
+
+  // bundle（只读内容根）里预置 legacy 世界线：产物 state/ 平时只有 README.md，index.json 此前不存在
+  const bundleWorlds = path.join(pkg.resources, "game", "state", "worlds");
+  const worldId = "w-legacy";
+  const legacyDir = path.join(bundleWorlds, worldId);
+  const indexFile = path.join(bundleWorlds, "index.json");
+  mkdirSync(legacyDir, { recursive: true });
+  writeFileSync(path.join(legacyDir, "state.md"), "# 剧情状态\n- preset: rift-mark\n- 场景: 旧宅\n");
+  writeFileSync(path.join(legacyDir, "summary.md"), "# 前情摘要（滚动）\n");
+  writeFileSync(
+    path.join(legacyDir, "story-tree.md"),
+    "# 剧情树\n## 第 1 章：起点\n### 节点 1-1（门口）\n- 状态: 可达\n",
+  );
+  writeFileSync(
+    indexFile,
+    JSON.stringify(
+      {
+        schema: 1,
+        worlds: [
+          {
+            worldId,
+            preset: "rift-mark",
+            title: "遗留世界线",
+            chapterNo: 1,
+            lastPlayed: Date.now(),
+            note: "",
+            forkedFrom: null,
+          },
+        ],
+      },
+      null,
+      2,
+    ) + "\n",
+  );
+
+  let app: ElectronApplication | null = null;
+  const appLogs: string[] = [];
+  try {
+    app = await electron.launch({
+      executablePath: pkg.exe,
+      env: {
+        ...process.env,
+        ...homeEnv(home),
+        ...dataRootEnv(dataRoot),
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        FAKE_ENGINE_TURNS: "[]",
+        FAKE_ENGINE_PROBE: probeFile,
+        BUNKITEN_DISABLE_UPDATE: "1",
+      },
+    });
+    app.process().stdout?.on("data", (d) => appLogs.push(String(d)));
+    app.process().stderr?.on("data", (d) => appLogs.push(String(d)));
+
+    const win = await app.firstWindow();
+    try {
+      await expect(win.getByTestId("title-wordmark")).toBeVisible({ timeout: 60_000 });
+    } catch (e) {
+      console.log("[packaged-legacy] url:", win.url());
+      console.log("[packaged-legacy] body:", (await win.evaluate(() => document.body.innerText)).slice(0, 600));
+      console.log("[packaged-legacy] app logs:", appLogs.join("").slice(-3000));
+      throw e;
+    }
+    const port = new URL(win.url()).port;
+
+    // ① /api/worlds 看得到迁移过来的世界线（读的是数据根 state/worlds/index.json）
+    type WorldRow = { worldId: string };
+    try {
+      await expect
+        .poll(
+          async () => {
+            const r = await fetch(`http://127.0.0.1:${port}/api/worlds`);
+            if (!r.ok) return [];
+            const body = (await r.json()) as { worlds?: WorldRow[] };
+            return (body.worlds ?? []).map((w) => w.worldId);
+          },
+          { timeout: 30_000, message: "数据根里的 /api/worlds 一直看不到迁移过来的 w-legacy" },
+        )
+        .toContain(worldId);
+    } catch (e) {
+      console.log("[packaged-legacy] dataRoot/state:", existsSync(path.join(dataRoot, "state")));
+      console.log("[packaged-legacy] app logs:", appLogs.join("").slice(-2000));
+      throw e;
+    }
+
+    // ② 数据根下出现复制副本（内容逐字）：迁移把 bundle 的 state/ 整树复制过来
+    expect(readFileSync(path.join(dataRoot, "state", "worlds", worldId, "state.md"), "utf8")).toContain(
+      "- preset: rift-mark",
+    );
+    expect(existsSync(path.join(dataRoot, "state", "worlds", "index.json"))).toBe(true);
+    // ③ 源文件仍在（迁移只复制不删源）
+    expect(existsSync(path.join(legacyDir, "state.md"))).toBe(true);
+    expect(readFileSync(indexFile, "utf8")).toContain(worldId);
+  } finally {
+    if (app) await closeApp(app);
+    // 收尾：删掉本用例往 bundle 预置的整棵 state/worlds（index.json 与 w-legacy/ 都是新建的——产物
+    // 规范布局里 state 只有 README.md，没有 worlds/；用递归删可顺带清掉失败重跑留下的残留）
+    try {
+      rmSync(bundleWorlds, { recursive: true, force: true });
+    } catch {
+      /* 删不掉就留着，已在报告里说明 */
+    }
+    rmTemp(tmp);
   }
 });
