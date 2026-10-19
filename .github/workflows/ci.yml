@@ -108,7 +108,7 @@ jobs:
       - name: Packaged dir build（stage-codex-acp --arch=x64 + electron-builder --win --dir）
         env:
           ELECTRON_BUILDER_CACHE: ${{ runner.temp }}/bunkiten-builder-cold-cache
-        run: npm run dist:win:dir
+        run: npm run dist:win:dir -- --config.electronDownload.cache="${{ runner.temp }}/bunkiten-electron-cold-cache"
 
       - name: Packaged smoke（打包布局 / asar / resources/game / codex-acp initialize）
         run: npm run test:e2e:packaged
