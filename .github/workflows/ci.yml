@@ -22,6 +22,16 @@ jobs:
       - name: Install
         run: npm ci
 
+      - name: Audit all dependencies, including development tooling
+        run: npm audit --json > dependency-audit.json
+
+      - name: Upload dependency audit
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: dependency-audit
+          path: dependency-audit.json
+
       # 最快的一对先跑（秒级、零依赖）：风格与静态规则。放在 build 之前是为了让最常见的
       # 「忘了跑 npm run format」在这里就断掉，不必等完构建与测试。
       - name: Format check（prettier --check）
@@ -96,6 +106,8 @@ jobs:
       # 内联环境变量前缀（`VAR=value cmd`），mac 专属的 `CSC_IDENTITY_AUTO_DISCOVERY=false` 只留在
       # dist:mac* 里（Windows 上本就没有证书自动发现这条路）。这条 job 是它第一次被真跑时抓到的。
       - name: Packaged dir build（stage-codex-acp --arch=x64 + electron-builder --win --dir）
+        env:
+          ELECTRON_BUILDER_CACHE: ${{ runner.temp }}/bunkiten-builder-cold-cache
         run: npm run dist:win:dir
 
       - name: Packaged smoke（打包布局 / asar / resources/game / codex-acp initialize）

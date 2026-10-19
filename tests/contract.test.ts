@@ -788,6 +788,8 @@ const CASE_GROUPS = [
   { name: "replay", files: ["tests/replay.test.ts"], floor: 4 },
   // v1.14 数据根（ADR-0024）：迁移 + seed-sync 纯函数面（tmp 目录直调）
   { name: "data-root", files: ["tests/data-root.test.ts"], floor: 13 },
+  // 三条显式代理/TLS用例；it.each 的缓存用例沿用本文既有静态计数边界。
+  { name: "dependency-security", files: ["tests/dependency-security.test.ts"], floor: 3 },
 ];
 
 /** integration 的子分组下限（文档不再单独声明；留着是为了「砍的是哪个文件」能直接指出来） */
