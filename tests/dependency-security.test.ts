@@ -2,13 +2,16 @@
 // HTTP cache 用例是显式启用缓存后的兼容合同，不声称修复 max-stale 的上游争议。
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { KeyObject, X509Certificate } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
 import https from "node:https";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { Integer, OctetString, Utf8String } from "asn1js";
+import { AttributeTypeAndValue, Certificate, Extension, GeneralName, GeneralNames, getCrypto } from "pkijs";
 
 const exec = promisify(execFile);
 const childSetup = String.raw`
@@ -64,33 +67,37 @@ describe("electron-builder 下载依赖的代理、TLS 与 HTTP cache 合同", (
   beforeAll(async () => {
     temp = await mkdtemp(path.join(os.tmpdir(), "bunkiten-dependency-"));
     certificate = path.join(temp, "localhost.crt");
-    const keyFile = path.join(temp, "localhost.key");
-    // 只生成临时测试证书，不提交私钥。mac 开发机与 Ubuntu 单测 CI 需有 openssl。
-    await exec(
-      "openssl",
-      [
-        "req",
-        "-x509",
-        "-newkey",
-        "ec",
-        "-pkeyopt",
-        "ec_paramgen_curve:P-256",
-        "-nodes",
-        "-keyout",
-        keyFile,
-        "-out",
-        certificate,
-        "-days",
-        "1",
-        "-subj",
-        "/CN=localhost",
-        "-addext",
-        "subjectAltName=IP:127.0.0.1",
-      ],
-      { timeout: 5000 },
-    ).catch((error: unknown) => {
-      throw new Error("依赖 TLS 合同需要 openssl 生成临时测试证书", { cause: error });
-    });
+    // 复用锁定依赖和 Node WebCrypto；跨平台生成证书，私钥只留在内存。
+    const engine = getCrypto(true);
+    const keys = await globalThis.crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, [
+      "sign",
+      "verify",
+    ]);
+    const tlsCertificate = new Certificate();
+    tlsCertificate.version = 2;
+    tlsCertificate.serialNumber = new Integer({ value: 1 });
+    tlsCertificate.subject.typesAndValues.push(
+      new AttributeTypeAndValue({ type: "2.5.4.3", value: new Utf8String({ value: "localhost" }) }),
+    );
+    tlsCertificate.issuer = tlsCertificate.subject;
+    tlsCertificate.notBefore.value = new Date(Date.now() - 60_000);
+    tlsCertificate.notAfter.value = new Date(Date.now() + 86_400_000);
+    tlsCertificate.extensions = [
+      new Extension({
+        extnID: "2.5.29.17",
+        extnValue: new GeneralNames({
+          names: [
+            new GeneralName({ type: 7, value: new OctetString({ valueHex: Uint8Array.of(127, 0, 0, 1).buffer }) }),
+          ],
+        })
+          .toSchema()
+          .toBER(false),
+      }),
+    ];
+    await tlsCertificate.subjectPublicKeyInfo.importKey(keys.publicKey, engine);
+    await tlsCertificate.sign(keys.privateKey, "SHA-256", engine);
+    const cert = new X509Certificate(Buffer.from(tlsCertificate.toSchema().toBER(false))).toString();
+    await writeFile(certificate, cert);
     origin = http.createServer((req, res) => {
       const route = req.url ?? "/";
       const count = (hits.get(route) ?? 0) + 1;
@@ -101,7 +108,7 @@ describe("electron-builder 下载依赖的代理、TLS 与 HTTP cache 合同", (
       res.end(`${req.headers["x-visitor"] ?? "download"}:${count}`);
     });
     secureOrigin = https.createServer(
-      { key: await readFile(keyFile), cert: await readFile(certificate) },
+      { key: KeyObject.from(keys.privateKey).export({ type: "pkcs8", format: "pem" }), cert },
       (_req, res) => res.end("secure-download"),
     );
     originUrl = `http://${await listen(origin)}`;

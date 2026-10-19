@@ -101,6 +101,9 @@ jobs:
       - name: Install
         run: npm ci
 
+      - name: Download dependency contracts（Windows，无外部证书命令）
+        run: npm test -- tests/dependency-security.test.ts
+
       # --dir 产物（release/win-unpacked/Bunkiten.exe）：不签名也不用 NSIS，跑冒烟足够了。
       # 纪律：`dist:win*` 这两条 npm script 必须保持**跨 shell**——Windows 的 cmd/pwsh 不认 POSIX 的
       # 内联环境变量前缀（`VAR=value cmd`），mac 专属的 `CSC_IDENTITY_AUTO_DISCOVERY=false` 只留在

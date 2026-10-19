@@ -55,7 +55,7 @@ vite 会把 `/api`、`/img`、`/audio`、`/events` 代理到它（默认 `localh
 
 ### 开发依赖审计与下载兼容
 
-`npm audit --json` 检查包含开发工具的完整依赖树；CI 保留原始报告并在告警或请求失败时阻止通过。下载、代理与缓存兼容检查放在 `tests/dependency-security.test.ts`，随原有单元和集成用例运行；TLS 用例用 `openssl` 在临时目录生成测试证书，不提交私钥。
+`npm audit --json` 检查包含开发工具的完整依赖树；CI 保留原始报告并在告警或请求失败时阻止通过。下载、代理与缓存兼容检查放在 `tests/dependency-security.test.ts`，随原有单元和集成用例运行；TLS 用例用已声明的开发依赖 `pkijs`、`asn1js` 和 Node WebCrypto 生成临时证书，私钥仅在内存中使用，不要求系统安装 `openssl`。Windows CI 也单独运行这组用例。
 
 `package.json` 仅对 `app-builder-lib → @electron/get → global-agent` 使用正式 `4.1.3` 的定向覆盖。该版本移除了引入 `sprintf-js` 的旧 `roarr` 日志链，保留原下载器的 got 选项及 `GLOBAL_AGENT_*` 代理配置。直接把下载器换成 get 5 会改变代理和超时接口，因此没有采用；上游 builder 正式支持新代理版本后可移除覆盖。来源：[global-agent 4.1.0](https://github.com/gajus/global-agent/releases/tag/v4.1.0)、[4.1.3](https://github.com/gajus/global-agent/releases/tag/v4.1.3)、[get 5 的破坏性变更](https://github.com/electron/get/releases/tag/v5.0.0)。
 
